@@ -1,6 +1,6 @@
 
 
-# aws_tools
+# awstools
 
 This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.
 
@@ -26,6 +26,7 @@ proof of concept
 - jq >= 1.8
 - BATS (Bash Automated Testing System)
 - git >= v2
+- shellcheck >= 0.11
 
 
 
@@ -35,7 +36,5 @@ proof of concept
 
 
 - [Getting Help, Reporting bugs](https://github.com/caltechlibrary/awstools/issues)
-
-- [Installation](INSTALL.md)
 - [About](about.md)
 

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>awstools</title>
+    <link rel="stylesheet" href="https://caltechlibrary.github.io/css/site.css">
+    <link rel="stylesheet" href="https://media.library.caltech.edu/cl-webcomponents/css/code-blocks.css">
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/copyToClipboard.js"></script>
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/footer-global.js"></script>
+</head>
+<body>
+<header>
+<a href="https://library.caltech.edu"><img src="https://media.library.caltech.edu/assets/caltechlibrary-logo.png" alt="Caltech Library logo"></a>
+</header>
+<a href="#main-content" class="visually-hidden">skip to main content</a>
+<nav>
+<ul>
+    <li><a href="/">All Library Apps</a></li>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="LICENSE">LICENSE</a></li>
+    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="user_manual.html">User Manual</a></li>
+    <li><a href="about.html">About</a></li>
+    <!-- <li><a href="search.html">Search</a></li> -->
+    <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
+</ul>
+</nav>
+<section id="main-content">
+<h1 id="aws-tools-architecture-ux-decision-log">AWS Tools — Architecture
+&amp; UX Decision Log</h1>
+<p>This file records significant architectural and UX decisions for the
+interactive EC2/AMI manager, their rationale, and known trade-offs. New
+decisions are added at the top.</p>
+<hr />
+<h2 id="ami-scope-limited-to-account-owned-only">2026-06-30 — AMI scope
+limited to account-owned only</h2>
+<p><strong>Context.</strong> When listing available AMIs for instance
+creation, we must choose between showing all AMIs (public + private),
+only AWS marketplace AMIs, only account-owned AMIs, or a filtered
+subset.</p>
+<p><strong>Decision.</strong> <strong>Show only AMIs owned by the
+current AWS account.</strong></p>
+<p><strong>Rationale.</strong> - Reduces clutter and confusion for users
+managing their own infrastructure - Public AMIs are typically accessed
+through other workflows (Launch Templates, console) - Owned AMIs are the
+primary concern for lifecycle management (creation/removal) - Simplifies
+the pick list to relevant, actionable items - Aligns with the AMI
+removal feature which only makes sense for owned AMIs</p>
+<p><strong>Rejected alternatives.</strong> - <em>All AMIs (public +
+private)</em> — would overwhelm users with thousands of irrelevant AMIs
+- <em>Owned + AWS marketplace</em> — AWS marketplace AMIs cannot be
+deleted, creating inconsistency in the removal feature - <em>Custom
+filter by tags</em> — adds complexity for initial implementation; can be
+added later as a filter option</p>
+<p><strong>Consequences.</strong> - Users cannot launch instances from
+public AMIs through this script - If needed, a future enhancement could
+add a “Show public AMIs” toggle - The script focuses on managing
+custom/private infrastructure</p>
+<hr />
+<h2 id="all-four-regions-aggregated-in-unified-view">2026-06-30 — All
+four regions aggregated in unified view</h2>
+<p><strong>Context.</strong> The script must operate across four AWS
+regions. We must decide whether to show each region separately,
+aggregate all regions, or let the user select a region per
+operation.</p>
+<p><strong>Decision.</strong> <strong>Aggregate all four regions in a
+single unified view.</strong></p>
+<p><strong>Rationale.</strong> - Provides a complete picture of
+infrastructure across all regions at a glance - Matches the user’s
+stated requirement to “list the EC2 instances from one of the four
+regions we use” - Simplifies the user experience by eliminating region
+selection from the critical path - Instance and AMI IDs are globally
+unique, so aggregation doesn’t cause collisions</p>
+<p><strong>Rejected alternatives.</strong> - <em>Single region (user
+picks first)</em> — requires extra step and doesn’t show full
+infrastructure state - <em>Region per operation</em> — inconsistent UX,
+requires region selection for every action</p>
+<p><strong>Consequences.</strong> - All API calls must be made against
+each of the four regions - Aggregation logic needed to combine and
+deduplicate results - Display must include region column for all
+resources - Performance: slightly slower due to 4x API calls, but
+acceptable for interactive use</p>
+<hr />
+<h2 id="prompt-user-for-all-instance-creation-parameters">2026-06-30 —
+Prompt user for all instance creation parameters</h2>
+<p><strong>Context.</strong> When creating an EC2 instance from an AMI,
+we need values for instance-type, key-name, security-group-ids,
+subnet-id, and other optional parameters. We must decide on the default
+behavior.</p>
+<p><strong>Decision.</strong> <strong>Prompt the user for all required
+parameters interactively, with no hardcoded defaults.</strong></p>
+<p><strong>Rationale.</strong> - Maximum flexibility for users with
+different requirements - Prevents launching instances with inappropriate
+defaults - Educational: helps users understand what’s required for
+instance creation - Reduces risk of launching instances in wrong
+subnet/security group</p>
+<p><strong>Rejected alternatives.</strong> - <em>Hardcoded sensible
+defaults</em> — defaults may not be appropriate for all use cases; could
+lead to instances in wrong network configuration - <em>Config file with
+overrides</em> — adds complexity; users may not have config files set
+up; harder to use across different projects</p>
+<p><strong>Consequences.</strong> - More interactive steps required from
+user - Need validation for each parameter - Should provide lists of
+available options (key pairs, security groups, subnets) to help user
+choose - May add helper to show “common” instance types with
+descriptions</p>
+<hr />
+<h2 id="user-provided-ami-names-for-new-amis">2026-06-30 — User-provided
+AMI names for new AMIs</h2>
+<p><strong>Context.</strong> When creating an AMI from an EC2 instance,
+we need a name for the new AMI. We must decide how this name is
+generated.</p>
+<p><strong>Decision.</strong> <strong>Require user to provide the AMI
+name interactively.</strong></p>
+<p><strong>Rationale.</strong> - AMI names are user-facing and should be
+meaningful - Users have different naming conventions based on their
+organization - Auto-generated names might not match organizational
+standards - Simple and predictable for users</p>
+<p><strong>Rejected alternatives.</strong> - <em>Auto-generate from
+instance name</em> — instance may not have a Name tag; generated names
+might not be descriptive enough - <em>Auto-generate with prefix</em> —
+requires configuration of prefix; less flexible - <em>Name + tags</em> —
+adds complexity for initial implementation</p>
+<p><strong>Consequences.</strong> - User must think of a name each time
+(minor friction) - Can add auto-suggestion in future based on instance
+metadata - Name validation needed (AMI name constraints: 3-128
+characters, specific allowed characters)</p>
+<hr />
+<h2 id="multi-layer-confirmation-for-ami-removal">2026-06-30 —
+Multi-layer confirmation for AMI removal</h2>
+<p><strong>Context.</strong> Removing an AMI is destructive and
+irreversible. We must implement safety mechanisms to prevent accidental
+deletion.</p>
+<p><strong>Decision.</strong> <strong>Implement three-layer
+confirmation:</strong> 1. Dry-run first: Show exactly what would be
+deleted 2. Show dependencies: List any instances currently using this
+AMI 3. Type to confirm: User must type the AMI ID or name exactly</p>
+<p><strong>Rationale.</strong> - AMI deletion cannot be undone -
+Instances using a deleted AMI cannot be launched or rebooted (if
+instance-store backed) - Typo in selection could cause significant data
+loss - Multiple confirmation layers provide defense in depth</p>
+<p><strong>Rejected alternatives.</strong> - <em>Simple yes/no
+prompt</em> — too easy to accidentally confirm - <em>Dry-run only</em> —
+doesn’t prevent accidental confirmation - <em>Show dependencies
+only</em> — doesn’t verify user intentionality</p>
+<p><strong>Consequences.</strong> - More steps required to delete an AMI
+(acceptable for safety-critical operation) - Need to implement
+dependency checking (query instances by ImageId) - Must handle case
+where AMI has no instances using it - Error handling for typed
+confirmation mismatch</p>
+<hr />
+<h2 id="use-aws-cli-v2-with-jq-for-json-parsing">2026-06-30 — Use AWS
+CLI v2 with jq for JSON parsing</h2>
+<p><strong>Context.</strong> We need to interact with AWS APIs and parse
+their JSON output in Bash.</p>
+<p><strong>Decision.</strong> <strong>Use AWS CLI v2 with jq for JSON
+parsing.</strong></p>
+<p><strong>Rationale.</strong> - AWS CLI v2 is the current standard,
+maintained by AWS - jq is the de facto standard for JSON parsing in
+shell scripts - Both are likely already installed in environments using
+AWS - Provides full access to AWS API functionality</p>
+<p><strong>Rejected alternatives.</strong> - <em>AWS CLI v1</em> —
+deprecated, no longer maintained - <em>aws-shell</em> — not suitable for
+scripting - <em>Boto3 (Python)</em> — requires Python, not pure Bash -
+<em>Custom JSON parsing with grep/sed</em> — fragile, error-prone</p>
+<p><strong>Consequences.</strong> - Script requires AWS CLI v2 and jq as
+dependencies - Need to check for these dependencies on startup - Error
+messages should guide users to install missing tools</p>
+<hr />
+<h2 id="numbered-menu-for-pick-lists">2026-06-30 — Numbered menu for
+pick lists</h2>
+<p><strong>Context.</strong> The script needs to present lists of
+resources (AMIs, instances) for user selection. We must choose an
+interaction method.</p>
+<p><strong>Decision.</strong> <strong>Use numbered menus for resource
+selection.</strong></p>
+<p><strong>Rationale.</strong> - Works in all terminal environments (no
+special dependencies) - Simple and familiar to users - Easy to implement
+in pure Bash - No external tools required (like fzf)</p>
+<p><strong>Rejected alternatives.</strong> - <em>fzf fuzzy finder</em> —
+requires fzf installation; not available on all systems - <em>arrow-key
+navigation</em> — complex to implement in pure Bash; requires ncurses or
+similar - <em>Search/filter</em> — adds complexity for initial
+implementation</p>
+<p><strong>Consequences.</strong> - For large lists (&gt;20 items), may
+need pagination - User must type number corresponding to selection -
+Input validation needed for number range - Can add fzf support as
+optional enhancement in future</p>
+<hr />
+<h2
+id="include-both-running-and-stopped-instances-for-ami-creation">2026-06-30
+— Include both running and stopped instances for AMI creation</h2>
+<p><strong>Context.</strong> When creating an AMI from an instance, the
+instance can be in various states. We must decide which states are
+allowed.</p>
+<p><strong>Decision.</strong> <strong>Allow both running and stopped
+instances to be selected for AMI creation.</strong></p>
+<p><strong>Rationale.</strong> - AWS supports creating AMIs from both
+running and stopped instances - Stopped instances are common targets for
+AMI creation (clean state) - Running instances might need AMIs created
+for backup purposes - Matches the user’s stated requirement</p>
+<p><strong>Rejected alternatives.</strong> - <em>Running only</em> —
+excludes common use case of creating AMI from stopped instance -
+<em>Stopped only</em> — excludes emergency backup scenarios - <em>All
+states including terminated</em> — terminated instances cannot have AMIs
+created</p>
+<p><strong>Consequences.</strong> - Need to filter out terminated
+instances from the pick list - May want to warn user about creating AMI
+from running instance (potential inconsistency) - For running instances,
+can offer no-reboot option</p>
+<hr />
+<h2 id="refresh-data-after-each-operation">2026-06-30 — Refresh data
+after each operation</h2>
+<p><strong>Context.</strong> After performing operations (create
+instance, create AMI, remove AMI), the displayed resource lists become
+stale. We must decide when to refresh.</p>
+<p><strong>Decision.</strong> <strong>Refresh all resource data after
+each operation that modifies state, and provide a manual refresh
+option.</strong></p>
+<p><strong>Rationale.</strong> - Ensures user always sees current state
+- Automated refresh after modifications provides immediate feedback -
+Manual refresh option allows user to see latest state at any time -
+Simple to implement (re-run the listing functions)</p>
+<p><strong>Rejected alternatives.</strong> - <em>Refresh only on
+demand</em> — user might not realize data is stale - <em>Periodic
+auto-refresh</em> — adds complexity, unnecessary API calls - <em>No
+refresh</em> — poor UX, user sees outdated information</p>
+<p><strong>Consequences.</strong> - Each operation will include the cost
+of 8 API calls (4 regions x 2 resource types) - Need to consider
+performance for slow connections - Can add progress indicators during
+refresh</p>
+</section>
+<footer-global></footer-global>
+</body>
+</html>

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>awstools</title>
+    <link rel="stylesheet" href="https://caltechlibrary.github.io/css/site.css">
+    <link rel="stylesheet" href="https://media.library.caltech.edu/cl-webcomponents/css/code-blocks.css">
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/copyToClipboard.js"></script>
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/footer-global.js"></script>
+</head>
+<body>
+<header>
+<a href="https://library.caltech.edu"><img src="https://media.library.caltech.edu/assets/caltechlibrary-logo.png" alt="Caltech Library logo"></a>
+</header>
+<a href="#main-content" class="visually-hidden">skip to main content</a>
+<nav>
+<ul>
+    <li><a href="/">All Library Apps</a></li>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="LICENSE">LICENSE</a></li>
+    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="user_manual.html">User Manual</a></li>
+    <li><a href="about.html">About</a></li>
+    <!-- <li><a href="search.html">Search</a></li> -->
+    <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
+</ul>
+</nav>
+<section id="main-content">
+<h1 id="aws-tools-software-requirements">AWS Tools — Software
+Requirements</h1>
+<h2 id="overview">Overview</h2>
+<p>This document lists all software dependencies required to develop and
+run the AWS Tools scripts.</p>
+<hr />
+<h2 id="core-requirements">Core Requirements</h2>
+<h3 id="bash">1. Bash</h3>
+<ul>
+<li><strong>Version:</strong> 4.0 or higher recommended</li>
+<li><strong>Purpose:</strong> Script execution environment</li>
+<li><strong>Check:</strong> <code>bash --version</code></li>
+<li><strong>Install:</strong> Pre-installed on macOS and most Linux
+distributions</li>
+</ul>
+<hr />
+<h3 id="aws-cli-v2">2. AWS CLI v2</h3>
+<ul>
+<li><strong>Version:</strong> 2.x (latest recommended)</li>
+<li><strong>Purpose:</strong> AWS API interaction for EC2 and AMI
+operations</li>
+<li><strong>Check:</strong> <code>aws --version</code></li>
+<li><strong>Install:</strong>
+<ul>
+<li><strong>macOS (MacPorts):</strong>
+<code>sudo port install awscli</code></li>
+<li><strong>macOS (Homebrew):</strong>
+<code>brew install awscli</code></li>
+<li><strong>Linux (apt):</strong>
+<code>sudo apt install awscli</code></li>
+<li><strong>Linux (yum):</strong>
+<code>sudo yum install awscli</code></li>
+<li><strong>Official:</strong>
+https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html</li>
+</ul></li>
+<li><strong>Post-install:</strong> Configure credentials with
+<code>aws configure</code> or via environment variables</li>
+</ul>
+<hr />
+<h3 id="jq">3. jq</h3>
+<ul>
+<li><strong>Version:</strong> 1.6 or higher</li>
+<li><strong>Purpose:</strong> JSON parsing for AWS CLI output</li>
+<li><strong>Check:</strong> <code>jq --version</code></li>
+<li><strong>Install:</strong>
+<ul>
+<li><strong>macOS (MacPorts):</strong>
+<code>sudo port install jq</code></li>
+<li><strong>macOS (Homebrew):</strong> <code>brew install jq</code></li>
+<li><strong>Linux (apt):</strong> <code>sudo apt install jq</code></li>
+<li><strong>Linux (yum):</strong> <code>sudo yum install jq</code></li>
+</ul></li>
+<li><strong>Website:</strong> https://stedolan.github.io/jq/</li>
+</ul>
+<hr />
+<h2 id="development-testing-requirements">Development &amp; Testing
+Requirements</h2>
+<h3 id="bats-bash-automated-testing-system">4. BATS (Bash Automated
+Testing System)</h3>
+<ul>
+<li><strong>Version:</strong> 1.13.0 (or latest)</li>
+<li><strong>Purpose:</strong> Unit testing framework for Bash
+scripts</li>
+<li><strong>Check:</strong> <code>bats --version</code></li>
+<li><strong>Install:</strong>
+<ul>
+<li><strong>macOS (MacPorts):</strong>
+<code>sudo port install bats-core</code></li>
+<li><strong>macOS (Homebrew):</strong>
+<code>brew install bats-core</code></li>
+<li><strong>Linux:</strong> See
+https://github.com/bats-core/bats-core</li>
+</ul></li>
+<li><strong>Website:</strong>
+https://github.com/bats-core/bats-core</li>
+</ul>
+<hr />
+<h3 id="git">5. Git</h3>
+<ul>
+<li><strong>Version:</strong> 2.x</li>
+<li><strong>Purpose:</strong> Version control</li>
+<li><strong>Check:</strong> <code>git --version</code></li>
+<li><strong>Install:</strong>
+<ul>
+<li><strong>macOS:</strong> <code>xcode-select --install</code> or via
+MacPorts/Homebrew</li>
+<li><strong>Linux:</strong> <code>sudo apt install git</code> or
+<code>sudo yum install git</code></li>
+</ul></li>
+</ul>
+<hr />
+<h3 id="shellcheck">6. shellcheck</h3>
+<ul>
+<li><strong>Version:</strong> 0.9.0 or higher</li>
+<li><strong>Purpose:</strong> Static analysis tool for Bash scripts
+(linting)</li>
+<li><strong>Check:</strong> <code>shellcheck --version</code></li>
+<li><strong>Install:</strong>
+<ul>
+<li><strong>macOS (MacPorts):</strong>
+<code>sudo port install shellcheck</code></li>
+<li><strong>macOS (Homebrew):</strong>
+<code>brew install shellcheck</code></li>
+<li><strong>Linux (apt):</strong>
+<code>sudo apt install shellcheck</code></li>
+<li><strong>Linux (snap):</strong>
+<code>sudo snap install shellcheck --classic</code></li>
+<li><strong>Official:</strong> See
+https://github.com/koalaman/shellcheck</li>
+</ul></li>
+<li><strong>Usage:</strong> Run <code>shellcheck script.sh</code> to
+check Bash scripts for common issues</li>
+<li><strong>Website:</strong> https://www.shellcheck.net/</li>
+</ul>
+<hr />
+<h2 id="optional-dependencies">Optional Dependencies</h2>
+<h3 id="fzf-optional">6. fzf (Optional)</h3>
+<ul>
+<li><strong>Version:</strong> Any recent version</li>
+<li><strong>Purpose:</strong> Fuzzy finder for enhanced pick list UX
+(future enhancement)</li>
+<li><strong>Install:</strong>
+<ul>
+<li><strong>macOS (MacPorts):</strong>
+<code>sudo port install fzf</code></li>
+<li><strong>macOS (Homebrew):</strong>
+<code>brew install fzf</code></li>
+</ul></li>
+<li><strong>Website:</strong> https://github.com/junegunn/fzf</li>
+</ul>
+<hr />
+<h2 id="aws-configuration">AWS Configuration</h2>
+<p>The scripts assume AWS credentials are configured. Set up one of:</p>
+<h3 id="option-a-aws-cli-configuration-file">Option A: AWS CLI
+Configuration File</h3>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">aws</span> configure</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Enter Access Key ID, Secret Access Key, default region, output format</span></span></code></pre></div>
+<p>File location: <code>~/.aws/credentials</code> and
+<code>~/.aws/config</code></p>
+<h3 id="option-b-environment-variables">Option B: Environment
+Variables</h3>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">AWS_ACCESS_KEY_ID</span><span class="op">=</span>AKIA...</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">AWS_SECRET_ACCESS_KEY</span><span class="op">=</span>...</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">AWS_DEFAULT_REGION</span><span class="op">=</span>us-east-1</span></code></pre></div>
+<h3 id="option-c-iam-role-ec2-ecs-etc.">Option C: IAM Role (EC2, ECS,
+etc.)</h3>
+<p>Automatically picked up when running on AWS infrastructure with
+appropriate IAM role.</p>
+<h3 id="required-iam-permissions">Required IAM Permissions</h3>
+<p>Minimum permissions required for the scripts to function:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;Version&quot;</span><span class="fu">:</span> <span class="st">&quot;2012-10-17&quot;</span><span class="fu">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;Statement&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;Effect&quot;</span><span class="fu">:</span> <span class="st">&quot;Allow&quot;</span><span class="fu">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;Action&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeInstances&quot;</span><span class="ot">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeImages&quot;</span><span class="ot">,</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeKeyPairs&quot;</span><span class="ot">,</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeSecurityGroups&quot;</span><span class="ot">,</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeSubnets&quot;</span><span class="ot">,</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeVpcs&quot;</span><span class="ot">,</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeIamInstanceProfileAssociations&quot;</span><span class="ot">,</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:RunInstances&quot;</span><span class="ot">,</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:CreateImage&quot;</span><span class="ot">,</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DeregisterImage&quot;</span><span class="ot">,</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:CreateTags&quot;</span><span class="ot">,</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;ec2:DescribeTags&quot;</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>      <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;Resource&quot;</span><span class="fu">:</span> <span class="st">&quot;*&quot;</span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<hr />
+<h2 id="installation-verification">Installation Verification</h2>
+<p>Run the following commands to verify all dependencies are
+installed:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Check all core requirements</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;=== Bash ===&quot;</span> <span class="kw">&amp;&amp;</span> <span class="fu">bash</span> <span class="at">--version</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;=== AWS CLI ===&quot;</span> <span class="kw">&amp;&amp;</span> <span class="ex">aws</span> <span class="at">--version</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;=== jq ===&quot;</span> <span class="kw">&amp;&amp;</span> <span class="ex">jq</span> <span class="at">--version</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;=== BATS ===&quot;</span> <span class="kw">&amp;&amp;</span> <span class="ex">bats</span> <span class="at">--version</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;=== Git ===&quot;</span> <span class="kw">&amp;&amp;</span> <span class="fu">git</span> <span class="at">--version</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Check development tools</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="bu">echo</span> <span class="st">&quot;=== shellcheck ===&quot;</span> <span class="kw">&amp;&amp;</span> <span class="ex">shellcheck</span> <span class="at">--version</span></span></code></pre></div>
+<p>All commands should return version information without errors.</p>
+<hr />
+<h2 id="macos-quick-install-macports">macOS Quick Install
+(MacPorts)</h2>
+<p>For a fresh macOS setup with MacPorts:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Install MacPorts if not already installed</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># https://www.macports.org/install.php</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Install all core dependencies</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> port install awscli jq bats-core git shellcheck</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Verify</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="ex">bats</span> <span class="at">--version</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="ex">aws</span> <span class="at">--version</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="ex">jq</span> <span class="at">--version</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="ex">shellcheck</span> <span class="at">--version</span></span></code></pre></div>
+<hr />
+<h2 id="troubleshooting">Troubleshooting</h2>
+<h3 id="bats-command-not-found">BATS: Command not found</h3>
+<ul>
+<li>Ensure <code>/opt/local/bin</code> is in your PATH (MacPorts
+default)</li>
+<li>Run: <code>export PATH="/opt/local/bin:$PATH"</code></li>
+<li>Or add to your shell config (<code>~/.bashrc</code>,
+<code>~/.bash_profile</code>, or <code>~/.zshrc</code>)</li>
+</ul>
+<h3 id="aws-cli-not-configured">AWS CLI: Not configured</h3>
+<ul>
+<li>Run <code>aws configure</code></li>
+<li>Or set environment variables as shown above</li>
+</ul>
+<h3 id="jq-command-not-found">jq: Command not found</h3>
+<ul>
+<li>Verify installation: <code>port installed jq</code> or
+<code>brew list jq</code></li>
+<li>Reinstall if needed</li>
+</ul>
+<h3 id="permission-errors">Permission errors</h3>
+<ul>
+<li>Verify IAM user has the required permissions listed above</li>
+<li>Check AWS credentials are correct and not expired</li>
+<li>Verify the AWS region matches where your resources exist</li>
+</ul>
+<h3 id="shellcheck-command-not-found">shellcheck: Command not found</h3>
+<ul>
+<li>Ensure shellcheck is installed (see installation instructions
+above)</li>
+<li>Verify <code>/opt/local/bin</code> is in your PATH (MacPorts
+default)</li>
+<li>Run: <code>export PATH="/opt/local/bin:$PATH"</code></li>
+</ul>
+<hr />
+<h2 id="code-quality-tools">Code Quality Tools</h2>
+<h3 id="running-shellcheck-on-the-project">Running shellcheck on the
+Project</h3>
+<p>To check all Bash scripts in the project for potential issues:</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Check main script</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="ex">shellcheck</span> ec2_ami_manager.bash</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Check test infrastructure</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="ex">shellcheck</span> tests/lib/test_helper.bash</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="ex">shellcheck</span> tests/<span class="pp">*</span>.bats</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Check all Bash files</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="fu">find</span> . <span class="at">-name</span> <span class="st">&quot;*.bash&quot;</span> <span class="at">-o</span> <span class="at">-name</span> <span class="st">&quot;*.bats&quot;</span> <span class="kw">|</span> <span class="fu">xargs</span> shellcheck</span></code></pre></div>
+<p>This helps catch common Bash scripting issues early in the
+development process.</p>
+<hr />
+<h2 id="version-compatibility-notes">Version Compatibility Notes</h2>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 32%" />
+<col style="width: 30%" />
+<col style="width: 13%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Dependency</th>
+<th scope="col">Minimum Version</th>
+<th scope="col">Tested Version</th>
+<th scope="col">Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bash</td>
+<td>4.0</td>
+<td>5.x</td>
+<td>Some features may require 4.0+ (associative arrays)</td>
+</tr>
+<tr>
+<td>AWS CLI</td>
+<td>2.0</td>
+<td>2.15+</td>
+<td>v1 is deprecated and unsupported</td>
+</tr>
+<tr>
+<td>jq</td>
+<td>1.6</td>
+<td>1.7+</td>
+<td>Earlier versions may lack some features</td>
+</tr>
+<tr>
+<td>BATS</td>
+<td>1.0</td>
+<td>1.13.0</td>
+<td>All 1.x versions should work</td>
+</tr>
+<tr>
+<td>Git</td>
+<td>2.0</td>
+<td>Any</td>
+<td>Used for version control only</td>
+</tr>
+<tr>
+<td>shellcheck</td>
+<td>0.9.0</td>
+<td>0.10.0</td>
+<td>Linting tool for development</td>
+</tr>
+</tbody>
+</table>
+</section>
+<footer-global></footer-global>
+</body>
+</html>

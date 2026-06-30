@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>awstools</title>
+    <link rel="stylesheet" href="https://caltechlibrary.github.io/css/site.css">
+    <link rel="stylesheet" href="https://media.library.caltech.edu/cl-webcomponents/css/code-blocks.css">
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/copyToClipboard.js"></script>
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/footer-global.js"></script>
+</head>
+<body>
+<header>
+<a href="https://library.caltech.edu"><img src="https://media.library.caltech.edu/assets/caltechlibrary-logo.png" alt="Caltech Library logo"></a>
+</header>
+<a href="#main-content" class="visually-hidden">skip to main content</a>
+<nav>
+<ul>
+    <li><a href="/">All Library Apps</a></li>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="LICENSE">LICENSE</a></li>
+    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="user_manual.html">User Manual</a></li>
+    <li><a href="about.html">About</a></li>
+    <!-- <li><a href="search.html">Search</a></li> -->
+    <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
+</ul>
+</nav>
+<section id="main-content">
+<h1 id="aws-tools-interactive-ec2ami-manager-implementation-plan">AWS
+Tools — Interactive EC2/AMI Manager — Implementation Plan</h1>
+<h2 id="source-design">Source Design</h2>
+<p>See <code>DESIGN.md</code> and <code>DECISIONS.md</code> for the
+complete design and decision rationale.</p>
+<h2 id="phases">Phases</h2>
+<p>This implementation follows a phased approach with tests written
+before code (TDD).</p>
+<hr />
+<h2 id="phase-0-project-setup-test-infrastructure">Phase 0 — Project
+Setup &amp; Test Infrastructure</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong> High</p>
+<h3 id="tasks">Tasks</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Create <code>tests/</code> directory
+structure</label></li>
+<li><label><input type="checkbox" />Install BATS (Bash Automated Testing
+System) if not present</label></li>
+<li><label><input type="checkbox" />Create <code>test_helper.bash</code>
+with common test setup (mock AWS CLI responses)</label></li>
+<li><label><input type="checkbox" />Create BATS test scaffold for main
+script</label></li>
+<li><label><input type="checkbox" />Set up GitHub Actions or local CI
+for test execution</label></li>
+</ul>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li><code>tests/</code> directory with helper scripts</li>
+<li>Basic test infrastructure that can mock AWS CLI calls</li>
+<li>Documentation on running tests locally</li>
+</ul>
+<h3 id="dependencies">Dependencies</h3>
+<ul>
+<li>BATS installation</li>
+<li>Mock AWS CLI response files for testing</li>
+</ul>
+<hr />
+<h2 id="phase-1-aws-cli-wrapper-layer">Phase 1 — AWS CLI Wrapper
+Layer</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items">Work Items</h3>
+<h4 id="w0-dependency-check">W0 — Dependency Check</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>check_dependencies()</code> function</li>
+<li>Verify AWS CLI v2 is installed and configured</li>
+<li>Verify jq is installed</li>
+<li>Verify AWS credentials are available</li>
+<li>Exit with clear error message if dependencies missing</li>
+</ul>
+<p><strong>Tests:</strong> - Test with all dependencies present (expect
+pass) - Test with missing AWS CLI (expect clear error) - Test with
+missing jq (expect clear error) - Test with missing credentials (expect
+clear error)</p>
+<p><strong>Dependency:</strong> Phase 0</p>
+<hr />
+<h4 id="w1-region-configuration">W1 — Region Configuration</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Define array of four regions:
+<code>REGIONS=(us-east-1 us-east-2 us-west-1 us-west-2)</code></li>
+<li>Create <code>for_all_regions()</code> helper function to iterate
+across regions</li>
+<li>Create <code>aws_ec2()</code> wrapper that adds
+<code>--region</code> parameter</li>
+</ul>
+<p><strong>Tests:</strong> - Test that all four regions are defined -
+Test that region iteration works correctly</p>
+<p><strong>Dependency:</strong> Phase 0</p>
+<hr />
+<h4 id="w2-aws-cli-error-handling">W2 — AWS CLI Error Handling</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>aws_cli_call()</code> wrapper function</li>
+<li>Parse AWS CLI JSON output for errors</li>
+<li>Extract and display error messages clearly</li>
+<li>Handle common error types (AccessDenied, InvalidParameter,
+etc.)</li>
+<li>Implement retry logic with exponential backoff (max 3 attempts)</li>
+</ul>
+<p><strong>Tests:</strong> - Test successful AWS CLI call (expect JSON
+output) - Test AWS CLI error parsing (expect error message extraction) -
+Test retry logic (mock failures then success) - Test max retry exceeded
+(expect error exit)</p>
+<p><strong>Dependency:</strong> W0</p>
+<hr />
+<h2 id="phase-2-resource-listing-functions">Phase 2 — Resource Listing
+Functions</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items-1">Work Items</h3>
+<h4 id="l0-list-ec2-instances-across-all-regions">L0 — List EC2
+Instances Across All Regions</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>list_ec2_instances()</code> function</li>
+<li>Call <code>aws ec2 describe-instances</code> for each of the four
+regions</li>
+<li>Filter for non-terminated instances</li>
+<li>Extract: InstanceId, InstanceType, State, ImageId, Tags (Name),
+Region</li>
+<li>Aggregate results from all regions into single array</li>
+<li>Sort by Region, then InstanceId</li>
+</ul>
+<p><strong>Tests:</strong> - Test with no instances (expect empty list)
+- Test with instances in multiple regions (expect aggregated list) -
+Test with instances having Name tags (expect name displayed) - Test with
+instances without Name tags (expect empty name)</p>
+<p><strong>Dependency:</strong> W2</p>
+<hr />
+<h4 id="l1-list-owned-amis-across-all-regions">L1 — List Owned AMIs
+Across All Regions</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>list_amis()</code> function</li>
+<li>Call <code>aws ec2 describe-images --owners self</code> for each
+region</li>
+<li>Filter for available AMIs</li>
+<li>Extract: ImageId, Name, CreationDate, State, Region</li>
+<li>Aggregate results from all regions into single array</li>
+<li>Sort by Region, then CreationDate (newest first)</li>
+</ul>
+<p><strong>Tests:</strong> - Test with no owned AMIs (expect empty list)
+- Test with AMIs in multiple regions (expect aggregated list) - Test
+sorting (expect newest first within each region)</p>
+<p><strong>Dependency:</strong> W2</p>
+<hr />
+<h4 id="l2-display-formatting">L2 — Display Formatting</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>display_instances()</code> function</li>
+<li>Format instance list as table with columns: ID, Name, State, AMI ID,
+Region</li>
+<li>Truncate long values with ellipsis (e.g., IDs to 12 chars)</li>
+<li>Create <code>display_amis()</code> function</li>
+<li>Format AMI list as table with columns: AMI ID, Name, Creation Date,
+Region</li>
+<li>Add visual separators between sections</li>
+</ul>
+<p><strong>Tests:</strong> - Test display with empty lists - Test
+display with multiple items - Test truncation of long values</p>
+<p><strong>Dependency:</strong> L0, L1</p>
+<hr />
+<h2 id="phase-3-pick-list-implementation">Phase 3 — Pick List
+Implementation</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items-2">Work Items</h3>
+<h4 id="p0-generic-pick-list-function">P0 — Generic Pick List
+Function</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>show_pick_list()</code> function</li>
+<li>Accept array of items as input</li>
+<li>Display numbered list (1-N)</li>
+<li>Accept user input with validation</li>
+<li>Return selected index or exit on invalid/cancel</li>
+<li>Handle empty list case</li>
+</ul>
+<p><strong>Tests:</strong> - Test with empty list (expect error message,
+return to menu) - Test with single item (expect auto-select or prompt) -
+Test with multiple items (expect correct selection) - Test with invalid
+input (expect re-prompt) - Test with cancel input (expect return to
+menu)</p>
+<p><strong>Dependency:</strong> Phase 2</p>
+<hr />
+<h4 id="p1-ami-pick-list">P1 — AMI Pick List</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>pick_ami()</code> function</li>
+<li>Call <code>list_amis()</code> to get current AMI list</li>
+<li>Pass to <code>show_pick_list()</code> with appropriate display
+formatting</li>
+<li>Return selected AMI (full object with all fields)</li>
+</ul>
+<p><strong>Tests:</strong> - Test selection from AMI list - Test cancel
+behavior</p>
+<p><strong>Dependency:</strong> P0, L1</p>
+<hr />
+<h4 id="p2-instance-pick-list">P2 — Instance Pick List</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>pick_instance()</code> function</li>
+<li>Call <code>list_ec2_instances()</code> to get current instance
+list</li>
+<li>Filter by state if needed (running, stopped, or both)</li>
+<li>Pass to <code>show_pick_list()</code> with appropriate display
+formatting</li>
+<li>Return selected instance (full object with all fields)</li>
+</ul>
+<p><strong>Tests:</strong> - Test selection from instance list - Test
+filtering by state - Test cancel behavior</p>
+<p><strong>Dependency:</strong> P0, L0</p>
+<hr />
+<h2 id="phase-4-create-ec2-instance-from-ami">Phase 4 — Create EC2
+Instance from AMI</h2>
+<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items-3">Work Items</h3>
+<h4 id="c0-parameter-collection">C0 — Parameter Collection</h4>
+<p><strong>Effort:</strong> ~3 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>collect_instance_params()</code> function</li>
+<li>After AMI selection, prompt for:
+<ul>
+<li>Instance type: list available types, allow user selection</li>
+<li>Key pair name: list available key pairs, allow selection</li>
+<li>Security group IDs: list available security groups, allow
+multi-select</li>
+<li>Subnet ID: list available subnets, allow selection</li>
+<li>IAM instance profile: list available, optional</li>
+<li>User data: text input, optional</li>
+<li>Tags: key=value pairs, optional</li>
+</ul></li>
+<li>Validate each parameter</li>
+<li>Allow back/redo for any parameter</li>
+</ul>
+<p><strong>Helper functions needed:</strong> -
+<code>list_instance_types()</code> — call AWS for available types in
+region - <code>list_key_pairs()</code> — call AWS for available key
+pairs in region - <code>list_security_groups()</code> — call AWS for
+available security groups - <code>list_subnets()</code> — call AWS for
+available subnets - <code>list_instance_profiles()</code> — call AWS for
+available IAM instance profiles</p>
+<p><strong>Tests:</strong> - Test parameter collection with valid inputs
+- Test validation of invalid instance types - Test validation of
+non-existent key pairs - Test cancel behavior at any prompt</p>
+<p><strong>Dependency:</strong> P1, W2</p>
+<hr />
+<h4 id="c1-confirmation-and-launch">C1 — Confirmation and Launch</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>confirm_and_launch()</code> function</li>
+<li>Display all collected parameters in readable format</li>
+<li>Ask for final confirmation</li>
+<li>Call <code>aws ec2 run-instances</code> with all parameters</li>
+<li>Parse response for new InstanceId</li>
+<li>Display success message with new instance details</li>
+</ul>
+<p><strong>Tests:</strong> - Test confirmation flow - Test cancel at
+confirmation - Test successful launch (mock AWS response) - Test failed
+launch (mock AWS error)</p>
+<p><strong>Dependency:</strong> C0</p>
+<hr />
+<h4 id="c2-post-launch-actions">C2 — Post-Launch Actions</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>After successful launch:
+<ul>
+<li>Wait for instance to reach running state (optional, with
+timeout)</li>
+<li>Display connection information (public IP, SSH command)</li>
+<li>Refresh resource lists</li>
+<li>Return to main menu</li>
+</ul></li>
+</ul>
+<p><strong>Tests:</strong> - Test post-launch refresh - Test connection
+info display</p>
+<p><strong>Dependency:</strong> C1</p>
+<hr />
+<h2 id="phase-5-create-ami-from-ec2-instance">Phase 5 — Create AMI from
+EC2 Instance</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong>
+Medium</p>
+<h3 id="work-items-4">Work Items</h3>
+<h4 id="a0-instance-selection-and-validation">A0 — Instance Selection
+and Validation</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Use <code>pick_instance()</code> with filter for running/stopped
+states</li>
+<li>Validate instance is not terminated</li>
+<li>Display selected instance details for confirmation</li>
+<li>Warn if instance is running (potential inconsistency in AMI)</li>
+</ul>
+<p><strong>Tests:</strong> - Test selection of running instance - Test
+selection of stopped instance - Test that terminated instances are
+excluded</p>
+<p><strong>Dependency:</strong> P2</p>
+<hr />
+<h4 id="a1-ami-creation-parameters">A1 — AMI Creation Parameters</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Prompt for:
+<ul>
+<li>AMI name (required, validate length/characters)</li>
+<li>AMI description (optional)</li>
+<li>No-reboot flag (default: false, only for running instances)</li>
+<li>Tags (optional)</li>
+</ul></li>
+<li>Validate AMI name meets AWS requirements</li>
+</ul>
+<p><strong>Tests:</strong> - Test valid AMI name - Test invalid AMI name
+(too long, invalid characters) - Test no-reboot flag only offered for
+running instances</p>
+<p><strong>Dependency:</strong> A0</p>
+<hr />
+<h4 id="a2-create-and-verify-ami">A2 — Create and Verify AMI</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>create_ami_from_instance()</code> function</li>
+<li>Call <code>aws ec2 create-image</code> with parameters</li>
+<li>Parse response for new ImageId</li>
+<li>Wait for AMI to reach available state (with timeout)</li>
+<li>Display success message with new AMI details</li>
+<li>Refresh resource lists</li>
+<li>Return to main menu</li>
+</ul>
+<p><strong>Tests:</strong> - Test successful AMI creation (mock
+response) - Test AMI creation failure (mock error) - Test timeout
+waiting for available state</p>
+<p><strong>Dependency:</strong> A1</p>
+<hr />
+<h2 id="phase-6-remove-ami">Phase 6 — Remove AMI</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong>
+Medium</p>
+<h3 id="work-items-5">Work Items</h3>
+<h4 id="r0-ami-selection">R0 — AMI Selection</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Use <code>pick_ami()</code> to select AMI to remove</li>
+<li>Display selected AMI details</li>
+</ul>
+<p><strong>Tests:</strong> - Test AMI selection for removal</p>
+<p><strong>Dependency:</strong> P1</p>
+<hr />
+<h4 id="r1-dry-run-display">R1 — Dry Run Display</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>show_removal_dry_run()</code> function</li>
+<li>Display what would be deleted (AMI ID, Name, Region)</li>
+<li>Ask user to confirm they want to proceed to dependency check</li>
+</ul>
+<p><strong>Tests:</strong> - Test dry run display - Test cancel at dry
+run</p>
+<p><strong>Dependency:</strong> R0</p>
+<hr />
+<h4 id="r2-dependency-check">R2 — Dependency Check</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>check_ami_dependencies()</code> function</li>
+<li>Query all regions for instances using this AMI (by ImageId)</li>
+<li>Display list of dependent instances with details</li>
+<li>If dependencies exist, warn user and ask if they want to
+continue</li>
+<li>If no dependencies, display “No instances currently using this
+AMI”</li>
+</ul>
+<p><strong>Tests:</strong> - Test with no dependencies (expect clean
+message) - Test with dependencies in same region (expect warning) - Test
+with dependencies in different regions (expect warning with all
+regions)</p>
+<p><strong>Dependency:</strong> R1</p>
+<hr />
+<h4 id="r3-type-to-confirm">R3 — Type-to-Confirm</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>type_to_confirm()</code> function</li>
+<li>Prompt user: “Type the AMI ID to confirm deletion:”</li>
+<li>Compare input exactly (case-sensitive) with selected AMI ID</li>
+<li>On match, proceed to deletion</li>
+<li>On mismatch, display error and return to previous step</li>
+<li>Allow cancel option</li>
+</ul>
+<p><strong>Tests:</strong> - Test correct AMI ID input (expect proceed)
+- Test incorrect AMI ID input (expect error, re-prompt) - Test cancel at
+confirmation</p>
+<p><strong>Dependency:</strong> R2</p>
+<hr />
+<h4 id="r4-execute-removal">R4 — Execute Removal</h4>
+<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>remove_ami()</code> function</li>
+<li>Call <code>aws ec2 deregister-image</code> for the AMI</li>
+<li>Handle potential errors (AMI in use, permissions, etc.)</li>
+<li>Verify removal was successful</li>
+<li>Display confirmation message</li>
+<li>Refresh resource lists</li>
+<li>Return to main menu</li>
+</ul>
+<p><strong>Tests:</strong> - Test successful removal (mock response) -
+Test removal failure (mock error - AMI in use) - Test removal failure
+(mock error - permissions)</p>
+<p><strong>Dependency:</strong> R3</p>
+<hr />
+<h2 id="phase-7-main-menu-and-integration">Phase 7 — Main Menu and
+Integration</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items-6">Work Items</h3>
+<h4 id="m0-main-menu-display">M0 — Main Menu Display</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create <code>show_main_menu()</code> function</li>
+<li>Display header with script name and regions</li>
+<li>Display current EC2 instances section</li>
+<li>Display current AMIs section</li>
+<li>Display menu options:
+<ol type="1">
+<li>Create EC2 instance from AMI</li>
+<li>Create AMI from EC2 instance</li>
+<li>Remove AMI</li>
+<li>Refresh resource lists</li>
+<li>Exit</li>
+</ol></li>
+<li>Accept user input with validation</li>
+</ul>
+<p><strong>Tests:</strong> - Test menu display with data - Test menu
+display with no data - Test valid menu selection - Test invalid menu
+selection (expect re-prompt)</p>
+<p><strong>Dependency:</strong> Phase 2, Phase 3</p>
+<hr />
+<h4 id="m1-main-loop">M1 — Main Loop</h4>
+<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
+<code>ec2_ami_manager.bash</code></p>
+<ul>
+<li>Create main loop that:
+<ul>
+<li>Calls <code>show_main_menu()</code></li>
+<li>Dispatches to appropriate function based on selection</li>
+<li>Handles errors gracefully</li>
+<li>Refreshes data after state-changing operations</li>
+<li>Exits cleanly on option 5</li>
+</ul></li>
+<li>Implement signal handling (Ctrl+C) for graceful exit</li>
+</ul>
+<p><strong>Tests:</strong> - Test menu navigation - Test operation
+dispatch - Test refresh after operations - Test clean exit</p>
+<p><strong>Dependency:</strong> M0, all Phase 4-6 items</p>
+<hr />
+<h2 id="phase-8-polish-and-error-handling">Phase 8 — Polish and Error
+Handling</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong>
+Medium</p>
+<h3 id="work-items-7">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Add loading indicators for long
+operations</label></li>
+<li><label><input type="checkbox" />Add color coding for states
+(green=running, red=stopped, etc.)</label></li>
+<li><label><input type="checkbox" />Add comprehensive error messages
+with actionable advice</label></li>
+<li><label><input type="checkbox" />Add input validation for all user
+inputs</label></li>
+<li><label><input type="checkbox" />Add timeout handling for AWS CLI
+calls</label></li>
+<li><label><input type="checkbox" />Add pagination for large lists
+(&gt;50 items)</label></li>
+</ul>
+<hr />
+<h2 id="phase-9-testing">Phase 9 — Testing</h2>
+<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items-8">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Write BATS tests for all
+functions</label></li>
+<li><label><input type="checkbox" />Create mock AWS CLI responses for
+testing</label></li>
+<li><label><input type="checkbox" />Test error scenarios</label></li>
+<li><label><input type="checkbox" />Test edge cases (empty lists,
+missing resources, etc.)</label></li>
+<li><label><input type="checkbox" />Run full test suite against real AWS
+(with test account)</label></li>
+<li><label><input type="checkbox" />Performance testing with many
+resources</label></li>
+</ul>
+<hr />
+<h2 id="phase-10-documentation">Phase 10 — Documentation</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
+Medium</p>
+<h3 id="work-items-9">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Add usage instructions to script
+header</label></li>
+<li><label><input type="checkbox" />Create README.md with:</label>
+<ul>
+<li>Overview</li>
+<li>Prerequisites</li>
+<li>Installation</li>
+<li>Usage</li>
+<li>Examples</li>
+<li>Troubleshooting</li>
+</ul></li>
+<li><label><input type="checkbox" />Update DESIGN.md, DECISIONS.md,
+PLAN.md with any changes from implementation</label></li>
+</ul>
+<hr />
+<h2 id="priority-order-for-implementation">Priority Order for
+Implementation</h2>
+<table>
+<thead>
+<tr>
+<th scope="col">Phase</th>
+<th scope="col">Priority</th>
+<th scope="col">Effort</th>
+<th scope="col">Dependencies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Phase 0</td>
+<td>High</td>
+<td>2h</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Phase 1</td>
+<td>High</td>
+<td>4h</td>
+<td>Phase 0</td>
+</tr>
+<tr>
+<td>Phase 2</td>
+<td>High</td>
+<td>6h</td>
+<td>Phase 1</td>
+</tr>
+<tr>
+<td>Phase 3</td>
+<td>High</td>
+<td>4h</td>
+<td>Phase 2</td>
+</tr>
+<tr>
+<td>Phase 4</td>
+<td>High</td>
+<td>8h</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Phase 7</td>
+<td>High</td>
+<td>4h</td>
+<td>Phase 4</td>
+</tr>
+<tr>
+<td>Phase 5</td>
+<td>Medium</td>
+<td>6h</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Phase 6</td>
+<td>Medium</td>
+<td>6h</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Phase 8</td>
+<td>Medium</td>
+<td>4h</td>
+<td>Phase 7</td>
+</tr>
+<tr>
+<td>Phase 9</td>
+<td>High</td>
+<td>8h</td>
+<td>All</td>
+</tr>
+<tr>
+<td>Phase 10</td>
+<td>Medium</td>
+<td>2h</td>
+<td>All</td>
+</tr>
+</tbody>
+</table>
+<h2 id="total-estimated-effort">Total Estimated Effort</h2>
+<p><strong>Total:</strong> ~54 hours - Phase 0-4, 7: Core functionality
+(~28 hours) - Phase 5-6: AMI creation/removal (~12 hours) - Phase 8-10:
+Polish, testing, docs (~14 hours)</p>
+<h2 id="milestones">Milestones</h2>
+<ol type="1">
+<li><strong>Milestone 1 (MVP):</strong> Phase 0-4, 7 complete — Basic
+listing and instance creation (~32 hours)</li>
+<li><strong>Milestone 2:</strong> Phase 5-6 complete — Full AMI
+lifecycle management (~40 hours total)</li>
+<li><strong>Milestone 3:</strong> Phase 8-10 complete — Production ready
+(~54 hours total)</li>
+</ol>
+<h2 id="testing-strategy">Testing Strategy</h2>
+<p>All code follows TDD approach: 1. Write tests first for each function
+2. Implement function to pass tests 3. Refactor as needed 4. Maintain
+&gt;80% test coverage</p>
+<p>Test types: - Unit tests: Individual functions with mocked AWS CLI -
+Integration tests: Function interactions with mocked AWS CLI -
+End-to-end tests: Full workflows with mocked AWS CLI - Manual tests:
+Against real AWS with test account</p>
+</section>
+<footer-global></footer-global>
+</body>
+</html>

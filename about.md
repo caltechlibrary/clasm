@@ -1,5 +1,5 @@
 ---
-title: aws_tools
+title: awstools
 abstract: |-
   This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.
 authors:
@@ -25,7 +25,7 @@ programming_language:
 About this software
 ===================
 
-## aws_tools 0.0.0
+## awstools 0.0.0
 
 proof of concept
 
@@ -61,6 +61,7 @@ This is a collaction of Bash scripts, some interactive, for managing our RDM col
 - jq >= 1.8
 - BATS (Bash Automated Testing System)
 - git >= v2
+- shellcheck >= 0.11
 
 
 

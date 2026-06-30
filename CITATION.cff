@@ -2,7 +2,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
-title: aws_tools
+title: awstools
 abstract: |-
   This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.
 authors:
