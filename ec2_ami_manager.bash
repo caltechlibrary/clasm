@@ -139,8 +139,20 @@ aws_cli_call() {
 # -----------------------------------------------------------------------------
 aws_ec2() {
     local region="${AWS_REGION:-${REGIONS[0]}}"
-    
+
     aws_cli_call ec2 --region "$region" "$@"
+}
+
+# -----------------------------------------------------------------------------
+# AWS SSM wrapper with region support
+# All arguments are passed directly to aws ssm command
+# Region can be overridden via AWS_REGION environment variable
+# Defaults to first region in REGIONS array
+# -----------------------------------------------------------------------------
+aws_ssm() {
+    local region="${AWS_REGION:-${REGIONS[0]}}"
+
+    aws_cli_call ssm --region "$region" "$@"
 }
 
 # =============================================================================
@@ -930,6 +942,183 @@ create_instance_from_ami() {
 # =============================================================================
 
 # -----------------------------------------------------------------------------
+# Estimate AMI creation time from total attached volume size.
+# Ported from ami_copy.bash's estimate_time() (PLAN.md Phase 5b / DECISIONS.md
+# "AMI-from-instance: fold ami_copy.bash capabilities into Phase 5").
+# Arguments:
+#   $1: total volume size in GB
+# Returns:
+#   Human-readable time estimate string
+# -----------------------------------------------------------------------------
+estimate_ami_creation_time() {
+    local gb="$1"
+    if   (( gb < 20  )); then echo "5–15 minutes"
+    elif (( gb < 100 )); then echo "15–45 minutes"
+    elif (( gb < 200 )); then echo "45–90 minutes"
+    else                       echo "1.5–3+ hours"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Gather attached EBS volume info for an instance and aggregate size.
+# Ported from ami_copy.bash's volume-gathering loop (PLAN.md Phase 5b).
+# Arguments:
+#   $1: Instance ID
+#   $2: Region
+# Returns:
+#   JSON object: {Volumes: [...], TotalGB: N, HasPriorSnapshot: bool}
+# -----------------------------------------------------------------------------
+gather_volume_info() {
+    local instance_id="$1"
+    local region="$2"
+
+    local response
+    response=$(AWS_REGION="$region" aws_ec2 describe-volumes \
+        --filters "Name=attachment.instance-id,Values=${instance_id}" 2>/dev/null)
+
+    if [[ -z "$response" ]]; then
+        echo '{"Volumes":[],"TotalGB":0,"HasPriorSnapshot":false}'
+        return
+    fi
+
+    echo "$response" | jq '
+        {
+            Volumes: [.Volumes[]? | {VolumeId, Size, VolumeType, SnapshotId}],
+            TotalGB: ([.Volumes[]?.Size] | add // 0),
+            HasPriorSnapshot: ([.Volumes[]? | select(.SnapshotId != null)] | length > 0)
+        }
+    '
+}
+
+# -----------------------------------------------------------------------------
+# Check SSM availability for an instance.
+# Ported from ami_copy.bash's ssm_ping check (PLAN.md Phase 5b).
+# Arguments:
+#   $1: Instance ID
+#   $2: Region
+# Returns:
+#   Echoes the SSM PingStatus (e.g. "Online"), or "None" if unavailable
+# -----------------------------------------------------------------------------
+check_ssm_availability() {
+    local instance_id="$1"
+    local region="$2"
+
+    local response
+    response=$(AWS_REGION="$region" aws_ssm describe-instance-information \
+        --filters "Key=InstanceIds,Values=${instance_id}" 2>/dev/null)
+
+    if [[ -z "$response" ]]; then
+        echo "None"
+        return
+    fi
+
+    echo "$response" | jq -r '.InstanceInformationList[0].PingStatus // "None"'
+}
+
+# -----------------------------------------------------------------------------
+# Run fstrim on an instance via SSM and poll until the command completes.
+# Ported from ami_copy.bash's fstrim send-command/poll loop (PLAN.md Phase 5b).
+# Arguments:
+#   $1: Instance ID
+#   $2: Region
+# Returns:
+#   0 and prints fstrim output on Success
+#   1 on Failed/Cancelled/TimedOut, or if the command could not be sent
+# Environment:
+#   SSM_POLL_INTERVAL: seconds between polls (default 10; tests set this to 0)
+# -----------------------------------------------------------------------------
+run_fstrim_via_ssm() {
+    local instance_id="$1"
+    local region="$2"
+    local poll_interval="${SSM_POLL_INTERVAL:-10}"
+
+    local send_response command_id
+    send_response=$(AWS_REGION="$region" aws_ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters 'commands=["sudo fstrim -av"]' 2>/dev/null)
+    command_id=$(echo "$send_response" | jq -r '.Command.CommandId // empty')
+
+    if [[ -z "$command_id" ]]; then
+        echo "ERROR: Failed to send fstrim command via SSM." >&2
+        return 1
+    fi
+
+    echo "  fstrim command sent (Command ID: ${command_id})"
+
+    while true; do
+        local invocation status
+        invocation=$(AWS_REGION="$region" aws_ssm get-command-invocation \
+            --command-id "$command_id" --instance-id "$instance_id" 2>/dev/null)
+        status=$(echo "$invocation" | jq -r '.Status // "Pending"')
+
+        case "$status" in
+            Success)
+                echo "  fstrim completed:"
+                echo "$invocation" | jq -r '.StandardOutputContent // ""' | sed 's/^/    /'
+                return 0
+                ;;
+            Failed|Cancelled|TimedOut)
+                echo "  Warning: fstrim did not complete (status: ${status})."
+                echo "  The snapshot will proceed but may copy more blocks than necessary."
+                return 1
+                ;;
+            *)
+                sleep "$poll_interval"
+                ;;
+        esac
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Offer to run fstrim via SSM before snapshotting, or confirm proceeding
+# without it. Ported from ami_copy.bash (PLAN.md Phase 5b).
+# Arguments:
+#   $1: Instance ID
+#   $2: Region
+# Returns:
+#   0 to proceed with AMI creation, 1 if the user cancels
+# -----------------------------------------------------------------------------
+offer_fstrim_before_snapshot() {
+    local instance_id="$1"
+    local region="$2"
+
+    local ssm_status
+    ssm_status=$(check_ssm_availability "$instance_id" "$region")
+
+    if [[ "$ssm_status" == "Online" ]]; then
+        echo ""
+        echo "SSM is available on this instance."
+        echo "Running fstrim before snapshotting tells the EBS volume which blocks"
+        echo "are free, so the snapshot skips them. This can reduce copy time"
+        echo "significantly on instances with Docker churn or deleted data."
+        echo ""
+        echo -n "Run fstrim via SSM before snapshotting? (y/N): "
+        local run_fstrim
+        read -r run_fstrim
+        if [[ "$run_fstrim" == "y" || "$run_fstrim" == "Y" ]]; then
+            echo ""
+            run_fstrim_via_ssm "$instance_id" "$region"
+        fi
+        return 0
+    fi
+
+    echo ""
+    echo "SSM is not available on this instance (status: ${ssm_status})."
+    echo "fstrim cannot be run automatically. The snapshot will proceed without it,"
+    echo "which may result in a larger snapshot and longer copy time."
+    echo ""
+    echo -n "Continue without fstrim? (y/N): "
+    local skip_fstrim
+    read -r skip_fstrim
+    if [[ "$skip_fstrim" != "y" && "$skip_fstrim" != "Y" ]]; then
+        echo "Cancelled."
+        return 1
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # Select an EC2 instance for AMI creation
 # Validates that the instance is in a valid state (running or stopped)
 # Sets PICKED_INSTANCE global variable
@@ -956,15 +1145,25 @@ select_instance_for_ami() {
         return 1
     fi
     
-    # Warn if instance is running
+    # Warn if instance is running.
+    # Ported from ami_copy_basic_steps.md's crash-consistency guidance
+    # (PLAN.md Phase 5b) -- AMI creation uses --no-reboot, so the result is
+    # crash-consistent rather than application-consistent.
     if [[ "$instance_state" == "running" ]]; then
-        echo "WARNING: Creating an AMI from a running instance may result in an inconsistent AMI."
-        echo "         It is recommended to stop the instance first."
+        echo "WARNING: Creating an AMI from a running instance produces a"
+        echo "crash-consistent snapshot (equivalent to pulling the power cord at"
+        echo "the snapshot moment), not an application-consistent one:"
+        echo "  - PostgreSQL replays its WAL automatically on first boot"
+        echo "  - OpenSearch replays its transaction log on first boot"
+        echo "  - Redis session/cache data may be lost (ephemeral by design)"
+        echo "  - Docker container images on disk are unaffected"
+        echo "This is acceptable for upgrade testing. Stop the instance first if"
+        echo "you need a fully consistent snapshot."
         echo ""
-        echo -n "Continue anyway? (y/N): "
+        echo -n "Continue with running instance? (y/N): "
         local confirm
         read -r confirm
-        
+
         if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
             echo "Cancelled."
             return 1
@@ -979,7 +1178,36 @@ select_instance_for_ami() {
     echo "  State: $instance_state"
     echo "  Region: $(echo "$PICKED_INSTANCE" | jq -r '.Region')"
     echo ""
-    
+
+    # Volume size summary and AMI creation time estimate.
+    # Ported from ami_copy.bash (PLAN.md Phase 5b).
+    local instance_id region
+    instance_id=$(echo "$PICKED_INSTANCE" | jq -r '.InstanceId')
+    region=$(echo "$PICKED_INSTANCE" | jq -r '.Region')
+
+    local volume_info total_gb has_prior_snapshot
+    volume_info=$(gather_volume_info "$instance_id" "$region")
+    total_gb=$(echo "$volume_info" | jq -r '.TotalGB')
+    has_prior_snapshot=$(echo "$volume_info" | jq -r '.HasPriorSnapshot')
+
+    echo "Attached volumes:"
+    echo "$volume_info" | jq -r '.Volumes[] | "  \(.VolumeId)  \(.Size) GB  \(.VolumeType)"'
+    echo "  Total volume size  : ${total_gb} GB"
+    echo "  Estimated copy time: $(estimate_ami_creation_time "$total_gb")"
+
+    if [[ "$has_prior_snapshot" == "true" ]]; then
+        echo ""
+        echo "  Note: one or more volumes have a prior snapshot — only changed blocks"
+        echo "        will be copied. Actual time may be significantly shorter."
+    fi
+    echo ""
+
+    # Offer to fstrim via SSM before snapshotting. Ported from ami_copy.bash
+    # (PLAN.md Phase 5b).
+    if ! offer_fstrim_before_snapshot "$instance_id" "$region"; then
+        return 1
+    fi
+
     return 0
 }
 
@@ -1180,6 +1408,17 @@ create_ami_from_instance() {
 }
 
 # -----------------------------------------------------------------------------
+# Format a duration in seconds as "Xh MMm SSs".
+# Ported from ami_copy.bash's elapsed() (PLAN.md Phase 5b).
+# Arguments:
+#   $1: duration in seconds
+# -----------------------------------------------------------------------------
+format_elapsed() {
+    local total="$1"
+    printf "%dh %02dm %02ds" $(( total/3600 )) $(( (total%3600)/60 )) $(( total%60 ))
+}
+
+# -----------------------------------------------------------------------------
 # Wait for AMI to reach available state and display details
 # Uses CREATED_AMI_ID global variable
 # -----------------------------------------------------------------------------
@@ -1188,59 +1427,70 @@ post_ami_creation_actions() {
         echo "ERROR: No AMI ID for post-creation actions."
         return 1
     fi
-    
+
     local region
     region=$(echo "$AMI_CREATION_PARAMS" | jq -r '.Region')
+    local poll_interval="${AMI_POLL_INTERVAL:-30}"
     local ami_state="pending"
-    local max_wait=600  # 10 minutes for AMI creation
-    local wait_interval=10
     local elapsed=0
-    
+
     echo ""
-    echo "Waiting for AMI to be available..."
-    
-    while [[ "$ami_state" != "available" && $elapsed -lt $max_wait ]]; do
-        sleep "$wait_interval"
-        elapsed=$((elapsed + wait_interval))
-        
+    echo "Waiting for AMI to be available."
+    echo "Polling every ${poll_interval} seconds. Large volumes (Docker images +"
+    echo "database + OpenSearch) may take 20-60+ minutes."
+    echo "Ctrl-C to stop polling -- creation will continue in AWS regardless."
+    echo ""
+
+    # Unbounded polling: AMI creation has no fixed deadline (PLAN.md Phase 5b
+    # / DECISIONS.md "AMI-from-instance: fold ami_copy.bash capabilities into
+    # Phase 5" -- a 600s timeout gave up before real Invenio RDM AMIs finish).
+    while true; do
         local state_response
         state_response=$(AWS_REGION="$region" aws_ec2 describe-images --image-ids "$CREATED_AMI_ID" 2>/dev/null)
-        
+
         if [[ -n "$state_response" ]]; then
             ami_state=$(echo "$state_response" | jq -r '.Images[0].State // "unknown"')
-            echo "  Current state: $ami_state (waited ${elapsed}s)"
         fi
+
+        echo "  [elapsed: $(format_elapsed "$elapsed")]  $CREATED_AMI_ID  state: $ami_state"
+
+        if [[ "$ami_state" == "available" ]]; then
+            break
+        fi
+
+        if [[ "$ami_state" == "failed" ]]; then
+            echo ""
+            echo "ERROR: AMI creation failed (state: failed) after $(format_elapsed "$elapsed")."
+            echo "Check the AWS Console for details."
+            return 1
+        fi
+
+        sleep "$poll_interval"
+        elapsed=$((elapsed + poll_interval))
     done
-    
-    if [[ "$ami_state" == "available" ]]; then
-        echo "AMI is now available!"
-        
-        # Get AMI details
-        local details_response
-        details_response=$(AWS_REGION="$region" aws_ec2 describe-images --image-ids "$CREATED_AMI_ID" 2>/dev/null)
-        
-        if [[ -n "$details_response" ]]; then
-            local ami_name
-            ami_name=$(echo "$details_response" | jq -r '.Images[0].Name')
-            local creation_date
-            creation_date=$(echo "$details_response" | jq -r '.Images[0].CreationDate')
-            
-            echo ""
-            echo "=== AMI Details ==="
-            echo "AMI ID: $CREATED_AMI_ID"
-            echo "Name: $ami_name"
-            echo "State: $ami_state"
-            echo "Creation Date: $creation_date"
-            echo "Region: $region"
-            echo ""
-        fi
-    else
-        echo "AMI did not reach available state within ${max_wait} seconds."
-        echo "You can check the AMI status manually using:"
-        echo "  aws ec2 describe-images --image-ids $CREATED_AMI_ID --region $region"
-    fi
-    
+
     echo ""
+    echo "AMI is now available! Total time: $(format_elapsed "$elapsed")"
+
+    # Get AMI details
+    local details_response
+    details_response=$(AWS_REGION="$region" aws_ec2 describe-images --image-ids "$CREATED_AMI_ID" 2>/dev/null)
+
+    if [[ -n "$details_response" ]]; then
+        local ami_name
+        ami_name=$(echo "$details_response" | jq -r '.Images[0].Name')
+        local creation_date
+        creation_date=$(echo "$details_response" | jq -r '.Images[0].CreationDate')
+
+        echo ""
+        echo "=== AMI Details ==="
+        echo "AMI ID: $CREATED_AMI_ID"
+        echo "Name: $ami_name"
+        echo "State: $ami_state"
+        echo "Creation Date: $creation_date"
+        echo "Region: $region"
+        echo ""
+    fi
 }
 
 # -----------------------------------------------------------------------------

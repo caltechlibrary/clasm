@@ -419,35 +419,40 @@ multi-region workflow, then retire `ami_copy.bash`.
 
 ### Work Items
 
-- [ ] Volume-size gathering: call `describe-volumes` for the selected
-      instance, sum attached volume sizes, and show the same time-estimate
-      table as `ami_copy_basic_steps.md` (<20GB: 5–15min, 20–100GB:
-      15–45min, 100–200GB: 45–90min, 200+GB: 1.5–3+hrs)
-- [ ] Prior-snapshot detection: note when an attached volume already has a
-      snapshot, since only changed blocks will be copied
-- [ ] SSM `fstrim` step: check SSM availability for the selected instance;
-      if online, offer to run `fstrim -av` via `ssm send-command` before
-      `create-image` to reduce copy time/size
-- [ ] Fix the AMI-creation wait: `post_ami_creation_actions()` currently
-      gives up after a 600-second (10 min) timeout. Per the timing table
-      above, even small volumes take 5–15 minutes, and an Invenio RDM
-      instance (Docker + PostgreSQL + OpenSearch) is estimated at 20–60+
-      minutes — this timeout will fail on real usage. Replace with
-      unbounded polling (elapsed-time display, Ctrl-C-safe — AMI creation
-      continues in AWS regardless of whether the script is watching)
-- [ ] Running-instance warning: carry over the Postgres/OpenSearch
-      crash-consistency guidance from `ami_copy_basic_steps.md` into the
-      running-instance warning shown by `select_instance_for_ami`/`A0`
+- [x] Volume-size gathering: `gather_volume_info()` calls `describe-volumes`
+      for the selected instance, sums attached volume sizes, and
+      `estimate_ami_creation_time()` shows the same time-estimate table as
+      `ami_copy_basic_steps.md` (<20GB: 5–15min, 20–100GB: 15–45min,
+      100–200GB: 45–90min, 200+GB: 1.5–3+hrs). Wired into
+      `select_instance_for_ami()`.
+- [x] Prior-snapshot detection: `gather_volume_info()` sets
+      `HasPriorSnapshot`; `select_instance_for_ami()` shows the "only
+      changed blocks will be copied" note when true.
+- [x] SSM `fstrim` step: `check_ssm_availability()` +
+      `run_fstrim_via_ssm()` + `offer_fstrim_before_snapshot()` (new
+      `aws_ssm()` wrapper alongside `aws_ec2()`), wired into
+      `select_instance_for_ami()` before AMI creation.
+- [x] Fix the AMI-creation wait: `post_ami_creation_actions()`'s 600s
+      timeout replaced with unbounded polling via `format_elapsed()` and
+      `AMI_POLL_INTERVAL` (default 30s), with explicit `failed`-state
+      short-circuit (previously only timed out generically).
+- [x] Running-instance warning: `select_instance_for_ami()`'s
+      running-instance warning now carries the Postgres/OpenSearch/Redis/
+      Docker crash-consistency guidance from `ami_copy_basic_steps.md`.
 - [ ] Retire `ami_copy.bash` once the above are folded in and verified
       equivalent (or better) across all four regions
 - [ ] Remove `ami_copy_basic_steps.md`'s standalone-script framing, or fold
       its content into this script's `--help`/usage text
 
-**Tests:**
-- Test volume-size aggregation and time-estimate boundaries
-- Test prior-snapshot detection messaging
-- Test SSM-unavailable path (skips fstrim, proceeds with warning)
-- Test that AMI-creation polling does not exit early before `available`/`failed`
+**Tests:** `tests/test_create_ami.bats` (27 tests, all passing as of
+2026-06-30):
+- [x] Volume-size aggregation and time-estimate boundaries
+- [x] Prior-snapshot detection messaging
+- [x] SSM-unavailable path (skips fstrim, proceeds with warning) and
+      Success/Failed command-status paths
+- [x] AMI-creation polling does not exit early before `available`/`failed`
+      (verified past 8 consecutive `pending` polls)
+- [x] Running-instance crash-consistency warning, including cancel path
 
 **Dependency:** A2
 
