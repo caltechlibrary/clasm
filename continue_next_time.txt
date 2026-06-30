@@ -1,0 +1,99 @@
+awstools — where we left off (2026-06-30)
+===========================================
+
+STATUS: Phase 5b is implemented, tested, and committed. Working tree is
+clean. All 67 BATS tests pass (`bats tests/`), shellcheck is clean on
+ec2_ami_manager.bash.
+
+What happened this session
+---------------------------
+
+1. Reviewed DESIGN.md / DECISIONS.md / PLAN.md against the actual code and
+   found several gaps:
+   - PLAN.md's checkboxes were stale (Phases 0-7 were already implemented
+     in ec2_ami_manager.bash, not just Phase 0).
+   - The whole BATS test suite was broken: all .bats files hardcoded a
+     load path to the pre-rename `aws_tools` directory. Fixed to a
+     relative `load 'lib/test_helper'`.
+   - check_ami.bash and check_ec2_instances.bash duplicated
+     list_ec2_instances()/list_amis() with no unique functionality.
+     Retired (deleted, committed).
+   - ami_copy.bash (merged in from a separate repo before this project's
+     design docs existed) duplicated the "create AMI from instance"
+     feature but had real capabilities ec2_ami_manager.bash's Phase 5
+     lacked: volume-size time estimates, prior-snapshot detection, an SSM
+     fstrim pre-snapshot optimization, unbounded creation polling, and
+     Invenio-RDM-specific crash-consistency guidance. Also found that
+     Phase 5's post_ami_creation_actions() had a 600-second timeout that
+     would fail on real Invenio RDM AMI sizes (20-60+ min per
+     ami_copy_basic_steps.md's own timing table).
+
+2. Decided (recorded in DECISIONS.md): port ami_copy.bash's capabilities
+   into Phase 5's multi-region workflow (new PLAN.md Phase 5b), THEN
+   retire ami_copy.bash — not before, so nothing is silently dropped.
+
+3. Implemented Phase 5b, TDD style, in ec2_ami_manager.bash:
+   - estimate_ami_creation_time(gb) — time-estimate buckets, ported from
+     ami_copy.bash's estimate_time()
+   - gather_volume_info(instance_id, region) — sums attached volume
+     sizes, detects prior snapshots
+   - aws_ssm() — new wrapper alongside aws_ec2()
+   - check_ssm_availability(), run_fstrim_via_ssm(),
+     offer_fstrim_before_snapshot() — SSM fstrim step
+   - format_elapsed(seconds) + rewrote post_ami_creation_actions() to
+     poll unboundedly (AMI_POLL_INTERVAL env var, default 30s) instead of
+     giving up after 600s; explicit failed-state short-circuit
+   - select_instance_for_ami()'s running-instance warning now carries the
+     Postgres/OpenSearch/Redis/Docker crash-consistency guidance from
+     ami_copy_basic_steps.md
+   All of the above are wired into select_instance_for_ami(), which is
+   called from create_ami_from_instance_workflow() (Phase 5's entry
+   point).
+
+4. tests/test_create_ami.bats — 27 new tests covering all of the above,
+   including two that exercise the *interactive* prompts for real (not
+   stubbed) using bash heredoc-stdin redirection on `run`:
+     run select_instance_for_ami <<< "y"
+   This pattern works in this BATS setup and is more honest than the
+   stub-everything pattern used elsewhere in the suite — worth reusing
+   for Phase 6/7 tests instead of skip-with-TODO.
+
+5. Updated PLAN.md (Phase 5b work items checked off except retirement),
+   TODO.md, tests/README.md (accurate coverage table), DESIGN.md (file
+   structure section, noted ami_copy.bash as "to be retired").
+
+What's NOT done yet
+--------------------
+
+- Task #11 (open): ami_copy.bash and ami_copy_basic_steps.md are still in
+  the repo, deliberately. They should only be deleted after manually
+  verifying ec2_ami_manager.bash's new create-AMI workflow against a real
+  EC2 instance — see TEST_PLAN_REAL_AWS.txt in this directory for the
+  steps. Everything so far has only been verified against mocked AWS CLI
+  responses in BATS.
+
+- Phase 9 test debt (PLAN.md / tests/README.md): test_remove_ami.bats
+  and test_menu.bats still don't exist, even though Phase 6 (AMI
+  removal: select_ami_for_removal, show_removal_dry_run,
+  check_ami_dependencies, type_to_confirm, remove_ami,
+  remove_ami_workflow) and Phase 7 (show_main_menu, main) are implemented
+  in ec2_ami_manager.bash. Removal is destructive, so this is probably
+  higher priority than the menu tests.
+
+- The publish.bash/release.bash executable-bit vs git-mode-644 mismatch
+  noticed during this session is unrelated to Phase 5b and was left
+  alone (not something I changed, just flagged it).
+
+Suggested next session
+-----------------------
+
+1. Walk through TEST_PLAN_REAL_AWS.txt against a real (ideally
+   disposable/test-account) EC2 instance.
+2. If it checks out: delete ami_copy.bash and ami_copy_basic_steps.md (or
+   fold the latter's content into ec2_ami_manager.bash's usage text),
+   update DESIGN.md to drop the "to be retired" note, close task #11.
+3. Then tackle Phase 9 test debt: test_remove_ami.bats first (destructive
+   operation, higher risk), then test_menu.bats.
+
+Git state as of this session's last commit: da60a21 "Phase 5b done".
+Working tree clean, 67/67 tests passing.

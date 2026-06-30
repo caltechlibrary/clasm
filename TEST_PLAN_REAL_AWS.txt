@@ -1,0 +1,79 @@
+Manual test plan: Phase 5b against real AWS
+=============================================
+
+Purpose: verify ec2_ami_manager.bash's "Create AMI from EC2 Instance"
+workflow (Phase 5 + Phase 5b) actually works against real AWS before
+retiring ami_copy.bash. Everything so far has only been verified against
+mocked AWS CLI responses in tests/test_create_ami.bats.
+
+Prerequisites
+--------------
+- A disposable/low-cost test instance (ideally in a test account, not
+  production). A small Invenio RDM instance is the realistic target, but
+  a plain small instance is fine for exercising the mechanics.
+- AWS credentials configured with the IAM permissions listed in
+  software_requirements.md (DescribeInstances, DescribeImages,
+  DescribeVolumes, CreateImage, plus ssm:DescribeInstanceInformation,
+  ssm:SendCommand, ssm:GetCommandInvocation for the fstrim step).
+- SSM Agent running on the test instance for at least one pass, so the
+  fstrim path gets exercised (not just the "SSM unavailable" path).
+
+Steps
+------
+
+1. Stopped-instance pass (the common case)
+   - Stop the test instance, or pick one already stopped.
+   - Run ./ec2_ami_manager.bash, choose "Create AMI from EC2 instance".
+   - Confirm the volume-size summary lists each attached volume with
+     correct size/type, the total matches reality, and the time estimate
+     bucket looks right for that total (see estimate_ami_creation_time
+     boundaries: <20GB, 20-100GB, 100-200GB, 200GB+).
+   - If the instance has a volume with a prior snapshot, confirm the
+     "only changed blocks will be copied" note appears; if not, confirm
+     it's absent.
+   - If SSM is online: confirm the fstrim offer appears, say yes, confirm
+     it sends the command and reports completion (or a clear
+     failure/timeout message if it doesn't finish).
+   - If SSM is not online (test this on a second instance, or temporarily
+     stop the SSM agent): confirm the "SSM not available" warning and the
+     "continue without fstrim?" prompt.
+   - Provide an AMI name/description, confirm, and let it create.
+   - Watch the polling output: confirm it keeps polling past a few
+     "pending" cycles without giving up (the bug this phase fixed was a
+     600-second/10-minute hard timeout), and that elapsed time displays
+     correctly (Xh MMm SSs format).
+   - Confirm the final AMI details (ID, name, state, creation date,
+     region) match what's in the AWS console.
+
+2. Running-instance pass (crash-consistency warning)
+   - Pick a running instance, repeat the same workflow.
+   - Confirm the running-instance warning text mentions PostgreSQL WAL
+     replay, OpenSearch transaction log replay, Redis ephemeral data
+     loss, and Docker images being unaffected (this replaces the old
+     generic "may result in an inconsistent AMI" message).
+   - Decline at this prompt once to confirm "Cancelled." and a clean
+     return to the menu with no AMI created.
+   - Accept and let it proceed through to AMI creation as in step 1.
+
+3. Failure path (optional but useful)
+   - If feasible, trigger or simulate an AMI creation failure (e.g. via
+     an instance/account without the right permissions) and confirm
+     post_ami_creation_actions() reports "state: failed" and returns
+     promptly rather than hanging or giving a generic timeout message.
+
+4. Multi-region sanity check
+   - Repeat step 1 against an instance in a second region to confirm the
+     region threading (AWS_REGION wrapping through aws_ec2/aws_ssm) is
+     correct end-to-end, not just in the default region.
+
+Pass/fail
+----------
+If all of the above behave as described and the resulting AMI is usable
+(launch a test instance from it), Phase 5b is verified equivalent-or-better
+than ami_copy.bash across regions, and task #11 (retire ami_copy.bash and
+ami_copy_basic_steps.md) can proceed.
+
+If anything regresses (slower/less informative than ami_copy.bash, a
+prompt that doesn't make sense, a real AWS error not seen in mocked
+tests), note it in PLAN.md Phase 5b or TODO.md before retiring
+ami_copy.bash — don't delete it until the gap is closed.
