@@ -72,6 +72,22 @@ This document lists all software dependencies required to develop and run the AW
 
 ---
 
+### 6. shellcheck
+
+- **Version:** 0.9.0 or higher
+- **Purpose:** Static analysis tool for Bash scripts (linting)
+- **Check:** `shellcheck --version`
+- **Install:**
+  - **macOS (MacPorts):** `sudo port install shellcheck`
+  - **macOS (Homebrew):** `brew install shellcheck`
+  - **Linux (apt):** `sudo apt install shellcheck`
+  - **Linux (snap):** `sudo snap install shellcheck --classic`
+  - **Official:** See https://github.com/koalaman/shellcheck
+- **Usage:** Run `shellcheck script.sh` to check Bash scripts for common issues
+- **Website:** https://www.shellcheck.net/
+
+---
+
 ## Optional Dependencies
 
 ### 6. fzf (Optional)
@@ -149,6 +165,9 @@ echo "=== AWS CLI ===" && aws --version
 echo "=== jq ===" && jq --version
 echo "=== BATS ===" && bats --version
 echo "=== Git ===" && git --version
+
+# Check development tools
+echo "=== shellcheck ===" && shellcheck --version
 ```
 
 All commands should return version information without errors.
@@ -164,12 +183,13 @@ For a fresh macOS setup with MacPorts:
 # https://www.macports.org/install.php
 
 # Install all core dependencies
-sudo port install awscli jq bats-core git
+sudo port install awscli jq bats-core git shellcheck
 
 # Verify
 bats --version
 aws --version
 jq --version
+shellcheck --version
 ```
 
 ---
@@ -194,6 +214,33 @@ jq --version
 - Check AWS credentials are correct and not expired
 - Verify the AWS region matches where your resources exist
 
+### shellcheck: Command not found
+- Ensure shellcheck is installed (see installation instructions above)
+- Verify `/opt/local/bin` is in your PATH (MacPorts default)
+- Run: `export PATH="/opt/local/bin:$PATH"`
+
+---
+
+## Code Quality Tools
+
+### Running shellcheck on the Project
+
+To check all Bash scripts in the project for potential issues:
+
+```bash
+# Check main script
+shellcheck ec2_ami_manager.bash
+
+# Check test infrastructure
+shellcheck tests/lib/test_helper.bash
+shellcheck tests/*.bats
+
+# Check all Bash files
+find . -name "*.bash" -o -name "*.bats" | xargs shellcheck
+```
+
+This helps catch common Bash scripting issues early in the development process.
+
 ---
 
 ## Version Compatibility Notes
@@ -205,3 +252,4 @@ jq --version
 | jq | 1.6 | 1.7+ | Earlier versions may lack some features |
 | BATS | 1.0 | 1.13.0 | All 1.x versions should work |
 | Git | 2.0 | Any | Used for version control only |
+| shellcheck | 0.9.0 | 0.10.0 | Linting tool for development |

@@ -25,7 +25,8 @@
     "AWS CLI >= v2",
     "jq >= 1.8",
     "BATS (Bash Automated Testing System)",
-    "git >= v2"
+    "git >= v2",
+	"shellcheck >= 0.11"
   ],
   "version": "0.0.0",
   "developmentStatus": "concept",

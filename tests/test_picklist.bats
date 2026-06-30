@@ -18,6 +18,7 @@ teardown() {
 
 @test "show_pick_list displays numbered list" {
     # Create a simple array to pick from
+    # shellcheck disable=SC2034
     local items=("item1" "item2" "item3")
     
     # Mock read to provide input "1" (select first item)

@@ -207,6 +207,7 @@ AWSEOF
 # =============================================================================
 
 @test "aws_cli_call retries on throttling error" {
+    # shellcheck disable=SC2034
     local retry_count=0
     
     # Create a mock aws that fails with throttling first, then succeeds

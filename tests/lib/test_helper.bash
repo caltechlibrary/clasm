@@ -12,6 +12,7 @@ TEST_TMP_DIR=""
 MOCK_AWS_DIR=""
 ORIGINAL_PATH=""
 
+# shellcheck disable=SC2034
 REGIONS=("us-east-1" "us-east-2" "us-west-1" "us-west-2")
 
 setup_mock_aws() {
@@ -88,11 +89,12 @@ AWSEOF
 }
 
 mock_aws_run_instances_success() {
+    local instance_id="$1"
     cat > "$MOCK_AWS_DIR/aws" << AWSEOF
 #!/bin/bash
 CMD="$*"
 if echo "$CMD" | grep -q "run-instances"; then
-    echo "{\"Instances\":[{\"InstanceId\":\"$1\",\"State\":{\"Code\":0,\"Name\":\"pending\"}}]}" ; exit 0
+    echo "{\"Instances\":[{\"InstanceId\":\"$instance_id\",\"State\":{\"Code\":0,\"Name\":\"pending\"}}]}" ; exit 0
 fi
 if echo "$CMD" | grep -q "get-caller-identity"; then
     echo '{"Account":"123456789012"}' ; exit 0
@@ -103,5 +105,6 @@ AWSEOF
 }
 
 source_main_script() {
+    # shellcheck disable=SC1091
     source "$PROJECT_ROOT/ec2_ami_manager.bash"
 }

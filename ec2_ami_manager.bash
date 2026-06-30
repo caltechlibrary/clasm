@@ -23,8 +23,8 @@ readonly SCRIPT_NAME="EC2/AMI Manager"
 # =============================================================================
 
 # Cached resource data (as strings, not associative arrays - for Bash 3.2 compatibility)
-INSTANCE_CACHE=""
-AMI_CACHE=""
+# INSTANCE_CACHE=""
+# AMI_CACHE=""
 
 # =============================================================================
 # DEPENDENCY CHECKING
@@ -372,8 +372,7 @@ pick_ami() {
         ami_items+=("${ami_id} - ${name} (${region}) - ${creation_date:0:10}")
     done
     
-    show_pick_list ami_items "Select an AMI:"
-    if [[ $? -ne 0 ]]; then
+    if ! show_pick_list ami_items "Select an AMI:"; then
         return 1
     fi
     
@@ -430,8 +429,7 @@ pick_instance() {
         instance_items+=("${instance_id} - ${name:-<unnamed>} - ${state} - ${ami_id} (${region})")
     done
     
-    show_pick_list instance_items "Select an EC2 instance:"
-    if [[ $? -ne 0 ]]; then
+    if ! show_pick_list instance_items "Select an EC2 instance:"; then
         return 1
     fi
     
@@ -561,11 +559,11 @@ list_subnets() {
 # -----------------------------------------------------------------------------
 list_instance_profiles() {
     local response
-    response=$(aws_ec2 describe-iam-instance-profile-associations 2>/dev/null)
+    response=$(aws iam list-instance-profiles 2>/dev/null)
     
     if [[ -z "$response" ]]; then
         # Try alternative approach
-        response=$(aws iam list-instance-profiles 2>/dev/null)
+        response=$(aws_ec2 describe-iam-instance-profile-associations 2>/dev/null)
     fi
     
     if [[ -z "$response" ]]; then
@@ -770,14 +768,22 @@ confirm_and_launch() {
     echo ""
     
     # Display parameters in readable format
-    local ami_id=$(echo "$INSTANCE_PARAMS" | jq -r '.ImageId')
-    local instance_type=$(echo "$INSTANCE_PARAMS" | jq -r '.InstanceType')
-    local key_name=$(echo "$INSTANCE_PARAMS" | jq -r '.KeyName // "(none)"')
-    local sg_ids=$(echo "$INSTANCE_PARAMS" | jq -r '.SecurityGroupIds | join(", ") // "(none)"')
-    local subnet_id=$(echo "$INSTANCE_PARAMS" | jq -r '.SubnetId // "(none)"')
-    local profile_arn=$(echo "$INSTANCE_PARAMS" | jq -r '.IamInstanceProfile.Arn // "(none)"')
-    local user_data=$(echo "$INSTANCE_PARAMS" | jq -r '.UserData // "(none)"')
-    local tags=$(echo "$INSTANCE_PARAMS" | jq -r '.TagSpecifications[0].Tags // {} | to_entries | map("\n  \(.key): \(.value)") | join("")')
+    local ami_id
+    ami_id=$(echo "$INSTANCE_PARAMS" | jq -r '.ImageId')
+    local instance_type
+    instance_type=$(echo "$INSTANCE_PARAMS" | jq -r '.InstanceType')
+    local key_name
+    key_name=$(echo "$INSTANCE_PARAMS" | jq -r '.KeyName // "(none)"')
+    local sg_ids
+    sg_ids=$(echo "$INSTANCE_PARAMS" | jq -r '.SecurityGroupIds | join(", ") // "(none)"')
+    local subnet_id
+    subnet_id=$(echo "$INSTANCE_PARAMS" | jq -r '.SubnetId // "(none)"')
+    local profile_arn
+    profile_arn=$(echo "$INSTANCE_PARAMS" | jq -r '.IamInstanceProfile.Arn // "(none)"')
+    local user_data
+    user_data=$(echo "$INSTANCE_PARAMS" | jq -r '.UserData // "(none)"')
+    local tags
+    tags=$(echo "$INSTANCE_PARAMS" | jq -r '.TagSpecifications[0].Tags // {} | to_entries | map("\n  \(.key): \(.value)") | join("")')
     
     echo "AMI ID: $ami_id"
     echo "Instance Type: $instance_type"
@@ -806,9 +812,7 @@ confirm_and_launch() {
     region=$(echo "$INSTANCE_PARAMS" | jq -r --arg default "${REGIONS[0]}" '.Region // $default')
     
     local response
-    response=$(AWS_REGION="$region" aws_ec2 run-instances "$(echo "$INSTANCE_PARAMS" | jq -c '.')" 2>&1)
-    
-    if [[ $? -ne 0 ]]; then
+    if ! response=$(AWS_REGION="$region" aws_ec2 run-instances "$(echo "$INSTANCE_PARAMS" | jq -c '.')" 2>&1); then
         echo "ERROR: Failed to launch instance: $response"
         return 1
     fi
@@ -867,10 +871,14 @@ post_launch_actions() {
         details_response=$(AWS_REGION="$region" aws_ec2 describe-instances --instance-ids "$CREATED_INSTANCE_ID" 2>/dev/null)
         
         if [[ -n "$details_response" ]]; then
-            local public_ip=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].PublicIpAddress // "N/A"')
-            local private_ip=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].PrivateIpAddress // "N/A"')
-            local instance_type=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].InstanceType')
-            local key_name=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].KeyName // "N/A"')
+            local public_ip
+            public_ip=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].PublicIpAddress // "N/A"')
+            local private_ip
+            private_ip=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].PrivateIpAddress // "N/A"')
+            local instance_type
+            instance_type=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].InstanceType')
+            local key_name
+            key_name=$(echo "$details_response" | jq -r '.Reservations[0].Instances[0].KeyName // "N/A"')
             
             echo ""
             echo "=== Connection Information ==="
@@ -897,25 +905,645 @@ post_launch_actions() {
 # -----------------------------------------------------------------------------
 create_instance_from_ami() {
     # Pick an AMI
-    pick_ami
-    if [[ $? -ne 0 ]]; then
+    if ! pick_ami; then
         return 1
     fi
     
     # Collect parameters
-    collect_instance_params "$PICKED_AMI"
-    if [[ $? -ne 0 ]]; then
+    if ! collect_instance_params "$PICKED_AMI"; then
         return 1
     fi
     
     # Confirm and launch
-    confirm_and_launch
-    if [[ $? -ne 0 ]]; then
+    if ! confirm_and_launch; then
         return 1
     fi
     
     # Post-launch actions
     post_launch_actions
+    
+    return 0
+}
+
+# =============================================================================
+# PHASE 5: CREATE AMI FROM EC2 INSTANCE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Select an EC2 instance for AMI creation
+# Validates that the instance is in a valid state (running or stopped)
+# Sets PICKED_INSTANCE global variable
+# Returns:
+#   0 on success, PICKED_INSTANCE contains the selected instance JSON
+#   1 on cancel/error
+# -----------------------------------------------------------------------------
+select_instance_for_ami() {
+    echo ""
+    echo "=== Create AMI from EC2 Instance ==="
+    echo ""
+    
+    # List instances and allow user to pick
+    if ! pick_instance; then
+        return 1
+    fi
+    
+    # Validate instance state
+    local instance_state
+    instance_state=$(echo "$PICKED_INSTANCE" | jq -r '.State.Name')
+    
+    if [[ "$instance_state" == "terminated" || "$instance_state" == "terminating" ]]; then
+        echo "ERROR: Cannot create AMI from a $instance_state instance."
+        return 1
+    fi
+    
+    # Warn if instance is running
+    if [[ "$instance_state" == "running" ]]; then
+        echo "WARNING: Creating an AMI from a running instance may result in an inconsistent AMI."
+        echo "         It is recommended to stop the instance first."
+        echo ""
+        echo -n "Continue anyway? (y/N): "
+        local confirm
+        read -r confirm
+        
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Cancelled."
+            return 1
+        fi
+    fi
+    
+    # Display selected instance details
+    echo ""
+    echo "Selected Instance:"
+    echo "  ID: $(echo "$PICKED_INSTANCE" | jq -r '.InstanceId')"
+    echo "  Type: $(echo "$PICKED_INSTANCE" | jq -r '.InstanceType')"
+    echo "  State: $instance_state"
+    echo "  Region: $(echo "$PICKED_INSTANCE" | jq -r '.Region')"
+    echo ""
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Collect parameters for creating an AMI from an instance
+# Sets AMI_CREATION_PARAMS global variable with JSON parameters
+# Returns:
+#   0 on success
+#   1 on cancel/error
+# -----------------------------------------------------------------------------
+collect_ami_params() {
+    local instance_json="$1"
+    local instance_id
+    instance_id=$(echo "$instance_json" | jq -r '.InstanceId')
+    local instance_state
+    instance_state=$(echo "$instance_json" | jq -r '.State.Name')
+    local region
+    region=$(echo "$instance_json" | jq -r '.Region')
+    
+    echo ""
+    echo "=== AMI Creation Parameters ==="
+    echo "Source Instance: $instance_id (State: $instance_state, Region: $region)"
+    echo ""
+    
+    # AMI name (required)
+    local ami_name=""
+    while [[ -z "$ami_name" ]]; do
+        echo -n "AMI Name (required, 3-128 chars, alphanumeric + -_./()): "
+        read -r ami_name
+        
+        if [[ -z "$ami_name" ]]; then
+            echo "ERROR: AMI Name is required."
+            continue
+        fi
+        
+        # Validate AMI name
+        if [[ ${#ami_name} -lt 3 || ${#ami_name} -gt 128 ]]; then
+            echo "ERROR: AMI name must be between 3 and 128 characters."
+            ami_name=""
+            continue
+        fi
+        
+        if ! echo "$ami_name" | grep -qE '^[a-zA-Z0-9\-_.()/]+$'; then
+            echo "ERROR: AMI name contains invalid characters. Allowed: alphanumeric, -_.()/"
+            ami_name=""
+            continue
+        fi
+    done
+    
+    # AMI description (optional)
+    echo -n "AMI Description (optional, press Enter to skip): "
+    local ami_description
+    read -r ami_description
+    
+    # No-reboot flag (only for running instances)
+    local no_reboot=false
+    if [[ "$instance_state" == "running" ]]; then
+        echo -n "Skip reboot after AMI creation? (y/N): "
+        local reboot_input
+        read -r reboot_input
+        
+        if [[ "$reboot_input" == "y" || "$reboot_input" == "Y" ]]; then
+            no_reboot=true
+        fi
+    fi
+    
+    # Tags (optional)
+    echo ""
+    echo "Enter tags for the AMI (optional):"
+    echo "  Format: Key1=Value1,Key2=Value2"
+    echo -n "  Tags: "
+    local tags_input
+    read -r tags_input
+    
+    # Build tags JSON
+    local tags_json="{}"
+    if [[ -n "$tags_input" ]]; then
+        IFS=',' read -ra tag_pairs <<< "$tags_input"
+        for tag_pair in "${tag_pairs[@]}"; do
+            if [[ -n "$tag_pair" ]]; then
+                local key="${tag_pair%%=*}"
+                local value="${tag_pair#*=}"
+                tags_json=$(echo "$tags_json" | jq --arg k "$key" --arg v "$value" '. + {($k): $v}')
+            fi
+        done
+    fi
+    
+    # Build the final parameters JSON
+    AMI_CREATION_PARAMS=$(jq -n \
+        --arg in "$instance_id" \
+        --arg name "$ami_name" \
+        --arg desc "$ami_description" \
+        --argjson nr "$no_reboot" \
+        --argjson tags "$tags_json" \
+        --arg region "$region" \
+        '{
+            InstanceId: $in,
+            Name: $name,
+            Description: $desc,
+            NoReboot: $nr,
+            TagSpecifications: [{
+                ResourceType: "image",
+                Tags: $tags
+            }],
+            Region: $region
+        }')
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Create AMI from an EC2 instance
+# Uses PICKED_INSTANCE and AMI_CREATION_PARAMS global variables
+# Returns:
+#   The new ImageId via CREATED_AMI_ID variable
+#   Or returns 1 on error
+# -----------------------------------------------------------------------------
+create_ami_from_instance() {
+    if [[ -z "$PICKED_INSTANCE" ]]; then
+        echo "ERROR: No instance selected for AMI creation."
+        return 1
+    fi
+    
+    if [[ -z "$AMI_CREATION_PARAMS" ]]; then
+        echo "ERROR: No AMI creation parameters collected."
+        return 1
+    fi
+    
+    echo ""
+    echo "=== Creating AMI ==="
+    echo ""
+    
+    local instance_id
+    instance_id=$(echo "$AMI_CREATION_PARAMS" | jq -r '.InstanceId')
+    local ami_name
+    ami_name=$(echo "$AMI_CREATION_PARAMS" | jq -r '.Name')
+    local region
+    region=$(echo "$AMI_CREATION_PARAMS" | jq -r '.Region')
+    
+    echo "Creating AMI from instance $instance_id..."
+    echo "AMI Name: $ami_name"
+    echo ""
+    
+    # Build the AWS CLI command
+    local cmd_args=("create-image")
+    cmd_args+=("--instance-id" "$instance_id")
+    cmd_args+=("--name" "$ami_name")
+    
+    local description
+    description=$(echo "$AMI_CREATION_PARAMS" | jq -r '.Description')
+    if [[ -n "$description" && "$description" != "null" ]]; then
+        cmd_args+=("--description" "$description")
+    fi
+    
+    local no_reboot
+    no_reboot=$(echo "$AMI_CREATION_PARAMS" | jq -r '.NoReboot')
+    if [[ "$no_reboot" == "true" ]]; then
+        cmd_args+=("--no-reboot")
+    fi
+    
+    # Add tags
+    local tags_json
+    tags_json=$(echo "$AMI_CREATION_PARAMS" | jq -c '.TagSpecifications[0].Tags')
+    if [[ "$tags_json" != "{}" && "$tags_json" != "null" ]]; then
+        # Convert tags JSON to AWS CLI format
+        local tags_args=()
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            local key="${line%%=*}"
+            local value="${line#*=}"
+            tags_args+=("Key=${key},Value=${value}")
+        done < <(echo "$tags_json" | jq -r 'to_entries | map("key=\u0027" + .key + "\u0027,value=\u0027" + .value + "\u0027") | join("\n")')
+        
+        if [[ ${#tags_args[@]} -gt 0 ]]; then
+            cmd_args+=("--tag-specifications" "ResourceType=image,Tags=[${tags_args[*]}]")
+        fi
+    fi
+    
+    # Execute the command
+    local response
+    if ! response=$(AWS_REGION="$region" aws_ec2 "${cmd_args[@]}" 2>&1); then
+        echo "ERROR: Failed to create AMI: $response"
+        return 1
+    fi
+    
+    # Extract the new AMI ID
+    CREATED_AMI_ID=$(echo "$response" | jq -r '.ImageId')
+    
+    if [[ -z "$CREATED_AMI_ID" ]]; then
+        echo "ERROR: No AMI ID returned from AWS."
+        return 1
+    fi
+    
+    echo "AMI created successfully!"
+    echo "AMI ID: $CREATED_AMI_ID"
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Wait for AMI to reach available state and display details
+# Uses CREATED_AMI_ID global variable
+# -----------------------------------------------------------------------------
+post_ami_creation_actions() {
+    if [[ -z "$CREATED_AMI_ID" ]]; then
+        echo "ERROR: No AMI ID for post-creation actions."
+        return 1
+    fi
+    
+    local region
+    region=$(echo "$AMI_CREATION_PARAMS" | jq -r '.Region')
+    local ami_state="pending"
+    local max_wait=600  # 10 minutes for AMI creation
+    local wait_interval=10
+    local elapsed=0
+    
+    echo ""
+    echo "Waiting for AMI to be available..."
+    
+    while [[ "$ami_state" != "available" && $elapsed -lt $max_wait ]]; do
+        sleep "$wait_interval"
+        elapsed=$((elapsed + wait_interval))
+        
+        local state_response
+        state_response=$(AWS_REGION="$region" aws_ec2 describe-images --image-ids "$CREATED_AMI_ID" 2>/dev/null)
+        
+        if [[ -n "$state_response" ]]; then
+            ami_state=$(echo "$state_response" | jq -r '.Images[0].State // "unknown"')
+            echo "  Current state: $ami_state (waited ${elapsed}s)"
+        fi
+    done
+    
+    if [[ "$ami_state" == "available" ]]; then
+        echo "AMI is now available!"
+        
+        # Get AMI details
+        local details_response
+        details_response=$(AWS_REGION="$region" aws_ec2 describe-images --image-ids "$CREATED_AMI_ID" 2>/dev/null)
+        
+        if [[ -n "$details_response" ]]; then
+            local ami_name
+            ami_name=$(echo "$details_response" | jq -r '.Images[0].Name')
+            local creation_date
+            creation_date=$(echo "$details_response" | jq -r '.Images[0].CreationDate')
+            
+            echo ""
+            echo "=== AMI Details ==="
+            echo "AMI ID: $CREATED_AMI_ID"
+            echo "Name: $ami_name"
+            echo "State: $ami_state"
+            echo "Creation Date: $creation_date"
+            echo "Region: $region"
+            echo ""
+        fi
+    else
+        echo "AMI did not reach available state within ${max_wait} seconds."
+        echo "You can check the AMI status manually using:"
+        echo "  aws ec2 describe-images --image-ids $CREATED_AMI_ID --region $region"
+    fi
+    
+    echo ""
+}
+
+# -----------------------------------------------------------------------------
+# Full workflow: Create AMI from EC2 Instance
+# -----------------------------------------------------------------------------
+create_ami_from_instance_workflow() {
+    # Select instance
+    if ! select_instance_for_ami; then
+        return 1
+    fi
+    
+    # Collect AMI parameters
+    if ! collect_ami_params "$PICKED_INSTANCE"; then
+        return 1
+    fi
+    
+    # Create the AMI
+    if ! create_ami_from_instance; then
+        return 1
+    fi
+    
+    # Post-creation actions
+    post_ami_creation_actions
+    
+    return 0
+}
+
+# =============================================================================
+# PHASE 6: REMOVE AMI
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Select an AMI for removal
+# Sets PICKED_AMI global variable
+# Returns:
+#   0 on success, PICKED_AMI contains the selected AMI JSON
+#   1 on cancel/error
+# -----------------------------------------------------------------------------
+select_ami_for_removal() {
+    echo ""
+    echo "=== Remove AMI ==="
+    echo ""
+    
+    # List AMIs and allow user to pick
+    if ! pick_ami; then
+        return 1
+    fi
+    
+    # Display selected AMI details
+    echo ""
+    echo "Selected AMI for removal:"
+    echo "  ID: $(echo "$PICKED_AMI" | jq -r '.ImageId')"
+    echo "  Name: $(echo "$PICKED_AMI" | jq -r '.Name')"
+    echo "  Creation Date: $(echo "$PICKED_AMI" | jq -r '.CreationDate')"
+    echo "  Region: $(echo "$PICKED_AMI" | jq -r '.Region')"
+    echo ""
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Display dry run information for AMI removal
+# Uses PICKED_AMI global variable
+# Returns:
+#   0 to proceed to dependency check
+#   1 to cancel
+# -----------------------------------------------------------------------------
+show_removal_dry_run() {
+    if [[ -z "$PICKED_AMI" ]]; then
+        echo "ERROR: No AMI selected for removal."
+        return 1
+    fi
+    
+    local ami_id
+    ami_id=$(echo "$PICKED_AMI" | jq -r '.ImageId')
+    local ami_name
+    ami_name=$(echo "$PICKED_AMI" | jq -r '.Name')
+    local region
+    region=$(echo "$PICKED_AMI" | jq -r '.Region')
+    
+    echo ""
+    echo "=== DRY RUN: AMI Removal ==="
+    echo ""
+    echo "The following AMI will be permanently deleted:"
+    echo ""
+    echo "  AMI ID: $ami_id"
+    echo "  Name: $ami_name"
+    echo "  Region: $region"
+    echo ""
+    echo "This action CANNOT be undone!"
+    echo ""
+    echo -n "Proceed to dependency check? (y/N): "
+    local confirm
+    read -r confirm
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo "Cancelled."
+        return 1
+    fi
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Check for dependencies before removing an AMI
+# Uses PICKED_AMI global variable
+# Returns:
+#   0 to proceed with removal
+#   1 to cancel
+# -----------------------------------------------------------------------------
+check_ami_dependencies() {
+    if [[ -z "$PICKED_AMI" ]]; then
+        echo "ERROR: No AMI selected for dependency check."
+        return 1
+    fi
+    
+    local ami_id
+    ami_id=$(echo "$PICKED_AMI" | jq -r '.ImageId')
+    local ami_region
+    ami_region=$(echo "$PICKED_AMI" | jq -r '.Region')
+    
+    echo ""
+    echo "=== Checking for Dependencies ==="
+    echo ""
+    echo "Checking all regions for instances using AMI: $ami_id"
+    echo ""
+    
+    local has_dependencies=false
+    local dependency_message=""
+    
+    # Check all configured regions
+    for region in "${REGIONS[@]}"; do
+        local response
+        response=$(AWS_REGION="$region" aws_ec2 describe-instances \
+            --filters "Name=image-id,Values=$ami_id" 2>/dev/null)
+        
+        if [[ -n "$response" ]]; then
+            local instance_count
+            instance_count=$(echo "$response" | jq '.Reservations | length')
+            
+            if [[ "$instance_count" -gt 0 ]]; then
+                has_dependencies=true
+                
+                # Get instance details
+                local instances_info
+                instances_info=$(echo "$response" | jq -r '
+                    .Reservations[] | 
+                    .Instances[] | 
+                    "  - Region: " + .Placement.AvailabilityZone + 
+                    " Instance: " + .InstanceId + 
+                    " State: " + .State.Name + 
+                    "\n"
+                ')
+                
+                if [[ -n "$instances_info" ]]; then
+                    dependency_message+="\n$region:\n$instances_info"
+                fi
+            fi
+        fi
+    done
+    
+    if [[ "$has_dependencies" == true ]]; then
+        echo "WARNING: The following instances are using this AMI:"
+        echo -e "$dependency_message"
+        echo ""
+        echo "Removing this AMI will cause these instances to fail on reboot."
+        echo "You should update these instances to use a different AMI first."
+        echo ""
+        echo -n "Continue with removal anyway? (y/N): "
+        local confirm
+        read -r confirm
+        
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Cancelled."
+            return 1
+        fi
+    else
+        echo "No instances currently using this AMI."
+    fi
+    
+    echo ""
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Type-to-confirm for destructive actions
+# Arguments:
+#   $1: Resource identifier to confirm (e.g., AMI ID)
+#   $2: Resource type description (e.g., "AMI")
+#   $3: Action description (e.g., "remove")
+# Returns:
+#   0 on successful confirmation
+#   1 on mismatch or cancel
+# -----------------------------------------------------------------------------
+type_to_confirm() {
+    local resource_id="$1"
+    local resource_type="$2"
+    local action="$3"
+    
+    if [[ -z "$resource_id" ]]; then
+        echo "ERROR: No resource identifier provided for confirmation."
+        return 1
+    fi
+    
+    echo ""
+    echo "=== CONFIRMATION REQUIRED ==="
+    echo ""
+    echo "To $action this $resource_type, type the exact identifier:"
+    echo "  $resource_id"
+    echo ""
+    echo -n "Enter identifier: "
+    local input
+    read -r input
+    
+    if [[ "$input" != "$resource_id" ]]; then
+        echo "ERROR: Input does not match. Aborting."
+        return 1
+    fi
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Remove an AMI after all confirmations
+# Uses PICKED_AMI global variable
+# Returns:
+#   0 on success
+#   1 on error
+# -----------------------------------------------------------------------------
+remove_ami() {
+    if [[ -z "$PICKED_AMI" ]]; then
+        echo "ERROR: No AMI selected for removal."
+        return 1
+    fi
+    
+    local ami_id
+    ami_id=$(echo "$PICKED_AMI" | jq -r '.ImageId')
+    local region
+    region=$(echo "$PICKED_AMI" | jq -r '.Region')
+    local ami_name
+    ami_name=$(echo "$PICKED_AMI" | jq -r '.Name')
+    
+    echo ""
+    echo "=== Removing AMI ==="
+    echo ""
+    echo "Removing AMI: $ami_id ($ami_name)"
+    echo "Region: $region"
+    echo ""
+    
+    # Execute the removal
+    local response
+    if ! response=$(AWS_REGION="$region" aws_ec2 deregister-image --image-id "$ami_id" 2>&1); then
+        echo "ERROR: Failed to remove AMI: $response"
+        return 1
+    fi
+    
+    # Check if removal was successful
+    local success
+    success=$(echo "$response" | jq -r '.Success // "false"')
+    
+    if [[ "$success" != "true" ]]; then
+        echo "ERROR: AMI removal was not successful."
+        return 1
+    fi
+    
+    echo "AMI removed successfully!"
+    echo "AMI ID: $ami_id"
+    echo "Name: $ami_name"
+    echo ""
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Full workflow: Remove AMI
+# -----------------------------------------------------------------------------
+remove_ami_workflow() {
+    # Select AMI for removal
+    if ! select_ami_for_removal; then
+        return 1
+    fi
+    
+    # Show dry run
+    if ! show_removal_dry_run; then
+        return 1
+    fi
+    
+    # Check dependencies
+    if ! check_ami_dependencies; then
+        return 1
+    fi
+    
+    # Type-to-confirm
+    local ami_id
+    ami_id=$(echo "$PICKED_AMI" | jq -r '.ImageId')
+    if ! type_to_confirm "$ami_id" "AMI" "remove"; then
+        return 1
+    fi
+    
+    # Execute removal
+    if ! remove_ami; then
+        return 1
+    fi
     
     return 0
 }
