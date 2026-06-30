@@ -1,0 +1,11 @@
+*~
+*#
+*.swp
+*.tmp
+*.bak
+*.env
+.env
+bin
+dist
+testout
+.DS_Store
