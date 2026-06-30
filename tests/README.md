@@ -137,13 +137,24 @@ EOF
 | check_dependencies | test_dependencies.bats | ✅ Implemented |
 | aws_cli_call | test_dependencies.bats | ✅ Implemented |
 | aws_ec2 | test_dependencies.bats | ✅ Implemented |
-| list_ec2_instances | test_listing.bats | ⏳ Not yet |
-| list_amis | test_listing.bats | ⏳ Not yet |
-| display_instances | test_listing.bats | ⏳ Not yet |
-| display_amis | test_listing.bats | ⏳ Not yet |
-| show_pick_list | test_picklist.bats | ⏳ Not yet |
-| pick_ami | test_picklist.bats | ⏳ Not yet |
-| pick_instance | test_picklist.bats | ⏳ Not yet |
+| list_ec2_instances | test_listing.bats | ✅ Implemented |
+| list_amis | test_listing.bats | ✅ Implemented |
+| display_instances | test_listing.bats | ⏳ Skipped — not yet fully tested |
+| display_amis | test_listing.bats | ⏳ Skipped — not yet fully tested |
+| show_pick_list | test_picklist.bats | ⏳ Skipped — interactive input, needs stdin mocking |
+| pick_ami | test_picklist.bats | ⏳ Skipped — interactive input, needs stdin mocking |
+| pick_instance | test_picklist.bats | ⏳ Skipped — interactive input, needs stdin mocking |
+| list_instance_types / list_key_pairs / list_security_groups / list_subnets / list_instance_profiles | test_instance_creation.bats | ✅ Implemented |
+| collect_instance_params / confirm_and_launch | test_instance_creation.bats | ⏳ Partially skipped — interactive input, needs stdin mocking |
+| create_instance_from_ami | test_instance_creation.bats | ✅ Implemented |
+| collect_ami_params / create_ami_from_instance / post_ami_creation_actions / create_ami_from_instance_workflow | test_create_ami.bats | ⏳ Not yet — file does not exist |
+| select_ami_for_removal / show_removal_dry_run / check_ami_dependencies / type_to_confirm / remove_ami / remove_ami_workflow | test_remove_ami.bats | ⏳ Not yet — file does not exist |
+| show_main_menu / main | test_menu.bats | ⏳ Not yet — file does not exist |
+
+The implementation in `ec2_ami_manager.bash` is substantially ahead of test
+coverage: Phases 0-4 (dependencies, listing, pick lists, instance creation)
+have working tests; Phases 5-7 (AMI creation, AMI removal, main menu) are
+implemented in code but untested.
 
 ## Tips for Writing Tests
 
@@ -159,7 +170,7 @@ For local development, run tests frequently:
 
 ```bash
 # Run tests before committing
-cd /Users/rsdoiel/WorkLab/aws_tools
+cd /Users/rsdoiel/WorkLab/awstools
 bats tests/
 
 # Run tests on file changes (requires entr or similar)

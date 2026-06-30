@@ -135,19 +135,27 @@ Menu Selection (1-5)
 ## File Structure
 
 ```
-aws_tools/
+awstools/
 ├── DESIGN.md          ← This document
 ├── DECISIONS.md       ← Architecture and UX decisions
 ├── PLAN.md            ← Implementation plan
 ├── ec2_ami_manager.bash   ← Main interactive script
-├── check_ami.bash     ← Existing: List AMIs
-├── check_ec2_instances.bash ← Existing: List instances
+├── ami_copy.bash      ← To be retired: capabilities folded into Phase 5b
+│                         (see DECISIONS.md "AMI-from-instance: fold
+│                         ami_copy.bash capabilities into Phase 5")
 └── tests/
-    ├── test_listing.bats     ← BATS tests for resource listing
-    ├── test_create_instance.bats ← BATS tests for instance creation
-    ├── test_create_ami.bats   ← BATS tests for AMI creation
-    └── test_remove_ami.bats   ← BATS tests for AMI removal
+    ├── test_dependencies.bats     ← BATS tests for dependency/wrapper layer
+    ├── test_listing.bats          ← BATS tests for resource listing
+    ├── test_picklist.bats         ← BATS tests for pick lists
+    ├── test_instance_creation.bats ← BATS tests for instance creation
+    ├── test_create_ami.bats       ← TBD: BATS tests for AMI creation
+    └── test_remove_ami.bats       ← TBD: BATS tests for AMI removal
 ```
+
+`check_ami.bash` and `check_ec2_instances.bash` have been retired — their
+listing functionality is superseded by `list_ec2_instances()`/`list_amis()`
+in `ec2_ami_manager.bash` (see DECISIONS.md "Retire check_ami.bash and
+check_ec2_instances.bash").
 
 ## Dependencies
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # BATS tests for resource listing functions
 
-load '/Users/rsdoiel/WorkLab/aws_tools/tests/lib/test_helper'
+load 'lib/test_helper'
 
 setup() {
     setup_mock_aws

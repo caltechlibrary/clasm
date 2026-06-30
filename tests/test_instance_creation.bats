@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # BATS tests for EC2 instance creation from AMI (Phase 4)
 
-load '/Users/rsdoiel/WorkLab/aws_tools/tests/lib/test_helper'
+load 'lib/test_helper'
 
 setup() {
     setup_mock_aws

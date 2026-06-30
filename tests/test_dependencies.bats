@@ -2,7 +2,7 @@
 # BATS tests for dependency checking functionality
 
 # Load test helper
-load '/Users/rsdoiel/WorkLab/aws_tools/tests/lib/test_helper'
+load 'lib/test_helper'
 
 # =============================================================================
 # SETUP AND TEARDOWN

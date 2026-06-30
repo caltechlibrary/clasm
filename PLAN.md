@@ -4,6 +4,23 @@
 
 See `DESIGN.md` and `DECISIONS.md` for the complete design and decision rationale.
 
+## Status (2026-06-30)
+
+`ec2_ami_manager.bash` already implements Phases 0–7 in code (dependency
+checks, region wrappers, listing, pick lists, instance creation, AMI
+creation, AMI removal, main menu). Test coverage from Phase 9 lags behind:
+Phases 0–4 have working BATS tests (`tests/test_dependencies.bats`,
+`tests/test_listing.bats`, `tests/test_picklist.bats`,
+`tests/test_instance_creation.bats`); Phases 5–7 (AMI creation, AMI removal,
+main menu) have no tests yet (`test_create_ami.bats`, `test_remove_ami.bats`,
+`test_menu.bats` do not exist). See `tests/README.md` for the current
+function-by-function coverage table.
+
+The checkboxes and phase descriptions below describe the original plan as
+written; they have not been retroactively marked complete. Phase 5b below is
+new — added after discovering `ami_copy.bash`'s capabilities were never
+folded into this plan.
+
 ## Phases
 
 This implementation follows a phased approach with tests written before code (TDD).
@@ -387,6 +404,52 @@ This implementation follows a phased approach with tests written before code (TD
 - Test timeout waiting for available state
 
 **Dependency:** A1
+
+---
+
+## Phase 5b — Fold in `ami_copy.bash` capabilities
+
+**Effort:** ~4 hours
+**Priority:** High
+**Source:** `ami_copy.bash`, `ami_copy_basic_steps.md` (merged from the separate `ami_copy` repo; see DECISIONS.md "AMI-from-instance: fold ami_copy.bash capabilities into Phase 5")
+
+`ami_copy.bash` duplicates this phase's instance→AMI workflow but single-region,
+and includes capabilities this phase's workflow lacks. Port them into the
+multi-region workflow, then retire `ami_copy.bash`.
+
+### Work Items
+
+- [ ] Volume-size gathering: call `describe-volumes` for the selected
+      instance, sum attached volume sizes, and show the same time-estimate
+      table as `ami_copy_basic_steps.md` (<20GB: 5–15min, 20–100GB:
+      15–45min, 100–200GB: 45–90min, 200+GB: 1.5–3+hrs)
+- [ ] Prior-snapshot detection: note when an attached volume already has a
+      snapshot, since only changed blocks will be copied
+- [ ] SSM `fstrim` step: check SSM availability for the selected instance;
+      if online, offer to run `fstrim -av` via `ssm send-command` before
+      `create-image` to reduce copy time/size
+- [ ] Fix the AMI-creation wait: `post_ami_creation_actions()` currently
+      gives up after a 600-second (10 min) timeout. Per the timing table
+      above, even small volumes take 5–15 minutes, and an Invenio RDM
+      instance (Docker + PostgreSQL + OpenSearch) is estimated at 20–60+
+      minutes — this timeout will fail on real usage. Replace with
+      unbounded polling (elapsed-time display, Ctrl-C-safe — AMI creation
+      continues in AWS regardless of whether the script is watching)
+- [ ] Running-instance warning: carry over the Postgres/OpenSearch
+      crash-consistency guidance from `ami_copy_basic_steps.md` into the
+      running-instance warning shown by `select_instance_for_ami`/`A0`
+- [ ] Retire `ami_copy.bash` once the above are folded in and verified
+      equivalent (or better) across all four regions
+- [ ] Remove `ami_copy_basic_steps.md`'s standalone-script framing, or fold
+      its content into this script's `--help`/usage text
+
+**Tests:**
+- Test volume-size aggregation and time-estimate boundaries
+- Test prior-snapshot detection messaging
+- Test SSM-unavailable path (skips fstrim, proceeds with warning)
+- Test that AMI-creation polling does not exit early before `available`/`failed`
+
+**Dependency:** A2
 
 ---
 
