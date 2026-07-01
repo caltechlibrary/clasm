@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,22 @@ type fakeSSMClient struct {
 	finalStatus     types.CommandInvocationStatus
 	stdout          string
 	invocationErr   error
+
+	// responses lets a single fake distinguish between different remote
+	// commands within one test (e.g. Backup Archive & Trim's list/upload/
+	// delete/fstrim steps) by matching a substring against the most
+	// recently sent command text; first match wins. Falls back to
+	// finalStatus/stdout above when empty or no substring matches, so
+	// every pre-existing test (single command per fake) is unaffected.
+	responses       []ssmCommandResponse
+	lastCommandText string
+	sentCommands    []string
+}
+
+type ssmCommandResponse struct {
+	substring string
+	stdout    string
+	status    types.CommandInvocationStatus
 }
 
 func (f *fakeSSMClient) DescribeInstanceInformation(ctx context.Context, params *ssm.DescribeInstanceInformationInput, optFns ...func(*ssm.Options)) (*ssm.DescribeInstanceInformationOutput, error) {
@@ -51,6 +68,10 @@ func (f *fakeSSMClient) DescribeInstanceInformation(ctx context.Context, params 
 
 func (f *fakeSSMClient) SendCommand(ctx context.Context, params *ssm.SendCommandInput, optFns ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
 	f.sendCommandCallCount++
+	if len(params.Parameters["commands"]) > 0 {
+		f.lastCommandText = params.Parameters["commands"][0]
+		f.sentCommands = append(f.sentCommands, f.lastCommandText)
+	}
 	if f.sendCommandErr != nil {
 		return nil, f.sendCommandErr
 	}
@@ -66,6 +87,11 @@ func (f *fakeSSMClient) GetCommandInvocation(ctx context.Context, params *ssm.Ge
 	}
 	if f.invocationCalls <= f.pendingCalls {
 		return &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}, nil
+	}
+	for _, r := range f.responses {
+		if strings.Contains(f.lastCommandText, r.substring) {
+			return &ssm.GetCommandInvocationOutput{Status: r.status, StandardOutputContent: aws.String(r.stdout)}, nil
+		}
 	}
 	return &ssm.GetCommandInvocationOutput{Status: f.finalStatus, StandardOutputContent: aws.String(f.stdout)}, nil
 }

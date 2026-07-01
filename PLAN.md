@@ -510,11 +510,28 @@ path-error handling
 
 ---
 
-## Phase 13 — Backup Archive & Trim
+## Phase 13 — Backup Archive & Trim (done, unit tests only)
 
 **Effort:** ~10 hours
 **Priority:** High
-**Files:** `internal/workflow/backup_archive.go`
+**Files:** `internal/workflow/{backup_list,backup_upload,backup_verify,backup_delete,backup_archive}.go`
+
+Age filtering happens in Go (`FilterByAge`), not in the remote `find`
+command -- the SSM command only lists every file's size/mtime; all
+threshold logic is local and independently testable, avoiding fragile
+shell-arithmetic date math. Building the remote upload/delete scripts
+reintroduces the shell-quoting risk category this whole rewrite exists
+to eliminate for *local* command construction -- SSM's API only accepts
+a command string, so it's unavoidable here. Caught a real quoting bug in
+review: the upload script's S3 destination URI and echoed key were
+unquoted (only the source path was), which would have broken on any
+filename containing a single quote -- fixed by routing every dynamic
+value through `shellQuote` and passing it as a separate `printf`
+argument rather than interpolating into a double-quoted string.
+
+Real-AWS verification remains blocked on the S3 bucket and target
+instance IAM policy the user still needs to set up outside this repo
+(per `DESIGN.md` Assumptions #3-4) -- flagged rather than guessed at.
 
 ### Work Items
 
