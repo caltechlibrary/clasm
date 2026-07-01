@@ -418,12 +418,16 @@ check_ec2_instances.bash").
   module-based build)
 - **github.com/aws/aws-sdk-go-v2** and its `ec2`, `ssm`, `s3`, `sts`
   service packages — see `DECISIONS.md` ("Use official AWS SDK for Go v2")
+- **github.com/rsdoiel/termlib** for terminal output and interactive
+  input (`internal/ui`) — see `DECISIONS.md` ("Use github.com/rsdoiel/
+  termlib for the Terminal UI")
 - **Go standard library `testing`** for unit tests; no external test
   framework needed (replaces BATS)
 
 No `jq`, no AWS CLI, and no `bash`/`grep`/`tr` version- or locale-dependent
-behavior at runtime — the compiled binary only needs Go's standard library
-and the AWS SDK.
+behavior at runtime — the compiled binary only needs the Go standard
+library, the AWS SDK, and `termlib` (both pre-approved dependencies per
+`CLAUDE.md`).
 
 ## Assumptions
 

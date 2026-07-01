@@ -105,28 +105,41 @@ absent); group/filter by Project and by Environment
 
 ---
 
-## Phase 3 — Terminal UI
+## Phase 3 — Terminal UI (done)
 
 **Effort:** ~4 hours
 **Priority:** High
 **Files:** `internal/ui/`
 
+Built on `github.com/rsdoiel/termlib` rather than a stdlib-only
+implementation — see `DECISIONS.md`, "Use github.com/rsdoiel/termlib for
+the Terminal UI".
+
 ### Work Items
 
-- `DisplayInstances([]Instance)` / `DisplayImages([]Image)` — formatted
-  table output (replaces `display_instances`/`display_amis`)
-- `PickList[T any](items []T, label func(T) string, prompt string) (T, error)`
+- `DisplayInstances(t *termlib.Terminal, []inventory.Instance)` /
+  `DisplayImages(t *termlib.Terminal, []inventory.Image)` — formatted
+  table output via `termlib.PadRight`/`termlib.Truncate` (replaces
+  `display_instances`/`display_amis`); untagged Project/Environment
+  render as `"unknown"`, untagged Name renders blank, matching the Bash
+  version
+- `PickList[T any](t *termlib.Terminal, le *termlib.LineEditor, items []T, label func(T) string, prompt string) (T, error)`
   — generic numbered pick list; returns an error (not a panic/crash) on
-  invalid input, re-prompts on out-of-range/non-numeric input, supports a
-  cancel option
-- `Prompt(label string, opts ...PromptOption) (string, error)` — single
-  free-text prompt with optional default value and validator function
-  (replaces the repeated `echo -n ...; read -r ...` pattern)
+  invalid input, re-prompts on out-of-range/non-numeric input, entering
+  `0` cancels (`ErrCancelled`)
+- `Prompt(t *termlib.Terminal, le *termlib.LineEditor, label string, opts ...PromptOption) (string, error)`
+  — single free-text prompt with optional default value
+  (`WithDefault`) and validator function (`WithValidator`), re-prompting
+  on validation failure (replaces the repeated `echo -n ...; read -r ...`
+  pattern)
 
-**Tests:** pick list with valid/invalid/cancel input (using an
-`io.Reader`/`io.Writer` pair instead of real stdin/stdout — this is the
-Go equivalent of the Bash version's skipped "interactive testing is hard"
-tests, and should not be skipped here)
+**Tests:** pick list with valid/invalid/cancel input, and prompt with
+default/validator, driven through `termlib.LineEditor` via an `os.Pipe()`
+(not a TTY) rather than a real terminal -- `LineEditor.Prompt` detects the
+non-TTY input and falls back to plain line reading, which is `termlib`'s
+own documented/intended way to drive it in tests. This is the Go
+equivalent of the Bash version's skipped "interactive testing is hard"
+tests, and is not skipped here.
 
 **Dependency:** Phase 2
 
