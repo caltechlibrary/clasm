@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,7 +21,20 @@ import (
 
 type stubEC2Client struct {
 	EC2API
-	describeErr error
+	describeErr      error
+	createKeyPairErr error
+}
+
+func (s *stubEC2Client) CreateKeyPair(ctx context.Context, params *ec2.CreateKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
+	if s.createKeyPairErr != nil {
+		return nil, s.createKeyPairErr
+	}
+	return &ec2.CreateKeyPairOutput{
+		KeyName:        params.KeyName,
+		KeyPairId:      aws.String("key-0123456789"),
+		KeyFingerprint: aws.String("aa:bb:cc"),
+		KeyMaterial:    aws.String("-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET\n-----END OPENSSH PRIVATE KEY-----"),
+	}, nil
 }
 
 func (s *stubEC2Client) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -135,6 +149,43 @@ func TestWrapEC2_LogsErrorInsteadOfOutput(t *testing.T) {
 	}
 	if records[0]["error"] != "boom" {
 		t.Errorf("error = %v, want %q", records[0]["error"], "boom")
+	}
+}
+
+func TestWrapEC2_CreateKeyPairRedactsPrivateKeyMaterial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debug.jsonl")
+	dl, err := debuglog.New(path)
+	if err != nil {
+		t.Fatalf("debuglog.New: %v", err)
+	}
+	defer dl.Close()
+
+	wrapped := WrapEC2(&stubEC2Client{}, dl, "us-east-1")
+	if _, err := wrapped.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{KeyName: aws.String("my-new-key")}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dl.Close()
+
+	records := readJSONLRecords(t, path)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	raw, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatalf("re-marshaling record: %v", err)
+	}
+	if strings.Contains(string(raw), "SECRET") {
+		t.Fatalf("debug log record contains the private key material: %s", raw)
+	}
+	output, ok := records[0]["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("output is not a map: %v", records[0]["output"])
+	}
+	if output["KeyMaterial"] != "[REDACTED]" {
+		t.Errorf("KeyMaterial = %v, want %q", output["KeyMaterial"], "[REDACTED]")
+	}
+	if output["KeyName"] != "my-new-key" {
+		t.Errorf("KeyName = %v, want %q", output["KeyName"], "my-new-key")
 	}
 }
 

@@ -43,7 +43,11 @@ type LaunchInstanceParams struct {
 // key pair name stays a free-text prompt -- unlike opaque sg-xxxx/
 // subnet-xxxx IDs, key pair names are already human-readable, and a
 // flat list of every key pair in the account added noise without
-// helping. Resolving the region-specific client here, right after the
+// helping -- but it also offers "new" to create a fresh key pair on
+// the spot (promptKeyPairNameOrCreate; see DECISIONS.md, "Support
+// creating a new key pair from within awsops") for operators who don't
+// want to reuse keys across instances. Resolving the region-specific
+// client here, right after the
 // AMI is picked, is why this takes ctx and the per-region client maps
 // and returns the resolved clients alongside params, instead of just
 // the AMI's picked Region.
@@ -68,7 +72,7 @@ func CollectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *t
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	keyName, err := ui.Prompt(t, le, "Key pair name (SSH key for logging in later, e.g. my-laptop-key; see EC2 console > Key Pairs)", ui.WithValidator(requireNonEmpty))
+	keyName, err := promptKeyPairNameOrCreate(ctx, t, le, ec2Client, sshKeyDir())
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

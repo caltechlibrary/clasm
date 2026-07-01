@@ -674,6 +674,30 @@ operation; clean exit; signal handling
 
 ---
 
+## Phase 15.2 — Create Key Pair inline (done)
+
+**Effort:** ~1.5 hours
+**Priority:** Medium
+
+### Work Items
+
+- [x] `internal/awsclient`: `EC2API.CreateKeyPair`; `-debug` logging
+      wrapper redacts `KeyMaterial` instead of using the shared
+      `logAWSCall` helper (see DESIGN.md, "Debug Logging"; DECISIONS.md,
+      "Support creating a new key pair from within awsops")
+- [x] `internal/workflow/create_key_pair.go`: `createKeyPair` (calls
+      `ec2:CreateKeyPair`, saves the private key to `~/.ssh/<name>.pem`
+      at `0600`) and `promptKeyPairNameOrCreate` (typing `new` at the
+      Key pair name prompt switches into the create-a-new-one sub-flow;
+      a name collision re-prompts, any other error propagates)
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`: both launch
+      flows' Key pair name prompt goes through
+      `promptKeyPairNameOrCreate` instead of a plain `ui.Prompt`
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

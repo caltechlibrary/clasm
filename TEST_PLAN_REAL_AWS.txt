@@ -95,7 +95,8 @@ General checks (do these once, up front)
 1. Create EC2 instance from AMI (menu option 1)
 --------------------------------------------------
 Prompts, in order: pick an AMI -> "Name tag" -> "Instance type" [t3.micro]
--> "Key pair name" -> a numbered security group list plus "Security
+-> "Key pair name" (type "new" to create one instead) -> a numbered
+security group list plus "Security
 group IDs (numbers above and/or raw IDs, comma-separated)" -> "Select a
 subnet" -> "IAM instance profile (optional)" -> "User data (inline text,
 @file path, or blank)" -> "Project tag" [defaults to the AMI's Project
@@ -127,6 +128,18 @@ test)" -> confirm "Launch this instance?".
   blank") and re-prompts -- note the message is field-agnostic, not the
   old hardcoded cloud-init-YAML wording that used to leak into
   unrelated prompts.
+- Type "new" (any case) at "Key pair name": confirm it prompts "New key
+  pair name" instead, then calls ec2:CreateKeyPair and prints "Created
+  key pair "<name>" (ED25519); private key saved to
+  ~/.ssh/<name>.pem (mode 0600)". Confirm the file actually exists at
+  that path with `-rw-------` permissions (`ls -l ~/.ssh/<name>.pem`),
+  and that the instance launches using that new key pair (verify in the
+  AWS console under EC2 > Key Pairs, and that you can
+  `ssh -i ~/.ssh/<name>.pem ...` into the running instance once it's up).
+- Type "new" -> a name that already exists as a key pair in your
+  account: confirm it's rejected ("invalid input: a key pair named
+  "<name>" already exists -- choose a different name") and re-prompts
+  for a different new name, without restarting the whole launch flow.
 - Type an Environment value other than production/development/test:
   confirm it's rejected and re-prompts.
 - Point User data at a real file from a local clone of

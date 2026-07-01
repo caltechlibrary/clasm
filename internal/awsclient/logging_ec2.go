@@ -2,7 +2,9 @@ package awsclient
 
 import (
 	"context"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 
 	"github.com/caltechlibrary/awstools/internal/debuglog"
@@ -131,4 +133,35 @@ func (w *loggingEC2Client) DescribeVolumes(ctx context.Context, params *ec2.Desc
 	return logAWSCall(w.dl, "EC2.DescribeVolumes", w.region, params, func() (*ec2.DescribeVolumesOutput, error) {
 		return w.inner.DescribeVolumes(ctx, params, optFns...)
 	})
+}
+
+// CreateKeyPair does not use the shared logAWSCall helper: its output
+// carries the new key pair's unencrypted private key material, which
+// must never be written to the debug log. The rest of the output is
+// still useful for debugging, so it's logged individually with
+// KeyMaterial replaced by a fixed redaction marker rather than omitting
+// the whole output.
+func (w *loggingEC2Client) CreateKeyPair(ctx context.Context, params *ec2.CreateKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
+	start := time.Now()
+	out, err := w.inner.CreateKeyPair(ctx, params, optFns...)
+
+	fields := map[string]any{
+		"method":      "EC2.CreateKeyPair",
+		"region":      w.region,
+		"params":      params,
+		"duration_ms": time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	} else {
+		fields["output"] = map[string]any{
+			"KeyName":        aws.ToString(out.KeyName),
+			"KeyPairId":      aws.ToString(out.KeyPairId),
+			"KeyFingerprint": aws.ToString(out.KeyFingerprint),
+			"KeyMaterial":    "[REDACTED]",
+		}
+	}
+	w.dl.Log("aws_call", fields)
+
+	return out, err
 }

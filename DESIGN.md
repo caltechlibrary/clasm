@@ -89,7 +89,12 @@ Interactive workflow:
 3. Prompt for required parameters:
    - Instance type (with sensible default suggestion)
    - Key pair name (free text — key pair names are already human-readable,
-     unlike security group/subnet IDs, so a pick list mostly adds noise)
+     unlike security group/subnet IDs, so a pick list mostly adds noise —
+     but typing `new` instead of a name creates a fresh key pair on the
+     spot via `ec2:CreateKeyPair`, saving the private key to `~/.ssh/
+     <name>.pem` with `0600` permissions, for operators who don't want to
+     reuse keys across instances; see "Debug Logging" below for why its
+     response is handled specially in the `-debug` log)
    - Security group IDs (list available security groups)
    - Subnet ID (list available subnets)
    - IAM instance profile (optional)
@@ -502,6 +507,11 @@ same pattern used for `~/Laboratory/harvey`'s own `--debug` JSONL log.
   team's infrastructure details (instance IDs, AMI names, security
   group/subnet IDs) and handle it accordingly (don't attach it to a
   public issue, etc.)
+- Exception: `ec2:CreateKeyPair`'s response carries the new key pair's
+  unencrypted private key material, which must never reach the debug
+  log even though everything else does — its logging wrapper redacts
+  `KeyMaterial` to a fixed marker before writing the record, rather
+  than skipping the whole call's output
 
 ## Security Considerations
 
@@ -527,6 +537,11 @@ same pattern used for `~/Laboratory/harvey`'s own `--debug` JSONL log.
    to the current directory and is not automatically cleaned up — it's
    the operator's responsibility to remove old debug logs, same as any
    other local diagnostic file
+9. A newly created key pair's private key material never touches AWS
+   again after `ec2:CreateKeyPair` returns it — awsops writes it to
+   `~/.ssh/<name>.pem` with `0600` permissions immediately and never
+   logs the raw material anywhere (including `-debug`'s log; see
+   "Debug Logging" above)
 
 ## Domain Knowledge Carried Forward from the Bash Version
 

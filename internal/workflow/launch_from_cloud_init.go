@@ -52,7 +52,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	keyName, err := ui.Prompt(t, le, "Key pair name (SSH key for logging in later, e.g. my-laptop-key; see EC2 console > Key Pairs)", ui.WithValidator(requireNonEmpty))
+	keyName, err := promptKeyPairNameOrCreate(ctx, t, le, ec2Client, sshKeyDir())
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

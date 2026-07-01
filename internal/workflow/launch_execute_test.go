@@ -72,6 +72,29 @@ type fakeEC2Client struct {
 	describeSecurityGroupsErr error
 	subnets                   []types.Subnet
 	describeSubnetsErr        error
+
+	createKeyPairCalls       int
+	createKeyPairErr         error
+	createKeyPairErrOnce     bool // if true, only the first CreateKeyPair call errors
+	lastCreateKeyPairInput   *ec2.CreateKeyPairInput
+	createKeyPairKeyMaterial string
+}
+
+func (f *fakeEC2Client) CreateKeyPair(ctx context.Context, params *ec2.CreateKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
+	f.createKeyPairCalls++
+	f.lastCreateKeyPairInput = params
+	if f.createKeyPairErr != nil && (!f.createKeyPairErrOnce || f.createKeyPairCalls == 1) {
+		return nil, f.createKeyPairErr
+	}
+	material := f.createKeyPairKeyMaterial
+	if material == "" {
+		material = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n"
+	}
+	return &ec2.CreateKeyPairOutput{
+		KeyName:     params.KeyName,
+		KeyPairId:   aws.String("key-fake0123456789"),
+		KeyMaterial: aws.String(material),
+	}, nil
 }
 
 func (f *fakeEC2Client) DescribeKeyPairs(ctx context.Context, params *ec2.DescribeKeyPairsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error) {
