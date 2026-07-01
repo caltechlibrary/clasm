@@ -61,6 +61,10 @@ type fakeEC2Client struct {
 
 	lastDeregisterImageInput *ec2.DeregisterImageInput
 	deregisterImageErr       error
+
+	userDataValue               string // returned by DescribeInstanceAttribute; empty means "not set"
+	describeInstanceAttrErr     error
+	terminateInstancesCallCount int
 }
 
 func (f *fakeEC2Client) DeregisterImage(ctx context.Context, params *ec2.DeregisterImageInput, optFns ...func(*ec2.Options)) (*ec2.DeregisterImageOutput, error) {
@@ -69,6 +73,17 @@ func (f *fakeEC2Client) DeregisterImage(ctx context.Context, params *ec2.Deregis
 		return nil, f.deregisterImageErr
 	}
 	return &ec2.DeregisterImageOutput{}, nil
+}
+
+func (f *fakeEC2Client) DescribeInstanceAttribute(ctx context.Context, params *ec2.DescribeInstanceAttributeInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceAttributeOutput, error) {
+	if f.describeInstanceAttrErr != nil {
+		return nil, f.describeInstanceAttrErr
+	}
+	out := &ec2.DescribeInstanceAttributeOutput{InstanceId: aws.String(aws.ToString(params.InstanceId))}
+	if f.userDataValue != "" {
+		out.UserData = &types.AttributeValue{Value: aws.String(f.userDataValue)}
+	}
+	return out, nil
 }
 
 func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
@@ -122,6 +137,7 @@ func (f *fakeEC2Client) DeleteTags(ctx context.Context, params *ec2.DeleteTagsIn
 }
 
 func (f *fakeEC2Client) TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+	f.terminateInstancesCallCount++
 	f.lastTerminateInstancesInput = params
 	if f.terminateInstancesErr != nil {
 		return nil, f.terminateInstancesErr

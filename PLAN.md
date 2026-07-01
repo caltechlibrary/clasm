@@ -454,11 +454,19 @@ removal success/failure
 
 ---
 
-## Phase 12 — Show/Export Cloud-Init
+## Phase 12 — Show/Export Cloud-Init (done)
 
 **Effort:** ~8 hours
 **Priority:** High
-**Files:** `internal/workflow/cloud_init.go`
+**Files:** `internal/workflow/{cloud_init_instance,cloud_init_ami,cloud_init_export,show_cloud_init}.go`
+
+The always-terminate guarantee is a `defer` against a cleanup-scoped
+`context.WithTimeout(context.Background(), 30s)`, deliberately decoupled
+from the caller's `ctx` so cleanup isn't skipped by an early return *or*
+by `ctx` itself being cancelled. Verified with dedicated tests asserting
+`TerminateInstances` is called exactly once across every failure path
+(SSM never online, command fails, instance never reaches running) and
+exactly zero times when launch itself fails (nothing to clean up).
 
 ### Work Items
 
