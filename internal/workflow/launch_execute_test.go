@@ -26,6 +26,17 @@ type fakeEC2Client struct {
 	runningAfterCall int // DescribeInstances reports running starting at this call number; 0 = never
 	describeErr      error
 	publicIP         string
+
+	lastStartInstancesInput *ec2.StartInstancesInput
+	startInstancesErr       error
+}
+
+func (f *fakeEC2Client) StartInstances(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+	f.lastStartInstancesInput = params
+	if f.startInstancesErr != nil {
+		return nil, f.startInstancesErr
+	}
+	return &ec2.StartInstancesOutput{}, nil
 }
 
 func (f *fakeEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {

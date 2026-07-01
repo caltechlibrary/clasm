@@ -161,6 +161,15 @@ func runLaunch(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 		t.Refresh()
 	}
 
+	displayConnectionInfo(t, instanceID, inst)
+	return nil
+}
+
+// displayConnectionInfo prints an instance's public/private IP and, if it
+// has a public IP, a ready-to-copy ssh command -- shared by every
+// workflow that ends with a running instance (Create Instance from AMI/
+// Cloud-Init YAML, Start Instance).
+func displayConnectionInfo(t *termlib.Terminal, instanceID string, inst types.Instance) {
 	t.Printf("\nInstance %s is running.\n", instanceID)
 	t.Printf("  Public IP:  %s\n", displayOrNone(aws.ToString(inst.PublicIpAddress)))
 	t.Printf("  Private IP: %s\n", displayOrNone(aws.ToString(inst.PrivateIpAddress)))
@@ -168,7 +177,6 @@ func runLaunch(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 		t.Printf("  ssh ec2-user@%s\n", aws.ToString(inst.PublicIpAddress))
 	}
 	t.Refresh()
-	return nil
 }
 
 func displayOrNone(s string) string {

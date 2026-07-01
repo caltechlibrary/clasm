@@ -233,11 +233,18 @@ the AMI pick list; otherwise covered by Phase 4's execution-path tests
 
 ---
 
-## Phase 6 — Start EC2 Instance
+## Phase 6 — Start EC2 Instance (done)
 
 **Effort:** ~2 hours
 **Priority:** Medium
 **Files:** `internal/workflow/power_state.go`
+
+Reuses Phase 4's `WaitUntilRunning` (poll-until-running) and the
+`displayConnectionInfo` helper extracted from `launch_execute.go` when
+Phase 5 shared its execution path — no new poll/display logic needed
+here, so the timeout path is covered by Phase 4's existing tests rather
+than re-tested at this orchestrator level (same reuse pattern as Phase
+5's own Tests note).
 
 ### Work Items
 
