@@ -327,11 +327,17 @@ match/mismatch; termination success/failure
 
 ---
 
-## Phase 9 — Manage Tags
+## Phase 9 — Manage Tags (done)
 
 **Effort:** ~4 hours
 **Priority:** Medium
 **Files:** `internal/workflow/manage_tags.go`
+
+Current tags are fetched fresh via `ec2:DescribeInstances`/`DescribeImages`
+(both already return the full `Tags` list) rather than a separate
+`ec2:DescribeTags` call. `TagChangeParams` stays minimal (resource ID,
+action, key, value), matching Phase 8's `TerminateInstanceParams`
+precedent for the params-struct/confirm-gate seam.
 
 ### Work Items
 

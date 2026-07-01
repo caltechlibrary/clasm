@@ -38,6 +38,42 @@ type fakeEC2Client struct {
 	terminateInstancesErr       error
 
 	blockDeviceMappings []types.InstanceBlockDeviceMapping // returned by DescribeInstances, for dry-run tests
+	instanceTags        []types.Tag                        // returned by DescribeInstances, for Manage Tags tests
+
+	describeImagesErr  error
+	describeImagesTags []types.Tag // returned by DescribeImages, for Manage Tags tests
+
+	lastCreateTagsInput *ec2.CreateTagsInput
+	createTagsErr       error
+	lastDeleteTagsInput *ec2.DeleteTagsInput
+	deleteTagsErr       error
+}
+
+func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
+	if f.describeImagesErr != nil {
+		return nil, f.describeImagesErr
+	}
+	imageID := ""
+	if len(params.ImageIds) > 0 {
+		imageID = params.ImageIds[0]
+	}
+	return &ec2.DescribeImagesOutput{Images: []types.Image{{ImageId: aws.String(imageID), Tags: f.describeImagesTags}}}, nil
+}
+
+func (f *fakeEC2Client) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+	f.lastCreateTagsInput = params
+	if f.createTagsErr != nil {
+		return nil, f.createTagsErr
+	}
+	return &ec2.CreateTagsOutput{}, nil
+}
+
+func (f *fakeEC2Client) DeleteTags(ctx context.Context, params *ec2.DeleteTagsInput, optFns ...func(*ec2.Options)) (*ec2.DeleteTagsOutput, error) {
+	f.lastDeleteTagsInput = params
+	if f.deleteTagsErr != nil {
+		return nil, f.deleteTagsErr
+	}
+	return &ec2.DeleteTagsOutput{}, nil
 }
 
 func (f *fakeEC2Client) TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
@@ -88,6 +124,7 @@ func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		InstanceId:          aws.String(params.InstanceIds[0]),
 		State:               &types.InstanceState{Name: state},
 		BlockDeviceMappings: f.blockDeviceMappings,
+		Tags:                f.instanceTags,
 	}
 	if state == types.InstanceStateNameRunning && f.publicIP != "" {
 		inst.PublicIpAddress = aws.String(f.publicIP)

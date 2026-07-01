@@ -3,9 +3,11 @@
 *.swp
 *.tmp
 *.bak
+*.exe
 *.env
 .env
 bin
+man
 dist
 testout
 .DS_Store
