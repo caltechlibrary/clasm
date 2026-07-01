@@ -15,8 +15,9 @@ import (
 // time/money -- requires its own explicit confirmation), display the
 // decoded cloud-init, then offer to export it to a local file for
 // manual comparison against a local clone of
-// caltechlibrary/cloud-init-examples.
-func ShowCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Client awsclient.EC2API, ssmClient awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image) error {
+// caltechlibrary/cloud-init-examples. Takes per-region client maps and
+// resolves the ones matching the picked instance/AMI's region.
+func ShowCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image) error {
 	kind, err := ui.PickList(t, le, []string{"Instance", "AMI"}, identity, "Show/export cloud-init for")
 	if err != nil {
 		return cancelledIsNil(t, err)
@@ -33,6 +34,10 @@ func ShowCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdi
 		inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance")
 		if err != nil {
 			return cancelledIsNil(t, err)
+		}
+		ec2Client, err := resolveEC2(ec2Clients, inst.Region)
+		if err != nil {
+			return err
 		}
 		data, set, err := ShowCloudInitFromInstance(ctx, ec2Client, inst.InstanceID)
 		if err != nil {
@@ -54,6 +59,10 @@ func ShowCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdi
 		img, err := ui.PickList(t, le, images, imageLabel, "Select an AMI")
 		if err != nil {
 			return cancelledIsNil(t, err)
+		}
+		ec2Client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, img.Region)
+		if err != nil {
+			return err
 		}
 		ok, err := Confirm(t, le, "Extracting cloud-init from an AMI launches a temporary billable instance. Proceed?")
 		if err != nil {

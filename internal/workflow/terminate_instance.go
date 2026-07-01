@@ -36,8 +36,9 @@ func TerminateInstance(ctx context.Context, client awsclient.EC2API, instanceID 
 // warning if tagged, type-to-confirm (instance ID or Name), then
 // terminate. Same safety tier as Feature 9 (Remove AMI), since
 // termination is permanent. Returns nil (not an error) on cancellation
-// or when there are no instances to pick from.
-func TerminateEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instances []inventory.Instance) error {
+// or when there are no instances to pick from. Takes a per-region client
+// map and resolves the one matching the picked instance's region.
+func TerminateEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
 	if len(instances) == 0 {
 		t.Println("No instances found.")
 		t.Refresh()
@@ -51,6 +52,10 @@ func TerminateEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.
 			t.Refresh()
 			return nil
 		}
+		return err
+	}
+	client, err := resolveEC2(clients, inst.Region)
+	if err != nil {
 		return err
 	}
 	params := TerminateInstanceParams{InstanceID: inst.InstanceID}

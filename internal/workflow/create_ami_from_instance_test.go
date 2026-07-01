@@ -8,11 +8,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
 func TestCreateAMIFromInstance_HappyPathRunningInstance(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", State: "running", Region: "us-east-1"}}
 	input := "1\n" + // pick i-1
 		"\n" + // AMI name (blank -> default)
 		"\n" + // description (blank)
@@ -29,7 +30,7 @@ func TestCreateAMIFromInstance_HappyPathRunningInstance(t *testing.T) {
 	}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 0} // SSM unavailable -> fstrim skipped cleanly, no extra input needed
 
-	err := CreateAMIFromInstance(context.Background(), term, le, ec2Client, ssmClient, instances)
+	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestCreateAMIFromInstance_HappyPathRunningInstance(t *testing.T) {
 }
 
 func TestCreateAMIFromInstance_StoppedInstanceSkipsCrashGuidanceAndReboot(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "authorstest", State: "stopped"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "authorstest", State: "stopped", Region: "us-east-1"}}
 	input := "1\n" + // pick i-1
 		"\n" + // AMI name (blank -> default)
 		"\n" + // description
@@ -73,7 +74,7 @@ func TestCreateAMIFromInstance_StoppedInstanceSkipsCrashGuidanceAndReboot(t *tes
 	ec2Client := &fakeEC2Client{createImageID: "ami-new2", imageAvailableAfterCall: 1}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateAMIFromInstance(context.Background(), term, le, ec2Client, ssmClient, instances)
+	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,13 +87,13 @@ func TestCreateAMIFromInstance_StoppedInstanceSkipsCrashGuidanceAndReboot(t *tes
 }
 
 func TestCreateAMIFromInstance_DeclinedConfirmationDoesNotCreate(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "stopped"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "stopped", Region: "us-east-1"}}
 	input := "1\n\n\ncaltechauthors\ntest\nn\n"
 	term, le, _ := newPipeEditor(t, input)
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateAMIFromInstance(context.Background(), term, le, ec2Client, ssmClient, instances)
+	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,12 +103,12 @@ func TestCreateAMIFromInstance_DeclinedConfirmationDoesNotCreate(t *testing.T) {
 }
 
 func TestCreateAMIFromInstance_CancelledPickList(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", State: "stopped"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", State: "stopped", Region: "us-east-1"}}
 	term, le, _ := newPipeEditor(t, "0\n")
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateAMIFromInstance(context.Background(), term, le, ec2Client, ssmClient, instances)
+	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances)
 	if err != nil {
 		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
 	}
@@ -117,13 +118,13 @@ func TestCreateAMIFromInstance_CancelledPickList(t *testing.T) {
 }
 
 func TestCreateAMIFromInstance_ReportsFailedState(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "stopped"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "stopped", Region: "us-east-1"}}
 	input := "1\n\n\ncaltechauthors\ntest\ny\n"
 	term, le, buf := newPipeEditor(t, input)
 	ec2Client := &fakeEC2Client{createImageID: "ami-new3", imageFailedAfterCall: 1}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateAMIFromInstance(context.Background(), term, le, ec2Client, ssmClient, instances)
+	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestCreateAMIFromInstance_NoInstances(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateAMIFromInstance(context.Background(), term, le, ec2Client, ssmClient, nil)
+	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

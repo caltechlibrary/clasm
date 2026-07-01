@@ -26,8 +26,10 @@ func StartInstance(ctx context.Context, client awsclient.EC2API, instanceID stri
 // starting is safe and reversible, the symmetric counterpart to Stop),
 // start it, wait for running, and display connection info. Returns nil
 // (not an error) on cancellation or when there are no stopped instances
-// to pick from.
-func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instances []inventory.Instance) error {
+// to pick from. Takes a per-region client map (Phase 2 aggregates
+// instances across all four regions) and resolves the one matching the
+// picked instance's region.
+func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
 	stopped := filterInstancesByState(instances, "stopped")
 	if len(stopped) == 0 {
 		t.Println("No stopped instances found.")
@@ -42,6 +44,10 @@ func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.Line
 			t.Refresh()
 			return nil
 		}
+		return err
+	}
+	client, err := resolveEC2(clients, inst.Region)
+	if err != nil {
 		return err
 	}
 
@@ -90,8 +96,9 @@ func WaitUntilStopped(ctx context.Context, client awsclient.EC2API, instanceID s
 // stopping is reversible; data on EBS volumes persists and the instance
 // can be started again), stop it, and wait for stopped. Returns nil
 // (not an error) on cancellation or when there are no running instances
-// to pick from.
-func StopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instances []inventory.Instance) error {
+// to pick from. Takes a per-region client map and resolves the one
+// matching the picked instance's region, same as StartEC2Instance.
+func StopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
 	running := filterInstancesByState(instances, "running")
 	if len(running) == 0 {
 		t.Println("No running instances found.")
@@ -106,6 +113,10 @@ func StopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineE
 			t.Refresh()
 			return nil
 		}
+		return err
+	}
+	client, err := resolveEC2(clients, inst.Region)
+	if err != nil {
 		return err
 	}
 

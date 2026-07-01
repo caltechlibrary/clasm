@@ -107,7 +107,9 @@ func displayTags(t *termlib.Terminal, label string, tags map[string]string) {
 // Tagging Convention (Feature 12) is the separate *policy* that gives
 // those two tag keys meaning elsewhere in this tool (see DESIGN.md,
 // "Manage Tags vs. the Tagging Convention").
-func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instances []inventory.Instance, images []inventory.Image) error {
+// Takes a per-region client map and resolves the one matching the
+// picked resource's region.
+func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance, images []inventory.Image) error {
 	kind, err := ui.PickList(t, le, []string{"Instance", "AMI"}, identity, "Manage tags on")
 	if err != nil {
 		return cancelledIsNil(t, err)
@@ -115,6 +117,7 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 
 	var resourceID, resourceLabel string
 	var tags map[string]string
+	var client awsclient.EC2API
 
 	switch kind {
 	case "Instance":
@@ -126,6 +129,10 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 		inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance")
 		if err != nil {
 			return cancelledIsNil(t, err)
+		}
+		client, err = resolveEC2(clients, inst.Region)
+		if err != nil {
+			return err
 		}
 		resourceID, resourceLabel = inst.InstanceID, instanceLabel(inst)
 		tags, err = fetchInstanceTags(ctx, client, resourceID)
@@ -141,6 +148,10 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 		img, err := ui.PickList(t, le, images, imageLabel, "Select an AMI")
 		if err != nil {
 			return cancelledIsNil(t, err)
+		}
+		client, err = resolveEC2(clients, img.Region)
+		if err != nil {
+			return err
 		}
 		resourceID, resourceLabel = img.ImageID, imageLabel(img)
 		tags, err = fetchImageTags(ctx, client, resourceID)

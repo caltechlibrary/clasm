@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
@@ -28,7 +29,7 @@ func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
 	ec2Client := &fakeEC2Client{runInstancesID: "i-abc123", runningAfterCall: 1}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, ec2Client, ssmClient, images)
+	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testin
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, ec2Client, ssmClient, images)
+	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestCreateInstanceFromCloudInit_CancelledPickListReturnsCleanly(t *testing.
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, ec2Client, ssmClient, images)
+	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, images)
 	if err != nil {
 		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
 	}

@@ -46,8 +46,10 @@ func instancesUsingAMI(instances []inventory.Instance, imageID string) []invento
 // references it), an Environment=production warning if tagged,
 // type-to-confirm (AMI ID or Name), then deregister. Same safety tier as
 // Feature 6 (Terminate Instance). Returns nil (not an error) on
-// cancellation or when there are no AMIs to pick from.
-func RemoveAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, images []inventory.Image, instances []inventory.Instance) error {
+// cancellation or when there are no AMIs to pick from. Takes a
+// per-region client map and resolves the one matching the picked AMI's
+// region.
+func RemoveAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, images []inventory.Image, instances []inventory.Instance) error {
 	if len(images) == 0 {
 		t.Println("No AMIs found.")
 		t.Refresh()
@@ -57,6 +59,10 @@ func RemoveAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 	img, err := ui.PickList(t, le, images, imageLabel, "Select an AMI to remove")
 	if err != nil {
 		return cancelledIsNil(t, err)
+	}
+	client, err := resolveEC2(clients, img.Region)
+	if err != nil {
+		return err
 	}
 	params := RemoveAMIParams{ImageID: img.ImageID}
 

@@ -41,7 +41,11 @@ type BackupArchiveParams struct {
 // type-to-confirm, upload, independently verify via s3:HeadObject,
 // delete only the verified files via a second SSM command, fstrim, and
 // report bytes freed plus any verification failures (left untouched).
-func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Client awsclient.EC2API, ssmClient awsclient.SSMAPI, s3Client awsclient.S3API, instances []inventory.Instance) error {
+// Takes a per-region SSM client map (the S3 client stays a single
+// client -- a bucket's home region is unrelated to the instance's
+// region) and resolves the SSM client matching the picked instance's
+// region.
+func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, instances []inventory.Instance) error {
 	if len(instances) == 0 {
 		t.Println("No instances found.")
 		t.Refresh()
@@ -51,6 +55,10 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 	inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance")
 	if err != nil {
 		return cancelledIsNil(t, err)
+	}
+	ssmClient, err := resolveSSM(ssmClients, inst.Region)
+	if err != nil {
+		return err
 	}
 
 	directory, err := ui.Prompt(t, le, "Backup directory (e.g. /opt/rdm_sql_backups)", ui.WithValidator(requireNonEmpty))

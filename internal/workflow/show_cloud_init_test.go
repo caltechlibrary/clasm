@@ -8,11 +8,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
 func TestShowCloudInit_InstancePathWithUserData(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	input := "1\n" + // Instance
 		"1\n" + // pick i-1
 		"\n" // skip export
@@ -20,7 +21,7 @@ func TestShowCloudInit_InstancePathWithUserData(t *testing.T) {
 	ec2Client := &fakeEC2Client{userDataValue: base64.StdEncoding.EncodeToString([]byte("#cloud-config"))}
 	ssmClient := &fakeSSMClient{}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, instances, nil)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,13 +31,13 @@ func TestShowCloudInit_InstancePathWithUserData(t *testing.T) {
 }
 
 func TestShowCloudInit_InstancePathNoUserData(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	input := "1\n1\n"
 	term, le, buf := newPipeEditor(t, input)
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, instances, nil)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestShowCloudInit_InstancePathNoUserData(t *testing.T) {
 }
 
 func TestShowCloudInit_AMIPathAcceptedConfirmation(t *testing.T) {
-	images := []inventory.Image{{ImageID: "ami-1", Name: "base"}}
+	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	input := "2\n" + // AMI
 		"1\n" + // pick ami-1
 		"y\n" + // confirm the billable extraction
@@ -55,7 +56,7 @@ func TestShowCloudInit_AMIPathAcceptedConfirmation(t *testing.T) {
 	ec2Client := &fakeEC2Client{runInstancesID: "i-temp1", runningAfterCall: 1}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "#cloud-config from AMI"}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, nil, images)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,13 +69,13 @@ func TestShowCloudInit_AMIPathAcceptedConfirmation(t *testing.T) {
 }
 
 func TestShowCloudInit_AMIPathDeclinedConfirmation(t *testing.T) {
-	images := []inventory.Image{{ImageID: "ami-1", Name: "base"}}
+	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	input := "2\n1\nn\n"
 	term, le, _ := newPipeEditor(t, input)
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, nil, images)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestShowCloudInit_CancelledKindPickList(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, nil, nil)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil)
 	if err != nil {
 		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestShowCloudInit_NoInstances(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, nil, nil)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestShowCloudInit_NoAMIs(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := ShowCloudInit(context.Background(), term, le, ec2Client, ssmClient, nil, nil)
+	err := ShowCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

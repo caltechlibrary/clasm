@@ -81,8 +81,10 @@ func CollectCreateAMIParams(t *termlib.Terminal, le *termlib.LineEditor, inst in
 // workflow (DESIGN.md, Feature 8): pick an instance (running or
 // stopped), gather volume info and show the time estimate, offer fstrim
 // and crash-consistency guidance if running, collect AMI params,
-// confirm, create, and wait (unboundedly) for available/failed.
-func CreateAMIFromInstance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, ssmClient awsclient.SSMAPI, instances []inventory.Instance) error {
+// confirm, create, and wait (unboundedly) for available/failed. Takes
+// per-region client maps and resolves the ones matching the picked
+// instance's region.
+func CreateAMIFromInstance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance) error {
 	if len(instances) == 0 {
 		t.Println("No instances found.")
 		t.Refresh()
@@ -92,6 +94,10 @@ func CreateAMIFromInstance(ctx context.Context, t *termlib.Terminal, le *termlib
 	inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance to create an AMI from")
 	if err != nil {
 		return cancelledIsNil(t, err)
+	}
+	client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, inst.Region)
+	if err != nil {
+		return err
 	}
 
 	volumes, totalGB, hasPriorSnapshot, err := GatherVolumeInfo(ctx, client, inst.InstanceID)

@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
@@ -94,7 +95,7 @@ func TestFetchImageTags(t *testing.T) {
 }
 
 func TestManageTags_AddOnInstance(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
 	input := "1\n" + // pick "Instance"
 		"1\n" + // pick i-1
 		"1\n" + // pick "Add"
@@ -104,7 +105,7 @@ func TestManageTags_AddOnInstance(t *testing.T) {
 	term, le, _ := newPipeEditor(t, input)
 	fake := &fakeEC2Client{}
 
-	err := ManageTags(context.Background(), term, le, fake, instances, nil)
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestManageTags_AddOnInstance(t *testing.T) {
 }
 
 func TestManageTags_UpdateOnAMI(t *testing.T) {
-	images := []inventory.Image{{ImageID: "ami-1", Name: "base"}}
+	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	fake := &fakeEC2Client{describeImagesTags: []types.Tag{{Key: aws.String("Project"), Value: aws.String("caltechdata")}}}
 	input := "2\n" + // pick "AMI"
 		"1\n" + // pick ami-1
@@ -124,7 +125,7 @@ func TestManageTags_UpdateOnAMI(t *testing.T) {
 		"y\n" // confirm
 	term, le, _ := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, fake, nil, images)
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, nil, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestManageTags_UpdateOnAMI(t *testing.T) {
 }
 
 func TestManageTags_RemoveOnInstance(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{instanceTags: []types.Tag{{Key: aws.String("Owner"), Value: aws.String("dld")}}}
 	input := "1\n" + // Instance
 		"1\n" + // i-1
@@ -144,7 +145,7 @@ func TestManageTags_RemoveOnInstance(t *testing.T) {
 		"y\n" // confirm
 	term, le, _ := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, fake, instances, nil)
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,12 +156,12 @@ func TestManageTags_RemoveOnInstance(t *testing.T) {
 }
 
 func TestManageTags_EnvironmentNoteShown(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	input := "1\n1\n1\nEnvironment\nproduction\ny\n"
 	term, le, buf := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, fake, instances, nil)
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,12 +171,12 @@ func TestManageTags_EnvironmentNoteShown(t *testing.T) {
 }
 
 func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	input := "1\n1\n1\nOwner\ndld\nn\n"
 	term, le, _ := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, fake, instances, nil)
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -185,12 +186,12 @@ func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
 }
 
 func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{} // no instanceTags set -> empty tag map
 	input := "1\n1\n2\n"     // Instance, i-1, Update
 	term, le, buf := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, fake, instances, nil)
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

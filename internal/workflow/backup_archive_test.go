@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
@@ -26,18 +27,17 @@ func recentFindOutput(now int64) string {
 var errUnavailable = errors.New("SSM unavailable")
 
 func TestBackupArchiveAndTrim_DryRunEmptyResult(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}}
 	input := "1\n" + // pick instance
 		"/opt/rdm_sql_backups\n" + // directory
 		"90\n" + // age threshold (nothing is 90 days old in the fixture)
 		"my-backup-bucket\n" // bucket
 
 	term, le, buf := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
 	s3Client := &fakeS3Client{}
 
-	err := BackupArchiveAndTrim(context.Background(), term, le, ec2Client, ssmClient, s3Client, instances)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestBackupArchiveAndTrim_DryRunEmptyResult(t *testing.T) {
 }
 
 func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}}
 	oldEpoch := nowUnix() - int64(30*24*3600)
 	input := "1\n" +
 		"/opt/rdm_sql_backups\n" +
@@ -59,7 +59,6 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 		"i-1\n" // type-to-confirm with the instance ID
 
 	term, le, buf := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
@@ -73,7 +72,7 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 	}
 	s3Client := &fakeS3Client{objects: map[string]int64{"old-1.sql.gz": 1048576}}
 
-	err := BackupArchiveAndTrim(context.Background(), term, le, ec2Client, ssmClient, s3Client, instances)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,12 +90,11 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 }
 
 func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}}
 	oldEpoch := nowUnix() - int64(30*24*3600)
 	input := "1\n/opt/rdm_sql_backups\n7\nmy-backup-bucket\nwrong\n"
 
 	term, le, _ := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
@@ -106,7 +104,7 @@ func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 	}
 	s3Client := &fakeS3Client{}
 
-	err := BackupArchiveAndTrim(context.Background(), term, le, ec2Client, ssmClient, s3Client, instances)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,12 +114,11 @@ func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 }
 
 func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}}
 	oldEpoch := nowUnix() - int64(30*24*3600)
 	input := "1\n/opt/rdm_sql_backups\n7\nmy-backup-bucket\ni-1\n"
 
 	term, le, buf := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
@@ -137,7 +134,7 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 	// bad.sql.gz is missing from the bucket -- verification fails for it
 	s3Client := &fakeS3Client{objects: map[string]int64{"good.sql.gz": 1000}}
 
-	err := BackupArchiveAndTrim(context.Background(), term, le, ec2Client, ssmClient, s3Client, instances)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,15 +168,14 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 }
 
 func TestBackupArchiveAndTrim_SSMUnavailablePropagatesError(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}}
 	input := "1\n/opt/rdm_sql_backups\n7\nmy-backup-bucket\n"
 
 	term, le, _ := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{sendCommandErr: errUnavailable}
 	s3Client := &fakeS3Client{}
 
-	err := BackupArchiveAndTrim(context.Background(), term, le, ec2Client, ssmClient, s3Client, instances)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, instances)
 	if err == nil {
 		t.Fatal("expected an error when SSM is unavailable for the initial listing")
 	}
@@ -187,7 +183,7 @@ func TestBackupArchiveAndTrim_SSMUnavailablePropagatesError(t *testing.T) {
 
 func TestBackupArchiveAndTrim_NoInstances(t *testing.T) {
 	term, le, buf := newPipeEditor(t, "")
-	err := BackupArchiveAndTrim(context.Background(), term, le, &fakeEC2Client{}, &fakeSSMClient{}, &fakeS3Client{}, nil)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}, &fakeS3Client{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,10 +193,10 @@ func TestBackupArchiveAndTrim_NoInstances(t *testing.T) {
 }
 
 func TestBackupArchiveAndTrim_CancelledPickList(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Region: "us-east-1"}}
 	term, le, _ := newPipeEditor(t, "0\n")
 	ssmClient := &fakeSSMClient{}
-	err := BackupArchiveAndTrim(context.Background(), term, le, &fakeEC2Client{}, ssmClient, &fakeS3Client{}, instances)
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeS3Client{}, instances)
 	if err != nil {
 		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
 	}

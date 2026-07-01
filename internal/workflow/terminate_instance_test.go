@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
@@ -30,14 +31,14 @@ func TestTerminateInstance_Failure(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_DeleteOnTerminationWarningShown(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
 	fake := &fakeEC2Client{
 		blockDeviceMappings: []types.InstanceBlockDeviceMapping{
 			{DeviceName: aws.String("/dev/sda1"), Ebs: &types.EbsInstanceBlockDevice{DeleteOnTermination: aws.Bool(true), VolumeId: aws.String("vol-1")}},
 		},
 	}
 	term, le, buf := newPipeEditor(t, "1\ni-1\n") // pick i-1, then type-to-confirm with the instance ID
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,14 +54,14 @@ func TestTerminateEC2Instance_DeleteOnTerminationWarningShown(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_DeleteOnTerminationWarningAbsentWhenFalse(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
 	fake := &fakeEC2Client{
 		blockDeviceMappings: []types.InstanceBlockDeviceMapping{
 			{DeviceName: aws.String("/dev/sda1"), Ebs: &types.EbsInstanceBlockDevice{DeleteOnTermination: aws.Bool(false), VolumeId: aws.String("vol-1")}},
 		},
 	}
 	term, le, buf := newPipeEditor(t, "1\ni-1\n")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,10 +71,10 @@ func TestTerminateEC2Instance_DeleteOnTerminationWarningAbsentWhenFalse(t *testi
 }
 
 func TestTerminateEC2Instance_ProductionWarningShown(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Environment: "production"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Environment: "production", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	term, le, buf := newPipeEditor(t, "1\ni-1\n")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,10 +84,10 @@ func TestTerminateEC2Instance_ProductionWarningShown(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_ProductionWarningAbsentOtherwise(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Environment: "development"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Environment: "development", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	term, le, buf := newPipeEditor(t, "1\ni-1\n")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,10 +97,10 @@ func TestTerminateEC2Instance_ProductionWarningAbsentOtherwise(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_TypeToConfirmAcceptsName(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	term, le, _ := newPipeEditor(t, "1\nweb\n") // type the Name, not the ID
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,10 +110,10 @@ func TestTerminateEC2Instance_TypeToConfirmAcceptsName(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_TypeToConfirmMismatchCancels(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	term, le, _ := newPipeEditor(t, "1\nwrong\n")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,10 +123,10 @@ func TestTerminateEC2Instance_TypeToConfirmMismatchCancels(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_CancelledPickList(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", State: "running", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
 	term, le, _ := newPipeEditor(t, "0\n")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestTerminateEC2Instance_CancelledPickList(t *testing.T) {
 func TestTerminateEC2Instance_NoInstances(t *testing.T) {
 	fake := &fakeEC2Client{}
 	term, le, buf := newPipeEditor(t, "")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, nil)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,10 +148,10 @@ func TestTerminateEC2Instance_NoInstances(t *testing.T) {
 }
 
 func TestTerminateEC2Instance_PropagatesTerminateError(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
 	fake := &fakeEC2Client{terminateInstancesErr: errors.New("boom")}
 	term, le, _ := newPipeEditor(t, "1\ni-1\n")
-	err := TerminateEC2Instance(context.Background(), term, le, fake, instances)
+	err := TerminateEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

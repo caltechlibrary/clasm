@@ -573,11 +573,29 @@ production instance.
 
 ---
 
-## Phase 14 — Main Menu and Integration
+## Phase 14 — Main Menu and Integration (done)
 
 **Effort:** ~4 hours
 **Priority:** High
 **Files:** `cmd/awsops/main.go`, `internal/workflow/menu.go`
+
+Closed an architectural gap Phases 4-13 deliberately deferred here: each
+of the ten orchestrators originally took a single-region `EC2API`/
+`SSMAPI`, but Phase 2 aggregates instances/AMIs across all four regions,
+so the right client isn't known until *after* a resource is picked
+inside the orchestrator. Fixed by changing each orchestrator to take
+per-region client maps and resolve (`internal/workflow/region_clients.go`)
+by the picked resource's `Region` field immediately after the pick --
+touched all ten orchestrator files and their tests, verified
+build/vet/race clean after each one before moving to the next.
+
+`menu.go`'s `MenuActions` struct of `func(ctx) error` closures (bound by
+`main.go` to live clients and a mutable instance/AMI snapshot) lets menu
+dispatch itself be tested with fakes, without driving any workflow's full
+interactive prompt sequence. Ctrl+C between prompts cancels `ctx` via
+`signal.NotifyContext` (every poll loop already selects on `ctx.Done()`);
+Ctrl+C/Ctrl+D *during* an active prompt surfaces as `termlib.ErrInterrupted`/
+`io.EOF` instead, handled the same way in the menu loop.
 
 ### Work Items
 
