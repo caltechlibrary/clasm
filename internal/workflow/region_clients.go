@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
 // Phase 2 aggregates instances and AMIs across all four configured
@@ -13,15 +12,6 @@ import (
 // specific resource. These helpers resolve that client from the picked
 // resource's Region, failing clearly if a region is missing from the
 // caller's client map rather than silently using a nil client.
-
-func findImageByID(images []inventory.Image, imageID string) (inventory.Image, bool) {
-	for _, img := range images {
-		if img.ImageID == imageID {
-			return img, true
-		}
-	}
-	return inventory.Image{}, false
-}
 
 func resolveEC2(clients map[string]awsclient.EC2API, region string) (awsclient.EC2API, error) {
 	client, ok := clients[region]

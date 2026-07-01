@@ -14,13 +14,13 @@ import (
 func TestCreateInstanceFromAMI_HappyPathNoUserData(t *testing.T) {
 	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	input := "1\n" + // pick ami-1
+		"web\n" + // Name
 		"t3.micro\n" + // instance type
 		"my-key\n" + // key pair
 		"sg-1\n" + // security groups
 		"subnet-1\n" + // subnet
 		"\n" + // IAM profile
 		"\n" + // user data (blank -- skip cloud-init check)
-		"web\n" + // Name
 		"caltechauthors\n" + // Project
 		"production\n" + // Environment
 		"y\n" // confirm launch
@@ -47,13 +47,13 @@ func TestCreateInstanceFromAMI_HappyPathNoUserData(t *testing.T) {
 func TestCreateInstanceFromAMI_WithUserDataChecksCloudInit(t *testing.T) {
 	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	input := "1\n" +
+		"web\n" +
 		"t3.micro\n" +
 		"my-key\n" +
 		"sg-1\n" +
 		"subnet-1\n" +
 		"\n" +
 		"#cloud-config\n" + // user data present -> triggers cloud-init check
-		"web\n" +
 		"caltechauthors\n" +
 		"production\n" +
 		"y\n"
@@ -92,13 +92,13 @@ func TestCreateInstanceFromAMI_CancelledPickListReturnsCleanly(t *testing.T) {
 func TestCreateInstanceFromAMI_DeclinedConfirmationDoesNotLaunch(t *testing.T) {
 	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	input := "1\n" +
+		"web\n" +
 		"t3.micro\n" +
 		"my-key\n" +
 		"sg-1\n" +
 		"subnet-1\n" +
 		"\n" +
 		"\n" +
-		"web\n" +
 		"caltechauthors\n" +
 		"production\n" +
 		"n\n" // decline

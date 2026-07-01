@@ -1,11 +1,13 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/rsdoiel/termlib"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 	"github.com/caltechlibrary/awstools/internal/ui"
 )
@@ -33,50 +35,66 @@ type LaunchInstanceParams struct {
 // collect_instance_params(). Project defaults to the source AMI's
 // Project tag if set; Environment is always an explicit, validated
 // prompt with no default (see DECISIONS.md, "Introduce a light
-// Project/Environment tagging convention").
-func CollectLaunchInstanceParams(t *termlib.Terminal, le *termlib.LineEditor, images []inventory.Image) (LaunchInstanceParams, error) {
+// Project/Environment tagging convention"). Name tag is prompted right
+// after the AMI pick, before any technical configuration, per user
+// feedback during real-AWS testing. Security group IDs and subnet ID
+// are each offered as a pick list fetched from the AMI's region
+// (DESIGN.md, Feature 2: "list available security groups"/"subnets");
+// key pair name stays a free-text prompt -- unlike opaque sg-xxxx/
+// subnet-xxxx IDs, key pair names are already human-readable, and a
+// flat list of every key pair in the account added noise without
+// helping. Resolving the region-specific client here, right after the
+// AMI is picked, is why this takes ctx and the per-region client maps
+// and returns the resolved clients alongside params, instead of just
+// the AMI's picked Region.
+func CollectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
 	image, err := ui.PickList(t, le, images, imageLabel, "Select an AMI")
 	if err != nil {
-		return LaunchInstanceParams{}, err
+		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := ui.Prompt(t, le, "Instance type", ui.WithDefault("t3.micro"))
+	ec2Client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, image.Region)
 	if err != nil {
-		return LaunchInstanceParams{}, err
-	}
-
-	keyName, err := ui.Prompt(t, le, "Key pair name", ui.WithValidator(requireNonEmpty))
-	if err != nil {
-		return LaunchInstanceParams{}, err
-	}
-
-	securityGroupsRaw, err := ui.Prompt(t, le, "Security group IDs (comma-separated)", ui.WithValidator(requireAtLeastOneSecurityGroup))
-	if err != nil {
-		return LaunchInstanceParams{}, err
-	}
-
-	subnetID, err := ui.Prompt(t, le, "Subnet ID", ui.WithValidator(requireNonEmpty))
-	if err != nil {
-		return LaunchInstanceParams{}, err
-	}
-
-	iamProfile, err := ui.Prompt(t, le, "IAM instance profile (optional)")
-	if err != nil {
-		return LaunchInstanceParams{}, err
-	}
-
-	userDataInput, err := ui.Prompt(t, le, "User data (inline text, @file path, or blank)")
-	if err != nil {
-		return LaunchInstanceParams{}, err
-	}
-	userData, err := loadUserData(userDataInput)
-	if err != nil {
-		return LaunchInstanceParams{}, err
+		return LaunchInstanceParams{}, nil, nil, err
 	}
 
 	name, err := ui.Prompt(t, le, "Name tag", ui.WithValidator(requireNonEmpty))
 	if err != nil {
-		return LaunchInstanceParams{}, err
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	instanceType, err := ui.Prompt(t, le, "Instance type", ui.WithDefault("t3.micro"))
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	keyName, err := ui.Prompt(t, le, "Key pair name", ui.WithValidator(requireNonEmpty))
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	securityGroupIDs, err := promptSecurityGroupIDs(ctx, t, le, ec2Client)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	subnetID, err := promptSubnetID(ctx, t, le, ec2Client)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	iamProfile, err := ui.Prompt(t, le, "IAM instance profile (optional)")
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	userDataInput, err := ui.Prompt(t, le, "User data (inline text, @file path, or blank)")
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+	userData, err := loadUserData(userDataInput)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
 	}
 
 	var projectOpts []ui.PromptOption
@@ -85,19 +103,19 @@ func CollectLaunchInstanceParams(t *termlib.Terminal, le *termlib.LineEditor, im
 	}
 	project, err := ui.Prompt(t, le, "Project tag", projectOpts...)
 	if err != nil {
-		return LaunchInstanceParams{}, err
+		return LaunchInstanceParams{}, nil, nil, err
 	}
 
 	environment, err := ui.Prompt(t, le, "Environment tag (production, development, or test)", ui.WithValidator(validateEnvironment))
 	if err != nil {
-		return LaunchInstanceParams{}, err
+		return LaunchInstanceParams{}, nil, nil, err
 	}
 
 	return LaunchInstanceParams{
 		ImageID:            image.ImageID,
 		InstanceType:       instanceType,
 		KeyName:            keyName,
-		SecurityGroupIDs:   splitCSV(securityGroupsRaw),
+		SecurityGroupIDs:   securityGroupIDs,
 		SubnetID:           subnetID,
 		IAMInstanceProfile: iamProfile,
 		UserData:           userData,
@@ -106,7 +124,7 @@ func CollectLaunchInstanceParams(t *termlib.Terminal, le *termlib.LineEditor, im
 			"Project":     project,
 			"Environment": environment,
 		},
-	}, nil
+	}, ec2Client, ssmClient, nil
 }
 
 func imageLabel(img inventory.Image) string {

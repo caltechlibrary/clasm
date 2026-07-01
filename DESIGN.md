@@ -88,7 +88,8 @@ Interactive workflow:
 2. User selects an AMI
 3. Prompt for required parameters:
    - Instance type (with sensible default suggestion)
-   - Key pair name (list available key pairs)
+   - Key pair name (free text — key pair names are already human-readable,
+     unlike security group/subnet IDs, so a pick list mostly adds noise)
    - Security group IDs (list available security groups)
    - Subnet ID (list available subnets)
    - IAM instance profile (optional)

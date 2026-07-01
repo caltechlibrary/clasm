@@ -33,12 +33,12 @@ interfaces) before the implementation it covers.
 
 ### Tasks
 
-- [ ] `go mod init` for the module (name TBD — matches repo import path)
-- [ ] Add `github.com/aws/aws-sdk-go-v2` and its `ec2`, `ssm`, `s3`, `sts`
+- [x] `go mod init` for the module (name TBD — matches repo import path)
+- [x] Add `github.com/aws/aws-sdk-go-v2` and its `ec2`, `ssm`, `s3`, `sts`
       submodules, plus the config module for credential resolution
-- [ ] Create `cmd/awsops/main.go` stub (prints version, exits)
-- [ ] Create `internal/{awsclient,inventory,ui,workflow}` package skeletons
-- [ ] Confirm `go build ./...` and `go vet ./...` are clean on the empty
+- [x] Create `cmd/awsops/main.go` stub (prints version, exits)
+- [x] Create `internal/{awsclient,inventory,ui,workflow}` package skeletons
+- [x] Confirm `go build ./...` and `go vet ./...` are clean on the empty
       skeleton
 
 ---

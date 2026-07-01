@@ -65,6 +65,34 @@ type fakeEC2Client struct {
 	userDataValue               string // returned by DescribeInstanceAttribute; empty means "not set"
 	describeInstanceAttrErr     error
 	terminateInstancesCallCount int
+
+	keyPairs                  []types.KeyPairInfo
+	describeKeyPairsErr       error
+	securityGroups            []types.SecurityGroup
+	describeSecurityGroupsErr error
+	subnets                   []types.Subnet
+	describeSubnetsErr        error
+}
+
+func (f *fakeEC2Client) DescribeKeyPairs(ctx context.Context, params *ec2.DescribeKeyPairsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error) {
+	if f.describeKeyPairsErr != nil {
+		return nil, f.describeKeyPairsErr
+	}
+	return &ec2.DescribeKeyPairsOutput{KeyPairs: f.keyPairs}, nil
+}
+
+func (f *fakeEC2Client) DescribeSecurityGroups(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+	if f.describeSecurityGroupsErr != nil {
+		return nil, f.describeSecurityGroupsErr
+	}
+	return &ec2.DescribeSecurityGroupsOutput{SecurityGroups: f.securityGroups}, nil
+}
+
+func (f *fakeEC2Client) DescribeSubnets(ctx context.Context, params *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if f.describeSubnetsErr != nil {
+		return nil, f.describeSubnetsErr
+	}
+	return &ec2.DescribeSubnetsOutput{Subnets: f.subnets}, nil
 }
 
 func (f *fakeEC2Client) DeregisterImage(ctx context.Context, params *ec2.DeregisterImageInput, optFns ...func(*ec2.Options)) (*ec2.DeregisterImageOutput, error) {

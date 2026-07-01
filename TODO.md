@@ -1,6 +1,11 @@
 
 # Action items
 
+## Nice to have
+
+- [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
+- [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
+
 ## Next (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
 
 - [ ] Review the retargeted DESIGN.md/DECISIONS.md/PLAN.md and agree on the

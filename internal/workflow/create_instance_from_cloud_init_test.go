@@ -15,12 +15,12 @@ func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
 	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	input := "#cloud-config\n" + // cloud-init YAML, first
 		"1\n" + // pick ami-1
+		"web\n" +
 		"t3.micro\n" +
 		"my-key\n" +
 		"sg-1\n" +
 		"subnet-1\n" +
 		"\n" +
-		"web\n" +
 		"caltechauthors\n" +
 		"production\n" +
 		"y\n" // confirm launch
@@ -48,12 +48,12 @@ func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testin
 	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
 	input := "#cloud-config\n" +
 		"1\n" +
+		"web\n" +
 		"t3.micro\n" +
 		"my-key\n" +
 		"sg-1\n" +
 		"subnet-1\n" +
 		"\n" +
-		"web\n" +
 		"caltechauthors\n" +
 		"production\n" +
 		"n\n" // decline

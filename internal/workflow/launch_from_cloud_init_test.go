@@ -1,11 +1,13 @@
 package workflow
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/caltechlibrary/awstools/internal/awsclient"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 )
 
@@ -17,18 +19,20 @@ func TestCollectLaunchInstanceParamsFromCloudInit_PromptsCloudInitBeforeAMI(t *t
 
 	input := "#cloud-config\n" + // cloud-init YAML (inline, single-line), first
 		"2\n" + // pick ami-2, second
+		"newauthors\n" + // Name tag
 		"t3.large\n" + // instance type
 		"my-keypair\n" + // key pair
 		"sg-1\n" + // security groups
 		"subnet-abc\n" + // subnet
 		"\n" + // IAM profile (blank)
-		"newauthors\n" + // Name tag
 		"\n" + // Project tag (blank -> default from ami-2)
 		"development\n" // Environment tag
 
 	term, le, buf := newPipeEditor(t, input)
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, err := CollectLaunchInstanceParamsFromCloudInit(term, le, images)
+	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,18 +66,20 @@ func TestCollectLaunchInstanceParamsFromCloudInit_RequiresNonEmptyCloudInit(t *t
 	input := "\n" + // blank -- rejected
 		"#cloud-config\n" + // retry, accepted
 		"1\n" + // pick ami-1
+		"web\n" +
 		"t3.micro\n" +
 		"my-key\n" +
 		"sg-1\n" +
 		"subnet-1\n" +
 		"\n" +
-		"web\n" +
 		"caltechdata\n" +
 		"test\n"
 
 	term, le, buf := newPipeEditor(t, input)
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, err := CollectLaunchInstanceParamsFromCloudInit(term, le, images)
+	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,17 +102,20 @@ func TestCollectLaunchInstanceParamsFromCloudInit_LoadsFromFile(t *testing.T) {
 	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
 	input := "@" + path + "\n" +
 		"1\n" +
+		"web\n" +
 		"t3.micro\n" +
 		"my-key\n" +
 		"sg-1\n" +
 		"subnet-1\n" +
 		"\n" +
-		"web\n" +
 		"caltechdata\n" +
 		"test\n"
 
 	term, le, _ := newPipeEditor(t, input)
-	got, err := CollectLaunchInstanceParamsFromCloudInit(term, le, images)
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
+
+	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
