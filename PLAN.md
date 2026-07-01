@@ -145,11 +145,26 @@ tests, and is not skipped here.
 
 ---
 
-## Phase 4 — Create EC2 Instance from AMI
+## Phase 4 — Create EC2 Instance from AMI (done)
 
 **Effort:** ~6 hours
 **Priority:** High
-**Files:** `internal/workflow/launch_instance.go`
+**Files:** `internal/workflow/{launch_instance,launch_execute,cloud_init_check,confirm,ssm,userdata}.go`
+
+Implemented as several smaller files rather than one, each independently
+tested: `confirm.go` (the reusable yes/no gate — see below), `ssm.go`
+(`WaitForSSMOnline`/`RunShellCommand`, generic building blocks reused by
+Phases 10/12/13), `userdata.go` (`@file` vs. inline text), `cloud_init_check.go`
+(the launch-time completion check), `launch_instance.go` (params struct +
+interactive collection), `launch_execute.go` (`Launch`/`WaitUntilRunning`),
+and `create_instance_from_ami.go` (the orchestrator PLAN.md originally
+called out as this phase's one file).
+
+`Confirm(t, le, question) (bool, error)` is the first instance of the
+"reusable confirmation/dry-run gate" `DECISIONS.md`'s "Structure
+workflows for future record/replay" calls for — a simple yes/no tier for
+reversible actions. Phase 8/11/13's heavier dry-run + type-to-confirm
+tier is a separate function, added when those phases need it.
 
 ### Work Items
 
