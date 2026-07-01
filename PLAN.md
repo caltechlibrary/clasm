@@ -289,11 +289,17 @@ transition; poll timeout path; confirmation decline (no API call made)
 
 ---
 
-## Phase 8 — Terminate EC2 Instance
+## Phase 8 — Terminate EC2 Instance (done)
 
 **Effort:** ~6 hours
 **Priority:** High
-**Files:** `internal/workflow/power_state.go`
+**Files:** `internal/workflow/terminate_instance.go`; added `ConfirmDestructive`
+to `confirm.go` -- the heavier type-to-confirm gate `DECISIONS.md`'s
+"Structure workflows for future record/replay" anticipated. Single-shot
+(no retry loop on mismatch), matching `ec2_ami_manager.bash`'s
+`type_to_confirm`; accepts either the instance ID or Name (DESIGN.md says
+"ID or name," though the Bash version's actual `remove_ami` call site
+only ever passed the ID -- Go version honors the doc's stated intent).
 
 ### Work Items
 

@@ -33,6 +33,19 @@ type fakeEC2Client struct {
 
 	lastStopInstancesInput *ec2.StopInstancesInput
 	stopInstancesErr       error
+
+	lastTerminateInstancesInput *ec2.TerminateInstancesInput
+	terminateInstancesErr       error
+
+	blockDeviceMappings []types.InstanceBlockDeviceMapping // returned by DescribeInstances, for dry-run tests
+}
+
+func (f *fakeEC2Client) TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+	f.lastTerminateInstancesInput = params
+	if f.terminateInstancesErr != nil {
+		return nil, f.terminateInstancesErr
+	}
+	return &ec2.TerminateInstancesOutput{}, nil
 }
 
 func (f *fakeEC2Client) StartInstances(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
@@ -72,8 +85,9 @@ func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		state = types.InstanceStateNameStopped
 	}
 	inst := types.Instance{
-		InstanceId: aws.String(params.InstanceIds[0]),
-		State:      &types.InstanceState{Name: state},
+		InstanceId:          aws.String(params.InstanceIds[0]),
+		State:               &types.InstanceState{Name: state},
+		BlockDeviceMappings: f.blockDeviceMappings,
 	}
 	if state == types.InstanceStateNameRunning && f.publicIP != "" {
 		inst.PublicIpAddress = aws.String(f.publicIP)

@@ -62,3 +62,47 @@ func TestConfirm_ReprocessesInvalidInput(t *testing.T) {
 		t.Errorf("expected a re-prompt hint in output, got:\n%s", buf.String())
 	}
 }
+
+func TestConfirmDestructive_ExactMatch(t *testing.T) {
+	term, le, _ := newPipeEditor(t, "i-abc123\n")
+	ok, err := ConfirmDestructive(term, le, "i-abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("got false, want true for an exact match")
+	}
+}
+
+func TestConfirmDestructive_MatchesAnyAcceptedValue(t *testing.T) {
+	term, le, _ := newPipeEditor(t, "web-server\n")
+	ok, err := ConfirmDestructive(term, le, "i-abc123", "web-server")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("got false, want true when input matches the second accepted value")
+	}
+}
+
+func TestConfirmDestructive_MismatchCancelsWithoutRetry(t *testing.T) {
+	term, le, _ := newPipeEditor(t, "typo\n")
+	ok, err := ConfirmDestructive(term, le, "i-abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("got true, want false for a mismatched input")
+	}
+}
+
+func TestConfirmDestructive_IgnoresEmptyAcceptedValues(t *testing.T) {
+	term, le, _ := newPipeEditor(t, "\n") // blank input
+	ok, err := ConfirmDestructive(term, le, "i-abc123", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("got true, want false -- blank input must not match an untagged (empty) accepted value")
+	}
+}
