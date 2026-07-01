@@ -33,7 +33,9 @@ func VerifyUploads(ctx context.Context, client awsclient.S3API, bucket string, u
 			verified = append(verified, VerifiedFile{Key: u.Key, SizeBytes: u.SizeBytes, Verified: false})
 			continue
 		}
-		out, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(u.Key)})
+		headCtx, cancel := withCallTimeout(ctx)
+		out, err := client.HeadObject(headCtx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(u.Key)})
+		cancel()
 		ok := err == nil && out.ContentLength != nil && *out.ContentLength == u.SizeBytes
 		verified = append(verified, VerifiedFile{Key: u.Key, SizeBytes: u.SizeBytes, Verified: ok})
 	}

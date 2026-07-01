@@ -17,6 +17,8 @@ import (
 // read-only. set is false (not an error) if no user-data was set at
 // launch (see DESIGN.md, Feature 10).
 func ShowCloudInitFromInstance(ctx context.Context, client awsclient.EC2API, instanceID string) (userData string, set bool, err error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.DescribeInstanceAttribute(ctx, &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(instanceID),
 		Attribute:  types.InstanceAttributeNameUserData,

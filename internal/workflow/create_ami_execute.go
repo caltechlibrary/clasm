@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -10,6 +12,18 @@ import (
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
 )
+
+// amiNamePattern matches CreateImageInput's Name constraint: 3-128
+// alphanumeric characters, parentheses, square brackets, spaces,
+// periods, slashes, dashes, single quotes, at-signs, or underscores.
+var amiNamePattern = regexp.MustCompile(`^[A-Za-z0-9()\[\]. /'@_-]{3,128}$`)
+
+func validateAMIName(s string) error {
+	if !amiNamePattern.MatchString(s) {
+		return fmt.Errorf("must be 3-128 characters: letters, numbers, and ()[]. /'@_- only")
+	}
+	return nil
+}
 
 // DefaultAMIPollInterval is the production poll interval for
 // WaitForAMIAvailable's unbounded poll.
@@ -48,6 +62,8 @@ func CreateAMI(ctx context.Context, client awsclient.EC2API, params CreateAMIPar
 		input.Description = aws.String(params.Description)
 	}
 
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.CreateImage(ctx, input)
 	if err != nil {
 		return "", err

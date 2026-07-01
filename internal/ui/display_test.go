@@ -14,7 +14,7 @@ func TestDisplayInstances_Empty(t *testing.T) {
 	var buf bytes.Buffer
 	term := termlib.New(&buf)
 
-	DisplayInstances(term, nil)
+	DisplayInstances(term, nil, false)
 
 	if !strings.Contains(buf.String(), "No EC2 instances found.") {
 		t.Errorf("output = %q, want it to mention no instances found", buf.String())
@@ -30,7 +30,7 @@ func TestDisplayInstances_Populated(t *testing.T) {
 		{InstanceID: "i-067890", Name: "db-server", State: "stopped", ImageID: "ami-def456", Region: "us-west-2"},
 	}
 
-	DisplayInstances(term, instances)
+	DisplayInstances(term, instances, false)
 	out := buf.String()
 
 	for _, want := range []string{"i-012345", "web-server", "running", "ami-abc123", "us-east-1", "caltechauthors", "production"} {
@@ -41,6 +41,31 @@ func TestDisplayInstances_Populated(t *testing.T) {
 	// untagged Project/Environment render as "unknown"
 	if !strings.Contains(out, "db-server") || !strings.Contains(out, "unknown") {
 		t.Errorf("output missing untagged instance's %q rendering:\n%s", "unknown", out)
+	}
+}
+
+func TestDisplayInstances_ColorEnabled_AppliesStateColor(t *testing.T) {
+	var buf bytes.Buffer
+	term := termlib.New(&buf)
+
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	DisplayInstances(term, instances, true)
+
+	out := buf.String()
+	if !strings.Contains(out, termlib.Green) || !strings.Contains(out, termlib.Reset) {
+		t.Errorf("expected a green/reset ANSI wrap around the running state, got:\n%q", out)
+	}
+}
+
+func TestDisplayInstances_ColorDisabled_NoANSICodes(t *testing.T) {
+	var buf bytes.Buffer
+	term := termlib.New(&buf)
+
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
+	DisplayInstances(term, instances, false)
+
+	if strings.Contains(buf.String(), "\033[") {
+		t.Errorf("expected no ANSI escape codes with color disabled, got:\n%q", buf.String())
 	}
 }
 

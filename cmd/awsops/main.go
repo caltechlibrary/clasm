@@ -107,6 +107,8 @@ func main() {
 	term.Printf("awsops %s -- authenticated as AWS account %s\n", version, account)
 	term.Refresh()
 
+	colorEnabled := ui.ColorEnabled()
+
 	var state struct {
 		instances []inventory.Instance
 		images    []inventory.Image
@@ -121,7 +123,7 @@ func main() {
 			return fmt.Errorf("listing AMIs: %w", err)
 		}
 		state.instances, state.images = instances, images
-		ui.DisplayInstances(term, state.instances)
+		ui.DisplayInstances(term, state.instances, colorEnabled)
 		ui.DisplayImages(term, state.images)
 		return nil
 	}

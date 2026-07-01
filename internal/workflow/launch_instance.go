@@ -45,17 +45,17 @@ func CollectLaunchInstanceParams(t *termlib.Terminal, le *termlib.LineEditor, im
 		return LaunchInstanceParams{}, err
 	}
 
-	keyName, err := ui.Prompt(t, le, "Key pair name")
+	keyName, err := ui.Prompt(t, le, "Key pair name", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
 
-	securityGroupsRaw, err := ui.Prompt(t, le, "Security group IDs (comma-separated)")
+	securityGroupsRaw, err := ui.Prompt(t, le, "Security group IDs (comma-separated)", ui.WithValidator(requireAtLeastOneSecurityGroup))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
 
-	subnetID, err := ui.Prompt(t, le, "Subnet ID")
+	subnetID, err := ui.Prompt(t, le, "Subnet ID", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
@@ -74,7 +74,7 @@ func CollectLaunchInstanceParams(t *termlib.Terminal, le *termlib.LineEditor, im
 		return LaunchInstanceParams{}, err
 	}
 
-	name, err := ui.Prompt(t, le, "Name tag")
+	name, err := ui.Prompt(t, le, "Name tag", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
@@ -122,6 +122,13 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func requireAtLeastOneSecurityGroup(s string) error {
+	if len(splitCSV(s)) == 0 {
+		return fmt.Errorf("at least one security group ID is required")
+	}
+	return nil
 }
 
 // validateEnvironment enforces the Project/Environment tagging

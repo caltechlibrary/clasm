@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/rsdoiel/termlib"
 
@@ -73,7 +74,9 @@ func ShowCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdi
 			t.Refresh()
 			return nil
 		}
+		stopTicker := startProgressTicker(t, 30*time.Second, "extracting cloud-init from a temporary instance")
 		data, err := ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
+		stopTicker()
 		if err != nil {
 			return err
 		}

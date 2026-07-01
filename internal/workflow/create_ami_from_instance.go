@@ -32,7 +32,7 @@ func CollectCreateAMIParams(t *termlib.Terminal, le *termlib.LineEditor, inst in
 		nameOrID = inst.InstanceID
 	}
 
-	name, err := ui.Prompt(t, le, "AMI name", ui.WithDefault(defaultAMIName(nameOrID, now)))
+	name, err := ui.Prompt(t, le, "AMI name", ui.WithDefault(defaultAMIName(nameOrID, now)), ui.WithValidator(validateAMIName))
 	if err != nil {
 		return CreateAMIParams{}, err
 	}
@@ -142,7 +142,9 @@ func CreateAMIFromInstance(ctx context.Context, t *termlib.Terminal, le *termlib
 	t.Refresh()
 
 	start := time.Now()
+	stopTicker := startProgressTicker(t, 30*time.Second, "waiting for AMI to become available")
 	state, err := WaitForAMIAvailable(ctx, client, imageID, DefaultAMIPollInterval)
+	stopTicker()
 	if err != nil {
 		return err
 	}

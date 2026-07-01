@@ -64,6 +64,8 @@ func Launch(ctx context.Context, client awsclient.EC2API, params LaunchInstanceP
 		input.IamInstanceProfile = &types.IamInstanceProfileSpecification{Name: aws.String(params.IAMInstanceProfile)}
 	}
 
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.RunInstances(ctx, input)
 	if err != nil {
 		return "", err

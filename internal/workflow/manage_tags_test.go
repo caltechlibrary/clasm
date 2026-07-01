@@ -199,3 +199,21 @@ func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
 		t.Errorf("expected a no-existing-tags message, got:\n%s", buf.String())
 	}
 }
+
+func TestManageTags_RejectsBlankTagKeyOnAdd(t *testing.T) {
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
+	fake := &fakeEC2Client{}
+	input := "1\n1\n1\n\nOwner\ndld\ny\n" // Instance, i-1, Add, blank key (rejected), retry key, value, confirm
+	term, le, buf := newPipeEditor(t, input)
+
+	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastCreateTagsInput == nil || aws.ToString(fake.lastCreateTagsInput.Tags[0].Key) != "Owner" {
+		t.Errorf("CreateTags called with %+v, want Key=Owner", fake.lastCreateTagsInput)
+	}
+	if !strings.Contains(buf.String(), "invalid input") {
+		t.Errorf("expected a validation error message for the blank key, got:\n%s", buf.String())
+	}
+}

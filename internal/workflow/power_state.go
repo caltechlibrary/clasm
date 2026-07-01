@@ -17,6 +17,8 @@ import (
 
 // StartInstance calls ec2:StartInstances for a single instance.
 func StartInstance(ctx context.Context, client awsclient.EC2API, instanceID string) error {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	_, err := client.StartInstances(ctx, &ec2.StartInstancesInput{InstanceIds: []string{instanceID}})
 	return err
 }
@@ -80,6 +82,8 @@ func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.Line
 
 // StopInstance calls ec2:StopInstances for a single instance.
 func StopInstance(ctx context.Context, client awsclient.EC2API, instanceID string) error {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	_, err := client.StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{instanceID}})
 	return err
 }

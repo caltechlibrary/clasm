@@ -36,6 +36,8 @@ func launchDisposableInstance(ctx context.Context, client awsclient.EC2API, imag
 			"Purpose": "cloud-init-extraction",
 		})},
 	}
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.RunInstances(ctx, input)
 	if err != nil {
 		return "", err

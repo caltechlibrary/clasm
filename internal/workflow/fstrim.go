@@ -17,6 +17,8 @@ import (
 // (the instance here has presumably been running for a while, so
 // polling for a transition doesn't apply).
 func isSSMOnline(ctx context.Context, client awsclient.SSMAPI, instanceID string) (bool, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.DescribeInstanceInformation(ctx, &ssm.DescribeInstanceInformationInput{
 		Filters: []types.InstanceInformationStringFilter{
 			{Key: aws.String("InstanceIds"), Values: []string{instanceID}},

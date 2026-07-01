@@ -38,17 +38,17 @@ func CollectLaunchInstanceParamsFromCloudInit(t *termlib.Terminal, le *termlib.L
 		return LaunchInstanceParams{}, err
 	}
 
-	keyName, err := ui.Prompt(t, le, "Key pair name")
+	keyName, err := ui.Prompt(t, le, "Key pair name", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
 
-	securityGroupsRaw, err := ui.Prompt(t, le, "Security group IDs (comma-separated)")
+	securityGroupsRaw, err := ui.Prompt(t, le, "Security group IDs (comma-separated)", ui.WithValidator(requireAtLeastOneSecurityGroup))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
 
-	subnetID, err := ui.Prompt(t, le, "Subnet ID")
+	subnetID, err := ui.Prompt(t, le, "Subnet ID", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}
@@ -58,7 +58,7 @@ func CollectLaunchInstanceParamsFromCloudInit(t *termlib.Terminal, le *termlib.L
 		return LaunchInstanceParams{}, err
 	}
 
-	name, err := ui.Prompt(t, le, "Name tag")
+	name, err := ui.Prompt(t, le, "Name tag", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, err
 	}

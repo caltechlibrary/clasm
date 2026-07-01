@@ -101,11 +101,16 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 		return nil
 	}
 
+	stopUploadTicker := startProgressTicker(t, 30*time.Second, "uploading backup files to S3")
 	uploads, err := UploadBackupFiles(ctx, ssmClient, params.InstanceID, candidates, params.Bucket, DefaultBackupUploadTimeout, DefaultSSMPollInterval)
+	stopUploadTicker()
 	if err != nil {
 		return err
 	}
+
+	stopVerifyTicker := startProgressTicker(t, 30*time.Second, "verifying uploads via s3:HeadObject")
 	verified := VerifyUploads(ctx, s3Client, params.Bucket, uploads)
+	stopVerifyTicker()
 
 	pathByKey := make(map[string]string, len(candidates))
 	for _, f := range candidates {

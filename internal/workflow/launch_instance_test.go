@@ -92,3 +92,35 @@ func TestCollectLaunchInstanceParams_RejectsInvalidEnvironment(t *testing.T) {
 		t.Errorf("expected a validation error message in output, got:\n%s", buf.String())
 	}
 }
+
+func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
+	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
+
+	input := "1\n" + // pick ami-1
+		"t3.micro\n" + // instance type
+		"\n" + // Key pair name (blank -- rejected)
+		"my-keypair\n" + // Key pair name (retry, valid)
+		"\n" + // Security groups (blank -- rejected)
+		"sg-1\n" + // Security groups (retry, valid)
+		"\n" + // Subnet ID (blank -- rejected)
+		"subnet-abc\n" + // Subnet ID (retry, valid)
+		"\n" + // IAM profile (optional, blank is fine)
+		"\n" + // user data (optional, blank is fine)
+		"\n" + // Name tag (blank -- rejected)
+		"web\n" + // Name tag (retry, valid)
+		"caltechdata\n" + // Project tag
+		"test\n" // Environment tag
+
+	term, le, buf := newPipeEditor(t, input)
+
+	got, err := CollectLaunchInstanceParams(term, le, images)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.KeyName != "my-keypair" || len(got.SecurityGroupIDs) != 1 || got.SubnetID != "subnet-abc" || got.Tags["Name"] != "web" {
+		t.Errorf("got %+v, want all required fields filled after retry", got)
+	}
+	if !strings.Contains(buf.String(), "invalid input") {
+		t.Errorf("expected validation error messages in output, got:\n%s", buf.String())
+	}
+}

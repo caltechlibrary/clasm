@@ -81,3 +81,65 @@ func TestPickList_NoItems(t *testing.T) {
 func contains(haystack, needle string) bool {
 	return bytes.Contains([]byte(haystack), []byte(needle))
 }
+
+func manyItems(n int) []string {
+	items := make([]string, n)
+	for i := range items {
+		items[i] = "item-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	return items
+}
+
+func TestPickList_PaginatesLargeLists(t *testing.T) {
+	items := manyItems(75) // > the 50-item page size
+	term, le, buf := newPipeEditor(t, "n\n60\n")
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != items[59] {
+		t.Errorf("got %q, want %q", got, items[59])
+	}
+	if !contains(buf.String(), "Page 1/2") {
+		t.Errorf("expected a page indicator in output, got:\n%s", buf.String())
+	}
+}
+
+func TestPickList_PageBackNavigation(t *testing.T) {
+	items := manyItems(75)
+	term, le, _ := newPipeEditor(t, "n\np\n1\n") // page 2, back to page 1, pick item 1
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != items[0] {
+		t.Errorf("got %q, want %q", got, items[0])
+	}
+}
+
+func TestPickList_NoPageIndicatorForSmallLists(t *testing.T) {
+	term, le, buf := newPipeEditor(t, "1\n")
+	items := []string{"alpha", "beta"}
+
+	if _, err := PickList(term, le, items, func(s string) string { return s }, "Select an item"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if contains(buf.String(), "Page ") {
+		t.Errorf("did not expect a page indicator for a list under the page size, got:\n%s", buf.String())
+	}
+}
+
+func TestPickList_SelectionAcrossPagesUsesGlobalNumbering(t *testing.T) {
+	items := manyItems(75)
+	term, le, _ := newPipeEditor(t, "1\n") // page 1, item 1 -- no "n" needed
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != items[0] {
+		t.Errorf("got %q, want %q", got, items[0])
+	}
+}

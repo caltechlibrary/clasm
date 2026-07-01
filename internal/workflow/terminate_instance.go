@@ -26,6 +26,8 @@ type TerminateInstanceParams struct {
 
 // TerminateInstance calls ec2:TerminateInstances for a single instance.
 func TerminateInstance(ctx context.Context, client awsclient.EC2API, instanceID string) error {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	_, err := client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{instanceID}})
 	return err
 }
@@ -83,7 +85,9 @@ func TerminateEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.
 // for the dry-run display, shows an Environment=production warning if
 // applicable, then runs the type-to-confirm gate.
 func confirmTerminate(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, params TerminateInstanceParams, inst inventory.Instance) (bool, error) {
-	out, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{params.InstanceID}})
+	describeCtx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeInstances(describeCtx, &ec2.DescribeInstancesInput{InstanceIds: []string{params.InstanceID}})
 	if err != nil {
 		return false, err
 	}

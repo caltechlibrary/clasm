@@ -613,22 +613,39 @@ operation; clean exit; signal handling
 
 ---
 
-## Phase 15 — Polish and Error Handling
+## Phase 15 — Polish and Error Handling (done)
 
 **Effort:** ~4 hours
 **Priority:** Medium
 
 ### Work Items
 
-- [ ] Loading indicators for long operations (AMI creation polling,
-      cloud-init AMI extraction, backup archive upload/verify)
-- [ ] Color output for state (running=green, stopped/failed=red, etc.),
-      with a `NO_COLOR`/non-TTY fallback
-- [ ] Actionable error messages (unwrap AWS SDK errors to their API error
-      code, not just the raw Go error string)
-- [ ] Input validation for all prompts
-- [ ] Context-based timeouts for AWS calls (`context.WithTimeout`)
-- [ ] Pagination for large lists (>50 items)
+- [x] Loading indicators for long operations (AMI creation polling,
+      cloud-init AMI extraction, backup archive upload/verify) --
+      `progress_ticker.go`'s `startProgressTicker`, a goroutine-backed
+      periodic status line whose `stop()` blocks until the goroutine has
+      fully exited (no race with the caller's next write)
+- [x] Color output for state (running=green, stopped/failed=red, etc.),
+      with a `NO_COLOR`/non-TTY fallback -- `ui.ColorEnabled()` (checked
+      once at startup in `main.go`) + `DisplayInstances`'s new
+      `colorEnabled` parameter; `DisplayImages` needed no change since
+      AMIs carry no varying state after Phase 2's `available`-only filter
+- [x] Actionable error messages (unwrap AWS SDK errors to their API error
+      code, not just the raw Go error string) -- `formatError`, wired into
+      `menu.go`'s two error-display sites
+- [x] Input validation for all prompts -- audited every prompt; added
+      validators for previously-unvalidated required fields (KeyName,
+      SecurityGroupIDs-at-least-one, SubnetID, Name tag in both launch
+      flows; the AMI name's AWS character/length constraint; a non-empty
+      tag key on Manage Tags' Add action)
+- [x] Context-based timeouts for AWS calls (`context.WithTimeout`) --
+      `call_timeout.go`'s `withCallTimeout` (30s), applied to every
+      one-shot (non-polling) AWS call across ~13 call sites; polling
+      functions already bound themselves via their own timeout parameter
+- [x] Pagination for large lists (>50 items) -- rewrote `ui.PickList` to
+      paginate (`'n'`/`'p'` navigation) once `len(items)` exceeds the
+      50-item page size; selection numbers stay global across pages so a
+      page boundary never changes what number picks a given item
 
 **Dependency:** Phase 14
 

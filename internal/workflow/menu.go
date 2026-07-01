@@ -94,13 +94,13 @@ func RunMainMenu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdito
 				printExiting(t)
 				return nil
 			}
-			t.Printf("Error: %v\n", err)
+			t.Printf("Error: %s\n", formatError(err))
 			t.Refresh()
 			continue
 		}
 
 		if err := actions.Refresh(ctx); err != nil {
-			t.Printf("Error refreshing listings: %v\n", err)
+			t.Printf("Error refreshing listings: %s\n", formatError(err))
 			t.Refresh()
 		}
 	}

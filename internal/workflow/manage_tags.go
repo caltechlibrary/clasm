@@ -33,6 +33,8 @@ type TagChangeParams struct {
 // touches an AMI's Name *attribute*, which is immutable once set at
 // CreateImage time -- only tags.
 func ApplyTagChange(ctx context.Context, client awsclient.EC2API, params TagChangeParams) error {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	if params.Action == "remove" {
 		_, err := client.DeleteTags(ctx, &ec2.DeleteTagsInput{
 			Resources: []string{params.ResourceID},
@@ -48,6 +50,8 @@ func ApplyTagChange(ctx context.Context, client awsclient.EC2API, params TagChan
 }
 
 func fetchInstanceTags(ctx context.Context, client awsclient.EC2API, instanceID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceID}})
 	if err != nil {
 		return nil, err
@@ -60,6 +64,8 @@ func fetchInstanceTags(ctx context.Context, client awsclient.EC2API, instanceID 
 }
 
 func fetchImageTags(ctx context.Context, client awsclient.EC2API, imageID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{imageID}})
 	if err != nil {
 		return nil, err
@@ -171,7 +177,7 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 	switch action {
 	case "Add":
 		params.Action = "add"
-		params.Key, err = ui.Prompt(t, le, "New tag key")
+		params.Key, err = ui.Prompt(t, le, "New tag key", ui.WithValidator(requireNonEmpty))
 		if err != nil {
 			return err
 		}

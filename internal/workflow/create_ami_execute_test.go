@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,25 @@ func TestDefaultAMIName(t *testing.T) {
 	want := "newauthors-copy-2026-07-01"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestValidateAMIName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{name: "newauthors-copy-2026-07-01", wantErr: false},
+		{name: "custom AMI (v2) [test].snapshot/1@caltech_lib'2026", wantErr: false},
+		{name: "ok", wantErr: true},                     // too short (< 3 chars)
+		{name: strings.Repeat("a", 129), wantErr: true}, // too long (> 128 chars)
+		{name: "bad;name", wantErr: true},               // disallowed character
+	}
+	for _, tt := range tests {
+		err := validateAMIName(tt.name)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateAMIName(%q) error = %v, wantErr %v", tt.name, err, tt.wantErr)
+		}
 	}
 }
 

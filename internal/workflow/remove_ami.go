@@ -24,6 +24,8 @@ type RemoveAMIParams struct {
 
 // DeregisterAMI calls ec2:DeregisterImage for a single AMI.
 func DeregisterAMI(ctx context.Context, client awsclient.EC2API, imageID string) error {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	_, err := client.DeregisterImage(ctx, &ec2.DeregisterImageInput{ImageId: aws.String(imageID)})
 	return err
 }

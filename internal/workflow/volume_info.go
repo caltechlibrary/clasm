@@ -23,6 +23,8 @@ type VolumeInfo struct {
 // so the actual time may be shorter than EstimateAMICreationTime's
 // estimate) -- see DESIGN.md, "Domain Knowledge Carried Forward".
 func GatherVolumeInfo(ctx context.Context, client awsclient.EC2API, instanceID string) (volumes []VolumeInfo, totalGB int32, hasPriorSnapshot bool, err error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
 	out, err := client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		Filters: []types.Filter{{Name: aws.String("attachment.instance-id"), Values: []string{instanceID}}},
 	})
