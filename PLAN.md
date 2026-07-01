@@ -264,11 +264,16 @@ transition; poll timeout path; confirmation decline (no API call made)
 
 ---
 
-## Phase 7 — Stop EC2 Instance
+## Phase 7 — Stop EC2 Instance (done)
 
 **Effort:** ~2 hours
 **Priority:** Medium
 **Files:** `internal/workflow/power_state.go`
+
+`WaitUntilRunning` (Phase 4) was refactored into a shared `waitUntilState`
+helper in `launch_execute.go` (confirmed behavior-preserving against
+Phase 4/6's existing tests first), so `WaitUntilStopped` here is a
+one-line wrapper rather than duplicated polling logic.
 
 ### Work Items
 

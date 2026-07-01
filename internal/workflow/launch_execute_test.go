@@ -24,11 +24,15 @@ type fakeEC2Client struct {
 
 	describeCalls    int
 	runningAfterCall int // DescribeInstances reports running starting at this call number; 0 = never
+	stoppedAfterCall int // DescribeInstances reports stopped starting at this call number; 0 = never
 	describeErr      error
 	publicIP         string
 
 	lastStartInstancesInput *ec2.StartInstancesInput
 	startInstancesErr       error
+
+	lastStopInstancesInput *ec2.StopInstancesInput
+	stopInstancesErr       error
 }
 
 func (f *fakeEC2Client) StartInstances(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
@@ -37,6 +41,14 @@ func (f *fakeEC2Client) StartInstances(ctx context.Context, params *ec2.StartIns
 		return nil, f.startInstancesErr
 	}
 	return &ec2.StartInstancesOutput{}, nil
+}
+
+func (f *fakeEC2Client) StopInstances(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+	f.lastStopInstancesInput = params
+	if f.stopInstancesErr != nil {
+		return nil, f.stopInstancesErr
+	}
+	return &ec2.StopInstancesOutput{}, nil
 }
 
 func (f *fakeEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
@@ -55,6 +67,9 @@ func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 	state := types.InstanceStateNamePending
 	if f.runningAfterCall > 0 && f.describeCalls >= f.runningAfterCall {
 		state = types.InstanceStateNameRunning
+	}
+	if f.stoppedAfterCall > 0 && f.describeCalls >= f.stoppedAfterCall {
+		state = types.InstanceStateNameStopped
 	}
 	inst := types.Instance{
 		InstanceId: aws.String(params.InstanceIds[0]),

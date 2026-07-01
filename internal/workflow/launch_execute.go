@@ -80,6 +80,14 @@ func Launch(ctx context.Context, client awsclient.EC2API, params LaunchInstanceP
 // WaitForSSMOnline, a timeout here is a real error: an instance that
 // never reaches running needs the operator's attention.
 func WaitUntilRunning(ctx context.Context, client awsclient.EC2API, instanceID string, timeout, pollInterval time.Duration) (types.Instance, error) {
+	return waitUntilState(ctx, client, instanceID, types.InstanceStateNameRunning, timeout, pollInterval)
+}
+
+// waitUntilState polls ec2:DescribeInstances until instanceID reaches
+// want or the timeout elapses. Shared by WaitUntilRunning and Phase 7's
+// WaitUntilStopped -- the polling mechanics are identical, only the
+// target state differs.
+func waitUntilState(ctx context.Context, client awsclient.EC2API, instanceID string, want types.InstanceStateName, timeout, pollInterval time.Duration) (types.Instance, error) {
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -89,12 +97,12 @@ func WaitUntilRunning(ctx context.Context, client awsclient.EC2API, instanceID s
 		if err != nil {
 			return types.Instance{}, err
 		}
-		if inst, found := findInstance(out, instanceID); found && inst.State != nil && inst.State.Name == types.InstanceStateNameRunning {
+		if inst, found := findInstance(out, instanceID); found && inst.State != nil && inst.State.Name == want {
 			return inst, nil
 		}
 		select {
 		case <-deadline.Done():
-			return types.Instance{}, fmt.Errorf("timed out waiting for instance %s to reach running", instanceID)
+			return types.Instance{}, fmt.Errorf("timed out waiting for instance %s to reach %s", instanceID, want)
 		case <-time.After(pollInterval):
 		}
 	}

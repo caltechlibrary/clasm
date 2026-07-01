@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
@@ -66,6 +68,68 @@ func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.Line
 
 	displayConnectionInfo(t, inst.InstanceID, running)
 	t.Println("Note: the public IP may have changed since this instance was last running, unless it uses an Elastic IP.")
+	t.Refresh()
+	return nil
+}
+
+// StopInstance calls ec2:StopInstances for a single instance.
+func StopInstance(ctx context.Context, client awsclient.EC2API, instanceID string) error {
+	_, err := client.StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{instanceID}})
+	return err
+}
+
+// WaitUntilStopped polls ec2:DescribeInstances until instanceID reaches
+// the stopped state or the timeout elapses -- shares its polling
+// mechanics with WaitUntilRunning via waitUntilState.
+func WaitUntilStopped(ctx context.Context, client awsclient.EC2API, instanceID string, timeout, pollInterval time.Duration) (types.Instance, error) {
+	return waitUntilState(ctx, client, instanceID, types.InstanceStateNameStopped, timeout, pollInterval)
+}
+
+// StopEC2Instance runs the full Stop EC2 Instance workflow (DESIGN.md,
+// Feature 5): pick a running instance, confirm (a simple yes/no --
+// stopping is reversible; data on EBS volumes persists and the instance
+// can be started again), stop it, and wait for stopped. Returns nil
+// (not an error) on cancellation or when there are no running instances
+// to pick from.
+func StopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instances []inventory.Instance) error {
+	running := filterInstancesByState(instances, "running")
+	if len(running) == 0 {
+		t.Println("No running instances found.")
+		t.Refresh()
+		return nil
+	}
+
+	inst, err := ui.PickList(t, le, running, instanceLabel, "Select an instance to stop")
+	if err != nil {
+		if errors.Is(err, ui.ErrCancelled) {
+			t.Println("Cancelled.")
+			t.Refresh()
+			return nil
+		}
+		return err
+	}
+
+	ok, err := Confirm(t, le, fmt.Sprintf("Stop instance %s (%s)?", inst.InstanceID, inst.Name))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		t.Println("Cancelled.")
+		t.Refresh()
+		return nil
+	}
+
+	if err := StopInstance(ctx, client, inst.InstanceID); err != nil {
+		return fmt.Errorf("stopping instance %s: %w", inst.InstanceID, err)
+	}
+
+	t.Printf("Stopping %s, waiting for it to reach stopped...\n", inst.InstanceID)
+	t.Refresh()
+	if _, err := WaitUntilStopped(ctx, client, inst.InstanceID, DefaultLaunchTimeout, DefaultLaunchPollInterval); err != nil {
+		return err
+	}
+
+	t.Printf("Instance %s is now stopped.\n", inst.InstanceID)
 	t.Refresh()
 	return nil
 }
