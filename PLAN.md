@@ -202,11 +202,15 @@ timeout path; cloud-init completion check (done/error/SSM-unavailable)
 
 ---
 
-## Phase 5 — Create EC2 Instance from Cloud-Init YAML
+## Phase 5 — Create EC2 Instance from Cloud-Init YAML (done)
 
 **Effort:** ~2 hours
 **Priority:** Medium
-**Files:** `internal/workflow/launch_instance.go` (shared with Phase 4)
+**Files:** `internal/workflow/launch_from_cloud_init.go`,
+`create_instance_from_cloud_init.go`; extracted the shared execution
+logic from Phase 4's `create_instance_from_ami.go` into a new
+`runLaunch` function in `launch_execute.go`, confirmed behavior-preserving
+against Phase 4's existing tests before adding this phase's own.
 
 ### Work Items
 
