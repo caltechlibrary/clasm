@@ -33,6 +33,10 @@ the listings).
 
 # OPTIONS
 
+-debug
+: write a JSONL debug log of every AWS SDK call to
+./awsops-debug-\<timestamp\>.jsonl in the current directory
+
 -help
 : display help
 

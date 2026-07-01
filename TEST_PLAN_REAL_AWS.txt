@@ -43,6 +43,16 @@ General checks (do these once, up front)
   account <account-id>" before the first listing. If credentials aren't
   resolvable, it should fail fast with a clear message (DESIGN.md,
   Error Handling Strategy #4) -- not a raw SDK stack trace.
+- `-debug`: run `awsops -debug`, confirm it prints "Debug log:
+  ./awsops-debug-<timestamp>.jsonl" to stderr before the first listing,
+  and that file exists and grows as you use the tool. `tail -f` it
+  while performing a few operations (e.g. list refresh, start/stop an
+  instance): confirm each line is valid JSON (`jq . <file>` on the
+  whole file at the end is a quick way to check), each has "time",
+  "event" ("aws_call"), "method" (e.g. "EC2.DescribeInstances",
+  "SSM.SendCommand"), "region", and either "output" or "error". Run
+  without `-debug` (the default): confirm no debug file is created and
+  no debug-related output appears anywhere.
 - The initial listing shows "===== CURRENT EC2 INSTANCES =====" and
   "===== AVAILABLE AMIs (owned by account) =====" tables, aggregated
   across all four regions in one view (not one region at a time --

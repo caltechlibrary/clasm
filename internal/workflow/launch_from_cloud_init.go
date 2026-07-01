@@ -52,7 +52,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	keyName, err := ui.Prompt(t, le, "Key pair name", ui.WithValidator(requireNonEmpty))
+	keyName, err := ui.Prompt(t, le, "Key pair name (SSH key for logging in later, e.g. my-laptop-key; see EC2 console > Key Pairs)", ui.WithValidator(requireNonEmpty))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -67,7 +67,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	iamProfile, err := ui.Prompt(t, le, "IAM instance profile (optional)")
+	iamProfile, err := ui.Prompt(t, le, "IAM instance profile (optional; grants AWS permissions to the instance, e.g. ec2-invenio-role; see IAM console > Roles)")
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

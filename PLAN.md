@@ -651,6 +651,29 @@ operation; clean exit; signal handling
 
 ---
 
+## Phase 15.1 — Debug Logging (-debug) (done)
+
+**Effort:** ~2 hours
+**Priority:** Medium
+
+### Work Items
+
+- [x] `internal/debuglog`: nil-receiver-safe `*DebugLog` type
+      (`Log`/`Path`/`Close`), JSONL sink, timestamped default path
+      (see DESIGN.md, "Debug Logging"; DECISIONS.md, "Add -debug: a
+      JSONL log of every AWS SDK call")
+- [x] `internal/awsclient`: `WrapEC2`/`WrapSSM`/`WrapS3`/`WrapSTS`
+      logging decorators over `EC2API`/`SSMAPI`/`S3API`/`STSAPI`, all
+      four built on one shared generic helper (`logAWSCall`); each
+      returns the client unwrapped when the debug log is nil
+- [x] `cmd/awsops`: `-debug` flag, wraps every client right after
+      construction, prints the log's path to stderr once at startup
+- [x] `helptext.go`/`awsops.1.md`: document `-debug` in OPTIONS
+
+**Dependency:** Phase 1 (AWS Client Layer)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

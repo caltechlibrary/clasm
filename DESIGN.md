@@ -477,6 +477,32 @@ library, the AWS SDK, and `termlib` (both pre-approved dependencies per
    be resolved at startup
 5. **Permission errors**: display the required IAM permission and exit
 
+## Debug Logging
+
+`-debug` writes a line-delimited JSON (JSONL) record of every AWS SDK
+call awsops makes during the session, to a timestamped file in the
+current directory (`awsops-debug-<timestamp>.jsonl`), for diagnosing
+unexpected behavior without re-running under a debugger. Modeled on the
+same pattern used for `~/Laboratory/harvey`'s own `--debug` JSONL log.
+
+- Every EC2/SSM/S3/STS call is wrapped by a logging decorator
+  (`internal/awsclient`'s `Wrap*` functions) that records the method
+  name, region, request params, duration, and either the response or
+  the error — one JSON object per line, so the file can be tailed or
+  processed with `jq` while awsops is still running
+- The decorator is built on `internal/debuglog`'s nil-safe `*DebugLog`:
+  every logging method is a no-op on a nil receiver, so `-debug=false`
+  (the default) costs nothing beyond one nil check per client at
+  startup — no `if debug` conditionals scattered through workflow code
+- awsops prints the log's path to stderr once, at startup, when `-debug`
+  is set, so the operator knows where to `tail -f` it
+- The log records AWS resource identifiers and request/response
+  parameters — not credentials, and no customer data ever passes
+  through awsops — but treat a debug log file as containing this
+  team's infrastructure details (instance IDs, AMI names, security
+  group/subnet IDs) and handle it accordingly (don't attach it to a
+  public issue, etc.)
+
 ## Security Considerations
 
 1. Never store AWS credentials in the binary or repo; rely on the SDK's
@@ -497,6 +523,10 @@ library, the AWS SDK, and `termlib` (both pre-approved dependencies per
    a file based solely on the instance's own self-reported upload success;
    the tool's independent `s3:HeadObject` verification is the actual
    authorization for the delete step, not a redundant nice-to-have
+8. `-debug`'s JSONL log (see "Debug Logging" above) is written unencrypted
+   to the current directory and is not automatically cleaned up — it's
+   the operator's responsibility to remove old debug logs, same as any
+   other local diagnostic file
 
 ## Domain Knowledge Carried Forward from the Bash Version
 

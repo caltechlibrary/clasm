@@ -15,6 +15,7 @@ import (
 
 	"github.com/caltechlibrary/awstools"
 	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/awstools/internal/debuglog"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 	"github.com/caltechlibrary/awstools/internal/ui"
 	"github.com/caltechlibrary/awstools/internal/workflow"
@@ -25,6 +26,7 @@ var (
 	showHelp    bool
 	showLicense bool
 	showVersion bool
+	debugMode   bool
 )
 
 func main() {
@@ -37,6 +39,7 @@ func main() {
 	flag.BoolVar(&showHelp, "help", false, "display help")
 	flag.BoolVar(&showLicense, "license", false, "display license")
 	flag.BoolVar(&showVersion, "version", false, "display version")
+	flag.BoolVar(&debugMode, "debug", false, "write a JSONL debug log of every AWS SDK call to ./awsops-debug-<timestamp>.jsonl")
 
 	flag.Parse()
 
@@ -63,6 +66,23 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// -debug wraps every AWS client below in a logging decorator that
+	// writes one JSONL record per SDK call (see DESIGN.md, "Debug
+	// Logging"); a nil *debuglog.DebugLog makes every Wrap* call below a
+	// no-op, so this is the only debug-mode branch in main().
+	var dl *debuglog.DebugLog
+	if debugMode {
+		debugPath := debuglog.DefaultPath()
+		var err error
+		dl, err = debuglog.New(debugPath)
+		if err != nil {
+			fmt.Fprintf(eout, "opening debug log: %v\n", err)
+			os.Exit(1)
+		}
+		defer dl.Close()
+		fmt.Fprintf(eout, "Debug log: %s\n", debugPath)
+	}
+
 	ec2Clients := make(map[string]awsclient.EC2API, len(awsclient.Regions))
 	ssmClients := make(map[string]awsclient.SSMAPI, len(awsclient.Regions))
 	for _, region := range awsclient.Regions {
@@ -71,14 +91,14 @@ func main() {
 			fmt.Fprintf(eout, "creating EC2 client for %s: %v\n", region, err)
 			os.Exit(1)
 		}
-		ec2Clients[region] = ec2Client
+		ec2Clients[region] = awsclient.WrapEC2(ec2Client, dl, region)
 
 		ssmClient, err := awsclient.NewSSMClient(ctx, region)
 		if err != nil {
 			fmt.Fprintf(eout, "creating SSM client for %s: %v\n", region, err)
 			os.Exit(1)
 		}
-		ssmClients[region] = ssmClient
+		ssmClients[region] = awsclient.WrapSSM(ssmClient, dl, region)
 	}
 
 	// S3 bucket regions are unrelated to any instance's region (Backup
@@ -89,12 +109,14 @@ func main() {
 		fmt.Fprintf(eout, "creating S3 client: %v\n", err)
 		os.Exit(1)
 	}
+	s3Client = awsclient.WrapS3(s3Client, dl, awsclient.Regions[0])
 
 	stsClient, err := awsclient.NewSTSClient(ctx, awsclient.Regions[0])
 	if err != nil {
 		fmt.Fprintf(eout, "creating STS client: %v\n", err)
 		os.Exit(1)
 	}
+	stsClient = awsclient.WrapSTS(stsClient, dl, awsclient.Regions[0])
 	account, err := awsclient.CheckCredentials(ctx, stsClient)
 	if err != nil {
 		fmt.Fprintf(eout, "%v\n", err)

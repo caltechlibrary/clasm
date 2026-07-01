@@ -1,4 +1,4 @@
-%awsops(1) user manual | version 0.0.0 f567506
+%awsops(1) user manual | version 0.0.0 57eb69e
 % R. S. Doiel
 % 2026-07-01
 
@@ -26,6 +26,10 @@ tags, show/export cloud-init, archive stale backups to S3, and refresh
 the listings).
 
 # OPTIONS
+
+-debug
+: write a JSONL debug log of every AWS SDK call to
+./awsops-debug-\<timestamp\>.jsonl in the current directory
 
 -help
 : display help
