@@ -282,13 +282,13 @@ display_amis() {
     
     echo "===== AVAILABLE AMIs ====="
     echo ""
-    printf "%-20s %-25s %-20s %s\n" "AMI ID" "NAME" "CREATION DATE" "REGION"
-    echo "---------------------------------------------------------------------------------------"
-    
-    echo "$amis" | jq -r '.[] | 
+    printf "%-20s %-28s %-20s %s\n" "AMI ID" "NAME" "CREATION DATE" "REGION"
+    echo "------------------------------------------------------------------------------------------"
+
+    echo "$amis" | jq -r '.[] |
         "\(.ImageId // "")\t\(.Name // "")\t\(.CreationDate // "")\t\(.Region // "")"
     ' | while IFS=$'\t' read -r ami_id name creation_date region; do
-        printf "%-20s %-25s %-20s %s\n" "${ami_id:0:20}" "${name:0:25}" "${creation_date:0:19}" "$region"
+        printf "%-20s %-28s %-20s %s\n" "${ami_id:0:20}" "${name:0:28}" "${creation_date:0:19}" "$region"
     done
     echo ""
 }
@@ -310,7 +310,7 @@ show_pick_list() {
     local arr_name="$1"
     local description="${2:-Select an item}"
     local items
-    eval "items=(\"\${$arr_name}[@]\"\")"
+    eval "items=(\"\${${arr_name}[@]}\")"
     
     if [[ ${#items[@]} -eq 0 ]]; then
         echo "No items available."
@@ -1232,17 +1232,24 @@ collect_ami_params() {
     echo "Source Instance: $instance_id (State: $instance_state, Region: $region)"
     echo ""
     
-    # AMI name (required)
+    # AMI name (required) — suggest a default based on the instance name/ID and today's date
+    local instance_name
+    instance_name=$(echo "$instance_json" | jq -r '.Name // ""')
+    local name_base="${instance_name:-$instance_id}"
+    name_base=$(echo "$name_base" | tr -cs 'a-zA-Z0-9._()/-' '-')
+    name_base="${name_base%-}"
+    local default_ami_name
+    default_ami_name="${name_base}-copy-$(date +%Y-%m-%d)"
+
     local ami_name=""
     while [[ -z "$ami_name" ]]; do
-        echo -n "AMI Name (required, 3-128 chars, alphanumeric + -_./()): "
+        echo -n "AMI Name (required, 3-128 chars, alphanumeric + -_./()) [${default_ami_name}]: "
         read -r ami_name
-        
+
         if [[ -z "$ami_name" ]]; then
-            echo "ERROR: AMI Name is required."
-            continue
+            ami_name="$default_ami_name"
         fi
-        
+
         # Validate AMI name
         if [[ ${#ami_name} -lt 3 || ${#ami_name} -gt 128 ]]; then
             echo "ERROR: AMI name must be between 3 and 128 characters."
@@ -1250,7 +1257,7 @@ collect_ami_params() {
             continue
         fi
         
-        if ! echo "$ami_name" | grep -qE '^[a-zA-Z0-9\-_.()/]+$'; then
+        if ! echo "$ami_name" | LC_ALL=C grep -qE '^[a-zA-Z0-9._()/-]+$'; then
             echo "ERROR: AMI name contains invalid characters. Allowed: alphanumeric, -_.()/"
             ami_name=""
             continue
@@ -1799,19 +1806,84 @@ remove_ami_workflow() {
 }
 
 # =============================================================================
+# PHASE 7: MAIN MENU AND INTEGRATION
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Display header, current EC2 instances/AMIs, and menu options, then prompt
+# for a selection until a valid one (1-5) is entered.
+# Sets MENU_CHOICE global variable to the validated selection.
+# -----------------------------------------------------------------------------
+show_main_menu() {
+    echo "=============================================================================="
+    echo "$SCRIPT_NAME"
+    echo "Regions: ${REGIONS[*]}"
+    echo "=============================================================================="
+    echo ""
+
+    display_instances "$(list_ec2_instances)"
+    display_amis "$(list_amis)"
+
+    echo "===== MAIN MENU ====="
+    echo ""
+    echo "  1) Create EC2 instance from AMI"
+    echo "  2) Create AMI from EC2 instance"
+    echo "  3) Remove AMI"
+    echo "  4) Refresh resource lists"
+    echo "  5) Exit"
+    echo ""
+
+    local choice
+    while true; do
+        echo -n "Select an option [1-5]: "
+        read -r choice
+        case "$choice" in
+            1|2|3|4|5)
+                MENU_CHOICE="$choice"
+                return 0
+                ;;
+            *)
+                echo "Invalid selection: '$choice'. Please enter a number from 1 to 5."
+                ;;
+        esac
+    done
+}
+
+# =============================================================================
 # MAIN SCRIPT
 # =============================================================================
 
 main() {
     # Check dependencies
     check_dependencies
-    
-    echo "$SCRIPT_NAME - AWS EC2/AMI Manager"
-    echo "Regions: ${REGIONS[*]}"
     echo ""
-    
-    # TODO: Implement main menu and functionality
-    echo "Main menu implementation coming soon..."
+
+    # Ctrl+C exits cleanly instead of dumping a mid-workflow stack trace
+    trap 'echo ""; echo "Interrupted. Exiting."; exit 130' INT
+
+    while true; do
+        show_main_menu
+
+        case "$MENU_CHOICE" in
+            1)
+                create_instance_from_ami || echo "Create-instance workflow ended without launching an instance."
+                ;;
+            2)
+                create_ami_from_instance_workflow || echo "Create-AMI workflow ended without creating an AMI."
+                ;;
+            3)
+                remove_ami_workflow || echo "Remove-AMI workflow ended without removing an AMI."
+                ;;
+            4)
+                # No-op: show_main_menu refreshes resource lists every iteration
+                ;;
+            5)
+                echo "Exiting."
+                exit 0
+                ;;
+        esac
+        echo ""
+    done
 }
 
 # Run main if script is executed directly

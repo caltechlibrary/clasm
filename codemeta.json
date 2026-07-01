@@ -12,21 +12,21 @@
     }
   ],
   "dateCreated": "2026-06-30",
-  "description": "This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.",
+  "description": "This is a toolset for managing our RDM collection of AMI and EC2 instances.",
   "name": "awstools",
   "operatingSystem": [
     "POSIX"
   ],
   "programmingLanguage": [
-    "Bash"
+    "Go >= 1.26.4"
   ],
   "softwareRequirements": [
-    "Bash",
-    "AWS CLI >= v2",
-    "jq >= 1.8",
-    "BATS (Bash Automated Testing System)",
-    "git >= v2",
-	"shellcheck >= 0.11"
+    "Go >= 1.26",
+    "CMTools >= 0.0.46"
+  ],
+  "softwareSuggestions": [
+    "GNU Make >= 3.8",
+    "Pandoc >= 3.9"
   ],
   "version": "0.0.0",
   "developmentStatus": "concept",

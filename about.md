@@ -1,7 +1,7 @@
 ---
 title: awstools
 abstract: |-
-  This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.
+  This is a toolset for managing our RDM collection of AMI and EC2 instances.
 authors:
   - family_name: Doiel
     given_name: R. S.
@@ -16,7 +16,7 @@ operating_system:
   - POSIX
 
 programming_language:
-  - Bash
+  - Go >= 1.26.4
 
 
 
@@ -38,7 +38,7 @@ proof of concept
 
 
 
-This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.
+This is a toolset for managing our RDM collection of AMI and EC2 instances.
 
 
 - [Code Repository](https://github.com/caltechlibrary/awstools)
@@ -46,7 +46,7 @@ This is a collaction of Bash scripts, some interactive, for managing our RDM col
 
 ## Programming languages
 
-- Bash
+- Go >= 1.26.4
 
 
 ## Operating Systems
@@ -56,13 +56,13 @@ This is a collaction of Bash scripts, some interactive, for managing our RDM col
 
 ## Software Requirements
 
-- Bash
-- AWS CLI >= v2
-- jq >= 1.8
-- BATS (Bash Automated Testing System)
-- git >= v2
-- shellcheck >= 0.11
+- Go >= 1.26
+- CMTools >= 0.0.46
 
 
+## Software Suggestions
+
+- GNU Make >= 3.8
+- Pandoc >= 3.9
 
 

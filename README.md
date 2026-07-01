@@ -36,5 +36,7 @@ proof of concept
 
 
 - [Getting Help, Reporting bugs](https://github.com/caltechlibrary/awstools/issues)
+
+- [Installation](INSTALL.md)
 - [About](about.md)
 

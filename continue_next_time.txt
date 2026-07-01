@@ -1,99 +1,121 @@
-awstools — where we left off (2026-06-30)
+awstools — where we left off (2026-07-01)
 ===========================================
 
-STATUS: Phase 5b is implemented, tested, and committed. Working tree is
-clean. All 67 BATS tests pass (`bats tests/`), shellcheck is clean on
-ec2_ami_manager.bash.
+STATUS: Working tree is dirty, nothing from this session is committed
+yet. ec2_ami_manager.bash has real bug fixes in it (see below). DESIGN.md/
+DECISIONS.md/PLAN.md were completely rewritten to retarget the project
+from Bash to Go. No Go code exists yet — this was a design/decision/plan
+session, not an implementation session. Also present in the working tree:
+a CMTools scaffold (Makefile, version.go, INSTALL.md, installer.sh/ps1,
+codemeta.json changes) that the user generated themselves in a separate
+terminal mid-session, not by Claude.
 
 What happened this session
 ---------------------------
 
-1. Reviewed DESIGN.md / DECISIONS.md / PLAN.md against the actual code and
-   found several gaps:
-   - PLAN.md's checkboxes were stale (Phases 0-7 were already implemented
-     in ec2_ami_manager.bash, not just Phase 0).
-   - The whole BATS test suite was broken: all .bats files hardcoded a
-     load path to the pre-rename `aws_tools` directory. Fixed to a
-     relative `load 'lib/test_helper'`.
-   - check_ami.bash and check_ec2_instances.bash duplicated
-     list_ec2_instances()/list_amis() with no unique functionality.
-     Retired (deleted, committed).
-   - ami_copy.bash (merged in from a separate repo before this project's
-     design docs existed) duplicated the "create AMI from instance"
-     feature but had real capabilities ec2_ami_manager.bash's Phase 5
-     lacked: volume-size time estimates, prior-snapshot detection, an SSM
-     fstrim pre-snapshot optimization, unbounded creation polling, and
-     Invenio-RDM-specific crash-consistency guidance. Also found that
-     Phase 5's post_ami_creation_actions() had a 600-second timeout that
-     would fail on real Invenio RDM AMI sizes (20-60+ min per
-     ami_copy_basic_steps.md's own timing table).
+1. User ran ./ec2_ami_manager.bash for real against production AWS and
+   hit three real, previously-undetected bugs:
+   - show_pick_list()'s eval had unbalanced quoting + a misplaced [@]
+     subscript, crashing the interactive picker with "unexpected EOF".
+     Fixed: eval "items=(\"\${${arr_name}[@]}\")"
+   - The AMI-name validation regex broke under BSD grep + a UTF-8 locale
+     ("invalid character range"). Fixed by pinning LC_ALL=C and moving
+     the hyphen to an unambiguous bracket position.
+   - create_ami_from_instance()'s --tag-specifications string builder
+     produced malformed AWS CLI shorthand, silently failing create-image
+     with NO AMI created anywhere (confirmed via read-only
+     describe-images across all 4 regions) — this was the actual root
+     cause of "I don't see the AMI actually get generated."
+   Also implemented the Phase 7 main menu (never actually wired up
+   despite PLAN.md claiming it was done), a default AMI-name suggestion,
+   and a wider AMI-name display column.
 
-2. Decided (recorded in DECISIONS.md): port ami_copy.bash's capabilities
-   into Phase 5's multi-region workflow (new PLAN.md Phase 5b), THEN
-   retire ami_copy.bash — not before, so nothing is silently dropped.
+2. After fixing bug #3, the user asked whether Go/Python/Deno would be
+   faster than continuing in Bash. Decision: retarget to Go. This led to
+   a long collaborative design session that grew the v1 scope far beyond
+   the original 4-operation Bash tool.
 
-3. Implemented Phase 5b, TDD style, in ec2_ami_manager.bash:
-   - estimate_ami_creation_time(gb) — time-estimate buckets, ported from
-     ami_copy.bash's estimate_time()
-   - gather_volume_info(instance_id, region) — sums attached volume
-     sizes, detects prior snapshots
-   - aws_ssm() — new wrapper alongside aws_ec2()
-   - check_ssm_availability(), run_fstrim_via_ssm(),
-     offer_fstrim_before_snapshot() — SSM fstrim step
-   - format_elapsed(seconds) + rewrote post_ami_creation_actions() to
-     poll unboundedly (AMI_POLL_INTERVAL env var, default 30s) instead of
-     giving up after 600s; explicit failed-state short-circuit
-   - select_instance_for_ami()'s running-instance warning now carries the
-     Postgres/OpenSearch/Redis/Docker crash-consistency guidance from
-     ami_copy_basic_steps.md
-   All of the above are wired into select_instance_for_ami(), which is
-   called from create_ami_from_instance_workflow() (Phase 5's entry
-   point).
+3. Real findings that shaped the new design (not hypothetical):
+   - newauthors (i-0c4c81336aea33d27) has 87GB in /opt/rdm_sql_backups,
+     ~980MB/day, zero rotation — the measured cause of the
+     "over-provisioned disk / slow cloning" problem.
+   - Tagging today is inconsistent (a "project" tag on some instances,
+     no dedicated Environment tag anywhere — prod/test lives only in the
+     instance NAME string).
+   - newauthors/authorstest both have real, recoverable cloud-init
+     user-data (proven via ec2:DescribeInstanceAttribute).
+   - cloud-init-examples' invenio-rdm.yaml has already drifted from what's
+     actually deployed.
 
-4. tests/test_create_ami.bats — 27 new tests covering all of the above,
-   including two that exercise the *interactive* prompts for real (not
-   stubbed) using bash heredoc-stdin redirection on `run`:
-     run select_instance_for_ami <<< "y"
-   This pattern works in this BATS setup and is more honest than the
-   stub-everything pattern used elsewhere in the suite — worth reusing
-   for Phase 6/7 tests instead of skip-with-TODO.
+4. DESIGN.md/DECISIONS.md/PLAN.md fully rewritten for Go. CLI binary
+   named "awsops" (repo stays "awstools"). Final v1 primitive list (12
+   features, in final menu order — see DESIGN.md Core Features):
+   1) Unified Resource Listing, 2) Create Instance from AMI (now with
+   file-path user-data + cloud-init completion check), 3) Create Instance
+   from Cloud-Init YAML, 4) Start Instance, 5) Stop Instance,
+   6) Terminate Instance (flags DeleteOnTermination volumes), 7) Manage
+   Tags, 8) Create AMI from Instance, 9) Remove AMI, 10) Show/Export
+   Cloud-Init, 11) Backup Archive & Trim (two-phase upload-then-
+   independently-verify, never trusts the instance's self-report),
+   12) Project/Environment Tagging Convention (cross-cutting policy, not
+   an action — distinct from #7).
 
-5. Updated PLAN.md (Phase 5b work items checked off except retirement),
-   TODO.md, tests/README.md (accurate coverage table), DESIGN.md (file
-   structure section, noted ami_copy.bash as "to be retired").
+5. Confirmed against real AWS behavior: an AMI's Name is permanently
+   immutable via the API (no rename operation exists or can exist short
+   of CopyImage + deregister). Only Description is mutable post-creation.
+
+6. Every confirmation-gated workflow (PLAN.md Phases 4-13) is required to
+   separate "build a resolved params struct" from "execute against AWS,"
+   with the confirmation/dry-run gate as its own reusable function — not
+   because record/replay ships in v1, but so a deferred "Recorded
+   Scripts" YAML-playbook feature can be added later without reopening
+   finished code.
 
 What's NOT done yet
 --------------------
 
-- Task #11 (open): ami_copy.bash and ami_copy_basic_steps.md are still in
-  the repo, deliberately. They should only be deleted after manually
-  verifying ec2_ami_manager.bash's new create-AMI workflow against a real
-  EC2 instance — see TEST_PLAN_REAL_AWS.txt in this directory for the
-  steps. Everything so far has only been verified against mocked AWS CLI
-  responses in BATS.
-
-- Phase 9 test debt (PLAN.md / tests/README.md): test_remove_ami.bats
-  and test_menu.bats still don't exist, even though Phase 6 (AMI
-  removal: select_ami_for_removal, show_removal_dry_run,
-  check_ami_dependencies, type_to_confirm, remove_ami,
-  remove_ami_workflow) and Phase 7 (show_main_menu, main) are implemented
-  in ec2_ami_manager.bash. Removal is destructive, so this is probably
-  higher priority than the menu tests.
-
-- The publish.bash/release.bash executable-bit vs git-mode-644 mismatch
-  noticed during this session is unrelated to Phase 5b and was left
-  alone (not something I changed, just flagged it).
+- No Go code exists. PLAN.md Phase 0 (go mod init, SDK deps, package
+  skeletons) has not been started.
+- Backup Archive & Trim (Phase 13) real-AWS verification is blocked on
+  two things the user still needs to do outside this repo: create the S3
+  bucket for backup archival, and update caltechlibrary/cloud-init-
+  examples so target instances' IAM profiles grant s3:PutObject/
+  s3:ListBucket on it.
+- One open question never got an explicit answer: DESIGN.md's Overview
+  paragraph still frames the tool as being "behind this team's RDM
+  deployments," which is in mild tension with the awsops naming
+  rationale (explicitly not meant to read as RDM-specific). Quick to
+  resolve, just never circled back to it.
+- Nothing from this session is committed to git yet.
 
 Suggested next session
 -----------------------
 
-1. Walk through TEST_PLAN_REAL_AWS.txt against a real (ideally
-   disposable/test-account) EC2 instance.
-2. If it checks out: delete ami_copy.bash and ami_copy_basic_steps.md (or
-   fold the latter's content into ec2_ami_manager.bash's usage text),
-   update DESIGN.md to drop the "to be retired" note, close task #11.
-3. Then tackle Phase 9 test debt: test_remove_ami.bats first (destructive
-   operation, higher risk), then test_menu.bats.
+1. Re-read DESIGN.md, DECISIONS.md, and PLAN.md fresh in full — all three
+   were heavily rewritten this session, don't rely on memory of older
+   versions or of this file's summary above.
+2. Decide the Overview-wording question (30 seconds), then start PLAN.md
+   Phase 0: go mod init, add github.com/aws/aws-sdk-go-v2 (ec2/ssm/s3/sts
+   submodules), cmd/awsops/main.go stub, internal/{awsclient,inventory,ui,
+   workflow} package skeletons.
+3. Work PLAN.md's phases in order (0 through 17) — TDD throughout, fakes
+   for EC2API/SSMAPI/S3API, no real AWS calls in unit tests.
+4. Do NOT touch ec2_ami_manager.bash or tests/*.bats — they stay as the
+   working reference spec until the Go binary passes
+   TEST_PLAN_REAL_AWS.txt (retire only after that, per this project's
+   existing retire-after-verify pattern).
+5. If you reach Phase 13 (Backup Archive & Trim) real-AWS verification
+   before the S3 bucket / IAM policy blockers above are resolved, flag it
+   rather than guessing at bucket names or skipping the independent
+   verification step.
+6. Consider committing this session's ec2_ami_manager.bash bug fixes
+   separately from the Go design-doc rewrite, since they're logically
+   distinct changes (bug fixes to code that's about to be retired vs. new
+   design for its replacement) — ask the user how they want it split
+   before committing anything.
 
-Git state as of this session's last commit: da60a21 "Phase 5b done".
-Working tree clean, 67/67 tests passing.
+Git state as of this session: still on top of commit 7c42249 "session
+wrap up", working tree dirty, nothing committed. See
+agents/knowledge.db (query: awstools or awsops) and
+agents/hand-off/2026-07-01T220000Z-awstools-bash-to-go-design.spmd for
+full detail.

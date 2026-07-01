@@ -1,10 +1,10 @@
 
-# generated with CMTools 0.0.0 0656ce7
+# generated with CMTools 0.0.0 7c42249
 
 #
 # Makefile for running pandoc on all Markdown docs ending in .md
 #
-PROJECT = aws_tools
+PROJECT = awstools
 
 PANDOC = $(shell which pandoc)
 

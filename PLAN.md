@@ -1,670 +1,605 @@
-# AWS Tools — Interactive EC2/AMI Manager — Implementation Plan
+# AWS Tools — awsops — Implementation Plan (Go)
 
 ## Source Design
 
-See `DESIGN.md` and `DECISIONS.md` for the complete design and decision rationale.
+See `DESIGN.md` and `DECISIONS.md` for the complete design and decision
+rationale, including why this plan retargets from Bash to Go
+(`DECISIONS.md`, 2026-07-01 "Retarget implementation from Bash to Go").
 
-## Status (2026-06-30)
+## Status (2026-07-01)
 
-`ec2_ami_manager.bash` already implements Phases 0–7 in code (dependency
-checks, region wrappers, listing, pick lists, instance creation, AMI
-creation, AMI removal, main menu). Test coverage from Phase 9 lags behind:
-Phases 0–4 have working BATS tests (`tests/test_dependencies.bats`,
-`tests/test_listing.bats`, `tests/test_picklist.bats`,
-`tests/test_instance_creation.bats`); Phases 5–7 (AMI creation, AMI removal,
-main menu) have no tests yet (`test_create_ami.bats`, `test_remove_ami.bats`,
-`test_menu.bats` do not exist). See `tests/README.md` for the current
-function-by-function coverage table.
+Starting from scratch. `ec2_ami_manager.bash` remains in the repo as the
+working reference for expected behavior and stays in place, untouched,
+until this plan's Phase 14 (main menu) is complete and
+`TEST_PLAN_REAL_AWS.txt` passes against the Go binary. Nothing below has
+been implemented yet.
 
-The checkboxes and phase descriptions below describe the original plan as
-written; they have not been retroactively marked complete. Phase 5b below is
-new — added after discovering `ami_copy.bash`'s capabilities were never
-folded into this plan.
+Unlike the Bash plan, the AMI-from-instance capabilities that were folded
+in later as "Phase 5b" (volume-size time estimate, fstrim/SSM step,
+unbounded polling, Invenio RDM crash-consistency guidance) are included in
+Phase 5 from the start — we already know they're required.
 
 ## Phases
 
-This implementation follows a phased approach with tests written before code (TDD).
+TDD throughout: write the `*_test.go` file (with fakes for the AWS SDK
+interfaces) before the implementation it covers.
 
 ---
 
-## Phase 0 — Project Setup & Test Infrastructure
+## Phase 0 — Project Setup
 
 **Effort:** ~2 hours
 **Priority:** High
 
 ### Tasks
 
-- [ ] Create `tests/` directory structure
-- [ ] Install BATS (Bash Automated Testing System) if not present
-- [ ] Create `test_helper.bash` with common test setup (mock AWS CLI responses)
-- [ ] Create BATS test scaffold for main script
-- [ ] Set up GitHub Actions or local CI for test execution
-
-### Deliverables
-- `tests/` directory with helper scripts
-- Basic test infrastructure that can mock AWS CLI calls
-- Documentation on running tests locally
-
-### Dependencies
-- BATS installation
-- Mock AWS CLI response files for testing
+- [ ] `go mod init` for the module (name TBD — matches repo import path)
+- [ ] Add `github.com/aws/aws-sdk-go-v2` and its `ec2`, `ssm`, `s3`, `sts`
+      submodules, plus the config module for credential resolution
+- [ ] Create `cmd/awsops/main.go` stub (prints version, exits)
+- [ ] Create `internal/{awsclient,inventory,ui,workflow}` package skeletons
+- [ ] Confirm `go build ./...` and `go vet ./...` are clean on the empty
+      skeleton
 
 ---
 
-## Phase 1 — AWS CLI Wrapper Layer
+## Phase 1 — AWS Client Layer
 
-**Effort:** ~4 hours
+**Effort:** ~3 hours
 **Priority:** High
+**Files:** `internal/awsclient/`
 
 ### Work Items
 
-#### W0 — Dependency Check
+- Define the four configured regions as a package-level constant/slice
+  (`Regions = []string{"us-east-1", "us-east-2", "us-west-1", "us-west-2"}`)
+- `NewEC2Client(ctx, region) (EC2API, error)` — constructs a region-scoped
+  EC2 client from the SDK's default config/credential chain
+- `NewSSMClient(ctx, region) (SSMAPI, error)` — same, for the fstrim step
+- `NewS3Client(ctx, region) (S3API, error)` — for Backup Archive & Trim's
+  independent verification (`HeadObject`) using the operator's own
+  credentials, distinct from the target instance's own IAM instance
+  profile (see `DESIGN.md` Assumptions)
+- Define `EC2API`/`SSMAPI`/`S3API` as narrow interfaces covering only the
+  SDK methods actually used (enables fakes in tests without a real client)
+- Startup credential check: fail fast with a clear message if
+  `sts:GetCallerIdentity` fails (replaces `check_dependencies`'s AWS CLI/jq
+  checks — there's no external binary to check for anymore)
 
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Create `check_dependencies()` function
-- Verify AWS CLI v2 is installed and configured
-- Verify jq is installed
-- Verify AWS credentials are available
-- Exit with clear error message if dependencies missing
-
-**Tests:**
-- Test with all dependencies present (expect pass)
-- Test with missing AWS CLI (expect clear error)
-- Test with missing jq (expect clear error)
-- Test with missing credentials (expect clear error)
+**Tests:** credential-check failure path; region client construction;
+retry/backoff behavior on throttling errors (table-driven, using a fake
+that returns a throttling error N times then succeeds)
 
 **Dependency:** Phase 0
 
 ---
 
-#### W1 — Region Configuration
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Define array of four regions: `REGIONS=(us-east-1 us-east-2 us-west-1 us-west-2)`
-- Create `for_all_regions()` helper function to iterate across regions
-- Create `aws_ec2()` wrapper that adds `--region` parameter
-
-**Tests:**
-- Test that all four regions are defined
-- Test that region iteration works correctly
-
-**Dependency:** Phase 0
-
----
-
-#### W2 — AWS CLI Error Handling
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `aws_cli_call()` wrapper function
-- Parse AWS CLI JSON output for errors
-- Extract and display error messages clearly
-- Handle common error types (AccessDenied, InvalidParameter, etc.)
-- Implement retry logic with exponential backoff (max 3 attempts)
-
-**Tests:**
-- Test successful AWS CLI call (expect JSON output)
-- Test AWS CLI error parsing (expect error message extraction)
-- Test retry logic (mock failures then success)
-- Test max retry exceeded (expect error exit)
-
-**Dependency:** W0
-
----
-
-## Phase 2 — Resource Listing Functions
-
-**Effort:** ~6 hours
-**Priority:** High
-
-### Work Items
-
-#### L0 — List EC2 Instances Across All Regions
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `list_ec2_instances()` function
-- Call `aws ec2 describe-instances` for each of the four regions
-- Filter for non-terminated instances
-- Extract: InstanceId, InstanceType, State, ImageId, Tags (Name), Region
-- Aggregate results from all regions into single array
-- Sort by Region, then InstanceId
-
-**Tests:**
-- Test with no instances (expect empty list)
-- Test with instances in multiple regions (expect aggregated list)
-- Test with instances having Name tags (expect name displayed)
-- Test with instances without Name tags (expect empty name)
-
-**Dependency:** W2
-
----
-
-#### L1 — List Owned AMIs Across All Regions
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `list_amis()` function
-- Call `aws ec2 describe-images --owners self` for each region
-- Filter for available AMIs
-- Extract: ImageId, Name, CreationDate, State, Region
-- Aggregate results from all regions into single array
-- Sort by Region, then CreationDate (newest first)
-
-**Tests:**
-- Test with no owned AMIs (expect empty list)
-- Test with AMIs in multiple regions (expect aggregated list)
-- Test sorting (expect newest first within each region)
-
-**Dependency:** W2
-
----
-
-#### L2 — Display Formatting
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `display_instances()` function
-- Format instance list as table with columns: ID, Name, State, AMI ID, Region
-- Truncate long values with ellipsis (e.g., IDs to 12 chars)
-- Create `display_amis()` function
-- Format AMI list as table with columns: AMI ID, Name, Creation Date, Region
-- Add visual separators between sections
-
-**Tests:**
-- Test display with empty lists
-- Test display with multiple items
-- Test truncation of long values
-
-**Dependency:** L0, L1
-
----
-
-## Phase 3 — Pick List Implementation
+## Phase 2 — Resource Listing
 
 **Effort:** ~4 hours
 **Priority:** High
+**Files:** `internal/inventory/`
 
 ### Work Items
 
-#### P0 — Generic Pick List Function
+- `ListInstances(ctx, clients map[string]EC2API) ([]Instance, error)` —
+  queries `DescribeInstances` per region concurrently (goroutines +
+  errgroup or similar), aggregates, excludes terminated instances
+- `ListImages(ctx, clients map[string]EC2API) ([]Image, error)` — queries
+  `DescribeImages` with `Owners: [self]` per region, aggregates, filters to
+  `State == available`
+- `Instance`/`Image` structs carry the same fields the Bash version
+  displayed: InstanceId/ImageId, Name (from tags), State, ImageId, Region /
+  Name, CreationDate, Region — plus `Project` and `Environment` (from
+  tags, empty string if untagged — display layer renders empty as
+  "unknown", see `DECISIONS.md` "Introduce a light Project/Environment
+  tagging convention")
+- Group/filter helpers over the aggregated results: by `Project`, by
+  `Environment` — used by Phase 3's display and the main menu's listing
 
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
+**Tests:** aggregation across regions; empty-region handling; terminated-
+instance filtering; Name/Project/Environment-tag extraction (present/
+absent); group/filter by Project and by Environment
 
-- Create `show_pick_list()` function
-- Accept array of items as input
-- Display numbered list (1-N)
-- Accept user input with validation
-- Return selected index or exit on invalid/cancel
-- Handle empty list case
+**Dependency:** Phase 1
 
-**Tests:**
-- Test with empty list (expect error message, return to menu)
-- Test with single item (expect auto-select or prompt)
-- Test with multiple items (expect correct selection)
-- Test with invalid input (expect re-prompt)
-- Test with cancel input (expect return to menu)
+---
+
+## Phase 3 — Terminal UI
+
+**Effort:** ~4 hours
+**Priority:** High
+**Files:** `internal/ui/`
+
+### Work Items
+
+- `DisplayInstances([]Instance)` / `DisplayImages([]Image)` — formatted
+  table output (replaces `display_instances`/`display_amis`)
+- `PickList[T any](items []T, label func(T) string, prompt string) (T, error)`
+  — generic numbered pick list; returns an error (not a panic/crash) on
+  invalid input, re-prompts on out-of-range/non-numeric input, supports a
+  cancel option
+- `Prompt(label string, opts ...PromptOption) (string, error)` — single
+  free-text prompt with optional default value and validator function
+  (replaces the repeated `echo -n ...; read -r ...` pattern)
+
+**Tests:** pick list with valid/invalid/cancel input (using an
+`io.Reader`/`io.Writer` pair instead of real stdin/stdout — this is the
+Go equivalent of the Bash version's skipped "interactive testing is hard"
+tests, and should not be skipped here)
 
 **Dependency:** Phase 2
 
 ---
 
-#### P1 — AMI Pick List
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Create `pick_ami()` function
-- Call `list_amis()` to get current AMI list
-- Pass to `show_pick_list()` with appropriate display formatting
-- Return selected AMI (full object with all fields)
-
-**Tests:**
-- Test selection from AMI list
-- Test cancel behavior
-
-**Dependency:** P0, L1
-
----
-
-#### P2 — Instance Pick List
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Create `pick_instance()` function
-- Call `list_ec2_instances()` to get current instance list
-- Filter by state if needed (running, stopped, or both)
-- Pass to `show_pick_list()` with appropriate display formatting
-- Return selected instance (full object with all fields)
-
-**Tests:**
-- Test selection from instance list
-- Test filtering by state
-- Test cancel behavior
-
-**Dependency:** P0, L0
-
----
-
 ## Phase 4 — Create EC2 Instance from AMI
 
-**Effort:** ~8 hours
+**Effort:** ~6 hours
 **Priority:** High
+**Files:** `internal/workflow/launch_instance.go`
 
 ### Work Items
 
-#### C0 — Parameter Collection
+- Pick an AMI (Phase 3's `PickList` over `ListImages` results)
+- Collect instance type, key pair, security group(s), subnet, IAM instance
+  profile (optional), user data (optional — accepts inline text **or a
+  local file path**, e.g. a file from a local clone of
+  `cloud-init-examples`), tags — mirroring `collect_instance_params()`'s
+  parameter set, plus `Project` (default: the source AMI's `Project` tag
+  if set) and `Environment` (always an explicit prompt, no default — see
+  `DECISIONS.md` "Introduce a light Project/Environment tagging
+  convention")
+- Confirm and call `ec2.RunInstances`
+- Poll `DescribeInstances` until `running` (bounded — 5 minutes, matching
+  current Bash behavior) or report a timeout; display connection info
+  (public/private IP, SSH command) on success
+- **If user-data was provided**: wait for SSM to report `Online`, then run
+  `cloud-init status --wait` via SSM (bounded timeout — see
+  `DECISIONS.md`, "Enhance Create Instance from AMI: cloud-init file
+  input + completion check"), reporting cloud-init's actual completion
+  status (`done` vs `error`). Skip cleanly (not an error) if SSM never
+  comes online
+- Structure as: build a resolved `LaunchInstanceParams` struct (from
+  prompts) → reusable confirmation/dry-run gate → execute against
+  `ec2.RunInstances`. This is the seam a future replay engine reuses
+  rather than reimplementing (see `DECISIONS.md`, "Structure workflows
+  for future record/replay")
 
-**Effort:** ~3 hours
-**Files:** `ec2_ami_manager.bash`
+**Tests:** parameter collection with a fake reader; user-data-from-file
+loading (success and file-not-found); launch success/failure;
+poll-until-running with a fake that transitions state after N calls; poll
+timeout path; cloud-init completion check (done/error/SSM-unavailable)
 
-- Create `collect_instance_params()` function
-- After AMI selection, prompt for:
-  - Instance type: list available types, allow user selection
-  - Key pair name: list available key pairs, allow selection
-  - Security group IDs: list available security groups, allow multi-select
-  - Subnet ID: list available subnets, allow selection
-  - IAM instance profile: list available, optional
-  - User data: text input, optional
-  - Tags: key=value pairs, optional
-- Validate each parameter
-- Allow back/redo for any parameter
-
-**Helper functions needed:**
-- `list_instance_types()` — call AWS for available types in region
-- `list_key_pairs()` — call AWS for available key pairs in region
-- `list_security_groups()` — call AWS for available security groups
-- `list_subnets()` — call AWS for available subnets
-- `list_instance_profiles()` — call AWS for available IAM instance profiles
-
-**Tests:**
-- Test parameter collection with valid inputs
-- Test validation of invalid instance types
-- Test validation of non-existent key pairs
-- Test cancel behavior at any prompt
-
-**Dependency:** P1, W2
+**Dependency:** Phase 1 (for the SSM client), Phase 3
 
 ---
 
-#### C1 — Confirmation and Launch
+## Phase 5 — Create EC2 Instance from Cloud-Init YAML
 
 **Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
+**Priority:** Medium
+**Files:** `internal/workflow/launch_instance.go` (shared with Phase 4)
 
-- Create `confirm_and_launch()` function
-- Display all collected parameters in readable format
-- Ask for final confirmation
-- Call `aws ec2 run-instances` with all parameters
-- Parse response for new InstanceId
-- Display success message with new instance details
+### Work Items
 
-**Tests:**
-- Test confirmation flow
-- Test cancel at confirmation
-- Test successful launch (mock AWS response)
-- Test failed launch (mock AWS error)
+- Prompt for the cloud-init YAML first — inline text or a local file path
+  (reuses Phase 4's file-loading logic)
+- Pick a base AMI (Phase 3's `PickList` over `ListImages`)
+- Collect the remaining parameters and execute via the *same*
+  `LaunchInstanceParams` struct and execution function Phase 4 uses —
+  this phase only adds a different front-end prompt sequence, not new
+  execution logic (see `DECISIONS.md`, "Add Create EC2 Instance from
+  Cloud-Init YAML as a v1 primitive")
+- Same post-launch behavior as Phase 4: poll until `running`, then wait
+  for SSM + `cloud-init status --wait`, reporting completion status
 
-**Dependency:** C0
+**Tests:** prompt-ordering test confirming cloud-init is collected before
+the AMI pick list; otherwise covered by Phase 4's execution-path tests
+(no new execution logic to test independently)
 
----
-
-#### C2 — Post-Launch Actions
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- After successful launch:
-  - Wait for instance to reach running state (optional, with timeout)
-  - Display connection information (public IP, SSH command)
-  - Refresh resource lists
-  - Return to main menu
-
-**Tests:**
-- Test post-launch refresh
-- Test connection info display
-
-**Dependency:** C1
+**Dependency:** Phase 4 (shares its execution path directly)
 
 ---
 
-## Phase 5 — Create AMI from EC2 Instance
+## Phase 6 — Start EC2 Instance
+
+**Effort:** ~2 hours
+**Priority:** Medium
+**Files:** `internal/workflow/power_state.go`
+
+### Work Items
+
+- Pick a stopped instance
+- Confirm (simple yes/no, via the same reusable confirmation gate as
+  every other workflow)
+- Call `ec2.StartInstances`
+- Poll `DescribeInstances` until `running` (bounded timeout)
+- Display connection info (public/private IP, SSH command) — note the
+  public IP may have changed since the instance was last running, unless
+  it uses an Elastic IP
+
+**Tests:** start success/failure; poll-until-running with a fake state
+transition; poll timeout path; confirmation decline (no API call made)
+
+**Dependency:** Phase 3
+
+---
+
+## Phase 7 — Stop EC2 Instance
+
+**Effort:** ~2 hours
+**Priority:** Medium
+**Files:** `internal/workflow/power_state.go`
+
+### Work Items
+
+- Pick a running instance
+- Confirm (simple yes/no — reversible, unlike Phase 8's terminate)
+- Call `ec2.StopInstances`
+- Poll `DescribeInstances` until `stopped` (bounded timeout)
+
+**Tests:** stop success/failure; poll-until-stopped with a fake state
+transition; poll timeout path; confirmation decline (no API call made)
+
+**Dependency:** Phase 3
+
+---
+
+## Phase 8 — Terminate EC2 Instance
 
 **Effort:** ~6 hours
-**Priority:** Medium
-
-### Work Items
-
-#### A0 — Instance Selection and Validation
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Use `pick_instance()` with filter for running/stopped states
-- Validate instance is not terminated
-- Display selected instance details for confirmation
-- Warn if instance is running (potential inconsistency in AMI)
-
-**Tests:**
-- Test selection of running instance
-- Test selection of stopped instance
-- Test that terminated instances are excluded
-
-**Dependency:** P2
-
----
-
-#### A1 — AMI Creation Parameters
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Prompt for:
-  - AMI name (required, validate length/characters)
-  - AMI description (optional)
-  - No-reboot flag (default: false, only for running instances)
-  - Tags (optional)
-- Validate AMI name meets AWS requirements
-
-**Tests:**
-- Test valid AMI name
-- Test invalid AMI name (too long, invalid characters)
-- Test no-reboot flag only offered for running instances
-
-**Dependency:** A0
-
----
-
-#### A2 — Create and Verify AMI
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `create_ami_from_instance()` function
-- Call `aws ec2 create-image` with parameters
-- Parse response for new ImageId
-- Wait for AMI to reach available state (with timeout)
-- Display success message with new AMI details
-- Refresh resource lists
-- Return to main menu
-
-**Tests:**
-- Test successful AMI creation (mock response)
-- Test AMI creation failure (mock error)
-- Test timeout waiting for available state
-
-**Dependency:** A1
-
----
-
-## Phase 5b — Fold in `ami_copy.bash` capabilities
-
-**Effort:** ~4 hours
 **Priority:** High
-**Source:** `ami_copy.bash`, `ami_copy_basic_steps.md` (merged from the separate `ami_copy` repo; see DECISIONS.md "AMI-from-instance: fold ami_copy.bash capabilities into Phase 5")
-
-`ami_copy.bash` duplicates this phase's instance→AMI workflow but single-region,
-and includes capabilities this phase's workflow lacks. Port them into the
-multi-region workflow, then retire `ami_copy.bash`.
+**Files:** `internal/workflow/power_state.go`
 
 ### Work Items
 
-- [x] Volume-size gathering: `gather_volume_info()` calls `describe-volumes`
-      for the selected instance, sums attached volume sizes, and
-      `estimate_ami_creation_time()` shows the same time-estimate table as
-      `ami_copy_basic_steps.md` (<20GB: 5–15min, 20–100GB: 15–45min,
-      100–200GB: 45–90min, 200+GB: 1.5–3+hrs). Wired into
-      `select_instance_for_ami()`.
-- [x] Prior-snapshot detection: `gather_volume_info()` sets
-      `HasPriorSnapshot`; `select_instance_for_ami()` shows the "only
-      changed blocks will be copied" note when true.
-- [x] SSM `fstrim` step: `check_ssm_availability()` +
-      `run_fstrim_via_ssm()` + `offer_fstrim_before_snapshot()` (new
-      `aws_ssm()` wrapper alongside `aws_ec2()`), wired into
-      `select_instance_for_ami()` before AMI creation.
-- [x] Fix the AMI-creation wait: `post_ami_creation_actions()`'s 600s
-      timeout replaced with unbounded polling via `format_elapsed()` and
-      `AMI_POLL_INTERVAL` (default 30s), with explicit `failed`-state
-      short-circuit (previously only timed out generically).
-- [x] Running-instance warning: `select_instance_for_ami()`'s
-      running-instance warning now carries the Postgres/OpenSearch/Redis/
-      Docker crash-consistency guidance from `ami_copy_basic_steps.md`.
-- [ ] Retire `ami_copy.bash` once the above are folded in and verified
-      equivalent (or better) across all four regions
-- [ ] Remove `ami_copy_basic_steps.md`'s standalone-script framing, or fold
-      its content into this script's `--help`/usage text
+- Pick an instance
+- Dry-run display: what would be destroyed, **including whether any
+  attached EBS volume has `DeleteOnTermination=true`** (query
+  `BlockDeviceMappings` on the instance) — that data is destroyed along
+  with the instance, potentially including not-yet-archived backups (see
+  Phase 13)
+- Environment check: if `Environment=production`, show an additional
+  explicit warning before type-to-confirm (see `DECISIONS.md`, "Introduce
+  a light Project/Environment tagging convention")
+- Type-to-confirm: user must type the instance ID or name exactly
+- Call `ec2.TerminateInstances`
+- Structure as: build a resolved `TerminateInstanceParams` struct →
+  reusable confirmation/dry-run gate → execute against
+  `ec2.TerminateInstances` (see `DECISIONS.md`, "Structure workflows for
+  future record/replay")
 
-**Tests:** `tests/test_create_ami.bats` (27 tests, all passing as of
-2026-06-30):
-- [x] Volume-size aggregation and time-estimate boundaries
-- [x] Prior-snapshot detection messaging
-- [x] SSM-unavailable path (skips fstrim, proceeds with warning) and
-      Success/Failed command-status paths
-- [x] AMI-creation polling does not exit early before `available`/`failed`
-      (verified past 8 consecutive `pending` polls)
-- [x] Running-instance crash-consistency warning, including cancel path
+**Tests:** dry-run display, including the `DeleteOnTermination` warning
+present/absent; production-tag warning shown/not-shown; type-to-confirm
+match/mismatch; termination success/failure
 
-**Dependency:** A2
+**Dependency:** Phase 3
 
 ---
 
-## Phase 6 — Remove AMI
-
-**Effort:** ~6 hours
-**Priority:** Medium
-
-### Work Items
-
-#### R0 — AMI Selection
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Use `pick_ami()` to select AMI to remove
-- Display selected AMI details
-
-**Tests:**
-- Test AMI selection for removal
-
-**Dependency:** P1
-
----
-
-#### R1 — Dry Run Display
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Create `show_removal_dry_run()` function
-- Display what would be deleted (AMI ID, Name, Region)
-- Ask user to confirm they want to proceed to dependency check
-
-**Tests:**
-- Test dry run display
-- Test cancel at dry run
-
-**Dependency:** R0
-
----
-
-#### R2 — Dependency Check
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `check_ami_dependencies()` function
-- Query all regions for instances using this AMI (by ImageId)
-- Display list of dependent instances with details
-- If dependencies exist, warn user and ask if they want to continue
-- If no dependencies, display "No instances currently using this AMI"
-
-**Tests:**
-- Test with no dependencies (expect clean message)
-- Test with dependencies in same region (expect warning)
-- Test with dependencies in different regions (expect warning with all regions)
-
-**Dependency:** R1
-
----
-
-#### R3 — Type-to-Confirm
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Create `type_to_confirm()` function
-- Prompt user: "Type the AMI ID to confirm deletion: "
-- Compare input exactly (case-sensitive) with selected AMI ID
-- On match, proceed to deletion
-- On mismatch, display error and return to previous step
-- Allow cancel option
-
-**Tests:**
-- Test correct AMI ID input (expect proceed)
-- Test incorrect AMI ID input (expect error, re-prompt)
-- Test cancel at confirmation
-
-**Dependency:** R2
-
----
-
-#### R4 — Execute Removal
-
-**Effort:** ~1 hour
-**Files:** `ec2_ami_manager.bash`
-
-- Create `remove_ami()` function
-- Call `aws ec2 deregister-image` for the AMI
-- Handle potential errors (AMI in use, permissions, etc.)
-- Verify removal was successful
-- Display confirmation message
-- Refresh resource lists
-- Return to main menu
-
-**Tests:**
-- Test successful removal (mock response)
-- Test removal failure (mock error - AMI in use)
-- Test removal failure (mock error - permissions)
-
-**Dependency:** R3
-
----
-
-## Phase 7 — Main Menu and Integration
-
-**Effort:** ~4 hours
-**Priority:** High
-
-### Work Items
-
-#### M0 — Main Menu Display
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create `show_main_menu()` function
-- Display header with script name and regions
-- Display current EC2 instances section
-- Display current AMIs section
-- Display menu options:
-  1. Create EC2 instance from AMI
-  2. Create AMI from EC2 instance
-  3. Remove AMI
-  4. Refresh resource lists
-  5. Exit
-- Accept user input with validation
-
-**Tests:**
-- Test menu display with data
-- Test menu display with no data
-- Test valid menu selection
-- Test invalid menu selection (expect re-prompt)
-
-**Dependency:** Phase 2, Phase 3
-
----
-
-#### M1 — Main Loop
-
-**Effort:** ~2 hours
-**Files:** `ec2_ami_manager.bash`
-
-- Create main loop that:
-  - Calls `show_main_menu()`
-  - Dispatches to appropriate function based on selection
-  - Handles errors gracefully
-  - Refreshes data after state-changing operations
-  - Exits cleanly on option 5
-- Implement signal handling (Ctrl+C) for graceful exit
-
-**Tests:**
-- Test menu navigation
-- Test operation dispatch
-- Test refresh after operations
-- Test clean exit
-
-**Dependency:** M0, all Phase 4-6 items
-
----
-
-## Phase 8 — Polish and Error Handling
+## Phase 9 — Manage Tags
 
 **Effort:** ~4 hours
 **Priority:** Medium
+**Files:** `internal/workflow/manage_tags.go`
 
 ### Work Items
 
-- [ ] Add loading indicators for long operations
-- [ ] Add color coding for states (green=running, red=stopped, etc.)
-- [ ] Add comprehensive error messages with actionable advice
-- [ ] Add input validation for all user inputs
-- [ ] Add timeout handling for AWS CLI calls
-- [ ] Add pagination for large lists (>50 items)
+- Pick a resource — an instance or an AMI
+- Display its current tags
+- Choose an action: add (new key/value), update (pick existing key,
+  prompt new value), or remove (pick existing key)
+- Confirm (simple yes/no — this is cheap and reversible, not the
+  dry-run/type-to-confirm tier used for AMI removal or backup deletion)
+  via the same reusable confirmation gate used throughout this project's
+  workflows, for consistency and future replay support (see
+  `DECISIONS.md`, "Structure workflows for future record/replay")
+- Call `ec2.CreateTags` (add/update) or `ec2.DeleteTags` (remove)
+- Renaming an instance is just updating its `Name` tag through this same
+  flow — no separate code path. This never touches an AMI's `Name`
+  attribute itself, which is immutable via the AWS API once set at
+  `CreateImage` time — see `DECISIONS.md`, "Add Rename Instance as a v1
+  primitive; AMI Name is immutable"
+- If the edited key is `Environment`, show a brief note that it's the
+  same tag used elsewhere in this tool (Phase 11, Remove AMI, and Phase 8,
+  Terminate Instance) to gate production warnings
+
+**Tests:** add/update/remove success paths, for both an instance and an
+AMI target; confirmation decline (no API call made); `CreateTags`/
+`DeleteTags` failure handling
+
+**Dependency:** Phase 3
 
 ---
 
-## Phase 9 — Testing
+## Phase 10 — Create AMI from EC2 Instance
 
 **Effort:** ~8 hours
 **Priority:** High
+**Files:** `internal/workflow/create_ami.go`
 
 ### Work Items
 
-- [ ] Write BATS tests for all functions
-- [ ] Create mock AWS CLI responses for testing
-- [ ] Test error scenarios
-- [ ] Test edge cases (empty lists, missing resources, etc.)
-- [ ] Run full test suite against real AWS (with test account)
-- [ ] Performance testing with many resources
+- Pick an instance (running or stopped)
+- Gather attached volume info (sizes, prior-snapshot detection) and show
+  the volume-size time estimate table (see `DESIGN.md`, "Domain Knowledge
+  Carried Forward")
+- If running: show Invenio RDM (Postgres/OpenSearch/Redis/Docker)
+  crash-consistency guidance; offer an SSM fstrim pass (skip cleanly, not
+  an error, if SSM is unavailable on the instance)
+- Collect AMI name (default suggestion:
+  `<instance-name-or-id>-copy-<date>`, user may override), description,
+  no-reboot flag (running instances only), tags — `Project` defaults to
+  the source instance's `Project` tag if set; `Environment` is always an
+  explicit prompt, no default
+- Call `ec2.CreateImage`
+- Poll `DescribeImages` unboundedly until `available` or `failed`
+  (large Invenio RDM volumes: 20–60+ minutes) — no fixed timeout, matching
+  the fix already made in the Bash version for this same reason
+- Build the `TagSpecifications` request field as a typed SDK struct, not a
+  hand-built string — this is the exact bug class (malformed AWS CLI
+  shorthand for tags) that broke the Bash version in real use
+- Structure as: build a resolved `CreateAMIParams` struct → reusable
+  confirmation/dry-run gate → execute against `ec2.CreateImage` (see
+  `DECISIONS.md`, "Structure workflows for future record/replay")
+
+**Tests:** volume-info gathering; SSM-unavailable path; fstrim
+success/decline; AMI-name default generation and validation; create
+success/failure; unbounded-poll transitions (available/failed) with a
+fake clock or call-count-based fake
+
+**Dependency:** Phase 3
 
 ---
 
-## Phase 10 — Documentation
+## Phase 11 — Remove AMI
+
+**Effort:** ~6 hours
+**Priority:** High
+**Files:** `internal/workflow/remove_ami.go`
+
+### Work Items
+
+- Pick an owned AMI
+- Dry-run display: what would be deleted
+- Dependency check: list instances currently referencing this AMI's
+  `ImageId`
+- Environment check: if the AMI's `Environment` tag is `production`, show
+  an additional explicit warning before type-to-confirm (see
+  `DECISIONS.md` "Introduce a light Project/Environment tagging
+  convention")
+- Type-to-confirm: user must type the AMI ID or name exactly
+- Call `ec2.DeregisterImage`
+- Structure as: build a resolved `RemoveAMIParams` struct → reusable
+  confirmation/dry-run gate → execute against `ec2.DeregisterImage` (see
+  `DECISIONS.md`, "Structure workflows for future record/replay")
+
+**Tests:** dry-run display; dependency detection (AMI in use / not in use);
+production-tag warning shown/not-shown; type-to-confirm match/mismatch;
+removal success/failure
+
+**Dependency:** Phase 3
+
+---
+
+## Phase 12 — Show/Export Cloud-Init
+
+**Effort:** ~8 hours
+**Priority:** High
+**Files:** `internal/workflow/cloud_init.go`
+
+### Work Items
+
+- Pick an instance or an AMI (either is a valid target)
+- **Instance path**: call `ec2.DescribeInstanceAttribute` (attribute
+  `userData`), base64-decode, display; report plainly (not as an error) if
+  no user-data was set
+- **AMI path** — costs real time/money, so requires its own explicit
+  confirmation before proceeding (see `DESIGN.md` Security
+  Considerations):
+  1. Launch the smallest available instance type from the AMI, tagged to
+     mark it disposable (e.g. `Purpose=cloud-init-extraction`)
+  2. Poll until `running` and SSM reports `Online`, with a **bounded**
+     timeout (this is a diagnostic side-operation, not core creation —
+     unlike Phase 10's unbounded poll, it should fail cleanly rather than
+     wait indefinitely)
+  3. `ssm.SendCommand` to read `/var/lib/cloud/instance/user-data.txt`,
+     then `ssm.GetCommandInvocation` for the output
+  4. **Always** call `ec2.TerminateInstances` on the temporary instance
+     afterward — including when SSM never comes online or the command
+     fails. This must be structured so cleanup cannot be skipped by an
+     early return (Go's `defer`, or an equivalent explicit cleanup path
+     covered by tests)
+- The AMI path's launch-confirmation step uses the same reusable
+  confirmation gate used throughout this project's workflows, not a
+  one-off implementation (see `DECISIONS.md`, "Structure workflows for
+  future record/replay")
+- **Export**: prompt for a local file path and write the decoded YAML
+  there, for manual comparison against a local clone of
+  `caltechlibrary/cloud-init-examples`. No inline fetch-and-diff against
+  the GitHub repo in v1 (see `DECISIONS.md`, "Add Show/Export Cloud-Init
+  as a v1 primitive", and the Deferred section below)
+
+**Tests:** instance-path success; instance-path no-user-data-set;
+AMI-path full happy path with a fake SSM client; AMI-path
+cleanup-on-SSM-timeout (assert `TerminateInstances` is still called);
+AMI-path cleanup-on-command-failure; export-to-file success and
+path-error handling
+
+**Dependency:** Phase 1, Phase 2, Phase 3
+
+---
+
+## Phase 13 — Backup Archive & Trim
+
+**Effort:** ~10 hours
+**Priority:** High
+**Files:** `internal/workflow/backup_archive.go`
+
+### Work Items
+
+- Pick an instance
+- Prompt for the backup directory and an age threshold in days — both
+  explicit, no baked-in default (same reasoning as the `Environment` tag
+  having no default: force a deliberate choice)
+- **Dry-run list** (SSM, read-only): candidate files matching the age
+  threshold, with size and age, shown before anything else happens
+- **Type-to-confirm** before proceeding — same safety tier as Phase 11's
+  (Remove AMI) destructive-action pattern
+- **Upload phase** (SSM): instance uploads each candidate file to S3 via
+  its own AWS CLI/credentials, reports back a small per-file JSON summary
+  (S3 key, size). Nothing deleted yet
+- **Independent verification**: the tool's own `S3API.HeadObject` (Phase
+  1), using the operator's credentials, confirms each uploaded key exists
+  with the expected size — this, not the instance's self-report, is what
+  authorizes deletion
+- **Delete phase** (a *second*, separate SSM command): instance deletes
+  exactly the tool-verified file list, not a re-derived one
+- **fstrim** (reuse Phase 10's SSM fstrim mechanism), then report bytes
+  freed and any files that failed verification (left untouched)
+- Structure as: build a resolved `BackupArchiveParams` struct (directory,
+  age threshold, bucket) → reusable confirmation/dry-run gate → execute
+  the upload/verify/delete/fstrim sequence (see `DECISIONS.md`, "Structure
+  workflows for future record/replay")
+
+**Tests:** dry-run empty result; dry-run with matches; type-to-confirm
+mismatch; full happy path (all files verified, deleted, fstrim runs) with
+fake `EC2API`/`SSMAPI`/`S3API`; partial-verification-failure path (only
+verified files deleted, failures reported, fstrim still runs on whatever
+was freed); SSM-unavailable path
+
+**Dependency:** Phase 1 (including the `S3API`), Phase 2, Phase 3. Real-AWS
+verification (Phase 16) additionally depends on Phase 4, since the live
+test target is a throwaway instance launched from an existing AMI that
+already has these backups baked in — never tested directly against a
+production instance.
+
+---
+
+## Phase 14 — Main Menu and Integration
+
+**Effort:** ~4 hours
+**Priority:** High
+**Files:** `cmd/awsops/main.go`, `internal/workflow/menu.go`
+
+### Work Items
+
+- `ShowMainMenu` — header, live instance/AMI listings (Phase 2 + 3),
+  12-option menu, input validation loop
+- Main loop: dispatch to Phase 4/5/6/7/8/9/10/11/12/13 workflows, refresh
+  listings after each state-changing operation, handle `Ctrl+C`
+  (`os/signal`) for a clean exit
+- Wire real AWS clients (Phase 1) into the workflows at startup
+
+**Tests:** menu navigation and dispatch (fake workflows); refresh-after-
+operation; clean exit; signal handling
+
+**Dependency:** Phase 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+
+---
+
+## Phase 15 — Polish and Error Handling
+
+**Effort:** ~4 hours
+**Priority:** Medium
+
+### Work Items
+
+- [ ] Loading indicators for long operations (AMI creation polling,
+      cloud-init AMI extraction, backup archive upload/verify)
+- [ ] Color output for state (running=green, stopped/failed=red, etc.),
+      with a `NO_COLOR`/non-TTY fallback
+- [ ] Actionable error messages (unwrap AWS SDK errors to their API error
+      code, not just the raw Go error string)
+- [ ] Input validation for all prompts
+- [ ] Context-based timeouts for AWS calls (`context.WithTimeout`)
+- [ ] Pagination for large lists (>50 items)
+
+**Dependency:** Phase 14
+
+---
+
+## Phase 16 — Testing
+
+**Effort:** ~6 hours
+**Priority:** High
+
+### Work Items
+
+- [ ] `go test ./...` covers all packages; target meaningful coverage on
+      `internal/workflow` (the highest-risk, most-interactive code)
+- [ ] Fakes for `EC2API`/`SSMAPI`/`S3API` covering error scenarios
+      (throttling, access denied, not-found) — no real AWS calls in unit
+      tests
+- [ ] `TEST_PLAN_REAL_AWS.txt` run manually against a real AWS account,
+      all four regions, covering create-instance, create-instance-from-
+      cloud-init-YAML, create-AMI, tag management (add/update/remove,
+      instance and AMI), start/stop/terminate (including the
+      `DeleteOnTermination` warning), both Show/Export Cloud-Init paths
+      (including verifying the temporary instance from the AMI path is
+      actually terminated), and Backup Archive & Trim (against a
+      throwaway instance launched from an existing AMI with real backups
+      baked in — not production; requires the S3 bucket and target
+      instance profile to exist first)
+- [ ] Update `TEST_PLAN_REAL_AWS.txt` if the Go CLI's exact prompts/flow
+      differ from the Bash version's
+
+**Dependency:** Phase 14
+
+---
+
+## Phase 17 — Documentation and Bash Retirement
 
 **Effort:** ~2 hours
 **Priority:** Medium
 
 ### Work Items
 
-- [ ] Add usage instructions to script header
-- [ ] Create README.md with:
-  - Overview
-  - Prerequisites
-  - Installation
-  - Usage
-  - Examples
-  - Troubleshooting
-- [ ] Update DESIGN.md, DECISIONS.md, PLAN.md with any changes from implementation
+- [ ] `README.md`: overview, prerequisites (Go toolchain removed for end
+      users — ship a built binary), installation, usage, examples
+- [ ] Update `DESIGN.md`/`DECISIONS.md`/`PLAN.md` with any changes made
+      during implementation
+- [ ] Once Phase 16's real-AWS verification passes: retire
+      `ec2_ami_manager.bash`, `ami_copy.bash`, `ami_copy_basic_steps.md`,
+      and the `tests/*.bats` suite (record the retirement as a new
+      `DECISIONS.md` entry, per this project's existing retire-after-verify
+      pattern)
+
+**Dependency:** Phase 16
+
+---
+
+## Deferred to a Later Version (Phase 18+, not scheduled)
+
+Not part of v1 — see `DECISIONS.md`, "V1 scope: ship the four primitives
+first, defer composite workflows", "Add Show/Export Cloud-Init as a v1
+primitive", "Add Backup Archive & Trim as a v1 primitive", "Add Rename
+Instance as a v1 primitive; AMI Name is immutable", "Add Create EC2
+Instance from Cloud-Init YAML as a v1 primitive", "Add Start/Stop/
+Terminate EC2 Instance as v1 primitives", "Structure workflows for future
+record/replay", and `DESIGN.md`, "Deferred to a Later Version". Recorded
+here so they're scheduled deliberately once Phase 16 passes, not lost:
+
+- **Recorded Scripts ("session playbooks")** — capture an interactive
+  session's actions as an editable, templated YAML script and replay it
+  later, with the same confirmation gates as interactive mode always
+  enforced (never bypassable for `Environment=production`). Phases
+  4-13 are already structured (params-struct/confirm-gate seam) to
+  support this without rework once it's built
+- **Clone instance for testing**, **Upgrade with rollback point**, and
+  **Bake AMI from cloud-init** — composite sequences built from v1's
+  primitives (Phase 4 + Phase 10, plus Phase 12's SSM/poll/cleanup pattern
+  for the cloud-init case). Once Recorded Scripts exist, these likely
+  become example saved scripts rather than bespoke Go workflows
+- **Inline diff against `cloud-init-examples`** — fetch a comparison file
+  from the GitHub repo and show a unified diff in the tool, instead of
+  Phase 12's export-then-manual-diff. Deferred until the repo's files have
+  a clear mapping to this account's `Project` tag values
+- **Edit AMI Description** — an AMI's `Name` is immutable, but
+  `Description` can be changed after creation via `ec2.ModifyImageAttribute`.
+  The closest thing to a "rename" AWS actually allows for an AMI. Not
+  requested for v1; noted here so it isn't lost (see `DECISIONS.md`, "Add
+  Rename Instance as a v1 primitive; AMI Name is immutable")
 
 ---
 
@@ -673,40 +608,21 @@ multi-region workflow, then retire `ami_copy.bash`.
 | Phase | Priority | Effort | Dependencies |
 |-------|----------|--------|---------------|
 | Phase 0 | High | 2h | None |
-| Phase 1 | High | 4h | Phase 0 |
-| Phase 2 | High | 6h | Phase 1 |
+| Phase 1 | High | 3h | Phase 0 |
+| Phase 2 | High | 4h | Phase 1 |
 | Phase 3 | High | 4h | Phase 2 |
-| Phase 4 | High | 8h | Phase 3 |
-| Phase 7 | High | 4h | Phase 4 |
-| Phase 5 | Medium | 6h | Phase 3 |
-| Phase 6 | Medium | 6h | Phase 3 |
-| Phase 8 | Medium | 4h | Phase 7 |
-| Phase 9 | High | 8h | All |
-| Phase 10 | Medium | 2h | All |
-
-## Total Estimated Effort
-
-**Total:** ~54 hours
-- Phase 0-4, 7: Core functionality (~28 hours)
-- Phase 5-6: AMI creation/removal (~12 hours)
-- Phase 8-10: Polish, testing, docs (~14 hours)
-
-## Milestones
-
-1. **Milestone 1 (MVP):** Phase 0-4, 7 complete — Basic listing and instance creation (~32 hours)
-2. **Milestone 2:** Phase 5-6 complete — Full AMI lifecycle management (~40 hours total)
-3. **Milestone 3:** Phase 8-10 complete — Production ready (~54 hours total)
-
-## Testing Strategy
-
-All code follows TDD approach:
-1. Write tests first for each function
-2. Implement function to pass tests
-3. Refactor as needed
-4. Maintain >80% test coverage
-
-Test types:
-- Unit tests: Individual functions with mocked AWS CLI
-- Integration tests: Function interactions with mocked AWS CLI
-- End-to-end tests: Full workflows with mocked AWS CLI
-- Manual tests: Against real AWS with test account
+| Phase 4 | High | 6h | Phase 1, 3 |
+| Phase 5 | Medium | 2h | Phase 4 |
+| Phase 6 | Medium | 2h | Phase 3 |
+| Phase 7 | Medium | 2h | Phase 3 |
+| Phase 8 | High | 6h | Phase 3 |
+| Phase 9 | Medium | 4h | Phase 3 |
+| Phase 10 | High | 8h | Phase 3 |
+| Phase 11 | High | 6h | Phase 3 |
+| Phase 12 | High | 8h | Phase 1, 2, 3 |
+| Phase 13 | High | 10h | Phase 1, 2, 3 |
+| Phase 14 | High | 4h | Phase 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 |
+| Phase 15 | Medium | 4h | Phase 14 |
+| Phase 16 | High | 6h | Phase 14 |
+| Phase 17 | Medium | 2h | Phase 16 |
+| Phase 18+ | Deferred | — | Phase 16 (see above) |
