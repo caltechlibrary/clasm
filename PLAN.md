@@ -419,11 +419,16 @@ fake clock or call-count-based fake
 
 ---
 
-## Phase 11 — Remove AMI
+## Phase 11 — Remove AMI (done)
 
 **Effort:** ~6 hours
 **Priority:** High
 **Files:** `internal/workflow/remove_ami.go`
+
+The dependency check (`instancesUsingAMI`) filters the already-fetched
+inventory listing by `ImageID` rather than making a fresh AWS call --
+Phase 2's `ListInstances` already carries each instance's `ImageID`.
+Reuses `ConfirmDestructive` from Phase 8 unchanged.
 
 ### Work Items
 

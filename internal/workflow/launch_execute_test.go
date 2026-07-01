@@ -58,6 +58,17 @@ type fakeEC2Client struct {
 	lastCreateImageInput *ec2.CreateImageInput
 	createImageErr       error
 	createImageID        string
+
+	lastDeregisterImageInput *ec2.DeregisterImageInput
+	deregisterImageErr       error
+}
+
+func (f *fakeEC2Client) DeregisterImage(ctx context.Context, params *ec2.DeregisterImageInput, optFns ...func(*ec2.Options)) (*ec2.DeregisterImageOutput, error) {
+	f.lastDeregisterImageInput = params
+	if f.deregisterImageErr != nil {
+		return nil, f.deregisterImageErr
+	}
+	return &ec2.DeregisterImageOutput{}, nil
 }
 
 func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
