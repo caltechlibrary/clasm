@@ -24,8 +24,9 @@ type fakeSSMClient struct {
 	describeErr      error
 
 	// SendCommand
-	commandID      string
-	sendCommandErr error
+	commandID            string
+	sendCommandErr       error
+	sendCommandCallCount int
 
 	// GetCommandInvocation
 	pendingCalls    int // number of leading calls that report InProgress
@@ -49,11 +50,14 @@ func (f *fakeSSMClient) DescribeInstanceInformation(ctx context.Context, params 
 }
 
 func (f *fakeSSMClient) SendCommand(ctx context.Context, params *ssm.SendCommandInput, optFns ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
+	f.sendCommandCallCount++
 	if f.sendCommandErr != nil {
 		return nil, f.sendCommandErr
 	}
 	return &ssm.SendCommandOutput{Command: &types.Command{CommandId: aws.String(f.commandID)}}, nil
 }
+
+func (f *fakeSSMClient) sendCommandCalls() int { return f.sendCommandCallCount }
 
 func (f *fakeSSMClient) GetCommandInvocation(ctx context.Context, params *ssm.GetCommandInvocationInput, optFns ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error) {
 	f.invocationCalls++

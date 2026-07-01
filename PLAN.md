@@ -368,11 +368,22 @@ AMI target; confirmation decline (no API call made); `CreateTags`/
 
 ---
 
-## Phase 10 — Create AMI from EC2 Instance
+## Phase 10 — Create AMI from EC2 Instance (done)
 
 **Effort:** ~8 hours
 **Priority:** High
-**Files:** `internal/workflow/create_ami.go`
+**Files:** `internal/workflow/{volume_info,fstrim,create_ami_execute,create_ami_from_instance}.go`
+
+`ec2:DescribeVolumes` was missing from both the `EC2API` interface and
+DESIGN.md's Assumptions list -- added to both once this phase's volume-
+info gathering needed it. `isSSMOnline` is a single-shot check (not
+Phase 4's poll-based `WaitForSSMOnline`), matching
+`ec2_ami_manager.bash`'s `check_ssm_availability` for an instance that's
+presumably been running a while already. `WaitForAMIAvailable` has no
+internal timeout at all (unlike every other poll in this codebase) --
+only the caller's `ctx` can end it -- since the Bash version's fixed
+600-second timeout for this exact operation was itself a correctness bug
+(DECISIONS.md, 2026-06-30).
 
 ### Work Items
 

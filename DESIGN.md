@@ -445,6 +445,9 @@ library, the AWS SDK, and `termlib` (both pre-approved dependencies per
    `ec2:DeleteTags`, `ec2:DescribeTags` (for the Project/Environment
    tagging convention and Manage Tags),
    `ec2:DescribeInstanceAttribute` (for Show/Export Cloud-Init),
+   `ec2:DescribeVolumes` (for Create AMI from Instance's volume-size time
+   estimate and prior-snapshot detection -- missing from this list until
+   Phase 10 surfaced it),
    `ssm:SendCommand`, `ssm:GetCommandInvocation`,
    `ssm:DescribeInstanceInformation` (fstrim, Show/Export Cloud-Init's AMI
    path, and Backup Archive & Trim), `s3:HeadObject` (for Backup Archive &

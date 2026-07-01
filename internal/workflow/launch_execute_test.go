@@ -47,9 +47,21 @@ type fakeEC2Client struct {
 	createTagsErr       error
 	lastDeleteTagsInput *ec2.DeleteTagsInput
 	deleteTagsErr       error
+
+	describeImagesCalls     int
+	imageAvailableAfterCall int // DescribeImages reports available starting at this call number; 0 = never
+	imageFailedAfterCall    int // DescribeImages reports failed starting at this call number; 0 = never
+
+	describeVolumesOutput []types.Volume
+	describeVolumesErr    error
+
+	lastCreateImageInput *ec2.CreateImageInput
+	createImageErr       error
+	createImageID        string
 }
 
 func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
+	f.describeImagesCalls++
 	if f.describeImagesErr != nil {
 		return nil, f.describeImagesErr
 	}
@@ -57,7 +69,29 @@ func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.Describe
 	if len(params.ImageIds) > 0 {
 		imageID = params.ImageIds[0]
 	}
-	return &ec2.DescribeImagesOutput{Images: []types.Image{{ImageId: aws.String(imageID), Tags: f.describeImagesTags}}}, nil
+	state := types.ImageStatePending
+	if f.imageAvailableAfterCall > 0 && f.describeImagesCalls >= f.imageAvailableAfterCall {
+		state = types.ImageStateAvailable
+	}
+	if f.imageFailedAfterCall > 0 && f.describeImagesCalls >= f.imageFailedAfterCall {
+		state = types.ImageStateFailed
+	}
+	return &ec2.DescribeImagesOutput{Images: []types.Image{{ImageId: aws.String(imageID), Tags: f.describeImagesTags, State: state}}}, nil
+}
+
+func (f *fakeEC2Client) DescribeVolumes(ctx context.Context, params *ec2.DescribeVolumesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
+	if f.describeVolumesErr != nil {
+		return nil, f.describeVolumesErr
+	}
+	return &ec2.DescribeVolumesOutput{Volumes: f.describeVolumesOutput}, nil
+}
+
+func (f *fakeEC2Client) CreateImage(ctx context.Context, params *ec2.CreateImageInput, optFns ...func(*ec2.Options)) (*ec2.CreateImageOutput, error) {
+	f.lastCreateImageInput = params
+	if f.createImageErr != nil {
+		return nil, f.createImageErr
+	}
+	return &ec2.CreateImageOutput{ImageId: aws.String(f.createImageID)}, nil
 }
 
 func (f *fakeEC2Client) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
