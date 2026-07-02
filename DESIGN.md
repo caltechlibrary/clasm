@@ -210,6 +210,19 @@ single-menu implementation (see "Architecture" below), so introducing the
 domain picker is a refactor of `internal/ui`/`internal/workflow`'s menu
 wiring, not a rewrite of any of Compute's existing workflows.
 
+## Color Output
+
+When color is enabled (respects `NO_COLOR` and falls back to plain text
+on a non-TTY, `ui.ColorEnabled()`), two things are colorized:
+- The STATE column in the instance listing (running=green,
+  stopped/terminated=red, pending/stopping=yellow).
+- Every pick-list prompt's header line (e.g. "Select an instance to
+  start"), printed in bold *before* the numbered list it introduces --
+  so picking the wrong main-menu action (e.g. Start instead of Stop) is
+  visible immediately, without reading through the list first. See
+  DECISIONS.md, "Highlight PickList's prompt header when color is
+  enabled".
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

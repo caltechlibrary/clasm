@@ -1,4 +1,4 @@
-%awsops(1) user manual | version 0.0.0 d917d70
+%awsops(1) user manual | version 0.0.0 27441d6
 % R. S. Doiel
 % 2026-07-02
 
@@ -14,10 +14,11 @@ awsops [OPTIONS]
 
 awsops is an interactive command line tool for administering AWS EC2
 instances, AMIs, and S3 backup archives for Caltech Library DLD's
-infrastructure, across two regions (us-west-1, us-west-2). Its primary
-use case today is managing instances behind this
-team's Invenio RDM deployments, but nothing in its mechanisms (tagging,
-backup archival, cloud-init inspection) is RDM-specific.
+infrastructure, across the regions configured in ~/.awsops (default:
+us-west-1, us-west-2). Its primary use case today is managing instances
+behind this team's Invenio RDM deployments, but nothing in its
+mechanisms (tagging, backup archival, cloud-init inspection) is
+RDM-specific.
 
 Run with no options to launch the interactive menu: it lists current EC2
 instances and owned AMIs, then presents a numbered menu of operations
@@ -26,6 +27,12 @@ tags, show/export cloud-init, archive stale backups to S3, and refresh
 the listings).
 
 # OPTIONS
+
+-config
+: path to awsops' own YAML config file (regions, etc.); defaults to
+~/.awsops. AWS credentials and profile selection are never read from
+here -- they remain the AWS SDK's responsibility via its standard
+chain (~/.aws/credentials, ~/.aws/config, environment variables, SSO)
 
 -debug
 : write a JSONL debug log of every AWS SDK call to

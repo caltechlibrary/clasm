@@ -148,6 +148,7 @@ func main() {
 	term.Refresh()
 
 	colorEnabled := ui.ColorEnabled()
+	ui.SetColorEnabled(colorEnabled)
 
 	var state struct {
 		instances []inventory.Instance

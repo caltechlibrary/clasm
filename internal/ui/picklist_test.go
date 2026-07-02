@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/rsdoiel/termlib"
@@ -116,6 +117,43 @@ func TestPickList_PageBackNavigation(t *testing.T) {
 	}
 	if got != items[0] {
 		t.Errorf("got %q, want %q", got, items[0])
+	}
+}
+
+func TestPickList_PrintsHighlightedPromptHeaderBeforeList(t *testing.T) {
+	SetColorEnabled(true)
+	defer SetColorEnabled(false)
+
+	term, le, buf := newPipeEditor(t, "1\n")
+	items := []string{"alpha", "beta"}
+
+	if _, err := PickList(term, le, items, func(s string) string { return s }, "Select an instance to start"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	headerIdx := strings.Index(out, termlib.Bold+"Select an instance to start"+termlib.Reset)
+	itemIdx := strings.Index(out, "1) alpha")
+	if headerIdx < 0 {
+		t.Errorf("expected a highlighted header before the list, got:\n%s", out)
+	}
+	if itemIdx < 0 || headerIdx > itemIdx {
+		t.Errorf("expected the header to precede the list items, got:\n%s", out)
+	}
+}
+
+func TestPickList_NoHighlightWhenColorDisabled(t *testing.T) {
+	SetColorEnabled(false)
+
+	term, le, buf := newPipeEditor(t, "1\n")
+	items := []string{"alpha", "beta"}
+
+	if _, err := PickList(term, le, items, func(s string) string { return s }, "Select an instance to start"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if contains(buf.String(), termlib.Bold) {
+		t.Errorf("did not expect ANSI bold codes with color disabled, got:\n%s", buf.String())
 	}
 }
 

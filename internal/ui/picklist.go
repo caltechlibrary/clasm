@@ -34,6 +34,12 @@ func PickList[T any](t *termlib.Terminal, le *termlib.LineEditor, items []T, lab
 	page := 0
 	promptText := prompt + ": "
 
+	// Printed once, before the list, so a wrong menu selection is
+	// visible immediately instead of only after reading through every
+	// item (see internal/ui/color.go's Highlight).
+	t.Println(Highlight(prompt))
+	t.Refresh()
+
 	for {
 		start := page * pickListPageSize
 		end := min(start+pickListPageSize, len(items))

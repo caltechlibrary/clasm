@@ -63,6 +63,15 @@ General checks (do these once, up front)
   the STATE column should be colorized (running=green, stopped/
   terminated=red, pending/stopping=yellow); redirecting output to a file
   or setting NO_COLOR=1 should produce plain text with no escape codes.
+- [ ] Pick-list prompt highlighting (DECISIONS.md, "Highlight PickList's
+  prompt header when color is enabled"): with a color-capable TTY and no
+  NO_COLOR, trigger any pick list (e.g. option 4, Start EC2 instance).
+  Confirm the header line ("Select an instance to start") appears in
+  bold *before* the numbered list of instances, not just as the trailing
+  input prompt -- the point is being able to notice a wrong menu
+  selection without reading through the list. With NO_COLOR=1 or output
+  redirected to a file, confirm the same header appears with no escape
+  codes.
 - [ ] The main menu shows exactly these 12 options, in this order (Show
   resource lists moved to the top and renamed from "Refresh resource
   lists" -- see DECISIONS.md, "Move 'Show resource lists' to the top of

@@ -1131,6 +1131,32 @@ operational settings".
 
 ---
 
+## Phase 15.18 — Highlight PickList's prompt header (done)
+
+**Effort:** ~1 hour
+**Priority:** Low
+
+See DECISIONS.md, "Highlight PickList's prompt header when color is
+enabled".
+
+### Work Items
+
+- [x] `internal/ui/color.go`: package-level `colorEnabled` flag +
+      `SetColorEnabled(bool)` setter; `Highlight(s string) string` wraps
+      `s` in `termlib.Bold`/`termlib.Reset` when enabled, else returns
+      `s` unchanged
+- [x] `internal/ui/picklist.go`: `PickList` prints `Highlight(prompt)` as
+      its own line before the numbered list, not just as the trailing
+      input query -- so a wrong menu selection is visible before reading
+      through the list
+- [x] `cmd/awsops/main.go`: `ui.SetColorEnabled(colorEnabled)` alongside
+      the existing `ui.ColorEnabled()` call
+
+**Dependency:** Phase 15 (Color output for state -- `ui.ColorEnabled()`,
+`NO_COLOR`/non-TTY fallback)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours
