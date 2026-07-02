@@ -104,7 +104,7 @@ operational settings".
   for a single-operator-maintained local dotfile (not a multi-tenant
   service config).
 
-### Today's only setting: `regions`
+### `regions`
 
 ```yaml
 regions:
@@ -116,11 +116,31 @@ Defaults to `[us-west-1, us-west-2]` if unset or the file doesn't exist
 (see `DECISIONS.md`, "Narrow configured regions to us-west-1/us-west-2").
 These are the regions every region-fanned-out feature (instance/AMI
 listing, key pair listing, official Ubuntu AMI lookup, and eventually
-Key Management once it ships) iterates over. Built to accommodate, not
-yet implementing, future settings this same file would naturally hold:
-per-domain defaults once S3/CloudFront ship (e.g. a default backup
-bucket), or overrides for the curated instance-type/Ubuntu-release lists
-if those ever need site-specific tuning.
+Key Management once it ships) iterates over.
+
+### `backup_directories`
+
+```yaml
+backup_directories:
+  - pattern: "rdm-*"
+    directory: /opt/rdm_sql_backups
+  - pattern: "newt-*"
+    directory: /opt/newt/backups
+```
+
+An ordered list of glob patterns (`path.Match` syntax: `*`, `?`,
+`[...]`), matched against the picked instance's Name tag, first match
+wins. Feature 11 (Backup Archive & Trim) uses the matching rule's
+directory to pre-fill its "Backup directory" prompt — still an editable
+value, never a silent default, consistent with that prompt's other
+fields. No match (including an untagged instance with a blank Name)
+leaves the prompt with no default, exactly like today. See
+`DECISIONS.md`, "Configure per-instance backup directories by Name
+pattern". Built to accommodate, not yet implementing, further settings
+this same file would naturally hold: per-domain defaults once
+S3/CloudFront ship (e.g. a default bucket), or overrides for the curated
+instance-type/Ubuntu-release lists if those ever need site-specific
+tuning.
 
 ## User Experience Flow
 
@@ -526,9 +546,14 @@ backups" chore into a supervised, verified operation (see `DECISIONS.md`,
 destructive workflow (it deletes real backup files), so it gets the same
 safety tier as Feature 9 (Remove AMI):
 1. Pick an instance
-2. Prompt for the backup directory (no default — e.g.
-   `/opt/rdm_sql_backups`, but instances may differ) and an age threshold
-   in days (no default — always an explicit, deliberate choice)
+2. Prompt for the backup directory — pre-filled from `~/.awsops`'s
+   `backup_directories` (see "Configuration" above) when the picked
+   instance's Name tag matches a configured pattern (e.g. RDM instances
+   default to `/opt/rdm_sql_backups`, other services to their own
+   directory), still editable and never silently accepted; no match
+   leaves it unset, same as before this setting existed — and an age
+   threshold in days (no default — always an explicit, deliberate
+   choice)
 3. **Dry-run list** (SSM, read-only): show candidate files matching the
    age threshold, with size and age, before anything happens
 4. **Type to confirm** before proceeding

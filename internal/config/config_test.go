@@ -66,6 +66,71 @@ func TestLoad_MalformedYAMLReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesBackupDirectories(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "awsops-config")
+	content := "backup_directories:\n" +
+		"  - pattern: \"rdm-*\"\n" +
+		"    directory: /opt/rdm_sql_backups\n" +
+		"  - pattern: \"newt-*\"\n" +
+		"    directory: /opt/newt/backups\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []BackupDirectoryRule{
+		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},
+		{Pattern: "newt-*", Directory: "/opt/newt/backups"},
+	}
+	if len(cfg.BackupDirectories) != len(want) || cfg.BackupDirectories[0] != want[0] || cfg.BackupDirectories[1] != want[1] {
+		t.Errorf("BackupDirectories = %v, want %v", cfg.BackupDirectories, want)
+	}
+}
+
+func TestBackupDirectoryFor_MatchesGlobPattern(t *testing.T) {
+	rules := []BackupDirectoryRule{
+		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},
+	}
+	got := BackupDirectoryFor(rules, "rdm-prod-01")
+	if got != "/opt/rdm_sql_backups" {
+		t.Errorf("got %q, want %q", got, "/opt/rdm_sql_backups")
+	}
+}
+
+func TestBackupDirectoryFor_FirstMatchWins(t *testing.T) {
+	rules := []BackupDirectoryRule{
+		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},
+		{Pattern: "*", Directory: "/opt/catch-all"},
+	}
+	got := BackupDirectoryFor(rules, "rdm-prod-01")
+	if got != "/opt/rdm_sql_backups" {
+		t.Errorf("got %q, want the first matching rule's directory %q", got, "/opt/rdm_sql_backups")
+	}
+}
+
+func TestBackupDirectoryFor_NoMatchReturnsEmpty(t *testing.T) {
+	rules := []BackupDirectoryRule{
+		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},
+	}
+	got := BackupDirectoryFor(rules, "newt-machine-test")
+	if got != "" {
+		t.Errorf("got %q, want empty string for no match", got)
+	}
+}
+
+func TestBackupDirectoryFor_EmptyNameReturnsEmpty(t *testing.T) {
+	rules := []BackupDirectoryRule{
+		{Pattern: "*", Directory: "/opt/catch-all"},
+	}
+	got := BackupDirectoryFor(rules, "")
+	if got != "" {
+		t.Errorf("got %q, want empty string for an untagged (nameless) instance", got)
+	}
+}
+
 func TestDefaultPath_ReturnsHomeDirAwsops(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

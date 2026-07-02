@@ -198,7 +198,7 @@ func main() {
 			return workflow.ShowCloudInit(ctx, term, le, ec2Clients, ssmClients, state.instances, state.images)
 		},
 		BackupArchiveAndTrim: func(ctx context.Context) error {
-			return workflow.BackupArchiveAndTrim(ctx, term, le, ssmClients, s3Client, state.instances)
+			return workflow.BackupArchiveAndTrim(ctx, term, le, ssmClients, s3Client, state.instances, cfg.BackupDirectories)
 		},
 		Refresh: refresh,
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/awstools/internal/config"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 	"github.com/caltechlibrary/awstools/internal/ui"
 )
@@ -44,8 +45,14 @@ type BackupArchiveParams struct {
 // Takes a per-region SSM client map (the S3 client stays a single
 // client -- a bucket's home region is unrelated to the instance's
 // region) and resolves the SSM client matching the picked instance's
-// region.
-func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, instances []inventory.Instance) error {
+// region. backupDirRules (~/.awsops' backup_directories, see
+// DECISIONS.md, "Configure per-instance backup directories by Name
+// pattern") pre-fills the backup directory prompt with the first
+// matching rule's directory for the picked instance's Name tag, still
+// editable -- there is deliberately no rule-match-skips-the-prompt
+// mode, consistent with this workflow's other fields having no silent
+// defaults.
+func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
 	if len(instances) == 0 {
 		t.Println("No instances found.")
 		t.Refresh()
@@ -61,7 +68,11 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 		return err
 	}
 
-	directory, err := ui.Prompt(t, le, "Backup directory (e.g. /opt/rdm_sql_backups)", ui.WithValidator(requireNonEmpty))
+	dirPromptOpts := []ui.PromptOption{ui.WithValidator(requireNonEmpty)}
+	if def := config.BackupDirectoryFor(backupDirRules, inst.Name); def != "" {
+		dirPromptOpts = append(dirPromptOpts, ui.WithDefault(def))
+	}
+	directory, err := ui.Prompt(t, le, "Backup directory (e.g. /opt/rdm_sql_backups)", dirPromptOpts...)
 	if err != nil {
 		return err
 	}

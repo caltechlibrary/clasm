@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
@@ -27,7 +28,38 @@ var DefaultRegions = []string{"us-west-1", "us-west-2"}
 // migration machinery, appropriate for a single-operator-maintained
 // local dotfile.
 type Config struct {
-	Regions []string `yaml:"regions"`
+	Regions           []string              `yaml:"regions"`
+	BackupDirectories []BackupDirectoryRule `yaml:"backup_directories"`
+}
+
+// BackupDirectoryRule maps a glob-style pattern (path.Match syntax: *,
+// ?, [...]), matched against an instance's Name tag, to the backup
+// directory Backup Archive & Trim (DESIGN.md, Feature 11) should
+// default to for matching instances -- e.g. RDM instances and some
+// other service's instances keep their backups in different
+// directories, and typing the right path from memory every run invites
+// mistakes.
+type BackupDirectoryRule struct {
+	Pattern   string `yaml:"pattern"`
+	Directory string `yaml:"directory"`
+}
+
+// BackupDirectoryFor returns the Directory of the first rule in rules
+// whose Pattern matches instanceName, checked in list order -- or "" if
+// none match, instanceName is empty (an untagged instance has nothing
+// to match), or a malformed pattern errors out of path.Match (treated
+// the same as no match, not a fatal error, since a typo'd pattern
+// should degrade to the ordinary prompt, not crash the workflow).
+func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string {
+	if instanceName == "" {
+		return ""
+	}
+	for _, rule := range rules {
+		if ok, err := path.Match(rule.Pattern, instanceName); err == nil && ok {
+			return rule.Directory
+		}
+	}
+	return ""
 }
 
 // DefaultPath returns ~/.awsops, falling back to a cwd-relative
