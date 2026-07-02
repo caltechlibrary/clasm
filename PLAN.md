@@ -1157,6 +1157,33 @@ enabled".
 
 ---
 
+## Phase 15.19 — Configure per-instance backup directories by Name pattern (done)
+
+**Effort:** ~1.5 hours
+**Priority:** Medium
+
+See DECISIONS.md, "Configure per-instance backup directories by Name
+pattern".
+
+### Work Items
+
+- [x] `internal/config/config.go`: `BackupDirectoryRule` struct
+      (`Pattern`, `Directory`, both `string`), `Config.BackupDirectories
+      []BackupDirectoryRule` (`yaml:"backup_directories"`),
+      `BackupDirectoryFor(rules, instanceName) string` (first
+      `path.Match` hit wins, in list order; "" for no match or an empty
+      instanceName)
+- [x] `internal/workflow/backup_archive.go`: `BackupArchiveAndTrim` takes
+      a new `backupDirRules []config.BackupDirectoryRule` parameter;
+      pre-fills the "Backup directory" prompt via `ui.WithDefault` when
+      `config.BackupDirectoryFor` matches, otherwise unchanged (required,
+      no default)
+- [x] `cmd/awsops/main.go`: passes `cfg.BackupDirectories` through
+
+**Dependency:** Phase 15.17 (`~/.awsops` YAML config file)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

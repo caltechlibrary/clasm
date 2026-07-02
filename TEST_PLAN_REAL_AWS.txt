@@ -540,6 +540,15 @@ dry-run list -> type-to-confirm (instance ID or name).
 - [ ] Leave directory/bucket blank once each: confirm rejected and
   re-prompted. Type a non-numeric or zero/negative age threshold:
   confirm rejected and re-prompted.
+- [ ] Per-instance backup directory default (DECISIONS.md, "Configure
+  per-instance backup directories by Name pattern"): add a
+  `backup_directories` rule to ~/.awsops matching the test instance's
+  Name tag (e.g. `pattern: "etd-*"`, `directory: /opt/rdm_sql_backups`).
+  Confirm the "Backup directory" prompt shows that path in brackets as
+  the default, and pressing Enter alone accepts it. Confirm typing a
+  different path still overrides it. Pick an instance whose Name doesn't
+  match any configured pattern: confirm the prompt has no default and
+  behaves exactly as before (blank input rejected, re-prompted).
 - [ ] Confirm the dry-run lists exactly the files older than the threshold,
   with size and age, before anything is touched -- and that it excludes
   files younger than the threshold.
