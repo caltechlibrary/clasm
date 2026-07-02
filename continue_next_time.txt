@@ -1,121 +1,131 @@
-awstools — where we left off (2026-07-01)
-===========================================
+awstools — where we left off (2026-07-01, end of day)
+=======================================================
 
-STATUS: Working tree is dirty, nothing from this session is committed
-yet. ec2_ami_manager.bash has real bug fixes in it (see below). DESIGN.md/
-DECISIONS.md/PLAN.md were completely rewritten to retarget the project
-from Bash to Go. No Go code exists yet — this was a design/decision/plan
-session, not an implementation session. Also present in the working tree:
-a CMTools scaffold (Makefile, version.go, INSTALL.md, installer.sh/ps1,
-codemeta.json changes) that the user generated themselves in a separate
-terminal mid-session, not by Claude.
+STATUS: Go implementation (binary: awsops) is substantially complete.
+PLAN.md Phases 0 through 15.2 are done, TDD throughout: `go build ./...`,
+`go vet ./...`, `go test ./... -race`, and `gofmt -l` are all clean as of
+the last commit. The user is now actively running `bin/awsops` against a
+real AWS account (074441911104), working through TEST_PLAN_REAL_AWS.txt
+in a parallel terminal, committing their own work as they go. This file
+supersedes the previous "no Go code exists yet" version of itself from
+earlier today.
 
-What happened this session
----------------------------
+What happened this session (continuing from the design/decision/plan
+session earlier today)
+---------------------------------------------------------------------
 
-1. User ran ./ec2_ami_manager.bash for real against production AWS and
-   hit three real, previously-undetected bugs:
-   - show_pick_list()'s eval had unbalanced quoting + a misplaced [@]
-     subscript, crashing the interactive picker with "unexpected EOF".
-     Fixed: eval "items=(\"\${${arr_name}[@]}\")"
-   - The AMI-name validation regex broke under BSD grep + a UTF-8 locale
-     ("invalid character range"). Fixed by pinning LC_ALL=C and moving
-     the hyphen to an unambiguous bracket position.
-   - create_ami_from_instance()'s --tag-specifications string builder
-     produced malformed AWS CLI shorthand, silently failing create-image
-     with NO AMI created anywhere (confirmed via read-only
-     describe-images across all 4 regions) — this was the actual root
-     cause of "I don't see the AMI actually get generated."
-   Also implemented the Phase 7 main menu (never actually wired up
-   despite PLAN.md claiming it was done), a default AMI-name suggestion,
-   and a wider AMI-name display column.
+1. Implemented PLAN.md Phases 0-15 in order, TDD (write test, confirm
+   red, implement, confirm green) throughout:
+   - internal/awsclient: typed EC2API/SSMAPI/S3API/STSAPI interfaces
+     (narrow, fake-able), credential check with backoff retry
+   - internal/inventory: cross-region instance/AMI listing
+   - internal/ui: termlib-based Terminal/PickList/Prompt (per user's
+     explicit redirect to use github.com/rsdoiel/termlib instead of a
+     stdlib-only implementation)
+   - internal/workflow: all 10 workflow orchestrators (create from
+     AMI/cloud-init, start/stop/terminate, manage tags, create/remove
+     AMI, show/export cloud-init, backup archive & trim), each
+     separating "collect params" from "execute against AWS" per
+     DECISIONS.md's Recorded-Scripts-readiness constraint
+   - cmd/awsops: main.go wiring, helptext.go-based -help/-license/
+     -version following this workspace's ~/WorkLab/dataset conventions
+   - Phase 15 polish: loading indicators, color output, actionable
+     AWS error messages, input validation audit, context timeouts,
+     PickList pagination (>50 items)
 
-2. After fixing bug #3, the user asked whether Go/Python/Deno would be
-   faster than continuing in Bash. Decision: retarget to Go. This led to
-   a long collaborative design session that grew the v1 scope far beyond
-   the original 4-operation Bash tool.
+2. User began live-testing bin/awsops against real AWS mid-Phase-15 and
+   reported two real gaps, both fixed:
+   - Key pair/security group/subnet name entry was free-text-only;
+     typing a security group *name* instead of an ID caused a real
+     `InvalidParameterCombination` AWS error. Fixed: security groups
+     and subnet are now pick lists fetched from the AMI's region
+     (ec2:DescribeSecurityGroups/DescribeSubnets); key pair name was
+     tried as a pick list too but reverted to free text after real
+     testing showed a flat list of every key pair in the account
+     (16+ entries, mostly irrelevant) was noise, not help.
+   - A validator (`requireNonEmpty`) written for one prompt (cloud-init
+     YAML) with a hardcoded field-specific message got reused generically
+     across 8 unrelated prompts without generalizing the message --
+     fixed to a field-agnostic message.
+   - Name tag prompt moved to right after the AMI pick (was at the end
+     of the flow) per feedback that naming the instance should come
+     early.
 
-3. Real findings that shaped the new design (not hypothetical):
-   - newauthors (i-0c4c81336aea33d27) has 87GB in /opt/rdm_sql_backups,
-     ~980MB/day, zero rotation — the measured cause of the
-     "over-provisioned disk / slow cloning" problem.
-   - Tagging today is inconsistent (a "project" tag on some instances,
-     no dedicated Environment tag anywhere — prod/test lives only in the
-     instance NAME string).
-   - newauthors/authorstest both have real, recoverable cloud-init
-     user-data (proven via ec2:DescribeInstanceAttribute).
-   - cloud-init-examples' invenio-rdm.yaml has already drifted from what's
-     actually deployed.
+3. Added -debug: a JSONL log of every AWS SDK call (internal/debuglog's
+   nil-safe *DebugLog + internal/awsclient's WrapEC2/WrapSSM/WrapS3/
+   WrapSTS logging decorators, one shared generic helper). Modeled on
+   ~/Laboratory/harvey's own --debug feature, but decorates the existing
+   narrow client interfaces instead of hand-instrumenting call sites, so
+   every AWS action is covered automatically. IMPORTANT: CreateKeyPair's
+   response carries private key material and is redacted to a fixed
+   marker before logging -- do not remove that special case if touching
+   logging_ec2.go.
 
-4. DESIGN.md/DECISIONS.md/PLAN.md fully rewritten for Go. CLI binary
-   named "awsops" (repo stays "awstools"). Final v1 primitive list (12
-   features, in final menu order — see DESIGN.md Core Features):
-   1) Unified Resource Listing, 2) Create Instance from AMI (now with
-   file-path user-data + cloud-init completion check), 3) Create Instance
-   from Cloud-Init YAML, 4) Start Instance, 5) Stop Instance,
-   6) Terminate Instance (flags DeleteOnTermination volumes), 7) Manage
-   Tags, 8) Create AMI from Instance, 9) Remove AMI, 10) Show/Export
-   Cloud-Init, 11) Backup Archive & Trim (two-phase upload-then-
-   independently-verify, never trusts the instance's self-report),
-   12) Project/Environment Tagging Convention (cross-cutting policy, not
-   an action — distinct from #7).
+4. Added inline "create a new key pair" support: typing "new" at the Key
+   pair name prompt (instead of the user asking "what is Key pair
+   name?" then "can we support creating one?") switches into a sub-flow
+   that calls ec2:CreateKeyPair (ED25519, PEM), saves the private key to
+   ~/.ssh/<name>.pem at 0600, and uses that name for the launch. A name
+   collision re-prompts; any other error propagates normally.
 
-5. Confirmed against real AWS behavior: an AMI's Name is permanently
-   immutable via the API (no rename operation exists or can exist short
-   of CopyImage + deregister). Only Description is mutable post-creation.
+5. Used the new -debug log to diagnose a real launch failure live: AMI
+   ami-0da49db6a772dda02 isn't ENA-enabled, and t3.micro requires ENA --
+   confirmed from the JSONL record's exact RunInstances params + AWS
+   error, not guessed.
 
-6. Every confirmation-gated workflow (PLAN.md Phases 4-13) is required to
-   separate "build a resolved params struct" from "execute against AWS,"
-   with the confirmation/dry-run gate as its own reusable function — not
-   because record/replay ships in v1, but so a deferred "Recorded
-   Scripts" YAML-playbook feature can be added later without reopening
-   finished code.
+6. User asked about pre-flight sanity-checking + a retry-on-error loop
+   for launch failures (see "Not done yet" below) -- discussed, not yet
+   scoped or implemented.
+
+Documentation updated to match (all committed alongside the code each
+step, per the user's own commit-as-you-go workflow this session):
+DESIGN.md (Debug Logging section, Feature 2's key pair/security group/
+subnet UX, Security Considerations #8-9), DECISIONS.md (three new
+entries: -debug's design, key-pair-stays-free-text + Name-tag-moves-
+earlier, and create-key-pair-inline), PLAN.md (Phases 15.1 and 15.2),
+TEST_PLAN_REAL_AWS.txt (updated prompt sequences + new checks, existing
+[ok] markers preserved).
 
 What's NOT done yet
 --------------------
 
-- No Go code exists. PLAN.md Phase 0 (go mod init, SDK deps, package
-  skeletons) has not been started.
-- Backup Archive & Trim (Phase 13) real-AWS verification is blocked on
-  two things the user still needs to do outside this repo: create the S3
-  bucket for backup archival, and update caltechlibrary/cloud-init-
-  examples so target instances' IAM profiles grant s3:PutObject/
-  s3:ListBucket on it.
-- One open question never got an explicit answer: DESIGN.md's Overview
-  paragraph still frames the tool as being "behind this team's RDM
-  deployments," which is in mild tension with the awsops naming
-  rationale (explicitly not meant to read as RDM-specific). Quick to
-  resolve, just never circled back to it.
-- Nothing from this session is committed to git yet.
+- PLAN.md Phase 16: TEST_PLAN_REAL_AWS.txt is still being worked through
+  manually against real AWS -- continue from wherever the user's [ok]
+  markers currently leave off.
+- PLAN.md Phase 17: documentation pass + retiring ec2_ami_manager.bash/
+  ami_copy.bash/tests/*.bats has not started. Do NOT touch those files
+  until Phase 16 is fully signed off.
+- Pre-flight ENA/instance-type sanity check before RunInstances --
+  discussed (cross-reference DescribeImages' EnaSupport against
+  DescribeInstanceTypes' NetworkInfo.EnaSupport for the picked type),
+  not scoped or implemented. Ask the user how broad to make it (just
+  ENA, or a short list of other common AWS launch-parameter conflicts)
+  before starting.
+- Retry-on-launch-failure loop -- discussed (keep collected params,
+  re-prompt just the likely-wrong field instead of restarting the whole
+  flow), not scoped or implemented. Ask the user what granularity they
+  want (just Instance type, or any collected field) before starting.
+- The two "nice to have" TODO.md items from earlier (color-coded menu
+  grouping, a spinner for long operations) are still queued, untouched.
 
 Suggested next session
 -----------------------
 
-1. Re-read DESIGN.md, DECISIONS.md, and PLAN.md fresh in full — all three
-   were heavily rewritten this session, don't rely on memory of older
-   versions or of this file's summary above.
-2. Decide the Overview-wording question (30 seconds), then start PLAN.md
-   Phase 0: go mod init, add github.com/aws/aws-sdk-go-v2 (ec2/ssm/s3/sts
-   submodules), cmd/awsops/main.go stub, internal/{awsclient,inventory,ui,
-   workflow} package skeletons.
-3. Work PLAN.md's phases in order (0 through 17) — TDD throughout, fakes
-   for EC2API/SSMAPI/S3API, no real AWS calls in unit tests.
-4. Do NOT touch ec2_ami_manager.bash or tests/*.bats — they stay as the
-   working reference spec until the Go binary passes
-   TEST_PLAN_REAL_AWS.txt (retire only after that, per this project's
-   existing retire-after-verify pattern).
-5. If you reach Phase 13 (Backup Archive & Trim) real-AWS verification
-   before the S3 bucket / IAM policy blockers above are resolved, flag it
-   rather than guessing at bucket names or skipping the independent
-   verification step.
-6. Consider committing this session's ec2_ami_manager.bash bug fixes
-   separately from the Go design-doc rewrite, since they're logically
-   distinct changes (bug fixes to code that's about to be retired vs. new
-   design for its replacement) — ask the user how they want it split
-   before committing anything.
+1. Check TEST_PLAN_REAL_AWS.txt for the user's latest [ok] markers to
+   see where real-AWS testing left off; don't re-run sections already
+   confirmed unless something regressed.
+2. If the user reports a new bug from live testing, check the -debug
+   JSONL log first (it now exists and works) before guessing -- it has
+   full request params and AWS error text for every call.
+3. If asked to continue the ENA sanity-check or retry-on-error work from
+   item 6 above, start by asking scope questions (see "What's NOT done
+   yet") rather than assuming -- both are genuinely open design
+   decisions, not just implementation work.
+4. Once TEST_PLAN_REAL_AWS.txt is fully [ok], move to PLAN.md Phase 17.
 
-Git state as of this session: still on top of commit 7c42249 "session
-wrap up", working tree dirty, nothing committed. See
+Git state: user is committing their own work throughout this session
+(explicit standing instruction: "I will do the commits and pushes from
+now on" -- never run git commit/push without being asked). See
 agents/knowledge.db (query: awstools or awsops) and
-agents/hand-off/2026-07-01T220000Z-awstools-bash-to-go-design.spmd for
+agents/hand-off/2026-07-01T235900Z-awstools-go-implementation.spmd for
 full detail.
