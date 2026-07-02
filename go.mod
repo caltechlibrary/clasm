@@ -13,6 +13,7 @@ require (
 	github.com/aws/smithy-go v1.27.3
 	github.com/rsdoiel/termlib v0.0.9
 	golang.org/x/term v0.38.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -30,5 +31,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.31.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.8 // indirect
 	golang.org/x/sys v0.39.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

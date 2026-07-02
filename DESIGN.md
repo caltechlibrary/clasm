@@ -551,16 +551,31 @@ safety tier as Feature 9 (Remove AMI):
    instance's Name tag matches a configured pattern (e.g. RDM instances
    default to `/opt/rdm_sql_backups`, other services to their own
    directory), still editable and never silently accepted; no match
-   leaves it unset, same as before this setting existed — and an age
+   leaves it unset, same as before this setting existed — an age
    threshold in days (no default — always an explicit, deliberate
-   choice)
+   choice), and the S3 bucket — immediately followed by `s3:GetBucketLocation`
+   to discover which region the bucket actually lives in (any region,
+   unrelated to the instance's — see `DECISIONS.md`, "Resolve a bucket's
+   actual region before Backup Archive & Trim's access check") and then
+   an `s3:HeadBucket` access check, scoped to that region, that aborts
+   with a clear reason (bucket doesn't exist, or the operator's own
+   credentials can't reach it) before any of the steps below run — see
+   `DECISIONS.md`, "Preflight check: S3 bucket access before Backup
+   Archive & Trim's dry-run list"
 3. **Dry-run list** (SSM, read-only): show candidate files matching the
    age threshold, with size and age, before anything happens
 4. **Type to confirm** before proceeding
-5. **Upload phase** (SSM): the instance uploads each candidate file to S3
-   via its own AWS CLI/credentials (SSM Run Command cannot bulk-transfer
-   multi-hundred-MB files — see Feature 10's AMI-path constraint), and
-   reports back a small per-file summary (S3 key, size). Nothing is
+5. **Upload phase** (SSM): the instance uploads each candidate file to
+   `s3://<bucket>/<instance-name>/<filename>` via its own AWS
+   CLI/credentials — every key namespaced by the source instance's Name
+   tag (falling back to its instance ID if untagged) so backups from
+   different systems sharing one bucket can't collide (see
+   `DECISIONS.md`, "Namespace backup uploads by instance") — one
+   `ssm:SendCommand` per file (SSM Run Command cannot bulk-transfer
+   multi-hundred-MB files — see Feature 10's AMI-path constraint),
+   printing a live "N/M (bytes of total) — OK/FAIL key" line as each
+   file completes rather than a generic heartbeat (see `DECISIONS.md`,
+   "Per-file upload progress for Backup Archive & Trim"). Nothing is
    deleted at this point
 6. **Independent verification**: the tool itself — using its own AWS
    credentials, not the instance's self-report — calls `s3:HeadObject` on

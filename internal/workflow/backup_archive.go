@@ -3,7 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
-	"path"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -38,21 +38,31 @@ type BackupArchiveParams struct {
 
 // BackupArchiveAndTrim runs the full Backup Archive & Trim workflow
 // (DESIGN.md, Feature 11): pick an instance, prompt for the backup
-// directory and age threshold (both explicit, no default), dry-run list,
-// type-to-confirm, upload, independently verify via s3:HeadObject,
-// delete only the verified files via a second SSM command, fstrim, and
-// report bytes freed plus any verification failures (left untouched).
-// Takes a per-region SSM client map (the S3 client stays a single
-// client -- a bucket's home region is unrelated to the instance's
-// region) and resolves the SSM client matching the picked instance's
-// region. backupDirRules (~/.awsops' backup_directories, see
-// DECISIONS.md, "Configure per-instance backup directories by Name
-// pattern") pre-fills the backup directory prompt with the first
-// matching rule's directory for the picked instance's Name tag, still
-// editable -- there is deliberately no rule-match-skips-the-prompt
-// mode, consistent with this workflow's other fields having no silent
-// defaults.
-func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
+// directory and age threshold (both explicit, no default) and the S3
+// bucket -- immediately followed by BucketRegion + newS3Client to build
+// an S3 client actually scoped to that bucket's region (a bucket can be
+// in any region, unrelated to the instance's -- see DECISIONS.md,
+// "Resolve a bucket's actual region before Backup Archive & Trim's
+// access check"), then CheckS3BucketAccess, aborting before the
+// (potentially slow) dry-run list if the bucket doesn't exist or the
+// operator's own credentials can't reach it (see DECISIONS.md,
+// "Preflight check: S3 bucket access before Backup Archive & Trim's
+// dry-run list") -- then dry-run list, type-to-confirm, upload,
+// independently verify via s3:HeadObject, delete only the verified files
+// via a second SSM command, fstrim, and report bytes freed plus any
+// verification failures (left untouched).
+// Takes a per-region SSM client map and resolves the one matching the
+// picked instance's region. s3Client is used only to discover the
+// bucket's region (BucketRegion works from a client scoped to any
+// region); newS3Client then builds the client actually used for every
+// other S3 call in this run, scoped to the bucket's real region.
+// backupDirRules (~/.awsops' backup_directories, see DECISIONS.md,
+// "Configure per-instance backup directories by Name pattern")
+// pre-fills the backup directory prompt with the first matching rule's
+// directory for the picked instance's Name tag, still editable -- there
+// is deliberately no rule-match-skips-the-prompt mode, consistent with
+// this workflow's other fields having no silent defaults.
+func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
 	if len(instances) == 0 {
 		t.Println("No instances found.")
 		t.Refresh()
@@ -86,6 +96,17 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 	if err != nil {
 		return err
 	}
+	bucketRegion, err := BucketRegion(ctx, s3Client, bucket)
+	if err != nil {
+		return err
+	}
+	bucketClient, err := newS3Client(ctx, bucketRegion)
+	if err != nil {
+		return err
+	}
+	if err := CheckS3BucketAccess(ctx, bucketClient, bucket); err != nil {
+		return err
+	}
 
 	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: directory, AgeDays: ageDays, Bucket: bucket}
 
@@ -112,20 +133,36 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 		return nil
 	}
 
-	stopUploadTicker := startProgressTicker(t, 30*time.Second, "uploading backup files to S3")
-	uploads, err := UploadBackupFiles(ctx, ssmClient, params.InstanceID, candidates, params.Bucket, DefaultBackupUploadTimeout, DefaultSSMPollInterval)
-	stopUploadTicker()
+	// Namespaces every uploaded key by the source instance, so backups
+	// from different systems sharing this bucket don't collide on
+	// identically- or similarly-named files (see DECISIONS.md,
+	// "Namespace backup uploads by instance"). Falls back to the
+	// instance ID when Name is blank -- an untagged instance still
+	// needs a non-empty, unique prefix.
+	prefix := inst.Name
+	if prefix == "" {
+		prefix = inst.InstanceID
+	}
+
+	uploads, err := UploadBackupFiles(ctx, ssmClient, params.InstanceID, candidates, params.Bucket, prefix, DefaultBackupUploadTimeout, DefaultSSMPollInterval, func(p UploadProgress) {
+		status := "OK"
+		if !p.Result.OK {
+			status = "FAIL"
+		}
+		t.Printf("  ... uploading %d/%d (%s of %s) - %s %s\n", p.Done, p.Total, formatBytes(p.BytesDone), formatBytes(p.BytesTotal), status, p.Result.Key)
+		t.Refresh()
+	})
 	if err != nil {
 		return err
 	}
 
 	stopVerifyTicker := startProgressTicker(t, 30*time.Second, "verifying uploads via s3:HeadObject")
-	verified := VerifyUploads(ctx, s3Client, params.Bucket, uploads)
+	verified := VerifyUploads(ctx, bucketClient, params.Bucket, uploads)
 	stopVerifyTicker()
 
 	pathByKey := make(map[string]string, len(candidates))
 	for _, f := range candidates {
-		pathByKey[path.Base(f.Path)] = f.Path
+		pathByKey[uploadKey(prefix, f.Path)] = f.Path
 	}
 
 	var toDelete []string
@@ -191,4 +228,20 @@ func displayBackupDryRun(t *termlib.Terminal, files []BackupFile) {
 	}
 	t.Printf("Total: %d file(s), %d bytes\n", len(files), total)
 	t.Refresh()
+}
+
+// formatBytes renders n as a human-scaled size (e.g. "1.2 GiB") for the
+// upload progress line -- raw byte counts for multi-gigabyte backups
+// are hard to track at a glance.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

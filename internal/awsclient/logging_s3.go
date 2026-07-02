@@ -28,3 +28,15 @@ func (w *loggingS3Client) HeadObject(ctx context.Context, params *s3.HeadObjectI
 		return w.inner.HeadObject(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingS3Client) HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+	return logAWSCall(w.dl, "S3.HeadBucket", w.region, params, func() (*s3.HeadBucketOutput, error) {
+		return w.inner.HeadBucket(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingS3Client) GetBucketLocation(ctx context.Context, params *s3.GetBucketLocationInput, optFns ...func(*s3.Options)) (*s3.GetBucketLocationOutput, error) {
+	return logAWSCall(w.dl, "S3.GetBucketLocation", w.region, params, func() (*s3.GetBucketLocationOutput, error) {
+		return w.inner.GetBucketLocation(ctx, params, optFns...)
+	})
+}

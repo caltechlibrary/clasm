@@ -1184,6 +1184,108 @@ pattern".
 
 ---
 
+## Phase 15.20 — Per-file upload progress for Backup Archive & Trim (done)
+
+**Effort:** ~1.5 hours
+**Priority:** Medium
+
+See DECISIONS.md, "Per-file upload progress for Backup Archive & Trim".
+
+### Work Items
+
+- [x] `internal/workflow/backup_upload.go`: `UploadProgress` struct
+      (`Done`, `Total`, `BytesDone`, `BytesTotal`, `Result`);
+      `UploadBackupFiles` runs one `ssm:SendCommand` per file (was one
+      batched script for the whole list) and takes a new
+      `onProgress func(UploadProgress)` parameter (nil-safe), invoked
+      after each file completes
+- [x] `internal/workflow/backup_archive.go`: `formatBytes` helper
+      (human-scaled sizes, e.g. "1.2 GiB"); upload phase now prints
+      "... uploading N/M (bytes of total) - OK/FAIL key" per file via
+      the new callback, replacing the generic 30s heartbeat ticker for
+      this phase only (the verify phase keeps its existing heartbeat)
+
+**Dependency:** Phase 11 (Backup Archive & Trim)
+
+---
+
+## Phase 15.21 — Preflight check: S3 bucket access before Backup Archive & Trim's dry-run list (done)
+
+**Effort:** ~1 hour
+**Priority:** Medium
+
+See DECISIONS.md, "Preflight check: S3 bucket access before Backup
+Archive & Trim's dry-run list".
+
+### Work Items
+
+- [x] `internal/awsclient/s3.go`: `S3API` gains `HeadBucket`; real client
+      (via the SDK), `internal/awsclient/logging_s3.go`'s decorator, and
+      the test fake all implement it
+- [x] `internal/workflow/backup_verify.go`: `CheckS3BucketAccess(ctx,
+      client, bucket) error` -- `s3:HeadBucket`, wraps any error with the
+      bucket name and a permissions hint
+- [x] `internal/workflow/backup_archive.go`: `BackupArchiveAndTrim` calls
+      `CheckS3BucketAccess` immediately after the "S3 bucket" prompt,
+      aborting before the dry-run list, type-to-confirm, or upload
+
+**Dependency:** Phase 11 (Backup Archive & Trim)
+
+---
+
+## Phase 15.22 — Resolve a bucket's actual region before Backup Archive & Trim's access check (done)
+
+**Effort:** ~1.5 hours
+**Priority:** High
+
+Real-AWS regression found immediately after Phase 15.21 shipped -- see
+DECISIONS.md, "Resolve a bucket's actual region before Backup Archive &
+Trim's access check".
+
+### Work Items
+
+- [x] `internal/awsclient/s3.go`: `S3API` gains `GetBucketLocation`; real
+      client, `internal/awsclient/logging_s3.go`'s decorator, and the
+      test fake all implement it
+- [x] `internal/workflow/backup_verify.go`: `BucketRegion(ctx, client,
+      bucket) (string, error)` -- `s3:GetBucketLocation`, mapping ""
+      -> "us-east-1" and the legacy "EU" -> "eu-west-1"
+- [x] `internal/workflow/backup_archive.go`: `BackupArchiveAndTrim` gains
+      a `newS3Client func(ctx, region) (awsclient.S3API, error)`
+      parameter; after the "S3 bucket" prompt, calls `BucketRegion` on
+      the original `s3Client`, then `newS3Client` to build a
+      region-scoped client used for `CheckS3BucketAccess` and every
+      later `s3:HeadObject` verification call
+- [x] `cmd/awsops/main.go`: supplies the `newS3Client` factory closure
+      alongside the original probe `s3Client`
+
+**Dependency:** Phase 15.21 (Preflight check: S3 bucket access)
+
+---
+
+## Phase 15.23 — Namespace backup uploads by instance (done)
+
+**Effort:** ~1 hour
+**Priority:** Medium
+
+See DECISIONS.md, "Namespace backup uploads by instance".
+
+### Work Items
+
+- [x] `internal/workflow/backup_upload.go`: `uploadKey(prefix, filePath)
+      string` (`path.Join`, prefix dropped if empty); `buildUploadCommand`
+      and `UploadBackupFiles` both gain a `prefix` parameter, used for
+      every destination key
+- [x] `internal/workflow/backup_archive.go`: `BackupArchiveAndTrim`
+      derives the prefix from the picked instance's Name tag (falls back
+      to its instance ID if blank), passes it to `UploadBackupFiles`, and
+      uses the same `uploadKey` to build `pathByKey` for delete
+      resolution
+
+**Dependency:** Phase 11 (Backup Archive & Trim)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

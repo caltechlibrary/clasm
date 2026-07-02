@@ -10,26 +10,26 @@ plan has touched real AWS yet.
 
 Prerequisites
 --------------
-- [ ] `make build` (or `go build -o bin/awsops ./cmd/awsops`) produces a
+- [x] `make build` (or `go build -o bin/awsops ./cmd/awsops`) produces a
   binary that runs `-help`/`-version`/`-license` correctly.
-- [ ] AWS credentials configured and resolvable by the SDK's default chain
+- [x] AWS credentials configured and resolvable by the SDK's default chain
   (env vars, ~/.aws/credentials, or SSO) with the IAM permissions listed
   in DESIGN.md, "Assumptions" #2 (Describe*/Run/Start/Stop/Terminate/
   CreateImage/DeregisterImage/CreateTags/DeleteTags/DescribeTags/
   DescribeInstanceAttribute/DescribeVolumes on the EC2 side,
   SendCommand/GetCommandInvocation/DescribeInstanceInformation on the
   SSM side, HeadObject on the S3 side).
-- [ ] At least one disposable/low-cost test instance (ideally in a test
+- [x] At least one disposable/low-cost test instance (ideally in a test
   account or clearly-marked test resource, not production) in a region
   awsops is configured for (internal/config's DefaultRegions, used when
   no ~/.awsops file exists: us-west-1, us-west-2). A plain small
   instance is fine for
   exercising the mechanics; a real Invenio RDM instance is the realistic
   target for Feature 7 (Create AMI) and Feature 10 (Backup Archive).
-- [ ] SSM Agent running on at least one test instance, so the fstrim/
+- [x] SSM Agent running on at least one test instance, so the fstrim/
   cloud-init-check/backup paths get exercised (not just their
   "SSM unavailable" fallbacks).
-- [ ] A second test instance with SSM either absent or stopped, to exercise
+- [x] A second test instance with SSM either absent or stopped, to exercise
   the "SSM unavailable" fallback paths deliberately.
 - [ ] For Feature 10 (Backup Archive & Trim) specifically: an S3 bucket for
   archival, and the target instance's IAM instance profile granting
@@ -40,11 +40,11 @@ Prerequisites
 
 General checks (do these once, up front)
 ------------------------------------------
-- [ ] Startup: awsops prints "awsops <version> -- authenticated as AWS
+- [x] Startup: awsops prints "awsops <version> -- authenticated as AWS
   account <account-id>" before the first listing. If credentials aren't
   resolvable, it should fail fast with a clear message (DESIGN.md,
   Error Handling Strategy #4) -- not a raw SDK stack trace.
-- [ ] `-debug`: run `awsops -debug`, confirm it prints "Debug log:
+- [x] `-debug`: run `awsops -debug`, confirm it prints "Debug log:
   ./awsops-debug-<timestamp>.jsonl" to stderr before the first listing,
   and that file exists and grows as you use the tool. `tail -f` it
   while performing a few operations (e.g. list refresh, start/stop an
@@ -54,7 +54,7 @@ General checks (do these once, up front)
   "SSM.SendCommand"), "region", and either "output" or "error". Run
   without `-debug` (the default): confirm no debug file is created and
   no debug-related output appears anywhere.
-- [ ] The initial listing shows "===== CURRENT EC2 INSTANCES =====" and
+- [x] The initial listing shows "===== CURRENT EC2 INSTANCES =====" and
   "===== AVAILABLE AMIs (owned by account) =====" tables, aggregated
   across both configured regions in one view (not one region at a time --
   DECISIONS.md, "All four regions aggregated in unified view").
@@ -63,7 +63,7 @@ General checks (do these once, up front)
   the STATE column should be colorized (running=green, stopped/
   terminated=red, pending/stopping=yellow); redirecting output to a file
   or setting NO_COLOR=1 should produce plain text with no escape codes.
-- [ ] Pick-list prompt highlighting (DECISIONS.md, "Highlight PickList's
+- [x] Pick-list prompt highlighting (DECISIONS.md, "Highlight PickList's
   prompt header when color is enabled"): with a color-capable TTY and no
   NO_COLOR, trigger any pick list (e.g. option 4, Start EC2 instance).
   Confirm the header line ("Select an instance to start") appears in
@@ -72,14 +72,14 @@ General checks (do these once, up front)
   selection without reading through the list. With NO_COLOR=1 or output
   redirected to a file, confirm the same header appears with no escape
   codes.
-- [ ] The main menu shows exactly these 12 options, in this order (Show
+- [x] The main menu shows exactly these 12 options, in this order (Show
   resource lists moved to the top and renamed from "Refresh resource
   lists" -- see DECISIONS.md, "Move 'Show resource lists' to the top of
   the Compute menu; rename from 'Refresh'"; every other item's number
   shifted down by one accordingly):
     1) [ok] Show resource lists
     2) [ok] Create EC2 instance from AMI
-    3) [ ] Create EC2 instance from cloud-init YAML
+    3) [ok] Create EC2 instance from cloud-init YAML
     4) [ok] Start EC2 instance
     5) [ok] Stop EC2 instance
     6) [ok] Terminate EC2 instance
@@ -535,11 +535,34 @@ constraint).
 
 Prompts, in order: pick an instance -> "Backup directory (e.g.
 /opt/rdm_sql_backups)" -> "Age threshold in days" -> "S3 bucket" ->
-dry-run list -> type-to-confirm (instance ID or name).
+[S3 bucket access preflight check] -> dry-run list -> type-to-confirm
+(instance ID or name).
 
 - [ ] Leave directory/bucket blank once each: confirm rejected and
   re-prompted. Type a non-numeric or zero/negative age threshold:
   confirm rejected and re-prompted.
+- [ ] S3 bucket access preflight check (DECISIONS.md, "Preflight check:
+  S3 bucket access before Backup Archive & Trim's dry-run list"): enter
+  a bucket name that doesn't exist, or one your AWS credentials can't
+  reach. Confirm the tool aborts immediately with a clear error naming
+  the bucket -- before any dry-run list runs on the instance (no SSM
+  `find` command should be sent). Then enter the real, accessible
+  bucket and confirm the workflow proceeds normally.
+- [ ] Bucket in a different region than `~/.awsops`' configured regions
+  (DECISIONS.md, "Resolve a bucket's actual region before Backup
+  Archive & Trim's access check" -- the real bug hit against
+  `sql-backups.library.caltech.edu`): enter a bucket whose home region
+  isn't in your `~/.awsops` `regions` list at all. Confirm the bucket
+  access check and later verification succeed regardless -- no
+  `MovedPermanently` error -- since the region is auto-discovered per
+  bucket, not assumed from configured regions.
+- [ ] Uploads are namespaced by instance (DECISIONS.md, "Namespace
+  backup uploads by instance"): after a successful run, check the
+  bucket in the S3 console and confirm each uploaded object's key is
+  `<instance-name>/<filename>`, not just `<filename>` at the bucket
+  root. Run the workflow against a second, differently-named instance
+  and confirm its files land under its own prefix without touching the
+  first instance's.
 - [ ] Per-instance backup directory default (DECISIONS.md, "Configure
   per-instance backup directories by Name pattern"): add a
   `backup_directories` rule to ~/.awsops matching the test instance's
@@ -557,9 +580,21 @@ dry-run list -> type-to-confirm (instance ID or name).
   type-to-confirm step at all.
 - [ ] Type-to-confirm: wrong value cancels immediately (no retry); correct
   instance ID or name proceeds.
-- [ ] Confirm the upload phase shows the "... uploading backup files to S3"
-  periodic status, then the "... verifying uploads via s3:HeadObject"
-  status -- these are two distinct phases, not one.
+- [ ] Confirm the upload phase prints one line per file as it completes
+  (DECISIONS.md, "Per-file upload progress for Backup Archive & Trim"):
+  "... uploading N/M (bytes of total) - OK/FAIL <key>", with N/M and the
+  byte counters advancing file by file, not one generic heartbeat for
+  the whole batch. Then confirm the "... verifying uploads via
+  s3:HeadObject" periodic status follows as a distinct phase.
+- [ ] AWS CLI missing on the instance (real finding from this round of
+  testing): if `aws` isn't installed/on PATH on the target instance,
+  every file reports FAIL in the upload progress line (instance-side
+  `aws: not found`), and every file then correctly fails independent
+  verification and is left untouched -- confirm this is exactly what
+  happens, and that nothing is deleted. Fix by installing the AWS CLI
+  on the instance (and confirming its IAM instance profile grants
+  `s3:PutObject`/`s3:ListBucket` on the destination bucket) before
+  retrying.
 - [ ] Independent verification is the safety-critical part of this feature:
   if you can arrange a partial failure (e.g. revoke the instance's S3
   permission mid-upload, or use a bucket the instance can't reach),

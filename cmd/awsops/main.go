@@ -110,15 +110,26 @@ func main() {
 		ssmClients[region] = awsclient.WrapSSM(ssmClient, dl, region)
 	}
 
-	// S3 bucket regions are unrelated to any instance's region (Backup
-	// Archive & Trim's independent verification targets whatever bucket
-	// the operator specifies), so a single S3 client suffices.
+	// A bucket's home region is unrelated to any instance's region, and
+	// unknown up front -- Backup Archive & Trim discovers it via
+	// workflow.BucketRegion (called on this initial client, which works
+	// from any region) and then builds a client actually scoped to that
+	// region via newS3Client for every other S3 call (see DECISIONS.md,
+	// "Resolve a bucket's actual region before Backup Archive & Trim's
+	// access check").
 	s3Client, err := awsclient.NewS3Client(ctx, cfg.Regions[0])
 	if err != nil {
 		fmt.Fprintf(eout, "creating S3 client: %v\n", err)
 		os.Exit(1)
 	}
 	s3Client = awsclient.WrapS3(s3Client, dl, cfg.Regions[0])
+	newS3Client := func(ctx context.Context, region string) (awsclient.S3API, error) {
+		c, err := awsclient.NewS3Client(ctx, region)
+		if err != nil {
+			return nil, err
+		}
+		return awsclient.WrapS3(c, dl, region), nil
+	}
 
 	stsClient, err := awsclient.NewSTSClient(ctx, cfg.Regions[0])
 	if err != nil {
@@ -198,7 +209,7 @@ func main() {
 			return workflow.ShowCloudInit(ctx, term, le, ec2Clients, ssmClients, state.instances, state.images)
 		},
 		BackupArchiveAndTrim: func(ctx context.Context) error {
-			return workflow.BackupArchiveAndTrim(ctx, term, le, ssmClients, s3Client, state.instances, cfg.BackupDirectories)
+			return workflow.BackupArchiveAndTrim(ctx, term, le, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories)
 		},
 		Refresh: refresh,
 	}

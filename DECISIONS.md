@@ -4,6 +4,173 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-02 — Namespace backup uploads by instance
+
+**Context.** `sql-backups.library.caltech.edu` is meant to hold backups
+from multiple systems, not just one instance -- but every upload key was
+just `path.Base` of the source file (e.g. `caltechauthors-db-1-...sql.gz`
+directly at the bucket root). Two instances producing identically- or
+similarly-named backup files (a very real possibility -- not every
+system's backup script embeds a distinguishing name the way this one
+happens to) would silently collide and overwrite each other in the
+shared bucket.
+
+**Decision.** Every upload key is now namespaced by the source
+instance's Name tag: `s3://bucket/<name>/<filename>`. `uploadKey(prefix,
+filePath)` builds this from `path.Join`, used consistently for the
+`aws s3 cp` destination, the `printf`'d key the instance reports back,
+and the tool's own `s3:HeadObject` verification and `rm -f` path
+resolution. An untagged instance (blank Name) falls back to its
+instance ID as the prefix -- every instance needs *some* non-empty,
+distinguishing prefix, and the ID is always available.
+
+**Rationale.**
+- Name (not instance ID) as the primary prefix keeps the bucket
+  browsable by a human restoring from backup -- `newauthors/...` reads
+  far better than `i-0c4c81336aea33d27/...`. The ID-on-blank-Name
+  fallback covers the one case where Name alone wouldn't be usable at
+  all.
+- Building the prefix once, in `BackupArchiveAndTrim`, and threading it
+  through as a single `prefix` parameter to `UploadBackupFiles` (rather
+  than each of upload/verify/delete separately reconstructing "which
+  instance is this for") keeps the same value used everywhere a key is
+  built or matched, so upload, verification, and delete can never
+  disagree about a file's key.
+
+**Consequences.** `buildUploadCommand` and `UploadBackupFiles` gain a
+`prefix` parameter; `BackupArchiveParams`'s `Directory`/`Bucket`-style
+plain fields didn't need to change since the prefix is derived from the
+already-available picked instance, not a new prompt. Existing backups
+already sitting at the bucket root today are not automatically
+migrated -- an operator restoring from a backup uploaded before this
+change should account for that when scripting a bulk migration into the
+new per-instance prefixes, if desired.
+
+---
+
+## 2026-07-02 — Resolve a bucket's actual region before Backup Archive & Trim's access check
+
+**Context.** Real-AWS testing against `sql-backups.library.caltech.edu`
+failed with `AWS error [MovedPermanently]: Moved Permanently` on the
+brand-new `s3:HeadBucket` preflight check (above). The debug log showed
+the call went out scoped to `us-west-1` (`cfg.Regions[0]`, the region
+`awsops`' single global S3 client has always used) -- but the bucket
+isn't in that region. `HeadBucket`/`HeadObject` return a bare 301 with
+no useful detail when the calling client's region doesn't match the
+bucket's; DESIGN.md's "a bucket's home region is unrelated to the
+instance's" was correct, but the code never actually resolved *which*
+region a given bucket is in before talking to it.
+
+**Decision.** `BackupArchiveAndTrim` now takes both the original
+`s3Client` (used only to call the new `BucketRegion`, which resolves a
+bucket's true region via `s3:GetBucketLocation` -- a control-plane call
+that, unlike `HeadBucket`, works from a client scoped to any region) and
+a `newS3Client func(ctx, region) (awsclient.S3API, error)` factory. Once
+the bucket's region is known, `newS3Client` builds a client actually
+scoped to that region, used for the `CheckS3BucketAccess` preflight and
+every later `s3:HeadObject` verification call in the run.
+
+**Rationale.**
+- `s3:GetBucketLocation` exists specifically to answer "what region is
+  this bucket in" without already knowing the answer -- it's the
+  standard mechanism for this, not a workaround.
+- A factory function (rather than eagerly building N per-region S3
+  clients at startup, the way EC2/SSM clients are pre-built for every
+  configured region) fits S3 better: buckets can be in any AWS region,
+  not just the ones in `~/.awsops`' `regions` list, so there's no fixed
+  set to pre-build against.
+- Considered and rejected using
+  `github.com/aws/aws-sdk-go-v2/feature/s3/manager`'s `GetBucketRegion`
+  helper (which does something similar by inspecting a `HeadBucket`
+  redirect's `x-amz-bucket-region` header) -- `go get` reported that
+  module deprecated in favor of `feature/s3/transfermanager`, and
+  `GetBucketLocation` alone, already available via the `service/s3`
+  package already in use, needs no new dependency at all.
+
+**Consequences.** `awsclient.S3API` gains `GetBucketLocation` alongside
+`HeadObject`/`HeadBucket` (real client, logging decorator, and test fake
+all updated). `BackupArchiveAndTrim`'s signature grows a
+`newS3Client` parameter; `main.go` supplies both the initial
+`cfg.Regions[0]`-scoped probe client and the factory closure.
+
+---
+
+## 2026-07-02 — Preflight check: S3 bucket access before Backup Archive & Trim's dry-run list
+
+**Context.** Today's `sql-backups.library.caltech.edu` bucket test run
+happened to fail for an unrelated reason (the target instance's AWS CLI
+wasn't installed), but it highlighted a gap: if the operator's own
+credentials can't reach the entered bucket at all (typo'd name, bucket
+doesn't exist yet, missing `s3:ListBucket`), the workflow wouldn't find
+out until the independent verification step, well after the dry-run
+list, the destructive type-to-confirm gate, and a potentially large
+upload have already run.
+
+**Decision.** Right after the "S3 bucket" prompt, `BackupArchiveAndTrim`
+calls a new `CheckS3BucketAccess`, which does an `s3:HeadBucket` with the
+operator's own credentials and aborts immediately with an actionable
+error (naming the bucket, and hinting at the likely cause) if it fails
+-- before the dry-run list, before type-to-confirm, before any upload.
+
+**Rationale.**
+- `s3:HeadBucket` is the standard cheap existence-and-access check: no
+  object needs to exist, and both "bucket doesn't exist" and "no
+  permission" surface as an error from this one call.
+- Checking immediately after the bucket name is entered, rather than
+  waiting for the independent verification step later, means an
+  operator who mistypes a bucket name finds out in seconds, not after
+  a dry-run list and (potentially large) upload have already run.
+
+**Consequences.** `awsclient.S3API` gains `HeadBucket` alongside the
+existing `HeadObject`; every implementation (the real SDK client, the
+logging decorator, and the test fake) had to add it. No functional
+change to the upload/verify/delete pipeline itself.
+
+---
+
+## 2026-07-02 — Per-file upload progress for Backup Archive & Trim
+
+**Context.** Real-AWS testing on `newauthors` (85 files, ~85 GB total)
+surfaced that the upload phase's only feedback was a generic "...
+uploading backup files to S3 (elapsed Xs)" heartbeat every 30 seconds --
+no file count, no bytes, no way to tell whether it was actually making
+progress or stuck, for a phase that can legitimately run for a long time
+on a large backup set.
+
+**Decision.** `UploadBackupFiles` now runs one `ssm:SendCommand` per
+file instead of a single script covering the whole batch, and takes an
+`onProgress func(UploadProgress)` callback invoked after each file
+completes with a running `Done`/`Total` file count and `BytesDone`/
+`BytesTotal`. `BackupArchiveAndTrim` uses this to print one line per
+file: `... uploading 12/84 (1.2 GiB of 85.5 GiB) - OK <key>`.
+
+**Rationale.**
+- Real per-file progress requires the client to observe each file's
+  outcome individually, which is only possible if each file is its own
+  SSM command -- `ssm:GetCommandInvocation` doesn't expose partial
+  stdout mid-script for a single long-running batched command.
+- A callback (not a hardcoded print inside `UploadBackupFiles`) keeps
+  the SSM-calling code testable without capturing terminal output, and
+  leaves `nil` as a valid "don't care" value for callers that don't need
+  a live display (as the existing unit tests exercise).
+
+**Rejected alternatives.**
+- *Keep one batched script, just upgrade the heartbeat to a spinner.*
+  Cheaper, but still can't report which file or how far through the
+  batch the operation actually is -- doesn't address the real ask.
+
+**Consequences.** One `ssm:SendCommand`/`ssm:GetCommandInvocation`
+round-trip pair per file instead of one for the whole batch -- more AWS
+API calls and a bit more wall-clock overhead per file (each carries its
+own poll-until-terminal wait), accepted in exchange for real progress
+visibility on backup sets that can take a long time regardless.
+`DefaultBackupUploadTimeout` (30 minutes) is now a per-file timeout
+rather than a whole-batch timeout, which is more generous in aggregate
+than before -- appropriate since a single ~1 GB file uploading within 30
+minutes is already a very loose bound.
+
+---
+
 ## 2026-07-02 — Configure per-instance backup directories by Name pattern
 
 **Context.** Backup Archive & Trim's "Backup directory" prompt has no

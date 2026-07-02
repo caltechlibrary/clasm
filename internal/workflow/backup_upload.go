@@ -24,18 +24,29 @@ type UploadResult struct {
 	OK        bool
 }
 
+// uploadKey builds a bucket-relative S3 key that namespaces a file by
+// its source instance, so backups from different systems sharing one
+// bucket don't collide on identically- or similarly-named files (see
+// DECISIONS.md, "Namespace backup uploads by instance"). An empty
+// prefix falls back to the bare basename -- path.Join drops empty
+// segments, so this needs no special case.
+func uploadKey(prefix, filePath string) string {
+	return path.Join(prefix, path.Base(filePath))
+}
+
 // buildUploadCommand builds a shell script that uploads each file to
-// s3://bucket/<basename> via the instance's own `aws` CLI/credentials,
-// reporting one OK/FAIL line per file with the already-known size from
-// the dry-run listing (no need for the remote script to re-stat). Every
-// dynamic value (source path, destination URI, echoed key) is
-// shell-quoted and passed as a separate `printf` argument rather than
-// interpolated into a double-quoted string, so a key or path containing
-// a quote, backtick, or `$` can't break the generated script.
-func buildUploadCommand(files []BackupFile, bucket string) string {
+// s3://bucket/<prefix>/<basename> via the instance's own `aws`
+// CLI/credentials, reporting one OK/FAIL line per file with the
+// already-known size from the dry-run listing (no need for the remote
+// script to re-stat). Every dynamic value (source path, destination
+// URI, echoed key) is shell-quoted and passed as a separate `printf`
+// argument rather than interpolated into a double-quoted string, so a
+// key or path containing a quote, backtick, or `$` can't break the
+// generated script.
+func buildUploadCommand(files []BackupFile, bucket, prefix string) string {
 	var sb strings.Builder
 	for _, f := range files {
-		key := path.Base(f.Path)
+		key := uploadKey(prefix, f.Path)
 		dest := fmt.Sprintf("s3://%s/%s", bucket, key)
 		fmt.Fprintf(&sb, "if aws s3 cp %s %s; then printf 'OK\\t%%s\\t%%d\\n' %s %d; else printf 'FAIL\\t%%s\\t0\\n' %s; fi\n",
 			shellQuote(f.Path), shellQuote(dest), shellQuote(key), f.SizeBytes, shellQuote(key))
@@ -64,18 +75,56 @@ func parseUploadResults(output string) []UploadResult {
 	return results
 }
 
-// UploadBackupFiles runs buildUploadCommand's script via SSM and parses
-// the per-file results. A non-Success command status is a hard error --
-// distinct from an individual file reporting FAIL, which is a normal,
-// expected outcome this function still returns successfully so the
-// caller can report it.
-func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, files []BackupFile, bucket string, timeout, pollInterval time.Duration) ([]UploadResult, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildUploadCommand(files, bucket), timeout, pollInterval)
-	if err != nil {
-		return nil, err
+// UploadProgress reports one file's outcome as UploadBackupFiles works
+// through its list sequentially -- drives a live per-file progress
+// display instead of a generic "still working" heartbeat (see
+// DECISIONS.md, "Per-file upload progress for Backup Archive & Trim").
+type UploadProgress struct {
+	Done       int
+	Total      int
+	BytesDone  int64
+	BytesTotal int64
+	Result     UploadResult
+}
+
+// UploadBackupFiles runs one SSM command per file -- rather than a
+// single script covering the whole batch -- so onProgress (may be nil)
+// can report real per-file progress as each upload completes; a backup
+// set can run into the tens of gigabytes and take long enough that a
+// generic heartbeat isn't enough to tell it's actually making progress.
+// prefix namespaces every destination key (see uploadKey) so backups
+// from different instances sharing one bucket don't collide.
+// A non-Success command status for any one file is a hard error, same
+// as before this per-file split -- distinct from an individual file
+// reporting FAIL inside its own command, which is a normal, expected
+// outcome still returned to the caller to report.
+func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, files []BackupFile, bucket, prefix string, timeout, pollInterval time.Duration, onProgress func(UploadProgress)) ([]UploadResult, error) {
+	var bytesTotal int64
+	for _, f := range files {
+		bytesTotal += f.SizeBytes
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return nil, fmt.Errorf("upload command on %s failed (status: %s)", instanceID, status)
+
+	results := make([]UploadResult, 0, len(files))
+	var bytesDone int64
+	for i, f := range files {
+		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildUploadCommand([]BackupFile{f}, bucket, prefix), timeout, pollInterval)
+		if err != nil {
+			return nil, err
+		}
+		if status != ssmtypes.CommandInvocationStatusSuccess {
+			return nil, fmt.Errorf("upload command on %s failed (status: %s)", instanceID, status)
+		}
+
+		result := UploadResult{Key: uploadKey(prefix, f.Path)}
+		if parsed := parseUploadResults(stdout); len(parsed) == 1 {
+			result = parsed[0]
+		}
+		results = append(results, result)
+
+		bytesDone += f.SizeBytes
+		if onProgress != nil {
+			onProgress(UploadProgress{Done: i + 1, Total: len(files), BytesDone: bytesDone, BytesTotal: bytesTotal, Result: result})
+		}
 	}
-	return parseUploadResults(stdout), nil
+	return results, nil
 }
