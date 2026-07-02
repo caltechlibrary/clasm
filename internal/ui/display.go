@@ -21,6 +21,20 @@ func orUnknown(s string) string {
 	return s
 }
 
+// none renders an instance with no assigned public/private IP (e.g.
+// stopped, or launched without a public IP/EIP) -- distinct from
+// "unknown" above, since this isn't missing data, it's a legitimate
+// state (see DECISIONS.md, "Show instance IP addresses in the main
+// listing").
+const none = "none"
+
+func orNone(s string) string {
+	if s == "" {
+		return none
+	}
+	return s
+}
+
 // stateColor maps an instance state to a termlib color constant for
 // DisplayInstances, or "" for states with no specific color (PLAN.md,
 // Phase 15, "Color output for state").
@@ -51,14 +65,16 @@ func DisplayInstances(t *termlib.Terminal, instances []inventory.Instance, color
 
 	t.Println("===== CURRENT EC2 INSTANCES =====")
 	t.Println()
-	t.Printf("%s %s %s %s %s %s %s\n",
+	t.Printf("%s %s %s %s %s %s %s %s %s\n",
 		termlib.PadRight("INSTANCE ID", 20),
 		termlib.PadRight("NAME", 20),
 		termlib.PadRight("STATE", 12),
 		termlib.PadRight("AMI ID", 20),
 		termlib.PadRight("REGION", 10),
 		termlib.PadRight("PROJECT", 16),
-		"ENVIRONMENT")
+		termlib.PadRight("ENVIRONMENT", 11),
+		termlib.PadRight("PUBLIC IP", 15),
+		"PRIVATE IP")
 	for _, inst := range instances {
 		// Truncate/pad on the plain text first, then wrap in ANSI codes --
 		// escape sequences are zero-width on screen but would otherwise
@@ -69,14 +85,16 @@ func DisplayInstances(t *termlib.Terminal, instances []inventory.Instance, color
 				state = c + state + termlib.Reset
 			}
 		}
-		t.Printf("%s %s %s %s %s %s %s\n",
+		t.Printf("%s %s %s %s %s %s %s %s %s\n",
 			termlib.PadRight(termlib.Truncate(inst.InstanceID, 20), 20),
 			termlib.PadRight(termlib.Truncate(inst.Name, 20), 20),
 			state,
 			termlib.PadRight(termlib.Truncate(inst.ImageID, 20), 20),
 			termlib.PadRight(inst.Region, 10),
 			termlib.PadRight(termlib.Truncate(orUnknown(inst.Project), 16), 16),
-			orUnknown(inst.Environment))
+			termlib.PadRight(orUnknown(inst.Environment), 11),
+			termlib.PadRight(orNone(inst.PublicIP), 15),
+			orNone(inst.PrivateIP))
 	}
 	t.Println()
 	t.Refresh()

@@ -17,8 +17,11 @@ import (
 // Instance is an EC2 instance as displayed/managed by awsops, aggregated
 // across regions. Project and Environment are empty if the instance
 // isn't tagged that way -- see DECISIONS.md, "Introduce a light
-// Project/Environment tagging convention". Rendering an empty value as
-// "unknown" is the display layer's job, not this package's.
+// Project/Environment tagging convention". PublicIP/PrivateIP are empty
+// if the instance has none assigned (e.g. stopped, or no public IP/EIP)
+// -- see DECISIONS.md, "Show instance IP addresses in the main
+// listing". Rendering an empty value as "unknown"/"none" is the display
+// layer's job, not this package's.
 type Instance struct {
 	InstanceID  string
 	Name        string
@@ -27,6 +30,8 @@ type Instance struct {
 	Region      string
 	Project     string
 	Environment string
+	PublicIP    string
+	PrivateIP   string
 }
 
 // ListInstances queries ec2:DescribeInstances in each region concurrently,
@@ -99,6 +104,8 @@ func instanceFromSDK(inst types.Instance, region string) Instance {
 		Region:      region,
 		Project:     project,
 		Environment: environment,
+		PublicIP:    aws.ToString(inst.PublicIpAddress),
+		PrivateIP:   aws.ToString(inst.PrivateIpAddress),
 	}
 }
 

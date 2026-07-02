@@ -26,14 +26,14 @@ func TestDisplayInstances_Populated(t *testing.T) {
 	term := termlib.New(&buf)
 
 	instances := []inventory.Instance{
-		{InstanceID: "i-012345", Name: "web-server", State: "running", ImageID: "ami-abc123", Region: "us-east-1", Project: "caltechauthors", Environment: "production"},
+		{InstanceID: "i-012345", Name: "web-server", State: "running", ImageID: "ami-abc123", Region: "us-east-1", Project: "caltechauthors", Environment: "production", PublicIP: "203.0.113.25", PrivateIP: "10.0.1.25"},
 		{InstanceID: "i-067890", Name: "db-server", State: "stopped", ImageID: "ami-def456", Region: "us-west-2"},
 	}
 
 	DisplayInstances(term, instances, false)
 	out := buf.String()
 
-	for _, want := range []string{"i-012345", "web-server", "running", "ami-abc123", "us-east-1", "caltechauthors", "production"} {
+	for _, want := range []string{"i-012345", "web-server", "running", "ami-abc123", "us-east-1", "caltechauthors", "production", "203.0.113.25", "10.0.1.25"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
@@ -41,6 +41,10 @@ func TestDisplayInstances_Populated(t *testing.T) {
 	// untagged Project/Environment render as "unknown"
 	if !strings.Contains(out, "db-server") || !strings.Contains(out, "unknown") {
 		t.Errorf("output missing untagged instance's %q rendering:\n%s", "unknown", out)
+	}
+	// a stopped instance with no assigned IPs renders "none", not blank
+	if !strings.Contains(out, "none") {
+		t.Errorf("output missing %q rendering for an instance with no IPs:\n%s", "none", out)
 	}
 }
 

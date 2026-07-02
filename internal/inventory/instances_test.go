@@ -143,6 +143,42 @@ func TestListInstances_UntaggedResourceHasEmptyFields(t *testing.T) {
 	}
 }
 
+func TestListInstances_IncludesPublicAndPrivateIP(t *testing.T) {
+	inst := sdkInstance("i-1", "web", "running", "ami-1", "", "")
+	inst.PublicIpAddress = aws.String("203.0.113.25")
+	inst.PrivateIpAddress = aws.String("10.0.1.25")
+	clients := map[string]awsclient.EC2API{
+		"us-east-1": &fakeEC2Client{reservations: []types.Reservation{{Instances: []types.Instance{inst}}}},
+	}
+
+	got, err := ListInstances(context.Background(), clients)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d instances, want 1", len(got))
+	}
+	if got[0].PublicIP != "203.0.113.25" || got[0].PrivateIP != "10.0.1.25" {
+		t.Errorf("got %+v, want PublicIP=203.0.113.25 PrivateIP=10.0.1.25", got[0])
+	}
+}
+
+func TestListInstances_NoPublicIPIsEmptyNotNil(t *testing.T) {
+	clients := map[string]awsclient.EC2API{
+		"us-east-1": &fakeEC2Client{reservations: []types.Reservation{
+			{Instances: []types.Instance{sdkInstance("i-1", "web", "stopped", "ami-1", "", "")}},
+		}},
+	}
+
+	got, err := ListInstances(context.Background(), clients)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].PublicIP != "" || got[0].PrivateIP != "" {
+		t.Errorf("got %+v, want empty PublicIP/PrivateIP for a stopped instance with none assigned", got)
+	}
+}
+
 func TestListInstances_PropagatesError(t *testing.T) {
 	clients := map[string]awsclient.EC2API{
 		"us-east-1": &fakeEC2Client{err: errors.New("boom")},

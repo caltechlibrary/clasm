@@ -38,17 +38,23 @@ func uploadKey(prefix, filePath string) string {
 // s3://bucket/<prefix>/<basename> via the instance's own `aws`
 // CLI/credentials, reporting one OK/FAIL line per file with the
 // already-known size from the dry-run listing (no need for the remote
-// script to re-stat). Every dynamic value (source path, destination
-// URI, echoed key) is shell-quoted and passed as a separate `printf`
-// argument rather than interpolated into a double-quoted string, so a
-// key or path containing a quote, backtick, or `$` can't break the
-// generated script.
+// script to re-stat). `aws s3 cp` runs with --only-show-errors: without
+// it, its own \r-updated progress meter can fill
+// ssm:GetCommandInvocation's 24,000-character stdout cap on a large
+// file, pushing this script's own OK/FAIL line off the end before it's
+// ever captured -- silently misreporting a real, successful upload as
+// failed (see DECISIONS.md, "Suppress aws s3 cp's progress output to
+// avoid truncating the OK/FAIL signal"). Every dynamic value (source
+// path, destination URI, echoed key) is shell-quoted and passed as a
+// separate `printf` argument rather than interpolated into a
+// double-quoted string, so a key or path containing a quote, backtick,
+// or `$` can't break the generated script.
 func buildUploadCommand(files []BackupFile, bucket, prefix string) string {
 	var sb strings.Builder
 	for _, f := range files {
 		key := uploadKey(prefix, f.Path)
 		dest := fmt.Sprintf("s3://%s/%s", bucket, key)
-		fmt.Fprintf(&sb, "if aws s3 cp %s %s; then printf 'OK\\t%%s\\t%%d\\n' %s %d; else printf 'FAIL\\t%%s\\t0\\n' %s; fi\n",
+		fmt.Fprintf(&sb, "if aws s3 cp --only-show-errors %s %s; then printf 'OK\\t%%s\\t%%d\\n' %s %d; else printf 'FAIL\\t%%s\\t0\\n' %s; fi\n",
 			shellQuote(f.Path), shellQuote(dest), shellQuote(key), f.SizeBytes, shellQuote(key))
 	}
 	return sb.String()

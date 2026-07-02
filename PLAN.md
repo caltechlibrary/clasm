@@ -1286,6 +1286,27 @@ See DECISIONS.md, "Namespace backup uploads by instance".
 
 ---
 
+## Phase 15.24 — Show instance IP addresses in the main listing (done)
+
+**Effort:** ~1 hour
+**Priority:** Medium
+
+See DECISIONS.md, "Show instance IP addresses in the main listing".
+
+### Work Items
+
+- [x] `internal/inventory/instances.go`: `Instance` gains
+      `PublicIP`/`PrivateIP` (from the same `DescribeInstances` response
+      already fetched); `instanceFromSDK` populates both
+- [x] `internal/ui/display.go`: `orNone` helper ("none" for a blank IP,
+      distinct from `orUnknown`'s "unknown" for untagged Project/
+      Environment); `DisplayInstances` adds "PUBLIC IP"/"PRIVATE IP" as
+      two new trailing columns
+
+**Dependency:** Phase 1 (Unified Resource Listing)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

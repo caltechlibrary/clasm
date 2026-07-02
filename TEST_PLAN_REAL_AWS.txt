@@ -63,6 +63,13 @@ General checks (do these once, up front)
   the STATE column should be colorized (running=green, stopped/
   terminated=red, pending/stopping=yellow); redirecting output to a file
   or setting NO_COLOR=1 should produce plain text with no escape codes.
+- [ ] PUBLIC IP/PRIVATE IP columns (DECISIONS.md, "Show instance IP
+  addresses in the main listing"): confirm a running instance with a
+  public IP shows both its Public and Private IP; a stopped instance
+  (or one with no public IP) shows "none" for Public IP, not blank.
+  Confirm the IPs shown match what the AWS console reports for the same
+  instance, and that you can use the Public IP shown to `ssh` in
+  directly.
 - [x] Pick-list prompt highlighting (DECISIONS.md, "Highlight PickList's
   prompt header when color is enabled"): with a color-capable TTY and no
   NO_COLOR, trigger any pick list (e.g. option 4, Start EC2 instance).

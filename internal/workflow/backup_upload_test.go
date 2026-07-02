@@ -29,6 +29,21 @@ func TestBuildUploadCommand_QuotesPathsAndIncludesBucket(t *testing.T) {
 	}
 }
 
+func TestBuildUploadCommand_SuppressesAWSCLIProgressOutput(t *testing.T) {
+	files := []BackupFile{{Path: "/opt/rdm_sql_backups/foo.sql.gz", SizeBytes: 1024}}
+	cmd := buildUploadCommand(files, "my-backup-bucket", "newauthors")
+
+	// Without --only-show-errors, `aws s3 cp`'s own \r-updated progress
+	// meter can fill ssm:GetCommandInvocation's 24,000-character stdout
+	// cap on a large file, pushing this script's own OK/FAIL line off
+	// the end before it's ever captured -- silently misreporting a
+	// successful upload as failed (see DECISIONS.md, "Suppress aws s3
+	// cp's progress output to avoid truncating the OK/FAIL signal").
+	if !strings.Contains(cmd, "aws s3 cp --only-show-errors ") {
+		t.Errorf("expected aws s3 cp to run with --only-show-errors, got:\n%s", cmd)
+	}
+}
+
 func TestUploadKey_JoinsPrefixAndBasename(t *testing.T) {
 	got := uploadKey("newauthors", "/opt/rdm_sql_backups/foo.sql.gz")
 	if got != "newauthors/foo.sql.gz" {

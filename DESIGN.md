@@ -194,9 +194,10 @@ Compute domain (below) keeps today's exact shape:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-(Illustrative — the real listing also includes Project and Environment
-columns; see Feature 1 and Feature 12 below.) Key Management, S3, and
-CloudFront follow the same listing-then-menu pattern; their specific
+(Illustrative — the real listing also includes Project, Environment,
+Public IP, and Private IP columns; see Feature 1 and Feature 12 below.)
+Key Management, S3, and CloudFront follow the same listing-then-menu
+pattern; their specific
 listings and menus are documented under their own feature sections below
 rather than repeated here.
 
@@ -257,7 +258,11 @@ On startup, the tool fetches and displays:
 - All EC2 instances across the configured regions
 - For each instance: ID, Name (from tags), State, AMI ID, Region, Project
   and Environment (from tags — see "Project/Environment Tagging" below;
-  shown as "unknown" if untagged)
+  shown as "unknown" if untagged), and Public/Private IP (shown as
+  "none" if the instance has neither, e.g. stopped or launched without a
+  public IP — see `DECISIONS.md`, "Show instance IP addresses in the
+  main listing"; this is what makes it possible to look up which
+  instance to `ssh` into without a separate lookup step)
 - All AMIs owned by the current AWS account across the configured regions
 - For each AMI: ID, Name, Creation Date, Region, Project and Environment
 - Listing can be grouped/filtered by Project and by Environment, so
