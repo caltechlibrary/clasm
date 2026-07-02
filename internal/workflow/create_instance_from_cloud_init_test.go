@@ -12,15 +12,17 @@ import (
 )
 
 func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
+	path := writeCloudInitFixture(t, "#cloud-config")
 	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
-	input := "#cloud-config\n" + // cloud-init YAML, first
+	input := path + "\n" + // cloud-init YAML file path, first
 		"1\n" + // pick ami-1
 		"web\n" +
-		"t3.micro\n" +
-		"my-key\n" +
+		"1\n" + // instance type: t3.micro
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-key\n" + // New key pair name
 		"sg-1\n" +
 		"subnet-1\n" +
-		"\n" +
+		"1\n" + // IAM profile: select (none)
 		"caltechauthors\n" +
 		"production\n" +
 		"y\n" // confirm launch
@@ -29,7 +31,7 @@ func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
 	ec2Client := &fakeEC2Client{runInstancesID: "i-abc123", runningAfterCall: 1}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, images)
+	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,15 +47,17 @@ func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
 }
 
 func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testing.T) {
+	path := writeCloudInitFixture(t, "#cloud-config")
 	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := "#cloud-config\n" +
+	input := path + "\n" +
 		"1\n" +
 		"web\n" +
-		"t3.micro\n" +
-		"my-key\n" +
+		"1\n" + // instance type: t3.micro
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-key\n" + // New key pair name
 		"sg-1\n" +
 		"subnet-1\n" +
-		"\n" +
+		"1\n" + // IAM profile: select (none)
 		"caltechauthors\n" +
 		"production\n" +
 		"n\n" // decline
@@ -62,7 +66,7 @@ func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testin
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, images)
+	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,13 +76,14 @@ func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testin
 }
 
 func TestCreateInstanceFromCloudInit_CancelledPickListReturnsCleanly(t *testing.T) {
+	path := writeCloudInitFixture(t, "#cloud-config")
 	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := "#cloud-config\n" + "0\n" // provide cloud-init, then cancel the AMI pick list
+	input := path + "\n" + "0\n" // provide cloud-init, then cancel the AMI pick list
 	term, le, _ := newPipeEditor(t, input)
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, images)
+	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
 	}

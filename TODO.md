@@ -9,7 +9,7 @@ actively running `bin/awsops` against a real AWS account, working through
 `TEST_PLAN_REAL_AWS.txt`.
 
 - [ ] Continue working through `TEST_PLAN_REAL_AWS.txt` against real AWS,
-      all four regions; mark items `[ok]` as confirmed (existing markers
+      both configured regions (us-west-1, us-west-2 -- narrowed from four; see DECISIONS.md, "Narrow configured regions to us-west-1/us-west-2"); mark items `[ok]` as confirmed (existing markers
       must be preserved, not overwritten)
 - [ ] Phase 16 (PLAN.md): once the manual test plan is fully run, close
       out any gaps it surfaces
@@ -19,20 +19,24 @@ actively running `bin/awsops` against a real AWS account, working through
 
 ## Discussed but not yet designed/implemented
 
-- [ ] Pre-flight sanity check before `RunInstances`: cross-reference the
-      picked AMI's `EnaSupport` (from `DescribeImages`) against the picked
-      instance type's ENA requirement (`ec2:DescribeInstanceTypes`) to catch
-      the `InvalidParameterCombination: Enhanced networking (ENA) is
-      required...` class of error before submitting, not after. Surfaced by
-      two real launch failures this session (AMI `ami-0da49db6a772dda02`
-      isn't ENA-enabled, `t3.micro` requires it). Scope not yet decided --
-      just this one failure class, or a short list of other common
-      combinations.
-- [ ] Retry-on-launch-failure: instead of bouncing back to the main menu on
-      any `RunInstances` error, keep the already-collected params and let
-      the operator re-enter just the field that's likely wrong (e.g.
-      Instance type) instead of re-doing the whole launch flow. Granularity
-      not yet decided (just Instance type, or any collected field).
+- [x] Pre-flight sanity check before `RunInstances`: cross-reference the
+      picked AMI's `EnaSupport` against the picked instance type's ENA
+      requirement. Both known failure classes from this session are now
+      implemented: instance-type/Availability-Zone (DECISIONS.md,
+      "Pre-flight check: instance type vs. subnet Availability Zone") and
+      instance-type/AMI-ENA-support (DECISIONS.md, "Pre-flight check:
+      instance type vs. AMI ENA support"). If a third incompatibility
+      class turns up, that's the point to reconsider a shared framework,
+      not before (see either decision's "Rejected alternatives").
+- [ ] Retry-on-launch-failure (general case): instead of bouncing back to
+      the main menu on any `RunInstances` error, keep the already-collected
+      params and let the operator re-enter just the field that's likely
+      wrong instead of re-doing the whole launch flow. Granularity not yet
+      decided (just Instance type, or any collected field). NOTE: the
+      instance-type/AZ pre-flight check above already does a scoped version
+      of this (change instance type / pick a different subnet / abort) for
+      that one failure class, pre-flight rather than reactive -- this item
+      is about generalizing to *any* RunInstances failure, not just that one.
 
 ## Nice to have
 

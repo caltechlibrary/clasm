@@ -22,17 +22,13 @@ import (
 // primitive"). Resolves and returns the region-specific clients itself,
 // same as CollectLaunchInstanceParams, since security group/subnet
 // listing needs them too.
-func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
-	userDataInput, err := ui.Prompt(t, le, "Cloud-init YAML (inline text or @file path)", ui.WithValidator(requireNonEmpty))
-	if err != nil {
-		return LaunchInstanceParams{}, nil, nil, err
-	}
-	userData, err := loadUserData(userDataInput)
+func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
+	userData, err := promptCloudInitYAMLFile(t, le)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	image, err := ui.PickList(t, le, images, imageLabel, "Select a base AMI")
+	image, err := ui.PickList(t, le, imagesWithOfficialUbuntu(ctx, ec2Clients, images), imageLabel, "Select a base AMI")
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -47,7 +43,12 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := ui.Prompt(t, le, "Instance type", ui.WithDefault("t3.micro"))
+	instanceType, err := promptInstanceType(t, le)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	instanceType, err = ensureInstanceTypeENACompatible(ctx, t, le, ec2Client, instanceType, image.EnaSupport)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -62,12 +63,17 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	subnetID, err := promptSubnetID(ctx, t, le, ec2Client)
+	subnet, err := promptSubnetID(ctx, t, le, ec2Client, instanceType)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	iamProfile, err := ui.Prompt(t, le, "IAM instance profile (optional; grants AWS permissions to the instance, e.g. ec2-invenio-role; see IAM console > Roles)")
+	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, t, le, ec2Client, instanceType, subnet)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
+	iamProfile, err := promptIAMInstanceProfileOrCreate(ctx, t, le, iamClient)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -91,7 +97,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		InstanceType:       instanceType,
 		KeyName:            keyName,
 		SecurityGroupIDs:   securityGroupIDs,
-		SubnetID:           subnetID,
+		SubnetID:           subnet.SubnetID,
 		IAMInstanceProfile: iamProfile,
 		UserData:           userData,
 		Tags: map[string]string{

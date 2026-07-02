@@ -8,7 +8,13 @@ import (
 func TestNewClients(t *testing.T) {
 	ctx := context.Background()
 
-	for _, region := range Regions {
+	// A representative sample, not the "real" configured list (which
+	// now lives in internal/config) -- this test is only a sanity check
+	// that client construction works for a region string, decoupled
+	// from wherever the actual region list is decided.
+	regions := []string{"us-west-1", "us-west-2"}
+
+	for _, region := range regions {
 		t.Run(region, func(t *testing.T) {
 			ec2Client, err := NewEC2Client(ctx, region)
 			if err != nil {

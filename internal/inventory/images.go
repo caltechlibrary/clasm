@@ -22,6 +22,11 @@ type Image struct {
 	Region       string
 	Project      string
 	Environment  string
+	// EnaSupport reports whether the AMI is enabled for Enhanced
+	// Networking (ENA), for the instance-type-vs-AMI ENA pre-flight
+	// check (see internal/workflow/instance_type_ena_check.go). False
+	// when the SDK doesn't report a value, matching AWS's own default.
+	EnaSupport bool
 }
 
 // ListImages queries ec2:DescribeImages (scoped to Owners: [self]) in
@@ -89,5 +94,6 @@ func imageFromSDK(img types.Image, region string) Image {
 		Region:       region,
 		Project:      project,
 		Environment:  environment,
+		EnaSupport:   aws.ToBool(img.EnaSupport),
 	}
 }

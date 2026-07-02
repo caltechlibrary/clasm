@@ -5,12 +5,25 @@
 > this repo, unchanged, as the working reference for the behavior this
 > document describes, until the Go version reaches parity and is verified
 > against real AWS.
+>
+> **2026-07-02: Domain-picker redesign.** Scope is expanding beyond EC2/AMI
+> to Key Management, S3 (including static website hosting), and CloudFront.
+> The single flat main menu is replaced by a domain picker (Compute / Key
+> Management / S3 / CloudFront) with a domain-scoped submenu underneath —
+> see "Navigation: Domain Picker" below. This is additive: Compute's
+> existing 12 features (below) are unchanged in behavior, only regrouped
+> under one submenu. Real-AWS verification of Compute (Phase 16) continues
+> in parallel with this redesign — see `PLAN.md`. See `DECISIONS.md`,
+> "Redesign navigation as a domain picker; add Key Management, S3, and
+> CloudFront domains".
 
 ## Overview
 
 An interactive Go CLI for administering AWS EC2 instances and AMIs for
-this team's infrastructure, across four regions (us-east-1, us-east-2,
-us-west-1, us-west-2). The tool is general-purpose — nothing in its
+this team's infrastructure, across two regions (us-west-1, us-west-2 —
+narrowed from an original four; see `DECISIONS.md`, "Narrow configured
+regions to us-west-1/us-west-2"). The tool is general-purpose — nothing
+in its
 mechanisms (tagging, backup archival, cloud-init inspection) is
 RDM-specific (see `DECISIONS.md`, "Name the CLI binary `awsops`") — but
 this team's Invenio RDM deployments are its primary use case today, and
@@ -27,12 +40,110 @@ implementation language and AWS access layer change; everything from
 "Show/Export Cloud-Init" onward is new scope that came out of this design
 review.
 
+This team's AWS footprint splits into two broad concerns: deploying and
+operating Invenio RDM instances (Compute: EC2/AMI, plus the SSH key pairs
+they launch with) and publishing static websites (S3 buckets as origin,
+CloudFront serving and caching in front of them). The tool's navigation
+now reflects that split directly — see "Navigation: Domain Picker" below
+— rather than growing a single ever-longer menu.
+
+## Non-Goals
+
+`awsops` is an interactive replacement for ad hoc, day-2 AWS Console
+work — "what's running right now, let me tag/start/stop/snapshot/back up
+this specific thing" — with this team's safety gates and domain
+knowledge (crash-consistency guidance, backup hygiene, the Project/
+Environment tagging convention) built in. It is deliberately **not**:
+
+- **A declarative infrastructure-as-code tool.** It doesn't define
+  desired state, diff against reality, or reconcile drift. Terraform,
+  Pulumi, and AWS CDK already solve that problem well; if this team ever
+  wants version-controlled, reproducible environment definitions, one of
+  those is the right tool, not a `awsops` feature to grow toward.
+- **An AMI-baking pipeline.** Packer (and AWS EC2 Image Builder) already
+  automate "base AMI + cloud-init/provisioning script → new AMI." The
+  deferred "Bake AMI from cloud-init" idea (below) is v1's primitives
+  composed by hand, not a competing pipeline tool.
+- **A general-purpose AWS CLI replacement.** It wraps a curated, opinionated
+  subset of operations this team actually performs, not the full breadth
+  of any single AWS service's API.
+
+Scope decisions in this document (curated instance-type lists over full
+API listings, a fixed Project/Environment tagging vocabulary rather than
+free-form policy, no "pick a different AMI" recovery path once one is
+committed) follow from staying inside this lane — see `DECISIONS.md` for
+the specific trade-offs each one made.
+
+## Configuration
+
+`awsops` reads its own operational settings — never AWS credentials or
+profile selection, which remain entirely the AWS SDK's responsibility
+via its standard chain (`~/.aws/credentials`, `~/.aws/config`,
+environment variables, SSO; see "Assumptions" #1, unchanged) — from an
+optional YAML file at `~/.awsops` (overridable with `-config <path>`).
+See `DECISIONS.md`, "Add a `~/.awsops` YAML config file for awsops' own
+operational settings".
+
+- **Entirely optional.** If the file doesn't exist at the resolved path
+  (default or `-config`-specified), built-in defaults apply and the
+  tool behaves exactly as it always has — no config file is required to
+  run `awsops`.
+- **Fails loudly on a real mistake.** If the file exists but is
+  malformed YAML, `awsops` exits with a clear parse error rather than
+  silently falling back to defaults — a botched config that's silently
+  ignored could mask a typo (e.g. a misspelled region) behind confusing
+  "why isn't my region showing up" behavior.
+- **Per-field defaults, not all-or-nothing.** If the file exists and
+  parses but a given setting is absent or empty, that setting's own
+  built-in default applies. A config file only needs to mention what it
+  actually wants to override; it never needs to restate everything.
+- **A single flat struct, not a versioned schema.** `internal/config.Config`
+  has one YAML-tagged field per setting. Adding a new setting later means
+  adding a field, a default constant, and wiring it into whatever
+  consumes it — no migration machinery, which would be over-engineering
+  for a single-operator-maintained local dotfile (not a multi-tenant
+  service config).
+
+### Today's only setting: `regions`
+
+```yaml
+regions:
+  - us-west-1
+  - us-west-2
+```
+
+Defaults to `[us-west-1, us-west-2]` if unset or the file doesn't exist
+(see `DECISIONS.md`, "Narrow configured regions to us-west-1/us-west-2").
+These are the regions every region-fanned-out feature (instance/AMI
+listing, key pair listing, official Ubuntu AMI lookup, and eventually
+Key Management once it ships) iterates over. Built to accommodate, not
+yet implementing, future settings this same file would naturally hold:
+per-domain defaults once S3/CloudFront ship (e.g. a default backup
+bucket), or overrides for the curated instance-type/Ubuntu-release lists
+if those ever need site-specific tuning.
+
 ## User Experience Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  awsops — AWS Operations CLI                                    │
-│  Regions: us-east-1, us-east-2, us-west-1, us-west-2            │
+├─────────────────────────────────────────────────────────────────┤
+│  Pick a domain:                                                 │
+│  1) Compute (EC2 & AMI)                                         │
+│  2) Key Management                                              │
+│  3) S3 (Buckets & Static Websites)                              │
+│  4) CloudFront                                                  │
+│  5) Exit                                                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Picking a domain drops into that domain's own listing + menu loop. The
+Compute domain (below) keeps today's exact shape:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  awsops — Compute (EC2 & AMI)                                   │
+│  Regions: us-west-1, us-west-2                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ===== CURRENT EC2 INSTANCES =====                              │
@@ -46,36 +157,75 @@ review.
 │  ami-def456...  app-server-v2     2026-02-20      us-west-2     │
 │  ami-ghi789...  custom-ami        2026-03-10      us-east-1     │
 │                                                                 │
-│  ===== MAIN MENU =====                                          │
-│  1) Create EC2 instance from AMI                                │
-│  2) Create EC2 instance from cloud-init YAML                    │
-│  3) Start EC2 instance                                          │
-│  4) Stop EC2 instance                                           │
-│  5) Terminate EC2 instance                                      │
-│  6) Manage tags for an instance or AMI                          │
-│  7) Create AMI from EC2 instance (running or stopped)           │
-│  8) Remove AMI                                                  │
-│  9) Show/export cloud-init for an instance or AMI               │
-│ 10) Archive stale backups to S3 and trim disk space             │
-│ 11) Refresh resource lists                                      │
-│ 12) Exit                                                        │
+│  ===== COMPUTE MENU =====                                       │
+│  1) Show resource lists                                         │
+│  2) Create EC2 instance from AMI                                │
+│  3) Create EC2 instance from cloud-init YAML                    │
+│  4) Start EC2 instance                                          │
+│  5) Stop EC2 instance                                           │
+│  6) Terminate EC2 instance                                      │
+│  7) Manage tags for an instance or AMI                          │
+│  8) Create AMI from EC2 instance (running or stopped)           │
+│  9) Remove AMI                                                  │
+│ 10) Show/export cloud-init for an instance or AMI               │
+│ 11) Archive stale backups to S3 and trim disk space             │
+│ 12) Back to domain picker                                       │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 (Illustrative — the real listing also includes Project and Environment
-columns; see Feature 1 and Feature 12 below.)
+columns; see Feature 1 and Feature 12 below.) Key Management, S3, and
+CloudFront follow the same listing-then-menu pattern; their specific
+listings and menus are documented under their own feature sections below
+rather than repeated here.
+
+## Navigation: Domain Picker
+
+On startup, before any resource listing or menu, the tool shows the
+domain picker above. Picking a domain fetches and displays that domain's
+resources, then shows a domain-scoped numbered menu — its own "Refresh"
+and "Back to domain picker" entries, in addition to that domain's
+actions — and returns to that same domain's listing after each action
+completes. "Back to domain picker" returns to the picker; "Exit" from
+inside any domain menu exits the whole tool, not just that domain, so an
+operator working in S3 doesn't have to back out twice.
+
+Domain-specific notes:
+- **Compute** fans its resource listing out across all four configured
+  regions (Feature 1), unchanged from today.
+- **Key Management** also fans out across the configured regions — key pairs
+  are a per-region resource.
+- **S3** buckets share a single global namespace but each has a home
+  region; the listing shows that region per bucket, the same style as
+  Compute's per-resource region column today.
+- **CloudFront** is a genuinely global service (its control-plane API is
+  always `us-east-1`, regardless of where origins live) — its listing is
+  not region-fanned-out at all, the one domain that behaves differently
+  here.
+
+This structure is additive and mechanical: each domain's menu loop and
+resource-listing call were already separable pieces of Compute's existing
+single-menu implementation (see "Architecture" below), so introducing the
+domain picker is a refactor of `internal/ui`/`internal/workflow`'s menu
+wiring, not a rewrite of any of Compute's existing workflows.
 
 ## Core Features
+
+### Compute Domain (EC2 & AMI)
+
+Features 1 through 12 below are unchanged in behavior from the original
+single-menu design — only their position in the navigation changes (see
+"Navigation: Domain Picker" above).
 
 ### 1. Unified Resource Listing
 
 On startup, the tool fetches and displays:
-- All EC2 instances across the four configured regions
+- All EC2 instances across the configured regions
 - For each instance: ID, Name (from tags), State, AMI ID, Region, Project
   and Environment (from tags — see "Project/Environment Tagging" below;
   shown as "unknown" if untagged)
-- All AMIs owned by the current AWS account across the four regions
+- All AMIs owned by the current AWS account across the configured regions
 - For each AMI: ID, Name, Creation Date, Region, Project and Environment
 - Listing can be grouped/filtered by Project and by Environment, so
   "show me everything for caltechauthors" or "show me only production" is
@@ -84,35 +234,108 @@ On startup, the tool fetches and displays:
 ### 2. Create EC2 Instance from AMI
 
 Interactive workflow:
-1. Display pick list of available AMIs (filtered by owned-by-account)
+1. Display pick list of available AMIs — the account's own AMIs (owned-
+   by-account, as before) plus a short curated list of official Ubuntu
+   LTS releases (currently 24.04 and 22.04, amd64 only), so launching
+   from a fresh base image doesn't require first copying a public AMI
+   into the account by hand. See `DECISIONS.md`, "Offer official Ubuntu
+   LTS AMIs alongside owned AMIs when picking a base AMI" — this is a
+   curated addition, not a general public-AMI browser; anything more
+   exotic (arm64/Graviton, a different distribution, a specific non-LTS
+   release) still means copying that specific public AMI into the
+   account first, same as before this addition.
 2. User selects an AMI
 3. Prompt for required parameters:
-   - Instance type (with sensible default suggestion)
-   - Key pair name (free text — key pair names are already human-readable,
-     unlike security group/subnet IDs, so a pick list mostly adds noise —
-     but typing `new` instead of a name creates a fresh key pair on the
-     spot via `ec2:CreateKeyPair`, saving the private key to `~/.ssh/
-     <name>.pem` with `0600` permissions, for operators who don't want to
-     reuse keys across instances; see "Debug Logging" below for why its
-     response is handled specially in the `-debug` log)
+   - Instance type: a pick list of a curated shortlist relevant to this
+     team's actual usage (t3/m5/c5/r5 family, plus t2.micro/t2.medium —
+     the list's only non-Nitro, no-ENA-required entries, included after
+     real-world use hit a legacy AMI no ENA-requiring type could ever
+     launch; ~11 entries total), each labeled with vCPU/memory, plus
+     "Other" to type any value not listed — not a full AWS catalog
+     listing (600+ types per region), which would reproduce the "flat
+     list is noise, not help" problem already found with key pairs at a
+     much larger scale. See `DECISIONS.md`, "Instance type pick list:
+     curated shortlist, not the full AWS catalog" and "Add non-ENA-
+     required options to the curated instance type list". Once picked,
+     checked against the AMI's ENA support and
+     (after Subnet ID, below) the subnet's Availability Zone —
+     see those two items below and `DECISIONS.md`, "Pre-flight check:
+     instance type vs. AMI ENA support" / "... vs. subnet Availability
+     Zone"
+   - Key pair name: a pick list of key pairs that actually exist in the
+     AMI's region (`ec2:DescribeKeyPairs`), plus "Create new key pair"
+     (which calls `ec2:CreateKeyPair`, saving the private key to
+     `~/.ssh/<name>.pem` with `0600` permissions; see "Debug Logging"
+     below for why its response is handled specially in the `-debug`
+     log). Unlike Security group IDs/Subnet ID, there's no "Other: type
+     a name" escape hatch — key pairs are a complete, small,
+     fully-enumerable list per region, so a name outside it is
+     guaranteed not to work there. Falls back entirely to the original
+     free-text prompt (typing `new`, or a private key filename/path —
+     `/`, `~`, or `.pem`/`.ppk`/`.key` — validated as readable and
+     resolved to its AWS name, since `ssh -i` muscle memory makes typing
+     the file a real, recurring mistake) only if the list itself can't
+     be fetched. See `DECISIONS.md`, "Validate key pair name against the
+     AMI's region" and "Derive the AWS key pair name from a private key
+     filename/path".
    - Security group IDs (list available security groups)
-   - Subnet ID (list available subnets)
-   - IAM instance profile (optional)
+   - Subnet ID (list available subnets, narrowed to Availability Zones
+     that actually support the instance type chosen earlier —
+     `ec2:DescribeInstanceTypeOfferings` — so an incompatible subnet is
+     never offered in the first place; falls back to the full,
+     unfiltered list if that lookup fails or would filter to nothing.
+     See `DECISIONS.md`, "Filter the subnet picker by instance-type
+     Availability Zone support"). As a safety net for whatever this
+     filtering can't cover (lookup failure, free-text fallback with an
+     unknown AZ), the picked subnet is still checked against the
+     instance type after the fact — if AWS still wouldn't accept the
+     pairing, a pick list offers to change the instance type, pick a
+     different subnet, or abort the launch, instead of either a dead
+     end or a doomed `RunInstances` call. See `DECISIONS.md`,
+     "Pre-flight check: instance type vs. subnet Availability Zone".
+   - IAM instance profile (optional; list available instance profiles via
+     `iam:ListInstanceProfiles`, offering "(none)" to skip and "Create new
+     instance profile (attach an existing role)" to create one on the
+     spot — pick a role via `iam:ListRoles`, then
+     `iam:CreateInstanceProfile` + `iam:AddRoleToInstanceProfile`; falls
+     back to a free-text prompt only if the list itself can't be fetched.
+     See `DECISIONS.md`, "Support picking or creating an IAM instance
+     profile from within awsops" — this replaced an earlier free-text-only
+     prompt that pointed at "IAM console > Roles," which real-AWS testing
+     showed leads operators to type a role name where AWS actually
+     expects the (often differently named) instance profile name,
+     producing AWS's own "Invalid IAM Instance Profile name" error)
    - User data (optional) — a cloud-init YAML or any other user-data
      script, entered inline **or loaded from a local file path** (e.g.
-     pointing at a file from a local clone of `cloud-init-examples`)
+     pointing at a file from a local clone of `cloud-init-examples`),
+     prefixed with `@` (e.g. `@newt-machine.yaml`). A bare filename
+     typed without the `@` (a real mistake found in use) is auto-
+     detected and loaded anyway if a file actually exists at that path
+     — a bare filename is never valid literal user-data, so silently
+     using it as inline text would launch the instance with that string
+     as its user-data instead of the file's contents. See `DECISIONS.md`,
+     "Auto-detect a bare existing-file path in User data / Cloud-init
+     YAML input".
    - Tags — `Name` (required), `Project` and `Environment` (suggested; see
      "Project/Environment Tagging Convention" below), plus any additional
      free-form tags
 4. Confirm all parameters before launching
-5. Launch instance; poll until `running`
+5. Launch instance; poll until `running` — tolerates AWS's own brief
+   post-launch `InvalidInstanceID.NotFound` window (the new instance ID
+   isn't always immediately visible to `DescribeInstances`) rather than
+   treating it as a failure; see `DECISIONS.md`, "Tolerate
+   DescribeInstances' post-RunInstances eventual-consistency window"
 6. **If user-data was provided**: wait for SSM to report `Online` and run
    `cloud-init status --wait` (bounded timeout — see `DECISIONS.md`,
    "Enhance Create Instance from AMI: cloud-init file input + completion
    check"), reporting cloud-init's actual completion status (`done` vs
    `error`), not just that the instance reached `running`. If SSM never
    comes online, skip this check cleanly (not an error) — not every AMI
-   has SSM configured
+   has SSM configured. Tolerates AWS's own brief post-`SendCommand`
+   `InvocationDoesNotExist` window the same way step 5 tolerates
+   `DescribeInstances`' post-`RunInstances` window; see `DECISIONS.md`,
+   "Tolerate GetCommandInvocation's post-SendCommand eventual-consistency
+   window"
 7. Display connection info (public/private IP, SSH command)
 
 **See also:** Feature 3 shares this exact execution path but leads with
@@ -126,8 +349,15 @@ Cloud-Init YAML as a v1 primitive"). Shares its underlying execution with
 Feature 2 entirely — same launch/poll/cloud-init-completion-check logic —
 but a different entry point: the cloud-init file is the primary input,
 not one optional parameter among several.
-1. Prompt for the cloud-init YAML — inline text or a local file path
-   (e.g. a file from a local clone of `cloud-init-examples`)
+1. Prompt for a cloud-init YAML **file path** — unlike Feature 2's
+   optional "User data" field, this prompt always reads from disk
+   rather than also accepting inline text: real cloud-init YAML is
+   realistically always a file (e.g. from a local clone of
+   `cloud-init-examples`), never something typed inline at a terminal.
+   A leading `@` is tolerated (muscle memory from Feature 2's prompt)
+   but not required. Re-prompts on a missing/unreadable file rather
+   than silently using the value as literal text — see `DECISIONS.md`,
+   "Create EC2 Instance from Cloud-Init YAML always reads from a file"
 2. Pick a base AMI to launch it on (same pick list as Feature 2)
 3. Collect the remaining launch parameters — instance type, key pair,
    security groups, subnet, IAM profile, tags — identical to Feature 2
@@ -327,6 +557,226 @@ general-purpose tag-editing primitive.
 - The tool never rewrites tags on resources it didn't create; existing
   untagged resources simply display as "unknown" until someone tags them
 
+### Key Management Domain
+
+Key pairs are already touched by Compute (Feature 2's inline "type `new`"
+shortcut during instance launch), but were never first-class, listable,
+deletable resources in their own right. This domain makes them one.
+
+### 13. List Key Pairs
+
+Resource listing shown when the Key Management domain is entered: for
+each region, `ec2:DescribeKeyPairs`, aggregated into one table (Name,
+Region, Type, Fingerprint or Key ID). This is the listing this domain's
+menu sits below, not a separate menu action.
+
+### 14. Create Key Pair
+
+Interactive workflow — the standalone form of what Feature 2's inline
+"type `new`" shortcut already calls under the hood, so both share one
+underlying primitive:
+1. Prompt for a name (must be unique within its region)
+2. Prompt for region (pick list)
+3. Call `ec2:CreateKeyPair` (ED25519, PEM)
+4. Save the private key to `~/.ssh/<name>.pem` at `0600`
+5. Confirm success; remind the operator where the private key landed — it
+   is never displayed or logged again (see Security Considerations #9)
+
+A name collision re-prompts for a different name; any other AWS error
+propagates normally.
+
+### 15. Import Key Pair
+
+Interactive workflow, for operators who already have a personal or team
+public key they want registered instead of generating a new one:
+1. Prompt for a name (must be unique within its region)
+2. Prompt for a local public key file path (`.pub`)
+3. Prompt for region
+4. Read and validate the file is a well-formed public key before calling
+   AWS — fail locally with a clear message rather than surfacing AWS's
+   raw `InvalidKeyPair.Format` error
+5. Call `ec2:ImportKeyPair`
+6. Confirm success
+
+Unlike Create Key Pair, there is no private key material to save —
+`ec2:ImportKeyPair` never returns one, since AWS never sees the private
+half.
+
+### 16. Delete Key Pair
+
+Safety-tier workflow, one notch below Terminate/Remove AMI's dry-run +
+type-to-confirm tier (deleting a key pair doesn't destroy running
+infrastructure the way terminating an instance does, but it does
+permanently remove AWS's copy, so a plain yes/no is too casual):
+1. Pick a key pair from the list
+2. **Show dependent instances**: list any running/stopped instances
+   launched with this key pair (`ec2:DescribeInstances` filtered by
+   `key-name`) — deleting the AWS-side key pair doesn't affect those
+   instances' ability to keep running, but it does mean this key pair can
+   no longer be used to launch *new* ones, worth surfacing first
+3. **Type to confirm**: operator types the key pair name exactly
+4. Call `ec2:DeleteKeyPair`
+5. Confirm deletion; remind the operator the local `~/.ssh/<name>.pem`
+   file (if one exists, from Feature 14) is untouched — this tool never
+   deletes local files, only the AWS-side registration
+
+### S3 Domain (Buckets & Static Websites)
+
+Two use cases live in this domain: browsing/managing buckets generally,
+and the specific workflow of standing up a static website backed by S3 +
+CloudFront. Per `DECISIONS.md`'s "CloudFront + OAC by default for static
+websites", the website workflow defaults to CloudFront + Origin Access
+Control (bucket stays private; CloudFront is the only reader) rather than
+a public-read bucket policy — see Security Considerations below.
+
+### 17. List Buckets
+
+Resource listing shown when the S3 domain is entered: `s3:ListBuckets`,
+then for each bucket a lightweight `s3:GetBucketLocation` (region) and
+best-effort `s3:GetBucketWebsite` (a `NoSuchWebsiteConfiguration` error
+just means "not configured," not a failure) to show whether static
+website hosting is enabled, in one table (Name, Region, Static Website).
+
+### 18. Create Bucket
+
+Interactive workflow:
+1. Prompt for a bucket name (globally unique; validate against S3's
+   naming rules locally before calling AWS)
+2. Prompt for region
+3. Call `s3:CreateBucket`
+4. Block public access by default (`s3:PutPublicAccessBlock`, all four
+   settings on) — an operator who genuinely wants a public bucket must
+   say so explicitly in Feature 19, not get it by omission here
+5. Confirm creation
+
+### 19. Configure Static Website Hosting
+
+Interactive workflow for turning an existing bucket into a website
+origin:
+1. Pick a bucket
+2. Prompt for index document (default `index.html`) and error document
+   (default `error.html`)
+3. Call `s3:PutBucketWebsite`
+4. **Access pattern**: default and recommended path is CloudFront +
+   Origin Access Control — this step only configures the website
+   document settings on the bucket itself and hands off to Feature 24
+   (Create Distribution) to actually front it; the bucket's
+   public-access-block settings from Feature 18 are left untouched
+   (still blocking public access) unless the operator explicitly opts
+   into a public-read bucket policy instead, which requires its own
+   explicit confirmation warning that the bucket contents become
+   world-readable directly, independent of CloudFront
+5. Confirm; if the operator arrived here from Feature 24, offer to return
+   there to finish the CloudFront side
+
+### 20. Sync Local Directory to Bucket
+
+Interactive workflow for publishing a built static site:
+1. Pick a bucket
+2. Prompt for a local directory path
+3. **Dry-run diff**: compare local files against the bucket's current
+   objects (by key and size, not a full checksum, to keep this fast) and
+   show what would be uploaded (new/changed) and, separately, what
+   exists in the bucket but not locally (deletion candidates — never
+   deleted silently)
+4. Confirm before uploading
+5. Upload new/changed files (`s3:PutObject`, content-type inferred from
+   extension)
+6. If step 3 found bucket-only objects, a **separate** confirm-and-delete
+   step (`s3:DeleteObject`) — never bundled into the same confirmation as
+   the upload, so "yes" to publishing new content can never accidentally
+   also mean "yes" to deleting something
+7. Report a summary: files uploaded, files deleted, bytes transferred
+
+### 21. Browse/Manage Objects
+
+Interactive workflow for ad-hoc bucket inspection outside the sync flow:
+1. Pick a bucket
+2. List objects (`s3:ListObjectsV2`, paginated the same way Feature 1's
+   PickList pagination already handles >50 items)
+3. Choose an object; offer to show metadata (size, last-modified,
+   content-type) or delete it
+4. Deletion is a plain yes/no per-object confirm — Feature 20's bulk sync
+   deletion gets the stronger "separate confirm" treatment because it can
+   affect many files at once; a single ad-hoc delete here is
+   lower blast-radius
+
+### CloudFront Domain
+
+CloudFront's control plane is a single global API (`us-east-1`,
+regardless of where origins live) — this domain's listing is not
+region-fanned-out the way Compute/Key Management/S3 are (see "Navigation:
+Domain Picker" above).
+
+### 22. List Distributions
+
+Resource listing shown when the CloudFront domain is entered:
+`cloudfront:ListDistributions`, showing ID, Domain Name, Origin, and
+Status (`Deployed`/`InProgress`) in one table.
+
+### 23. Show Distribution Detail
+
+Interactive workflow: pick a distribution, call
+`cloudfront:GetDistribution`, display its full origin/behavior/cache
+config and current status — read-only, no confirmation needed.
+
+### 24. Create Distribution
+
+Interactive workflow, the CloudFront half of standing up a static website
+(paired with Feature 19):
+1. Pick (or create, handing off to Feature 18) the S3 bucket to serve
+2. Create an Origin Access Control for this distribution
+   (`cloudfront:CreateOriginAccessControl`) if one doesn't already exist
+   for this bucket
+3. Prompt for default root object (default `index.html`, matching
+   Feature 19's index document if already configured)
+4. Prompt for optional alternate domain name(s) (CNAMEs) — if provided,
+   note plainly that an ACM certificate covering that name must already
+   exist in `us-east-1` (certificate provisioning itself is out of scope
+   — see "Deferred to a Later Version")
+5. Confirm before creating (this provisions real, billable
+   infrastructure, though CloudFront's free tier makes this low-stakes
+   compared to Compute's destructive operations — a plain confirm, not a
+   type-to-confirm tier)
+6. Call `cloudfront:CreateDistribution`
+7. **Update the bucket policy** to allow only this distribution's OAC to
+   read it (`s3:PutBucketPolicy`, scoped by `AWS:SourceArn` to this
+   distribution) — this is what makes the private-bucket-plus-OAC pattern
+   actually work; without it the distribution returns `AccessDenied` for
+   every request
+8. Poll (unbounded — distribution deployment commonly takes 5–15 minutes)
+   until `Deployed`, displaying elapsed time, the same pattern as
+   Feature 8's AMI-creation poll
+9. Display the distribution's domain name
+
+### 25. Invalidate Cache Paths
+
+Interactive workflow for forcing CloudFront to re-fetch updated content
+after a Feature 20 sync (CloudFront otherwise serves cached content per
+each object's `Cache-Control`/default TTL):
+1. Pick a distribution
+2. Prompt for path pattern(s) to invalidate (default `/*` — everything —
+   with a note that wildcard invalidations are simple but less precise
+   than targeted paths)
+3. Confirm (invalidations beyond the first 1,000 paths/month are
+   billable — worth a brief on-screen note, not a blocking warning)
+4. Call `cloudfront:CreateInvalidation`
+5. Poll until `Completed`, displaying elapsed time
+6. Confirm completion
+
+### 26. Project/Environment Tagging Convention (extended)
+
+Feature 12's tagging convention (`Project`/`Environment` tags, defaults
+suggested at creation, explicit prompt for `Environment` with no default)
+extends to the new domains where the underlying AWS resource supports
+tags: S3 buckets (Feature 18) and CloudFront distributions (Feature 24).
+Key pairs also support tags but carry comparatively little operational
+risk on their own, so tagging them is offered but not required the way it
+effectively is for Compute's destructive-operation gating. The
+`Environment=production` safety-gate behavior itself (the extra warning
+before type-to-confirm) is **not** extended to Delete Key Pair or any
+S3/CloudFront deletion in this round — see "Deferred to a Later Version".
+
 ## Architecture
 
 ```
@@ -335,33 +785,70 @@ cmd/awsops/
                             interactive menu loop together
 
 internal/awsclient/       ← Thin, typed wrapper over aws-sdk-go-v2
-    ec2.go                 - per-region EC2 client construction
+    ec2.go                 - per-region EC2 client construction (also backs
+                              Key Management: DescribeKeyPairs/CreateKeyPair/
+                              ImportKeyPair/DeleteKeyPair share this client)
     ssm.go                 - per-region SSM client construction (fstrim,
                               cloud-init AMI extraction, backup archive)
-    s3.go                   - S3 client construction (operator-credential
-                              independent verification, see Feature 11)
-    regions.go              - the four configured regions
+    s3.go                   - S3 client construction; broadened beyond
+                              Feature 11's HeadObject-only use to cover the
+                              S3 domain (CreateBucket, PutPublicAccessBlock,
+                              PutBucketWebsite, PutBucketPolicy, PutObject,
+                              ListObjectsV2, DeleteObject)
+    cloudfront.go            - CloudFront client construction (single
+                              `us-east-1` control-plane endpoint — no
+                              per-region fan-out, unlike the other clients)
+    iam.go                   - IAM client construction (single client,
+                              global service like STS/CloudFront) --
+                              ListInstanceProfiles/ListRoles/
+                              CreateInstanceProfile/AddRoleToInstanceProfile
+                              for Feature 2/3's instance profile pick-or-create
+    regions.go              - the configured regions (currently us-west-1, us-west-2)
 
 internal/inventory/       ← Resource listing/aggregation
     instances.go            - ListInstances(ctx) across all regions
     images.go               - ListImages(ctx) (owned AMIs) across all regions
+    keypairs.go              - ListKeyPairs(ctx) across all regions
+    buckets.go               - ListBuckets(ctx) with per-bucket region +
+                              static-website-hosting status
+    distributions.go         - ListDistributions(ctx) (global, not
+                              region-fanned-out)
 
 internal/ui/               ← Terminal interaction (replaces show_pick_list,
-    picklist.go               display_instances/display_amis, prompts)
-    display.go
-    prompt.go
+    picklist.go               display_instances/display_amis, prompts) --
+    display.go                stays generic/parameterized; PickList[T]
+    prompt.go                 needed no changes for the domain picker below
 
 internal/workflow/         ← One file per operation (replaces the Bash
     launch_instance.go        "_workflow" functions; also backs Feature 3
                               (Create from Cloud-Init YAML) via the same
                               launch/poll/cloud-init-check execution path
+    domain_menu.go           - the top-level domain picker (RunDomainPicker,
+                              DomainActions) + the "Back to domain picker"
+                              vs. "genuine exit signal" distinction every
+                              domain's own menu loop reports through --
+                              lives here, not internal/ui, so it can share
+                              menu.go's dispatch-error sentinels
+    create_instance_profile.go - IAM instance profile pick-or-create
+                              (Feature 2/3): promptIAMInstanceProfileOrCreate,
+                              createInstanceProfileFromRole
     power_state.go           - Start/Stop/Terminate EC2 Instance
     manage_tags.go           - Manage Tags: add/update/remove, instance or AMI
     create_ami.go
     remove_ami.go
     cloud_init.go            - Show/Export Cloud-Init (instance + AMI paths)
     backup_archive.go        - Backup Archive & Trim (upload, verify, delete, fstrim)
-    menu.go
+    keypair_create.go         - Create/Import/Delete Key Pair (Features 14-16)
+    keypair_import.go
+    keypair_delete.go
+    bucket_create.go          - Create Bucket, Configure Static Website
+    bucket_website.go           Hosting (Features 18-19)
+    bucket_sync.go             - Sync Local Directory to Bucket (Feature 20)
+    bucket_browse.go           - Browse/Manage Objects (Feature 21)
+    distribution_create.go     - Create Distribution, Invalidate Cache Paths
+    distribution_invalidate.go   (Features 24-25)
+    menu.go                   - reworked to drive the domain picker and
+                              delegate to each domain's menu loop
 ```
 
 Each `internal/workflow` file depends on `internal/awsclient` and
@@ -422,11 +909,16 @@ check_ec2_instances.bash").
 
 - **Go**: 1.26+ (matches `codemeta.json`'s `softwareRequirements`,
   module-based build)
-- **github.com/aws/aws-sdk-go-v2** and its `ec2`, `ssm`, `s3`, `sts`
-  service packages — see `DECISIONS.md` ("Use official AWS SDK for Go v2")
+- **github.com/aws/aws-sdk-go-v2** and its `ec2`, `ssm`, `s3`, `sts`,
+  `iam`, and `cloudfront` service packages — see `DECISIONS.md` ("Use
+  official AWS SDK for Go v2"; `iam` added for Feature 2/3's instance
+  profile pick-or-create, `cloudfront` for the CloudFront domain)
 - **github.com/rsdoiel/termlib** for terminal output and interactive
   input (`internal/ui`) — see `DECISIONS.md` ("Use github.com/rsdoiel/
   termlib for the Terminal UI")
+- **gopkg.in/yaml.v3** for `~/.awsops` config file parsing
+  (`internal/config`) — see `DECISIONS.md`, "Add a `~/.awsops` YAML
+  config file for awsops' own operational settings"
 - **Go standard library `testing`** for unit tests; no external test
   framework needed (replaces BATS)
 
@@ -454,11 +946,30 @@ library, the AWS SDK, and `termlib` (both pre-approved dependencies per
    `ec2:DescribeVolumes` (for Create AMI from Instance's volume-size time
    estimate and prior-snapshot detection -- missing from this list until
    Phase 10 surfaced it),
+   `ec2:DescribeInstanceTypeOfferings` (Feature 2/3's instance-type-vs-
+   subnet-Availability-Zone pre-flight check),
+   `ec2:DescribeInstanceTypes` (Feature 2/3's instance-type-vs-AMI-ENA-
+   support pre-flight check),
    `ssm:SendCommand`, `ssm:GetCommandInvocation`,
    `ssm:DescribeInstanceInformation` (fstrim, Show/Export Cloud-Init's AMI
    path, and Backup Archive & Trim), `s3:HeadObject` (for Backup Archive &
    Trim's independent verification step — a read-only check against
-   whatever bucket the operator specifies)
+   whatever bucket the operator specifies),
+   `iam:ListInstanceProfiles`, `iam:ListRoles`, `iam:CreateInstanceProfile`,
+   `iam:AddRoleToInstanceProfile` (Feature 2/3's IAM instance profile
+   pick-or-create; see `DECISIONS.md`, "Support picking or creating an
+   IAM instance profile from within awsops").
+   For Key Management (Features 13-16): `ec2:ImportKeyPair`,
+   `ec2:DeleteKeyPair` (`ec2:DescribeKeyPairs` and `ec2:CreateKeyPair` are
+   already listed above).
+   For the S3 domain (Features 17-21): `s3:ListAllMyBuckets`,
+   `s3:GetBucketLocation`, `s3:GetBucketWebsite`, `s3:CreateBucket`,
+   `s3:PutPublicAccessBlock`, `s3:PutBucketWebsite`, `s3:PutBucketPolicy`,
+   `s3:PutObject`, `s3:ListBucket`, `s3:GetObject`, `s3:DeleteObject`.
+   For the CloudFront domain (Features 22-25): `cloudfront:ListDistributions`,
+   `cloudfront:GetDistribution`, `cloudfront:CreateDistribution`,
+   `cloudfront:CreateOriginAccessControl`, `cloudfront:CreateInvalidation`,
+   `cloudfront:GetInvalidation`.
 3. **Separately, each target instance's own IAM instance profile** needs
    `s3:PutObject` (and likely `s3:ListBucket` scoped to its own prefix) on
    the backup destination bucket, for Backup Archive & Trim's upload phase
@@ -542,6 +1053,27 @@ same pattern used for `~/Laboratory/harvey`'s own `--debug` JSONL log.
    `~/.ssh/<name>.pem` with `0600` permissions immediately and never
    logs the raw material anywhere (including `-debug`'s log; see
    "Debug Logging" above)
+10. S3 buckets default to `s3:PutPublicAccessBlock` fully enabled at
+    creation (Feature 18); a public-read bucket policy is never the
+    default path to a static website — CloudFront + Origin Access
+    Control is (Feature 19, Feature 24), so a bucket stays private and
+    only a specific CloudFront distribution can read it
+    (`s3:PutBucketPolicy` scoped by `AWS:SourceArn`, Feature 24 step 7).
+    An operator can still opt into a public-read bucket policy
+    explicitly, but that path requires its own separate confirmation
+    that plainly states the bucket becomes world-readable directly
+11. Feature 20's bucket-only-object deletion (during a sync) and
+    Feature 16's Delete Key Pair both require a **separate** explicit
+    confirmation step from whatever triggered them — never folded into
+    a broader "yes" (e.g. "yes, sync" must never also silently mean
+    "yes, delete"), the same principle already applied to Feature 11's
+    upload/verify/delete separation
+12. Feature 24 (Create Distribution) provisions real, billable
+    infrastructure and must say so before creating; it is not gated at
+    Compute's destructive-operation tier (dry-run + type-to-confirm)
+    since creating a distribution isn't itself destructive, but the
+    on-screen confirmation should be explicit that this isn't a free,
+    instantaneous operation
 
 ## Domain Knowledge Carried Forward from the Bash Version
 
@@ -638,3 +1170,26 @@ record/replay". Recorded here so they aren't lost:
   `ec2.ModifyImageAttribute` — the closest thing to a "rename" AWS
   actually allows for an AMI. Not requested for v1; noted so it isn't
   lost.
+- **ACM certificate provisioning**: Feature 24 lets an operator attach an
+  alternate domain name to a CloudFront distribution, but assumes a
+  matching ACM certificate already exists in `us-east-1`; requesting and
+  validating (DNS or email) a new certificate is not part of this tool.
+- **CloudFront functions / Lambda@Edge / WAF association**: none of
+  CloudFront's programmable-edge or firewall features are exposed;
+  Feature 24 creates a plain S3-origin distribution only.
+- **S3 bucket versioning and lifecycle rules**: Feature 18 creates a
+  bucket with default settings (no versioning, no lifecycle policy); if
+  this team wants versioned static-website buckets or automatic
+  old-version expiry later, that's an addition to Feature 18, not a new
+  domain.
+- **`Environment=production` safety-gate extension**: Compute's extra
+  warning before type-to-confirm on `Environment=production` resources
+  (Features 6, 9) is not extended to Delete Key Pair, bucket/object
+  deletion, or distribution changes in this round (see Feature 26) — a
+  candidate for a later pass once it's clear which of these new
+  resources actually accumulate a "production" tag in practice.
+- **Recorded Scripts for the new domains**: the deferred "session
+  playbooks" idea above was scoped against Compute's primitives; whether
+  Key Management/S3/CloudFront workflows get the same params-struct/
+  confirm-gate seam for future record/replay is an open question for
+  when Recorded Scripts itself is actually built, not decided now.

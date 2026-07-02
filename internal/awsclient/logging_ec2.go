@@ -57,6 +57,18 @@ func (w *loggingEC2Client) DescribeSubnets(ctx context.Context, params *ec2.Desc
 	})
 }
 
+func (w *loggingEC2Client) DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeInstanceTypeOfferings", w.region, params, func() (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+		return w.inner.DescribeInstanceTypeOfferings(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DescribeInstanceTypes(ctx context.Context, params *ec2.DescribeInstanceTypesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeInstanceTypes", w.region, params, func() (*ec2.DescribeInstanceTypesOutput, error) {
+		return w.inner.DescribeInstanceTypes(ctx, params, optFns...)
+	})
+}
+
 func (w *loggingEC2Client) DescribeVpcs(ctx context.Context, params *ec2.DescribeVpcsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
 	return logAWSCall(w.dl, "EC2.DescribeVpcs", w.region, params, func() (*ec2.DescribeVpcsOutput, error) {
 		return w.inner.DescribeVpcs(ctx, params, optFns...)

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
 )
@@ -35,6 +36,13 @@ type fakeSSMClient struct {
 	finalStatus     types.CommandInvocationStatus
 	stdout          string
 	invocationErr   error
+	// invocationNotFoundForCalls, if > 0, makes the first N
+	// GetCommandInvocation calls return InvocationDoesNotExist --
+	// simulates the real eventual-consistency window right after
+	// ssm:SendCommand returns a command ID that isn't immediately
+	// visible to ssm:GetCommandInvocation (see ssm.go's
+	// isInvocationNotYetVisible).
+	invocationNotFoundForCalls int
 
 	// responses lets a single fake distinguish between different remote
 	// commands within one test (e.g. Backup Archive & Trim's list/upload/
@@ -82,6 +90,9 @@ func (f *fakeSSMClient) sendCommandCalls() int { return f.sendCommandCallCount }
 
 func (f *fakeSSMClient) GetCommandInvocation(ctx context.Context, params *ssm.GetCommandInvocationInput, optFns ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error) {
 	f.invocationCalls++
+	if f.invocationNotFoundForCalls > 0 && f.invocationCalls <= f.invocationNotFoundForCalls {
+		return nil, &smithy.GenericAPIError{Code: "InvocationDoesNotExist", Message: ""}
+	}
 	if f.invocationErr != nil {
 		return nil, f.invocationErr
 	}
@@ -177,6 +188,35 @@ func TestRunShellCommand_PropagatesSendCommandError(t *testing.T) {
 
 func TestRunShellCommand_TimesOutWithError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", pendingCalls: 1000}
+	_, _, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", 20*time.Millisecond, testPollInterval)
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+}
+
+// Regression: a real launch failed immediately after ssm:SendCommand
+// succeeded, at the very first ssm:GetCommandInvocation call, with AWS's
+// own InvocationDoesNotExist -- the SSM-side analog of
+// InvalidInstanceID.NotFound/InvalidAMIID.NotFound (see DECISIONS.md,
+// "Tolerate GetCommandInvocation's post-SendCommand eventual-consistency
+// window"). This must be tolerated like "not visible yet", not treated
+// as a hard failure.
+func TestRunShellCommand_TreatsPostSendInvocationNotFoundAsNotYetVisible(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", invocationNotFoundForCalls: 2, finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
+	stdout, status, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", time.Second, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.CommandInvocationStatusSuccess {
+		t.Errorf("status = %v, want Success", status)
+	}
+	if stdout != "status: done\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "status: done\n")
+	}
+}
+
+func TestRunShellCommand_TimesOutIfInvocationNeverVisible(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", invocationNotFoundForCalls: 1000}
 	_, _, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", 20*time.Millisecond, testPollInterval)
 	if err == nil {
 		t.Fatal("expected a timeout error")

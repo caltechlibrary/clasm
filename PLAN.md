@@ -698,6 +698,439 @@ operation; clean exit; signal handling
 
 ---
 
+## Phase 15.3 — IAM Instance Profile pick-or-create (done)
+
+**Effort:** ~2 hours
+**Priority:** Medium
+
+Real-AWS testing hit `InvalidParameterValue: ... Invalid IAM Instance
+Profile name` at launch -- see DECISIONS.md, "Support picking or
+creating an IAM instance profile from within awsops".
+
+### Work Items
+
+- [x] `internal/awsclient`: new `IAMAPI` interface (`ListInstanceProfiles`,
+      `ListRoles`, `CreateInstanceProfile`, `AddRoleToInstanceProfile`),
+      `NewIAMClient` (single global client, like STS), `WrapIAM` (`-debug`
+      logging via the shared `logAWSCall` helper -- no special redaction
+      needed, unlike `CreateKeyPair`)
+- [x] `internal/workflow/resource_lists.go`: `InstanceProfileInfo`/
+      `listInstanceProfiles`, `RoleInfo`/`listRoles`
+- [x] `internal/workflow/create_instance_profile.go`:
+      `promptIAMInstanceProfileOrCreate` (pick list + "(none)" +
+      "Create new instance profile (attach an existing role)", always
+      offered even when the list is empty; falls back to free text only
+      if the list call itself errors), `createInstanceProfileInteractive`
+      (pick a role, prompt a name defaulting to the role's name, retry on
+      `EntityAlreadyExists`), `createInstanceProfileFromRole`
+      (`iam:CreateInstanceProfile` + `iam:AddRoleToInstanceProfile`)
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`/
+      `create_instance_from_ami.go`/`create_instance_from_cloud_init.go`:
+      threaded a new `awsclient.IAMAPI` parameter through; the IAM
+      instance profile prompt goes through
+      `promptIAMInstanceProfileOrCreate` instead of a plain `ui.Prompt`
+- [x] `cmd/awsops/main.go`: constructs one global IAM client (wrapped for
+      `-debug`), passed to both Create Instance workflows
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI)
+
+---
+
+## Phase 15.4 — Derive key pair name from a private key filename/path (done)
+
+**Effort:** ~1 hour
+**Priority:** Medium
+
+Real-AWS testing hit `InvalidKeyPair.NotFound` from typing a private key
+file path at "Key pair name" -- see DECISIONS.md, "Derive the AWS key
+pair name from a private key filename/path".
+
+### Work Items
+
+- [x] `internal/workflow/create_key_pair.go`: `looksLikeKeyFilename`
+      (path separator, `~` prefix, or `.pem`/`.ppk`/`.key` extension),
+      `keyPairNameFromFilePath` (expands `~`, falls back to checking
+      `keyDir` for a bare filename, derives the name from the basename),
+      `isReadableFile`
+- [x] `promptKeyPairNameOrCreate`: recognized key-filename input is
+      validated as readable and derived into an AWS key pair name
+      instead of being sent to AWS as-is; an unreadable path re-prompts
+      with a local error. Existing "new" sub-flow extracted unchanged
+      into `createNewKeyPairInteractive` so the outer loop could add
+      this without duplicating retry logic
+
+**Dependency:** Phase 15.2 (Create Key Pair inline)
+
+---
+
+## Phase 15.5 — Pre-flight check: instance type vs. subnet Availability Zone (done)
+
+**Effort:** ~2 hours
+**Priority:** Medium
+
+Real-AWS testing (via the `-debug` log) hit `Unsupported: ... instance
+type ... is not supported in ... Availability Zone` -- see DECISIONS.md,
+"Pre-flight check: instance type vs. subnet Availability Zone".
+
+### Work Items
+
+- [x] `internal/awsclient`: `EC2API.DescribeInstanceTypeOfferings`;
+      `-debug` logging wrapper via the shared `logAWSCall` helper
+- [x] `internal/workflow/instance_type_az_check.go`:
+      `instanceTypeOfferedInAZ`, `instanceTypeOfferedAZs`,
+      `ensureInstanceTypeSupportedInSubnet` (pick list: change instance
+      type / pick a different subnet / abort -- "abort" returns
+      `ui.ErrCancelled`, reusing the existing cancellation path)
+- [x] `promptSubnetID` (`launch_prompts.go`): return type changed from
+      `(string, error)` to `(SubnetInfo, error)` so the picked subnet's
+      Availability Zone is available without a redundant lookup; the
+      free-text fallback path returns an empty `AvailabilityZone`
+      ("unknown, skip the check")
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`: call
+      `ensureInstanceTypeSupportedInSubnet` right after the subnet is
+      picked, using its (possibly updated) instance type and subnet for
+      the rest of the flow
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI)
+
+---
+
+## Phase 15.6 — Instance type: curated pick list (done)
+
+**Effort:** ~1 hour
+**Priority:** Medium
+
+See DECISIONS.md, "Instance type pick list: curated shortlist, not the
+full AWS catalog".
+
+### Work Items
+
+- [x] `internal/workflow/launch_prompts.go`: `curatedInstanceTypes`
+      (~11 hand-picked types with vCPU/memory labels, including
+      t2.micro/t2.medium as the only non-ENA-required entries -- see
+      DECISIONS.md, "Add non-ENA-required options to the curated
+      instance type list"), `instanceTypeChoice`/`instanceTypeChoiceLabel`,
+      `promptInstanceType` (pick list + "Other" free-text fallback)
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`: "Instance type"
+      prompt goes through `promptInstanceType` instead of a plain
+      `ui.Prompt`
+- [x] `instance_type_az_check.go`'s "Change instance type" recovery step
+      also goes through `promptInstanceType`, for consistency
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI)
+
+---
+
+## Phase 15.7 — Pre-flight check: instance type vs. AMI ENA support (done)
+
+**Effort:** ~2 hours
+**Priority:** Medium
+
+Real-AWS testing hit `InvalidParameterCombination: Enhanced networking
+... is required for the '<type>' instance type` -- see DECISIONS.md,
+"Pre-flight check: instance type vs. AMI ENA support". Closes the
+ENA item queued in TODO.md since an earlier session.
+
+### Work Items
+
+- [x] `internal/inventory/images.go`: `Image.EnaSupport bool`, populated
+      from the existing `DescribeImages` call (no new AWS call)
+- [x] `internal/awsclient`: `EC2API.DescribeInstanceTypes`; `-debug`
+      logging wrapper via the shared `logAWSCall` helper
+- [x] `internal/workflow/instance_type_ena_check.go`:
+      `instanceTypeRequiresENA`, `ensureInstanceTypeENACompatible`
+      (pick list: change instance type / abort -- no "pick a different
+      AMI" option, unlike the AZ check's "pick a different subnet")
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`: call
+      `ensureInstanceTypeENACompatible` right after the instance type is
+      picked, using the already-known AMI's `EnaSupport`
+- [x] Incompatibility message names `t2.micro`/`t2.medium` explicitly
+      and points at the out-of-scope permanent fix (enable ENA on the
+      source instance, re-create the AMI) -- see DECISIONS.md, "Add
+      non-ENA-required options to the curated instance type list"
+      (real-world use showed every curated type failing this check for
+      a legacy AMI, with no way to recover without already knowing an
+      answer outside awsops)
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI), Phase 15.6
+(reuses `promptInstanceType`)
+
+---
+
+## Phase 15.8 — Tolerate post-launch/post-create eventual-consistency windows (done)
+
+**Effort:** ~1 hour
+**Priority:** High
+
+A real, confirmed launch failed immediately after `RunInstances`
+succeeded -- see DECISIONS.md, "Tolerate DescribeInstances' post-
+RunInstances eventual-consistency window". Not an edge case: a
+near-certain race on every launch that happened to hit AWS's brief
+propagation window.
+
+### Work Items
+
+- [x] `internal/workflow/launch_execute.go`: `isInstanceNotYetVisible`;
+      `waitUntilState` tolerates `InvalidInstanceID.NotFound` as "not
+      visible yet" instead of a hard failure
+- [x] `internal/workflow/create_ami_execute.go`: `isImageNotYetVisible`;
+      `WaitForAMIAvailable` tolerates the AMI-side analog,
+      `InvalidAMIID.NotFound` -- fixed preemptively, same failure class,
+      same code shape, not yet reported but certain to recur
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI), Phase 5 (Create AMI
+from EC2 Instance)
+
+---
+
+## Phase 15.9 — Filter the subnet picker by instance-type Availability Zone support (done)
+
+**Effort:** ~1.5 hours
+**Priority:** Medium
+
+Real-AWS testing surfaced repeated instance-type/subnet back-and-forth --
+see DECISIONS.md, "Filter the subnet picker by instance-type
+Availability Zone support".
+
+### Work Items
+
+- [x] `internal/workflow/instance_type_az_check.go`:
+      `filterSubnetsByInstanceTypeAZ` (best-effort narrowing; falls back
+      to the unfiltered list on lookup error or if filtering would leave
+      zero subnets)
+- [x] `promptSubnetID` (`launch_prompts.go`): gained an `instanceType`
+      parameter, applies the filter before building its pick list
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`/
+      `instance_type_az_check.go`'s "Pick a different subnet" branch:
+      updated to pass the already-known instance type through
+- [x] `ensureInstanceTypeSupportedInSubnet` (Phase 15.5) unchanged --
+      remains the safety net for cases filtering can't cover
+
+**Dependency:** Phase 15.5 (Pre-flight check: instance type vs. subnet
+Availability Zone)
+
+---
+
+## Phase 15.10 — Move "Show resource lists" to the top of the Compute menu (done)
+
+**Effort:** ~30 minutes
+**Priority:** Low
+
+See DECISIONS.md, "Move 'Show resource lists' to the top of the Compute
+menu; rename from 'Refresh'".
+
+### Work Items
+
+- [x] `internal/workflow/menu.go`: renamed "Refresh resource lists" to
+      "Show resource lists", moved to position 1; `MenuActions.Refresh`
+      field name unchanged
+- [x] `menu_test.go`: updated every menu-item-number reference
+- [x] `DESIGN.md`'s Compute Menu ASCII diagram and
+      `TEST_PLAN_REAL_AWS.txt`'s menu-order checklist updated to match,
+      preserving existing `[ok]` markers against renamed/renumbered items
+
+**Dependency:** Phase 14 (Main Menu and Integration)
+
+---
+
+## Phase 15.11 — Auto-detect a bare existing-file path in User data / Cloud-init YAML input (done)
+
+**Effort:** ~1 hour
+**Priority:** Medium
+
+Real-world use: typing `newt-machine.yaml` (no `@` prefix) at the
+Cloud-init YAML prompt silently became the instance's literal user-data
+instead of loading the file -- see DECISIONS.md, "Auto-detect a bare
+existing-file path in User data / Cloud-init YAML input".
+
+### Work Items
+
+- [x] `internal/workflow/userdata.go`: `loadUserData` gained a
+      `*termlib.Terminal` parameter; when input has no `@` prefix but a
+      file exists at that exact path, load it anyway with an on-screen
+      note, instead of silently using the filename as literal text
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`: updated call
+      sites (both already had `t` in scope)
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI), Phase 5 (Create
+EC2 Instance from Cloud-Init YAML)
+
+---
+
+## Phase 15.12 — Create EC2 Instance from Cloud-Init YAML always reads from a file (done)
+
+**Effort:** ~1.5 hours
+**Priority:** Medium
+
+Follow-up to Phase 15.11: for this specific prompt, "inline text or
+@file path" was itself the wrong shape -- see DECISIONS.md, "Create EC2
+Instance from Cloud-Init YAML always reads from a file".
+
+### Work Items
+
+- [x] `internal/workflow/userdata.go`: `promptCloudInitYAMLFile` --
+      always treats input as a file path (optional leading `@`
+      tolerated, not required), re-prompts with a clear error on a
+      missing/unreadable file instead of falling back to literal text
+- [x] `launch_from_cloud_init.go`: cloud-init prompt now calls
+      `promptCloudInitYAMLFile` instead of `ui.Prompt` + `loadUserData`;
+      no longer shares `loadUserData` with Feature 2's optional "User
+      data" field at all
+- [x] `launch_from_cloud_init_test.go`/`create_instance_from_cloud_init_test.go`:
+      rewrote every test that exercised this prompt with inline
+      `"#cloud-config"` text to use a real temp-file fixture
+      (`writeCloudInitFixture` helper) instead; added coverage for the
+      leading-`@` tolerance and the retry-on-unreadable-file path
+
+**Dependency:** Phase 15.11 (Auto-detect a bare existing-file path in
+User data / Cloud-init YAML input)
+
+---
+
+## Phase 15.13 — Offer official Ubuntu LTS AMIs alongside owned AMIs (done)
+
+**Effort:** ~2 hours
+**Priority:** Medium
+
+See DECISIONS.md, "Offer official Ubuntu LTS AMIs alongside owned AMIs
+when picking a base AMI".
+
+### Work Items
+
+- [x] `internal/workflow/official_ubuntu_amis.go`: `ubuntuAMIOwnerID`
+      constant (Canonical's public AWS account ID), `curatedUbuntuReleases`
+      (24.04, 22.04, amd64 only), `latestUbuntuAMI` (most recent match
+      per release/region via `ec2:DescribeImages`), `listOfficialUbuntuAMIsInRegion`,
+      `listOfficialUbuntuAMIs` (sequential per-region aggregation),
+      `imagesWithOfficialUbuntu` (best-effort merge with owned AMIs;
+      falls back to owned-only on lookup error)
+- [x] `launch_instance.go`/`launch_from_cloud_init.go`: both AMI pick
+      lists now call `imagesWithOfficialUbuntu` before display
+- [x] `EnaSupport` carried through from the real `DescribeImages`
+      response for curated Ubuntu entries, so the ENA pre-flight check
+      (Phase 15.7) doesn't false-positive on a modern, actually-ENA-
+      enabled official AMI
+- [x] Real-AWS testing (via `-debug`) caught a wrong `name` filter
+      pattern (missing the `ubuntu/images/hvm-ssd*/` prefix Canonical's
+      real AMI names carry) that silently matched zero AMIs in every
+      region -- see DECISIONS.md, "Fix official Ubuntu AMI name filter
+      pattern"; corrected in both curated release patterns
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI), Phase 15.6
+(curated instance-type list), Phase 15.7 (ENA pre-flight check)
+
+---
+
+## Phase 15.14 — Narrow configured regions to us-west-1/us-west-2 (done)
+
+**Effort:** ~1 hour
+**Priority:** High
+
+See DECISIONS.md, "Narrow configured regions to us-west-1/us-west-2" --
+follow-up to the official-Ubuntu-AMI feature surfacing a region
+(`us-west-1`) with no provisioned key pairs.
+
+### Work Items
+
+- [x] `internal/awsclient/regions.go`, `regions_test.go`: `Regions`
+      narrowed from four regions to `{us-west-1, us-west-2}`
+- [x] `helptext.go`, `DESIGN.md` (Overview, ASCII diagram, generic
+      "four regions" references genericized to avoid re-hardcoding a
+      count): updated to match. `awsops.1.md` regenerates from
+      `helptext.go` via the existing `cmt`/Makefile pipeline, not edited
+      by hand
+- [x] `TODO.md`, `TEST_PLAN_REAL_AWS.txt`: active (non-historical)
+      "four regions" mentions updated; historical `DECISIONS.md` entries
+      describing what was true when originally decided left unchanged
+
+**Dependency:** Phase 1 (region configuration)
+
+---
+
+## Phase 15.15 — Validate key pair name against the AMI's region (done)
+
+**Effort:** ~3 hours
+**Priority:** High
+
+A real launch failed with `InvalidKeyPair.NotFound` after every prompt
+was already answered and confirmed -- see DECISIONS.md, "Validate key
+pair name against the AMI's region".
+
+### Work Items
+
+- [x] `internal/workflow/resource_lists.go`: `listKeyPairs`
+      (`ec2:DescribeKeyPairs`)
+- [x] `internal/workflow/create_key_pair.go`: `promptKeyPairNameOrCreate`
+      rewritten to a region-scoped pick list (existing key pairs +
+      "Create new key pair", no "Other" escape hatch -- key pairs are a
+      complete, enumerable list, unlike AMIs/instance types); original
+      free-text logic (the "new" keyword, key-file-path auto-detection)
+      preserved verbatim as `promptKeyPairNameFreeText`, now solely the
+      fallback for when `ec2:DescribeKeyPairs` itself errors
+- [x] Updated every test exercising the full launch flow with a
+      zero-key-pairs fake (`launch_instance_test.go`,
+      `launch_from_cloud_init_test.go`, `create_instance_from_ami_test.go`,
+      `create_instance_from_cloud_init_test.go`) to select "Create new
+      key pair" from the now-shown pick list instead of typing a bare
+      name directly
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI), Phase 15.2
+(Create Key Pair inline), Phase 15.4 (key filename/path derivation)
+
+---
+
+## Phase 15.16 — Tolerate GetCommandInvocation's post-SendCommand eventual-consistency window (done)
+
+**Effort:** ~1 hour
+**Priority:** High
+
+Third instance of the same eventual-consistency bug pattern found this
+session -- see DECISIONS.md, "Tolerate GetCommandInvocation's
+post-SendCommand eventual-consistency window".
+
+### Work Items
+
+- [x] `internal/workflow/ssm.go`: `isInvocationNotYetVisible`;
+      `RunShellCommand`'s poll loop tolerates `InvocationDoesNotExist` as
+      "not visible yet" instead of a hard failure, matching
+      `isInstanceNotYetVisible`/`isImageNotYetVisible`'s shape exactly
+
+**Dependency:** Phase 4 (Create EC2 Instance from AMI -- introduced
+`RunShellCommand`/the cloud-init completion check)
+
+---
+
+## Phase 15.17 — `~/.awsops` YAML config file (done)
+
+**Effort:** ~2.5 hours
+**Priority:** Medium
+
+See DECISIONS.md, "Add a `~/.awsops` YAML config file for awsops' own
+operational settings".
+
+### Work Items
+
+- [x] `go get gopkg.in/yaml.v3`
+- [x] `internal/config/config.go`: `Config` struct (`Regions []string`,
+      `yaml:"regions"`), `DefaultRegions` (`[us-west-1, us-west-2]`),
+      `DefaultPath()` (`~/.awsops`, falling back to a cwd-relative
+      `.awsops` if the home directory can't be resolved, matching
+      `sshKeyDir()`'s existing fallback pattern), `Load(path)` (missing
+      file -> defaults, not an error; malformed YAML -> a real error;
+      valid file with `regions` unset/empty -> `DefaultRegions`)
+- [x] `internal/awsclient/regions.go`/`regions_test.go` removed;
+      `client_test.go`'s sanity test now uses a small test-local region
+      literal instead of the removed shared var
+- [x] `cmd/awsops/main.go`: new `-config` flag (default
+      `config.DefaultPath()`), loads config early (fails fast on a parse
+      error, matching every other startup failure mode), uses
+      `cfg.Regions` everywhere `awsclient.Regions` was read
+- [x] `helptext.go`: documents `-config`
+
+**Dependency:** Phase 15.14 (Narrow configured regions to us-west-1/us-west-2)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours
@@ -748,23 +1181,209 @@ operation; clean exit; signal handling
 
 ---
 
-## Deferred to a Later Version (Phase 18+, not scheduled)
+## Phase 18 — Domain Picker Refactor
 
-Not part of v1 — see `DECISIONS.md`, "V1 scope: ship the four primitives
+**Effort:** ~4 hours
+**Priority:** High
+**Files:** `internal/ui/domainmenu.go`, `cmd/awsops/main.go`,
+`internal/workflow/menu.go`
+
+Per `DECISIONS.md`, 2026-07-02 "Redesign navigation as a domain picker;
+add Key Management, S3, and CloudFront domains". Pure navigation refactor
+— no new AWS calls, and Compute's existing workflows and tests are
+untouched. Runs alongside Phase 16/17, not blocking or blocked by them.
+
+### Work Items
+
+- New top-level domain picker: Compute / Key Management / S3 /
+  CloudFront / Exit (see `DESIGN.md`, "Navigation: Domain Picker")
+- Extract Compute's existing "fetch resources → display → numbered menu
+  → dispatch → refresh → loop" pattern into a shared
+  `internal/ui/domainmenu.go` loop, parameterized by a resource-fetch
+  function, a display function, and a menu-item list
+- Wire Compute's existing `menu.go` through the new shared loop as the
+  first domain; behavior must be identical to today's — this phase adds
+  no new Compute-visible behavior
+- "Back to domain picker" in every domain menu; "Exit" from inside any
+  domain menu exits the whole program, not just that domain
+- Stub Key Management/S3/CloudFront picker entries as "not yet
+  implemented" placeholders until Phases 19-21 land, so this phase can be
+  merged and tested independently of them
+
+**Tests:** domain picker dispatches to the right domain loop; Compute's
+existing workflow tests continue to pass unmodified; "Back"/"Exit"
+behavior from within a domain menu
+
+**Dependency:** Phase 14 (Main Menu and Integration)
+
+---
+
+## Phase 19 — Key Management Domain
+
+**Effort:** ~6 hours
+**Priority:** Medium
+**Files:** `internal/inventory/keypairs.go`,
+`internal/workflow/{keypair_create,keypair_import,keypair_delete}.go`
+
+Implements `DESIGN.md` Features 13-16.
+
+### Work Items
+
+- `ListKeyPairs(ctx)` across all four regions (`internal/inventory`)
+- List Key Pairs display: Name, Region, Type, Fingerprint/Key ID
+- Create Key Pair: prompt name + region, `ec2:CreateKeyPair`, save
+  private key to `~/.ssh/<name>.pem` at `0600` — refactor Phase 15.2's
+  inline create-key-pair logic into this standalone primitive so both
+  call sites (this menu entry and Feature 2's inline "type `new`"
+  shortcut) share one implementation
+- Import Key Pair: prompt name + region + local `.pub` file path,
+  validate the file locally before calling AWS, `ec2:ImportKeyPair`
+- Delete Key Pair: pick a key pair, show dependent instances (filter the
+  already-fetched `ListInstances` result by `KeyName` — no fresh AWS
+  call, same pattern as Phase 11's AMI-dependency check), type-to-confirm,
+  `ec2:DeleteKeyPair`
+- Wire into the domain picker from Phase 18
+
+**Tests:** fakes for `DescribeKeyPairs`/`CreateKeyPair`/`ImportKeyPair`/
+`DeleteKeyPair` covering success, name-collision re-prompt, malformed
+public key file, dependent-instance detection
+
+**Dependency:** Phase 18; reuses Phase 15.2's `CreateKeyPair` wrapper
+
+---
+
+## Phase 20 — S3 Domain (Buckets & Static Websites)
+
+**Effort:** ~10 hours
+**Priority:** Medium
+**Files:** `internal/awsclient/s3.go` (broadened),
+`internal/inventory/buckets.go`,
+`internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse}.go`
+
+Implements `DESIGN.md` Features 17-21 and the 2026-07-02 "CloudFront +
+OAC by default for static websites" decision.
+
+### Work Items
+
+- Broaden the `S3API` interface beyond Feature 11's `HeadObject`-only
+  scope: `ListBuckets`, `GetBucketLocation`, `GetBucketWebsite`,
+  `CreateBucket`, `PutPublicAccessBlock`, `PutBucketWebsite`,
+  `PutBucketPolicy`, `PutObject`, `ListObjectsV2`, `GetObject`,
+  `DeleteObject`
+- `ListBuckets(ctx)` with per-bucket region + static-website-hosting
+  status (`internal/inventory`) — treat `GetBucketWebsite`'s
+  `NoSuchWebsiteConfiguration` error as "not configured," not a failure
+- Create Bucket: prompt name + region, `s3:CreateBucket`, then
+  `s3:PutPublicAccessBlock` (all four settings on) by default
+- Configure Static Website Hosting: pick bucket, prompt index/error
+  documents, `s3:PutBucketWebsite`; a public-read bucket policy is an
+  explicit, separately-confirmed opt-out path, never the default
+- Sync Local Directory to Bucket: dry-run diff (by key + size) against
+  the local directory, confirm, upload new/changed
+  (`s3:PutObject`), then a **separate** confirm-and-delete step for
+  bucket-only objects (`s3:DeleteObject`) — never bundled into the
+  upload confirmation
+- Browse/Manage Objects: paginated object listing (reuse Phase 15's
+  PickList pagination for >50 items), metadata display, per-object
+  delete with a plain yes/no confirm
+- Wire into the domain picker from Phase 18
+
+**Tests:** fakes for each new S3 call covering success/error paths
+(bucket-name-taken, website-not-configured treated as non-error, sync
+diff correctness, upload/delete confirmations never bundled)
+
+**Dependency:** Phase 18
+
+---
+
+## Phase 21 — CloudFront Domain
+
+**Effort:** ~8 hours
+**Priority:** Medium
+**Files:** `internal/awsclient/cloudfront.go`,
+`internal/inventory/distributions.go`,
+`internal/workflow/{distribution_create,distribution_invalidate}.go`
+
+Implements `DESIGN.md` Features 22-25.
+
+### Work Items
+
+- `CloudFrontAPI` interface: `ListDistributions`, `GetDistribution`,
+  `CreateDistribution`, `CreateOriginAccessControl`,
+  `CreateInvalidation`, `GetInvalidation`
+- Single `us-east-1` client construction — no per-region fan-out;
+  CloudFront's control plane is global (see `DESIGN.md`, "Navigation:
+  Domain Picker")
+- `ListDistributions(ctx)` (`internal/inventory`)
+- Show Distribution Detail: read-only, `cloudfront:GetDistribution`
+- Create Distribution: pick or create a bucket (hands off to Phase 20's
+  Create Bucket), create or reuse an Origin Access Control for that
+  bucket, prompt default root object + optional alternate domain
+  name(s), confirm (billable-infrastructure notice, plain confirm not
+  type-to-confirm), `cloudfront:CreateDistribution`, then update the
+  bucket policy scoped to this distribution's ARN (`s3:PutBucketPolicy`),
+  then poll (unbounded) until `Deployed`
+- Invalidate Cache Paths: pick a distribution, prompt path pattern(s)
+  (default `/*`), confirm, `cloudfront:CreateInvalidation`, poll until
+  `Completed`
+- Wire into the domain picker from Phase 18
+
+**Tests:** fakes for each new CloudFront call; OAC-then-bucket-policy
+sequencing; poll-until-`Deployed`/`Completed` with bounded test timeouts
+
+**Dependency:** Phase 18, Phase 20 (Create Distribution hands off to
+Create Bucket)
+
+---
+
+## Phase 22 — Real-AWS Testing: Key Management, S3, CloudFront
+
+**Effort:** ~6 hours
+**Priority:** High
+**Files:** `TEST_PLAN_REAL_AWS.txt` (extended with new sections)
+
+Mirrors Phase 16's manual-verification approach, extended to the three
+new domains. Independent of Phase 16/17 (Compute's own verification and
+Bash retirement) — see `DECISIONS.md`, 2026-07-02.
+
+### Work Items
+
+- Extend `TEST_PLAN_REAL_AWS.txt` with sections for Key Management
+  (create/import/delete against real AWS, all four regions), S3 (create
+  bucket, configure website hosting, sync a small test site, browse/
+  delete objects), and CloudFront (create a distribution for a real test
+  bucket, verify it actually serves content, invalidate, confirm the
+  cache refreshes)
+- Run manually against the real AWS account, same `[ok]`-marker
+  convention as Phase 16
+- Update `TEST_PLAN_REAL_AWS.txt` if the Go CLI's exact prompts/flow
+  differ from what's documented
+
+**Dependency:** Phase 19, 20, 21
+
+---
+
+## Deferred to a Later Version (Phase 23+, not scheduled)
+
+Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
 first, defer composite workflows", "Add Show/Export Cloud-Init as a v1
 primitive", "Add Backup Archive & Trim as a v1 primitive", "Add Rename
 Instance as a v1 primitive; AMI Name is immutable", "Add Create EC2
 Instance from Cloud-Init YAML as a v1 primitive", "Add Start/Stop/
 Terminate EC2 Instance as v1 primitives", "Structure workflows for future
-record/replay", and `DESIGN.md`, "Deferred to a Later Version". Recorded
-here so they're scheduled deliberately once Phase 16 passes, not lost:
+record/replay", "Redesign navigation as a domain picker...", "CloudFront +
+OAC by default for static websites", and `DESIGN.md`, "Deferred to a
+Later Version". Recorded here so they're scheduled deliberately once
+Phase 16/22 pass, not lost:
 
 - **Recorded Scripts ("session playbooks")** — capture an interactive
   session's actions as an editable, templated YAML script and replay it
   later, with the same confirmation gates as interactive mode always
   enforced (never bypassable for `Environment=production`). Phases
   4-13 are already structured (params-struct/confirm-gate seam) to
-  support this without rework once it's built
+  support this without rework once it's built; whether Phases 19-21's
+  new workflows get the same seam is an open question for when this is
+  actually built, not decided now
 - **Clone instance for testing**, **Upgrade with rollback point**, and
   **Bake AMI from cloud-init** — composite sequences built from v1's
   primitives (Phase 4 + Phase 10, plus Phase 12's SSM/poll/cleanup pattern
@@ -779,6 +1398,16 @@ here so they're scheduled deliberately once Phase 16 passes, not lost:
   The closest thing to a "rename" AWS actually allows for an AMI. Not
   requested for v1; noted here so it isn't lost (see `DECISIONS.md`, "Add
   Rename Instance as a v1 primitive; AMI Name is immutable")
+- **ACM certificate provisioning** for a CloudFront distribution's
+  alternate domain name — Phase 21 assumes a matching certificate already
+  exists in `us-east-1`; requesting/validating a new one is out of scope
+- **CloudFront functions / Lambda@Edge / WAF association** — Phase 21
+  creates a plain S3-origin distribution only
+- **S3 bucket versioning and lifecycle rules** — Phase 20's Create Bucket
+  uses default settings (no versioning, no lifecycle policy)
+- **`Environment=production` safety-gate extension** to Delete Key Pair,
+  bucket/object deletion, or distribution changes — not extended in
+  Phases 19-21; a candidate for a later pass (see `DESIGN.md` Feature 26)
 
 ---
 
@@ -804,4 +1433,9 @@ here so they're scheduled deliberately once Phase 16 passes, not lost:
 | Phase 15 | Medium | 4h | Phase 14 |
 | Phase 16 | High | 6h | Phase 14 |
 | Phase 17 | Medium | 2h | Phase 16 |
-| Phase 18+ | Deferred | — | Phase 16 (see above) |
+| Phase 18 | High | 4h | Phase 14 (runs alongside 16/17) |
+| Phase 19 | Medium | 6h | Phase 18 |
+| Phase 20 | Medium | 10h | Phase 18 |
+| Phase 21 | Medium | 8h | Phase 18, Phase 20 |
+| Phase 22 | High | 6h | Phase 19, 20, 21 |
+| Phase 23+ | Deferred | — | Phase 16, 22 (see above) |

@@ -15,20 +15,36 @@ func subnetLabel(s SubnetInfo) string {
 	return fmt.Sprintf("%s (%s, %s, %s)", s.SubnetID, s.VpcID, s.AvailabilityZone, s.CIDR)
 }
 
-// promptSubnetID lists subnets available in client's region and lets
-// the user pick one (DESIGN.md, Feature 2: "Subnet ID (list available
-// subnets)"). Falls back to a free-text prompt if the list can't be
-// fetched or is empty.
-func promptSubnetID(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API) (string, error) {
+// promptSubnetID lists subnets available in client's region, narrowed to
+// those whose Availability Zone actually supports instanceType (DESIGN.md,
+// Feature 2: "Subnet ID (list available subnets)"; see DECISIONS.md,
+// "Filter the subnet picker by instance-type Availability Zone support"
+// -- instance type is chosen earlier in the flow, so this list can be
+// pre-filtered instead of discovering an incompatibility only after the
+// fact). Falls back to a free-text prompt if the list can't be fetched
+// or is empty -- in which case the returned SubnetInfo's AvailabilityZone
+// is empty, signaling "unknown" to ensureInstanceTypeSupportedInSubnet
+// (it skips its check rather than treating an unknown AZ as an
+// incompatibility). That reactive check remains as a safety net for
+// cases this filtering can't cover (e.g. the AZ-offerings lookup itself
+// fails, or the free-text fallback was used).
+func promptSubnetID(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string) (SubnetInfo, error) {
 	subnets, err := listSubnets(ctx, client)
 	if err != nil || len(subnets) == 0 {
-		return ui.Prompt(t, le, "Subnet ID", ui.WithValidator(requireNonEmpty))
+		id, err := ui.Prompt(t, le, "Subnet ID", ui.WithValidator(requireNonEmpty))
+		if err != nil {
+			return SubnetInfo{}, err
+		}
+		return SubnetInfo{SubnetID: id}, nil
 	}
+
+	subnets = filterSubnetsByInstanceTypeAZ(ctx, client, instanceType, subnets)
+
 	picked, err := ui.PickList(t, le, subnets, subnetLabel, "Select a subnet")
 	if err != nil {
-		return "", err
+		return SubnetInfo{}, err
 	}
-	return picked.SubnetID, nil
+	return picked, nil
 }
 
 func securityGroupLabel(g SecurityGroupInfo) string {
@@ -96,4 +112,66 @@ func promptSecurityGroupIDs(ctx context.Context, t *termlib.Terminal, le *termli
 		ids = append(ids, tok)
 	}
 	return ids, nil
+}
+
+// instanceTypeChoice is one entry in promptInstanceType's pick list;
+// value is empty for the "Other" entry.
+type instanceTypeChoice struct {
+	value string
+	label string
+}
+
+func instanceTypeChoiceLabel(c instanceTypeChoice) string { return c.label }
+
+// curatedInstanceTypes is a short, hand-picked list of instance types
+// relevant to this team's actual usage (Invenio RDM deployments and
+// general EC2 ops) -- not an exhaustive AWS catalog. AWS offers 600+
+// instance types per region; listing them all would reproduce (at a
+// much larger scale) the "flat list is noise, not help" problem already
+// found with key pairs (DECISIONS.md, "Support creating a new key pair
+// from within awsops"). "Other" always stays available as an escape
+// hatch to any value not listed here. See DECISIONS.md, "Instance type
+// pick list: curated shortlist, not the full AWS catalog".
+//
+// t3/m5/c5/r5 are all Nitro-based and require Enhanced Networking (ENA)
+// -- every one of them fails ensureInstanceTypeENACompatible against an
+// AMI that isn't ENA-enabled, which real-world use surfaced as a launch
+// blocked entirely for a legacy, non-ENA-enabled AMI with no curated
+// type that could ever work with it. t2.micro/t2.medium are included
+// specifically as non-Nitro, no-ENA-required options for that case (see
+// DECISIONS.md, "Add non-ENA-required options to the curated instance
+// type list").
+var curatedInstanceTypes = []instanceTypeChoice{
+	{value: "t3.micro", label: "t3.micro (2 vCPU, 1 GiB) -- low-cost testing (requires ENA)"},
+	{value: "t3.small", label: "t3.small (2 vCPU, 2 GiB) (requires ENA)"},
+	{value: "t3.medium", label: "t3.medium (2 vCPU, 4 GiB) (requires ENA)"},
+	{value: "t3.large", label: "t3.large (2 vCPU, 8 GiB) -- typical small Invenio RDM instance (requires ENA)"},
+	{value: "t3.xlarge", label: "t3.xlarge (4 vCPU, 16 GiB) (requires ENA)"},
+	{value: "m5.large", label: "m5.large (2 vCPU, 8 GiB) -- steady-state, non-burstable (requires ENA)"},
+	{value: "m5.xlarge", label: "m5.xlarge (4 vCPU, 16 GiB) (requires ENA)"},
+	{value: "c5.large", label: "c5.large (2 vCPU, 4 GiB) -- compute-optimized (requires ENA)"},
+	{value: "r5.large", label: "r5.large (2 vCPU, 16 GiB) -- memory-optimized (requires ENA)"},
+	{value: "t2.micro", label: "t2.micro (1 vCPU, 1 GiB) -- no ENA required, works with older/legacy AMIs"},
+	{value: "t2.medium", label: "t2.medium (2 vCPU, 4 GiB) -- no ENA required, works with older/legacy AMIs"},
+}
+
+// promptInstanceType offers curatedInstanceTypes as a pick list, plus
+// "Other" to type any instance type not listed (DESIGN.md, Feature 2:
+// "Instance type"). No AWS call is made here -- the list is static; the
+// instance-type-vs-subnet-Availability-Zone pre-flight check
+// (instance_type_az_check.go) is what actually validates the chosen
+// value against AWS.
+func promptInstanceType(t *termlib.Terminal, le *termlib.LineEditor) (string, error) {
+	choices := make([]instanceTypeChoice, 0, len(curatedInstanceTypes)+1)
+	choices = append(choices, curatedInstanceTypes...)
+	choices = append(choices, instanceTypeChoice{label: "Other (type a custom instance type)"})
+
+	picked, err := ui.PickList(t, le, choices, instanceTypeChoiceLabel, "Select an instance type")
+	if err != nil {
+		return "", err
+	}
+	if picked.value != "" {
+		return picked.value, nil
+	}
+	return ui.Prompt(t, le, "Instance type", ui.WithValidator(requireNonEmpty))
 }

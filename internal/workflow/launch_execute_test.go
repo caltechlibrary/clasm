@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
 )
@@ -27,6 +28,13 @@ type fakeEC2Client struct {
 	stoppedAfterCall int // DescribeInstances reports stopped starting at this call number; 0 = never
 	describeErr      error
 	publicIP         string
+	// notFoundForCalls, if > 0, makes the first N DescribeInstances
+	// calls return InvalidInstanceID.NotFound -- simulates the real
+	// eventual-consistency window right after ec2:RunInstances returns
+	// an instance ID that isn't immediately visible to
+	// ec2:DescribeInstances (see launch_execute.go's
+	// isInstanceNotYetVisible).
+	notFoundForCalls int
 
 	lastStartInstancesInput *ec2.StartInstancesInput
 	startInstancesErr       error
@@ -42,6 +50,17 @@ type fakeEC2Client struct {
 
 	describeImagesErr  error
 	describeImagesTags []types.Tag // returned by DescribeImages, for Manage Tags tests
+	// officialUbuntuImages, keyed by "name" filter value, backs
+	// DescribeImages calls scoped to ubuntuAMIOwnerID (see
+	// official_ubuntu_amis.go) -- a separate code path from the
+	// ImageIds-based polling logic below, since the query shape differs.
+	officialUbuntuImages    map[string][]types.Image
+	describeUbuntuImagesErr error
+	// imageNotFoundForCalls, if > 0, makes the first N DescribeImages
+	// calls return InvalidAMIID.NotFound -- the AMI-side analog of
+	// notFoundForCalls above (see create_ami_execute.go's
+	// isImageNotYetVisible).
+	imageNotFoundForCalls int
 
 	lastCreateTagsInput *ec2.CreateTagsInput
 	createTagsErr       error
@@ -72,6 +91,21 @@ type fakeEC2Client struct {
 	describeSecurityGroupsErr error
 	subnets                   []types.Subnet
 	describeSubnetsErr        error
+
+	// instanceTypeOfferings maps instance type -> the Availability Zones
+	// it's offered in, for DescribeInstanceTypeOfferings (see
+	// instance_type_az_check.go). describeInstanceTypeOfferingsErr, if
+	// set, makes every call fail regardless of filters.
+	instanceTypeOfferings            map[string][]string
+	describeInstanceTypeOfferingsErr error
+
+	// enaRequiredInstanceTypes is the set of instance types
+	// DescribeInstanceTypes reports as requiring ENA (see
+	// instance_type_ena_check.go); any type not in this set is reported
+	// as not requiring it. describeInstanceTypesErr, if set, makes every
+	// call fail.
+	enaRequiredInstanceTypes map[string]bool
+	describeInstanceTypesErr error
 
 	createKeyPairCalls       int
 	createKeyPairErr         error
@@ -118,6 +152,67 @@ func (f *fakeEC2Client) DescribeSubnets(ctx context.Context, params *ec2.Describ
 	return &ec2.DescribeSubnetsOutput{Subnets: f.subnets}, nil
 }
 
+// DescribeInstanceTypeOfferings filters f.instanceTypeOfferings by the
+// "instance-type"/"location" filters present in params, mimicking the
+// real API closely enough for instance_type_az_check.go's two query
+// shapes: type+location (existence check) and type-only (listing AZs).
+func (f *fakeEC2Client) DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	if f.describeInstanceTypeOfferingsErr != nil {
+		return nil, f.describeInstanceTypeOfferingsErr
+	}
+
+	var wantType, wantLocation string
+	for _, filt := range params.Filters {
+		if len(filt.Values) == 0 {
+			continue
+		}
+		switch aws.ToString(filt.Name) {
+		case "instance-type":
+			wantType = filt.Values[0]
+		case "location":
+			wantLocation = filt.Values[0]
+		}
+	}
+
+	var offerings []types.InstanceTypeOffering
+	for typ, azs := range f.instanceTypeOfferings {
+		if wantType != "" && typ != wantType {
+			continue
+		}
+		for _, az := range azs {
+			if wantLocation != "" && az != wantLocation {
+				continue
+			}
+			offerings = append(offerings, types.InstanceTypeOffering{
+				InstanceType: types.InstanceType(typ),
+				Location:     aws.String(az),
+			})
+		}
+	}
+	return &ec2.DescribeInstanceTypeOfferingsOutput{InstanceTypeOfferings: offerings}, nil
+}
+
+// DescribeInstanceTypes reports each requested type's NetworkInfo.EnaSupport
+// as Required if it's in f.enaRequiredInstanceTypes, Unsupported otherwise.
+func (f *fakeEC2Client) DescribeInstanceTypes(ctx context.Context, params *ec2.DescribeInstanceTypesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+	if f.describeInstanceTypesErr != nil {
+		return nil, f.describeInstanceTypesErr
+	}
+
+	infos := make([]types.InstanceTypeInfo, 0, len(params.InstanceTypes))
+	for _, it := range params.InstanceTypes {
+		ena := types.EnaSupportUnsupported
+		if f.enaRequiredInstanceTypes[string(it)] {
+			ena = types.EnaSupportRequired
+		}
+		infos = append(infos, types.InstanceTypeInfo{
+			InstanceType: it,
+			NetworkInfo:  &types.NetworkInfo{EnaSupport: ena},
+		})
+	}
+	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: infos}, nil
+}
+
 func (f *fakeEC2Client) DeregisterImage(ctx context.Context, params *ec2.DeregisterImageInput, optFns ...func(*ec2.Options)) (*ec2.DeregisterImageOutput, error) {
 	f.lastDeregisterImageInput = params
 	if f.deregisterImageErr != nil {
@@ -138,7 +233,23 @@ func (f *fakeEC2Client) DescribeInstanceAttribute(ctx context.Context, params *e
 }
 
 func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
+	if len(params.Owners) == 1 && params.Owners[0] == ubuntuAMIOwnerID {
+		if f.describeUbuntuImagesErr != nil {
+			return nil, f.describeUbuntuImagesErr
+		}
+		var namePattern string
+		for _, filt := range params.Filters {
+			if aws.ToString(filt.Name) == "name" && len(filt.Values) > 0 {
+				namePattern = filt.Values[0]
+			}
+		}
+		return &ec2.DescribeImagesOutput{Images: f.officialUbuntuImages[namePattern]}, nil
+	}
+
 	f.describeImagesCalls++
+	if f.imageNotFoundForCalls > 0 && f.describeImagesCalls <= f.imageNotFoundForCalls {
+		return nil, &smithy.GenericAPIError{Code: "InvalidAMIID.NotFound", Message: "The image id does not exist"}
+	}
 	if f.describeImagesErr != nil {
 		return nil, f.describeImagesErr
 	}
@@ -222,6 +333,9 @@ func (f *fakeEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstanc
 
 func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 	f.describeCalls++
+	if f.notFoundForCalls > 0 && f.describeCalls <= f.notFoundForCalls {
+		return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound", Message: "The instance ID '" + params.InstanceIds[0] + "' does not exist"}
+	}
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
@@ -357,5 +471,28 @@ func TestWaitUntilRunning_PropagatesError(t *testing.T) {
 	_, err := WaitUntilRunning(context.Background(), fake, "i-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestWaitUntilRunning_TreatsPostLaunchNotFoundAsNotYetVisible(t *testing.T) {
+	// Real AWS behavior: ec2:RunInstances can return an instance ID that
+	// ec2:DescribeInstances doesn't recognize for the first few seconds
+	// (InvalidInstanceID.NotFound) -- this must be tolerated like "not
+	// running yet", not treated as a hard failure.
+	fake := &fakeEC2Client{notFoundForCalls: 2, runningAfterCall: 3}
+	inst, err := WaitUntilRunning(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if aws.ToString(inst.InstanceId) != "i-1" {
+		t.Errorf("InstanceId = %q, want %q", aws.ToString(inst.InstanceId), "i-1")
+	}
+}
+
+func TestWaitUntilRunning_TimesOutIfNeverVisible(t *testing.T) {
+	fake := &fakeEC2Client{notFoundForCalls: 1000}
+	_, err := WaitUntilRunning(context.Background(), fake, "i-1", 20*time.Millisecond, testPollInterval)
+	if err == nil {
+		t.Fatal("expected a timeout error")
 	}
 }

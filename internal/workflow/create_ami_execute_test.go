@@ -131,3 +131,19 @@ func TestWaitForAMIAvailable_PropagatesError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestWaitForAMIAvailable_TreatsPostCreateNotFoundAsNotYetVisible(t *testing.T) {
+	// Real AWS behavior: ec2:CreateImage can return an image ID that
+	// ec2:DescribeImages doesn't recognize for the first few seconds
+	// (InvalidAMIID.NotFound) -- must be tolerated like "not available
+	// yet", not treated as a hard failure (the AMI-side analog of
+	// WaitUntilRunning's InvalidInstanceID.NotFound tolerance).
+	fake := &fakeEC2Client{imageNotFoundForCalls: 2, imageAvailableAfterCall: 3}
+	state, err := WaitForAMIAvailable(context.Background(), fake, "ami-1", testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state != types.ImageStateAvailable {
+		t.Errorf("state = %v, want Available", state)
+	}
+}

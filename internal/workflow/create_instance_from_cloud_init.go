@@ -19,8 +19,8 @@ import (
 // every other workflow's confirmation gate. Takes per-region client maps;
 // CollectLaunchInstanceParamsFromCloudInit resolves and returns the
 // region-specific clients itself, same as CreateInstanceFromAMI.
-func CreateInstanceFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, images []inventory.Image) error {
-	params, ec2Client, ssmClient, err := CollectLaunchInstanceParamsFromCloudInit(ctx, t, le, ec2Clients, ssmClients, images)
+func CreateInstanceFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) error {
+	params, ec2Client, ssmClient, err := CollectLaunchInstanceParamsFromCloudInit(ctx, t, le, ec2Clients, ssmClients, iamClient, images)
 	if err != nil {
 		if errors.Is(err, ui.ErrCancelled) {
 			t.Println("Cancelled.")

@@ -20,11 +20,12 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 
 	input := "2\n" + // pick ami-2
 		"authorstest\n" + // Name tag
-		"t3.large\n" + // instance type
-		"my-keypair\n" + // key pair (free text)
+		"4\n" + // instance type: t3.large
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-keypair\n" + // New key pair name
 		"sg-1, sg-2\n" + // security groups (no groups fetched -> free-text fallback)
 		"subnet-abc\n" + // subnet (no subnets fetched -> free-text fallback)
-		"\n" + // IAM profile (blank)
+		"1\n" + // IAM profile: select (none)
 		"#cloud-config\n" + // user data (inline)
 		"\n" + // Project tag (blank -> default from ami-2)
 		"test\n" // Environment tag
@@ -34,7 +35,7 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, images)
+	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,11 +77,12 @@ func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T)
 	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
 	input := "1\n" + // pick ami-1
 		"web\n" + // Name tag, right after the AMI pick
-		"\n" + // instance type (default)
-		"my-key\n" + // key pair
+		"1\n" + // instance type: t3.micro
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-key\n" + // New key pair name
 		"sg-1\n" + // security groups
 		"subnet-1\n" + // subnet
-		"\n" + // IAM profile
+		"1\n" + // IAM profile: select (none)
 		"\n" + // user data
 		"caltechdata\n" + // Project tag
 		"test\n" // Environment tag
@@ -89,7 +91,7 @@ func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T)
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, images)
+	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +101,7 @@ func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T)
 
 	out := buf.String()
 	nameIdx := strings.Index(out, "Name tag")
-	instanceTypeIdx := strings.Index(out, "Instance type")
+	instanceTypeIdx := strings.Index(out, "Select an instance type")
 	if nameIdx < 0 || instanceTypeIdx < 0 || nameIdx > instanceTypeIdx {
 		t.Errorf("expected the Name tag prompt to precede the Instance type prompt in output:\n%s", out)
 	}
@@ -115,23 +117,25 @@ func TestCollectLaunchInstanceParams_PicksSecurityGroupsAndSubnetFromLists(t *te
 		subnets: []types.Subnet{
 			{SubnetId: aws.String("subnet-1"), VpcId: aws.String("vpc-1"), AvailabilityZone: aws.String("us-east-1a"), CidrBlock: aws.String("10.0.1.0/24")},
 		},
+		instanceTypeOfferings: map[string][]string{"t3.micro": {"us-east-1a"}}, // matches the chosen instance type (curated list entry 1)
 	}
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
 	input := "1\n" + // pick ami-1
 		"web\n" + // Name tag
-		"\n" + // instance type (default)
-		"my-key\n" + // key pair (free text)
+		"1\n" + // instance type: t3.micro
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-key\n" + // New key pair name
 		"1,2\n" + // pick both security groups by number
 		"1\n" + // pick the only subnet
-		"\n" + // IAM profile
+		"1\n" + // IAM profile: select (none)
 		"\n" + // user data
 		"caltechdata\n" + // Project tag
 		"test\n" // Environment tag
 
 	term, le, _ := newPipeEditor(t, input)
-	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, images)
+	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,11 +155,12 @@ func TestCollectLaunchInstanceParams_RejectsInvalidEnvironment(t *testing.T) {
 
 	input := "1\n" + // pick ami-1
 		"web\n" + // Name tag
-		"t3.micro\n" + // instance type
-		"my-keypair\n" + // key pair
+		"1\n" + // instance type: t3.micro
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-keypair\n" + // New key pair name
 		"sg-1\n" + // security groups
 		"subnet-abc\n" + // subnet
-		"\n" + // IAM profile
+		"1\n" + // IAM profile: select (none)
 		"\n" + // user data
 		"caltechdata\n" + // Project tag
 		"prod\n" + // Environment tag (invalid)
@@ -165,7 +170,7 @@ func TestCollectLaunchInstanceParams_RejectsInvalidEnvironment(t *testing.T) {
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, images)
+	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,14 +188,15 @@ func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
 	input := "1\n" + // pick ami-1
 		"\n" + // Name tag (blank -- rejected)
 		"web\n" + // Name tag (retry, valid)
-		"t3.micro\n" + // instance type
-		"\n" + // Key pair name (blank -- rejected)
-		"my-keypair\n" + // Key pair name (retry, valid)
+		"1\n" + // instance type: t3.micro
+		"\n" + // Key pair pick list (blank -- invalid selection, rejected)
+		"1\n" + // Key pair: Create new key pair (zero existing keys)
+		"my-keypair\n" + // New key pair name
 		"\n" + // Security groups (blank -- rejected)
 		"sg-1\n" + // Security groups (retry, valid)
 		"\n" + // Subnet ID (blank -- rejected)
 		"subnet-abc\n" + // Subnet ID (retry, valid)
-		"\n" + // IAM profile (optional, blank is fine)
+		"1\n" + // IAM profile: select (none)
 		"\n" + // user data (optional, blank is fine)
 		"caltechdata\n" + // Project tag
 		"test\n" // Environment tag
@@ -199,7 +205,7 @@ func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, images)
+	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,5 +214,38 @@ func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "invalid input") {
 		t.Errorf("expected validation error messages in output, got:\n%s", buf.String())
+	}
+}
+
+func TestCollectLaunchInstanceParams_OfficialUbuntuAMIIsSelectableFromThePickList(t *testing.T) {
+	images := []inventory.Image{{ImageID: "ami-owned", Region: "us-east-1"}}
+	fake := &fakeEC2Client{officialUbuntuImages: map[string][]types.Image{
+		nobleNamePattern: {{ImageId: aws.String("ami-noble"), CreationDate: aws.String("2026-06-01T00:00:00.000Z"), EnaSupport: aws.Bool(true)}},
+	}}
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
+
+	input := "2\n" + // owned AMI (1), then the appended official Ubuntu AMI (2)
+		"web\n" +
+		"1\n" + // instance type: t3.micro
+		"1\n" + // key pair: Create new key pair (zero existing keys)
+		"my-key\n" + // New key pair name
+		"sg-1\n" +
+		"subnet-1\n" +
+		"1\n" + // IAM profile: select (none)
+		"\n" +
+		"caltechdata\n" +
+		"test\n"
+
+	term, le, buf := newPipeEditor(t, input)
+	got, _, _, err := CollectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ImageID != "ami-noble" {
+		t.Errorf("ImageID = %q, want %q", got.ImageID, "ami-noble")
+	}
+	if !strings.Contains(buf.String(), "Ubuntu 24.04 LTS") {
+		t.Errorf("expected the official Ubuntu AMI to appear in the pick list, got:\n%s", buf.String())
 	}
 }

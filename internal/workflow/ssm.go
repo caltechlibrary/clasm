@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
 )
@@ -75,10 +77,10 @@ func RunShellCommand(ctx context.Context, client awsclient.SSMAPI, instanceID, c
 	input := &ssm.GetCommandInvocationInput{CommandId: aws.String(commandID), InstanceId: aws.String(instanceID)}
 	for {
 		out, err := client.GetCommandInvocation(deadline, input)
-		if err != nil {
+		switch {
+		case err != nil && !isInvocationNotYetVisible(err):
 			return "", "", err
-		}
-		if isTerminalCommandStatus(out.Status) {
+		case err == nil && isTerminalCommandStatus(out.Status):
 			return aws.ToString(out.StandardOutputContent), out.Status, nil
 		}
 		select {
@@ -87,6 +89,21 @@ func RunShellCommand(ctx context.Context, client awsclient.SSMAPI, instanceID, c
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+// isInvocationNotYetVisible reports whether err is AWS's own
+// InvocationDoesNotExist -- expected for the first few seconds after
+// ssm:SendCommand returns a new command ID, before that invocation is
+// visible to ssm:GetCommandInvocation (the SSM-side analog of
+// launch_execute.go's isInstanceNotYetVisible / create_ami_execute.go's
+// isImageNotYetVisible). Without this, RunShellCommand could fail
+// immediately after a successful SendCommand with "InvocationDoesNotExist"
+// -- confusing given the command was, in fact, just accepted. See
+// DECISIONS.md, "Tolerate GetCommandInvocation's post-SendCommand
+// eventual-consistency window".
+func isInvocationNotYetVisible(err error) bool {
+	apiErr, ok := errors.AsType[smithy.APIError](err)
+	return ok && apiErr.ErrorCode() == "InvocationDoesNotExist"
 }
 
 func isTerminalCommandStatus(s types.CommandInvocationStatus) bool {

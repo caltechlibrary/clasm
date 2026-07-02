@@ -21,8 +21,8 @@ import (
 // after the AMI is picked) -- CollectLaunchInstanceParams resolves and
 // returns the region-specific clients itself, since it also needs them
 // to list key pairs/security groups/subnets.
-func CreateInstanceFromAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, images []inventory.Image) error {
-	params, ec2Client, ssmClient, err := CollectLaunchInstanceParams(ctx, t, le, ec2Clients, ssmClients, images)
+func CreateInstanceFromAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) error {
+	params, ec2Client, ssmClient, err := CollectLaunchInstanceParams(ctx, t, le, ec2Clients, ssmClients, iamClient, images)
 	if err != nil {
 		if errors.Is(err, ui.ErrCancelled) {
 			t.Println("Cancelled.")

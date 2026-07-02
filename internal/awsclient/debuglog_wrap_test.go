@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -66,6 +67,14 @@ type stubSTSClient struct {
 
 func (s *stubSTSClient) GetCallerIdentity(ctx context.Context, params *sts.GetCallerIdentityInput, optFns ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
 	return &sts.GetCallerIdentityOutput{Account: aws.String("123456789012")}, nil
+}
+
+type stubIAMClient struct {
+	IAMAPI
+}
+
+func (s *stubIAMClient) ListInstanceProfiles(ctx context.Context, params *iam.ListInstanceProfilesInput, optFns ...func(*iam.Options)) (*iam.ListInstanceProfilesOutput, error) {
+	return &iam.ListInstanceProfilesOutput{}, nil
 }
 
 func readJSONLRecords(t *testing.T, path string) []map[string]any {
@@ -270,5 +279,33 @@ func TestWrapSTS_Logs(t *testing.T) {
 	records := readJSONLRecords(t, path)
 	if len(records) != 1 || records[0]["method"] != "STS.GetCallerIdentity" {
 		t.Fatalf("got %v, want one record with method STS.GetCallerIdentity", records)
+	}
+}
+
+func TestWrapIAM_NilDebugLogReturnsUnwrappedClient(t *testing.T) {
+	inner := &stubIAMClient{}
+	got := WrapIAM(inner, nil, "us-east-1")
+	if got != IAMAPI(inner) {
+		t.Error("WrapIAM with a nil DebugLog should return the original client unchanged")
+	}
+}
+
+func TestWrapIAM_Logs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debug.jsonl")
+	dl, err := debuglog.New(path)
+	if err != nil {
+		t.Fatalf("debuglog.New: %v", err)
+	}
+	defer dl.Close()
+
+	wrapped := WrapIAM(&stubIAMClient{}, dl, "us-east-1")
+	if _, err := wrapped.ListInstanceProfiles(context.Background(), &iam.ListInstanceProfilesInput{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dl.Close()
+
+	records := readJSONLRecords(t, path)
+	if len(records) != 1 || records[0]["method"] != "IAM.ListInstanceProfiles" {
+		t.Fatalf("got %v, want one record with method IAM.ListInstanceProfiles", records)
 	}
 }

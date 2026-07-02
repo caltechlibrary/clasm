@@ -30,19 +30,24 @@ type MenuActions struct {
 	// Refresh re-fetches and re-displays the instance/AMI listings. Called
 	// once after every successful dispatched action (DECISIONS.md,
 	// "Refresh data after each operation"), and directly for the
-	// "Refresh resource lists" menu item itself.
+	// "Show resource lists" menu item itself.
 	Refresh func(ctx context.Context) error
 }
 
 // menuItem pairs a main-menu label with the MenuActions field it
-// dispatches to; action is nil for "Exit".
+// dispatches to; action is nil for "Back to domain picker".
 type menuItem struct {
 	label  string
 	action func(MenuActions, context.Context) error
 }
 
-// mainMenuItems is DESIGN.md's Main Menu, in order.
+// mainMenuItems is DESIGN.md's Main Menu, in order. "Show resource
+// lists" leads the menu (DECISIONS.md, "Move Show resource lists to the
+// top of the Compute menu; rename from Refresh") -- it's the natural
+// first move on entering the domain (orient before acting), not just
+// one action among ten.
 var mainMenuItems = []menuItem{
+	{"Show resource lists", func(a MenuActions, ctx context.Context) error { return a.Refresh(ctx) }},
 	{"Create EC2 instance from AMI", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
 	{"Create EC2 instance from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
 	{"Start EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
@@ -53,19 +58,21 @@ var mainMenuItems = []menuItem{
 	{"Remove AMI", func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},
 	{"Show/export cloud-init for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ShowCloudInit(ctx) }},
 	{"Archive stale backups to S3 and trim disk space", func(a MenuActions, ctx context.Context) error { return a.BackupArchiveAndTrim(ctx) }},
-	{"Refresh resource lists", func(a MenuActions, ctx context.Context) error { return a.Refresh(ctx) }},
-	{"Exit", nil},
+	{"Back to domain picker", nil},
 }
 
 func menuItemLabel(item menuItem) string { return item.label }
 
-// RunMainMenu runs the interactive main menu loop (DESIGN.md, "Main Menu
-// and Integration"): show the 12-option menu, dispatch the chosen action,
-// refresh listings after a successful dispatch, and repeat -- until
-// Exit, a cancelled ctx (e.g. Ctrl+C delivered as os.Interrupt between
-// prompts), or an interrupted/EOF prompt (e.g. Ctrl+C/Ctrl+D during an
-// active prompt, which termlib surfaces as an error rather than a
-// process signal). A single action's error is shown and the loop
+// RunMainMenu runs the Compute domain's interactive menu loop (DESIGN.md,
+// "Compute Domain (EC2 & AMI)"): show the 12-option menu, dispatch the
+// chosen action, refresh listings after a successful dispatch, and
+// repeat -- until "Back to domain picker" is chosen (returns
+// ErrBackToDomainPicker), a cancelled ctx (e.g. Ctrl+C delivered as
+// os.Interrupt between prompts), or an interrupted/EOF prompt (e.g.
+// Ctrl+C/Ctrl+D during an active prompt, which termlib surfaces as an
+// error rather than a process signal) -- the latter two report nil,
+// which RunDomainPicker treats as "exit the whole program", not "return
+// to the picker". A single action's error is shown and the loop
 // continues -- one failed operation shouldn't force restarting the
 // whole CLI.
 func RunMainMenu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, actions MenuActions) error {
@@ -85,8 +92,7 @@ func RunMainMenu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdito
 		}
 
 		if choice.action == nil {
-			printExiting(t)
-			return nil
+			return ErrBackToDomainPicker
 		}
 
 		if err := choice.action(actions, ctx); err != nil {

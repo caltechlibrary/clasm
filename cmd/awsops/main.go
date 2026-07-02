@@ -15,6 +15,7 @@ import (
 
 	"github.com/caltechlibrary/awstools"
 	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/awstools/internal/config"
 	"github.com/caltechlibrary/awstools/internal/debuglog"
 	"github.com/caltechlibrary/awstools/internal/inventory"
 	"github.com/caltechlibrary/awstools/internal/ui"
@@ -27,6 +28,7 @@ var (
 	showLicense bool
 	showVersion bool
 	debugMode   bool
+	configPath  string
 )
 
 func main() {
@@ -40,6 +42,7 @@ func main() {
 	flag.BoolVar(&showLicense, "license", false, "display license")
 	flag.BoolVar(&showVersion, "version", false, "display version")
 	flag.BoolVar(&debugMode, "debug", false, "write a JSONL debug log of every AWS SDK call to ./awsops-debug-<timestamp>.jsonl")
+	flag.StringVar(&configPath, "config", config.DefaultPath(), "path to awsops' own YAML config file (regions, etc.); AWS credentials are never read from here")
 
 	flag.Parse()
 
@@ -66,6 +69,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(eout, "%v\n", err)
+		os.Exit(1)
+	}
+
 	// -debug wraps every AWS client below in a logging decorator that
 	// writes one JSONL record per SDK call (see DESIGN.md, "Debug
 	// Logging"); a nil *debuglog.DebugLog makes every Wrap* call below a
@@ -83,9 +92,9 @@ func main() {
 		fmt.Fprintf(eout, "Debug log: %s\n", debugPath)
 	}
 
-	ec2Clients := make(map[string]awsclient.EC2API, len(awsclient.Regions))
-	ssmClients := make(map[string]awsclient.SSMAPI, len(awsclient.Regions))
-	for _, region := range awsclient.Regions {
+	ec2Clients := make(map[string]awsclient.EC2API, len(cfg.Regions))
+	ssmClients := make(map[string]awsclient.SSMAPI, len(cfg.Regions))
+	for _, region := range cfg.Regions {
 		ec2Client, err := awsclient.NewEC2Client(ctx, region)
 		if err != nil {
 			fmt.Fprintf(eout, "creating EC2 client for %s: %v\n", region, err)
@@ -104,19 +113,28 @@ func main() {
 	// S3 bucket regions are unrelated to any instance's region (Backup
 	// Archive & Trim's independent verification targets whatever bucket
 	// the operator specifies), so a single S3 client suffices.
-	s3Client, err := awsclient.NewS3Client(ctx, awsclient.Regions[0])
+	s3Client, err := awsclient.NewS3Client(ctx, cfg.Regions[0])
 	if err != nil {
 		fmt.Fprintf(eout, "creating S3 client: %v\n", err)
 		os.Exit(1)
 	}
-	s3Client = awsclient.WrapS3(s3Client, dl, awsclient.Regions[0])
+	s3Client = awsclient.WrapS3(s3Client, dl, cfg.Regions[0])
 
-	stsClient, err := awsclient.NewSTSClient(ctx, awsclient.Regions[0])
+	stsClient, err := awsclient.NewSTSClient(ctx, cfg.Regions[0])
 	if err != nil {
 		fmt.Fprintf(eout, "creating STS client: %v\n", err)
 		os.Exit(1)
 	}
-	stsClient = awsclient.WrapSTS(stsClient, dl, awsclient.Regions[0])
+	stsClient = awsclient.WrapSTS(stsClient, dl, cfg.Regions[0])
+
+	// IAM is a global service, like STS -- one client suffices (Feature 2:
+	// "IAM instance profile" pick-or-create).
+	iamClient, err := awsclient.NewIAMClient(ctx, cfg.Regions[0])
+	if err != nil {
+		fmt.Fprintf(eout, "creating IAM client: %v\n", err)
+		os.Exit(1)
+	}
+	iamClient = awsclient.WrapIAM(iamClient, dl, cfg.Regions[0])
 	account, err := awsclient.CheckCredentials(ctx, stsClient)
 	if err != nil {
 		fmt.Fprintf(eout, "%v\n", err)
@@ -150,17 +168,12 @@ func main() {
 		return nil
 	}
 
-	if err := refresh(ctx); err != nil {
-		fmt.Fprintf(eout, "%v\n", err)
-		os.Exit(1)
-	}
-
 	actions := workflow.MenuActions{
 		CreateInstanceFromAMI: func(ctx context.Context) error {
-			return workflow.CreateInstanceFromAMI(ctx, term, le, ec2Clients, ssmClients, state.images)
+			return workflow.CreateInstanceFromAMI(ctx, term, le, ec2Clients, ssmClients, iamClient, state.images)
 		},
 		CreateInstanceFromCloudInit: func(ctx context.Context) error {
-			return workflow.CreateInstanceFromCloudInit(ctx, term, le, ec2Clients, ssmClients, state.images)
+			return workflow.CreateInstanceFromCloudInit(ctx, term, le, ec2Clients, ssmClients, iamClient, state.images)
 		},
 		StartEC2Instance: func(ctx context.Context) error {
 			return workflow.StartEC2Instance(ctx, term, le, ec2Clients, state.instances)
@@ -189,7 +202,29 @@ func main() {
 		Refresh: refresh,
 	}
 
-	if err := workflow.RunMainMenu(ctx, term, le, actions); err != nil {
+	domains := workflow.DomainActions{
+		Compute: func(ctx context.Context) error {
+			// Fetch and display the Compute listing on every entry into
+			// this domain (DESIGN.md, "Navigation: Domain Picker") --
+			// not once at startup, since the operator may return here
+			// after working in another domain.
+			if err := refresh(ctx); err != nil {
+				return err
+			}
+			return workflow.RunMainMenu(ctx, term, le, actions)
+		},
+		KeyManagement: func(ctx context.Context) error {
+			return workflow.NotYetImplemented(term, "Key Management")
+		},
+		S3: func(ctx context.Context) error {
+			return workflow.NotYetImplemented(term, "S3")
+		},
+		CloudFront: func(ctx context.Context) error {
+			return workflow.NotYetImplemented(term, "CloudFront")
+		},
+	}
+
+	if err := workflow.RunDomainPicker(ctx, term, le, domains); err != nil {
 		fmt.Fprintf(eout, "%v\n", err)
 		os.Exit(1)
 	}

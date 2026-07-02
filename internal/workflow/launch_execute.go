@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
@@ -88,7 +89,8 @@ func WaitUntilRunning(ctx context.Context, client awsclient.EC2API, instanceID s
 // waitUntilState polls ec2:DescribeInstances until instanceID reaches
 // want or the timeout elapses. Shared by WaitUntilRunning and Phase 7's
 // WaitUntilStopped -- the polling mechanics are identical, only the
-// target state differs.
+// target state differs. Tolerates InvalidInstanceID.NotFound as "not
+// visible yet" rather than a hard failure -- see isInstanceNotYetVisible.
 func waitUntilState(ctx context.Context, client awsclient.EC2API, instanceID string, want types.InstanceStateName, timeout, pollInterval time.Duration) (types.Instance, error) {
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -96,11 +98,13 @@ func waitUntilState(ctx context.Context, client awsclient.EC2API, instanceID str
 	input := &ec2.DescribeInstancesInput{InstanceIds: []string{instanceID}}
 	for {
 		out, err := client.DescribeInstances(deadline, input)
-		if err != nil {
+		switch {
+		case err != nil && !isInstanceNotYetVisible(err):
 			return types.Instance{}, err
-		}
-		if inst, found := findInstance(out, instanceID); found && inst.State != nil && inst.State.Name == want {
-			return inst, nil
+		case err == nil:
+			if inst, found := findInstance(out, instanceID); found && inst.State != nil && inst.State.Name == want {
+				return inst, nil
+			}
 		}
 		select {
 		case <-deadline.Done():
@@ -108,6 +112,20 @@ func waitUntilState(ctx context.Context, client awsclient.EC2API, instanceID str
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+// isInstanceNotYetVisible reports whether err is AWS's own
+// InvalidInstanceID.NotFound -- expected for the first few seconds
+// after ec2:RunInstances returns a new instance ID, before that ID is
+// visible to ec2:DescribeInstances (a well-known eventual-consistency
+// window, not a real failure). Without this, WaitUntilRunning could
+// fail immediately after a successful launch with "the instance ID ...
+// does not exist" -- confusing given the instance did, in fact, just
+// launch. See DECISIONS.md, "Tolerate DescribeInstances' post-
+// RunInstances eventual-consistency window".
+func isInstanceNotYetVisible(err error) bool {
+	apiErr, ok := errors.AsType[smithy.APIError](err)
+	return ok && apiErr.ErrorCode() == "InvalidInstanceID.NotFound"
 }
 
 func findInstance(out *ec2.DescribeInstancesOutput, instanceID string) (types.Instance, bool) {

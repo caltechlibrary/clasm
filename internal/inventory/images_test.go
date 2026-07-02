@@ -139,3 +139,28 @@ func TestListImages_PropagatesError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestImageFromSDK_CarriesEnaSupport(t *testing.T) {
+	enaEnabled := imageFromSDK(types.Image{
+		ImageId:    aws.String("ami-1"),
+		EnaSupport: aws.Bool(true),
+	}, "us-east-1")
+	if !enaEnabled.EnaSupport {
+		t.Error("EnaSupport = false, want true")
+	}
+
+	enaDisabled := imageFromSDK(types.Image{
+		ImageId:    aws.String("ami-2"),
+		EnaSupport: aws.Bool(false),
+	}, "us-east-1")
+	if enaDisabled.EnaSupport {
+		t.Error("EnaSupport = true, want false")
+	}
+
+	enaUnset := imageFromSDK(types.Image{
+		ImageId: aws.String("ami-3"),
+	}, "us-east-1")
+	if enaUnset.EnaSupport {
+		t.Error("EnaSupport = true, want false when the SDK field is nil")
+	}
+}

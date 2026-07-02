@@ -10,27 +10,28 @@ plan has touched real AWS yet.
 
 Prerequisites
 --------------
-- `make build` (or `go build -o bin/awsops ./cmd/awsops`) produces a
+- [ ] `make build` (or `go build -o bin/awsops ./cmd/awsops`) produces a
   binary that runs `-help`/`-version`/`-license` correctly.
-- AWS credentials configured and resolvable by the SDK's default chain
+- [ ] AWS credentials configured and resolvable by the SDK's default chain
   (env vars, ~/.aws/credentials, or SSO) with the IAM permissions listed
   in DESIGN.md, "Assumptions" #2 (Describe*/Run/Start/Stop/Terminate/
   CreateImage/DeregisterImage/CreateTags/DeleteTags/DescribeTags/
   DescribeInstanceAttribute/DescribeVolumes on the EC2 side,
   SendCommand/GetCommandInvocation/DescribeInstanceInformation on the
   SSM side, HeadObject on the S3 side).
-- At least one disposable/low-cost test instance (ideally in a test
+- [ ] At least one disposable/low-cost test instance (ideally in a test
   account or clearly-marked test resource, not production) in a region
-  awsops is configured for (internal/awsclient/regions.go: us-east-1,
-  us-east-2, us-west-1, us-west-2). A plain small instance is fine for
+  awsops is configured for (internal/config's DefaultRegions, used when
+  no ~/.awsops file exists: us-west-1, us-west-2). A plain small
+  instance is fine for
   exercising the mechanics; a real Invenio RDM instance is the realistic
   target for Feature 7 (Create AMI) and Feature 10 (Backup Archive).
-- SSM Agent running on at least one test instance, so the fstrim/
+- [ ] SSM Agent running on at least one test instance, so the fstrim/
   cloud-init-check/backup paths get exercised (not just their
   "SSM unavailable" fallbacks).
-- A second test instance with SSM either absent or stopped, to exercise
+- [ ] A second test instance with SSM either absent or stopped, to exercise
   the "SSM unavailable" fallback paths deliberately.
-- For Feature 10 (Backup Archive & Trim) specifically: an S3 bucket for
+- [ ] For Feature 10 (Backup Archive & Trim) specifically: an S3 bucket for
   archival, and the target instance's IAM instance profile granting
   s3:PutObject (and likely s3:ListBucket scoped to its prefix) on that
   bucket. As of this writing neither exists yet (see DESIGN.md,
@@ -39,11 +40,11 @@ Prerequisites
 
 General checks (do these once, up front)
 ------------------------------------------
-- Startup: awsops prints "awsops <version> -- authenticated as AWS
+- [ ] Startup: awsops prints "awsops <version> -- authenticated as AWS
   account <account-id>" before the first listing. If credentials aren't
   resolvable, it should fail fast with a clear message (DESIGN.md,
   Error Handling Strategy #4) -- not a raw SDK stack trace.
-- `-debug`: run `awsops -debug`, confirm it prints "Debug log:
+- [ ] `-debug`: run `awsops -debug`, confirm it prints "Debug log:
   ./awsops-debug-<timestamp>.jsonl" to stderr before the first listing,
   and that file exists and grows as you use the tool. `tail -f` it
   while performing a few operations (e.g. list refresh, start/stop an
@@ -53,136 +54,299 @@ General checks (do these once, up front)
   "SSM.SendCommand"), "region", and either "output" or "error". Run
   without `-debug` (the default): confirm no debug file is created and
   no debug-related output appears anywhere.
-- The initial listing shows "===== CURRENT EC2 INSTANCES =====" and
+- [ ] The initial listing shows "===== CURRENT EC2 INSTANCES =====" and
   "===== AVAILABLE AMIs (owned by account) =====" tables, aggregated
-  across all four regions in one view (not one region at a time --
+  across both configured regions in one view (not one region at a time --
   DECISIONS.md, "All four regions aggregated in unified view").
   Untagged Project/Environment show as "unknown"; untagged Name shows
   blank. If your terminal is a color-capable TTY and NO_COLOR isn't set,
   the STATE column should be colorized (running=green, stopped/
   terminated=red, pending/stopping=yellow); redirecting output to a file
   or setting NO_COLOR=1 should produce plain text with no escape codes.
-- The main menu shows exactly these 12 options, in this order:
-    1) [ok] Create EC2 instance from AMI
-    2) [ ] Create EC2 instance from cloud-init YAML
-    3) [ ] Start EC2 instance
-    4) [ ] Stop EC2 instance
-    5) [ ] Terminate EC2 instance
-    6) [ ] Manage tags for an instance or AMI
-    7) [ ] Create AMI from EC2 instance (running or stopped)
-    8) [ok] Remove AMI
-    9) [ ] Show/export cloud-init for an instance or AMI
-   10) [ ] Archive stale backups to S3 and trim disk space
-   11) [ok] Refresh resource lists
-   12) [ok] Exit
-- Choosing "Refresh resource lists" re-fetches and re-displays both
-  tables. Every other successful operation (1-10) should also trigger
+- [ ] The main menu shows exactly these 12 options, in this order (Show
+  resource lists moved to the top and renamed from "Refresh resource
+  lists" -- see DECISIONS.md, "Move 'Show resource lists' to the top of
+  the Compute menu; rename from 'Refresh'"; every other item's number
+  shifted down by one accordingly):
+    1) [ok] Show resource lists
+    2) [ok] Create EC2 instance from AMI
+    3) [ ] Create EC2 instance from cloud-init YAML
+    4) [ok] Start EC2 instance
+    5) [ok] Stop EC2 instance
+    6) [ok] Terminate EC2 instance
+    7) [ok] Manage tags for an instance or AMI
+    8a) [ok] Create AMI from EC2 instance (stopped)
+    8b) [ok] Create AMI from EC2 instance (running)
+    9) [ok] Remove AM
+   10) [ok] Show/export cloud-init for an instance or AMI
+   11) [ ] Archive stale backups to S3 and trim disk space
+   12) [ok] Back to domain picker
+- [ ] Choosing "Show resource lists" re-fetches and re-displays both
+  tables. Every other successful operation (2-11) should also trigger
   an automatic refresh afterward (DECISIONS.md, "Refresh data after
   each operation").
-- A single operation's error (e.g. cancel a pick list mid-flow by typing
+- [ ] A single operation's error (e.g. cancel a pick list mid-flow by typing
   an out-of-range number twice, or let an AWS call fail) should print
   "Error: ..." and return to the main menu -- not crash the whole
   process. AWS API errors should show as "AWS error [Code]: Message"
   (Phase 15's formatError), not a raw wrapped Go error string.
-- Ctrl+C while a menu/sub-prompt is active should print "Exiting." and
+- [ ] Ctrl+C while a menu/sub-prompt is active should print "Exiting." and
   exit 0 cleanly. Ctrl+C while a long operation is polling (e.g. mid-AMI
   creation) should also exit cleanly rather than hang or panic.
-- If your account or any region has more than 50 instances or AMIs, the
+- [ ] If your account or any region has more than 50 instances or AMIs, the
   pick list should paginate ('n'/'p' to move between pages) rather than
   dumping everything at once; item numbers must stay valid across pages
   (Phase 15, pagination).
 
 1. Create EC2 instance from AMI (menu option 1)
 --------------------------------------------------
-Prompts, in order: pick an AMI -> "Name tag" -> "Instance type" [t3.micro]
--> "Key pair name" (type "new" to create one instead) -> a numbered
+Prompts, in order: pick an AMI -> "Name tag" -> "Select an instance type"
+(a numbered list of ~11 curated types, including t2.micro/t2.medium as
+the only non-ENA-required entries, plus "Other" to type any value) ->
+"Select a key pair" (a numbered list of key pairs that exist in the
+AMI's region, plus "Create new key pair" -- no free-text entry unless
+the list itself can't be fetched) -> a numbered
 security group list plus "Security
 group IDs (numbers above and/or raw IDs, comma-separated)" -> "Select a
-subnet" -> "IAM instance profile (optional)" -> "User data (inline text,
+subnet" -> "Select an IAM instance profile" (a numbered list: "(none)",
+any existing instance profiles, "Create new instance profile (attach an
+existing role)") -> "User data (inline text,
 @file path, or blank)" -> "Project tag" [defaults to the AMI's Project
 tag if it has one] -> "Environment tag (production, development, or
 test)" -> confirm "Launch this instance?".
 
-- Name tag is prompted right after picking the AMI, before any
+- [ ] At "Select an AMI", confirm the pick list includes, in addition to
+  the account's own AMIs, official Ubuntu 24.04 LTS (Noble Numbat) and
+  22.04 LTS (Jammy Jellyfish) amd64 entries labeled "-- official" (this
+  is the fix for launching an entirely new machine from a stock base
+  image + cloud-init, rather than only from a pre-existing app-specific
+  AMI -- see DECISIONS.md, "Offer official Ubuntu LTS AMIs alongside
+  owned AMIs when picking a base AMI").
+- [ ] Launch from one of the official Ubuntu entries with an
+  ENA-requiring instance type (e.g. `t3.micro`): confirm it does NOT
+  trigger the ENA-incompatibility pick list -- official Ubuntu AMIs are
+  ENA-enabled, so this should be invisible on the happy path (if it
+  does trigger, that's a real regression: EnaSupport isn't being carried
+  through correctly for these entries).
+- [ ] If you can simulate a permissions issue for
+  `ec2:DescribeImages` against another account's AMIs (or just note this
+  as a code-review-level check if you can't easily force it): confirm
+  the AMI pick list still shows just the account's own AMIs rather than
+  failing the whole workflow when the official-Ubuntu lookup itself
+  errors.
+- [ ] Name tag is prompted right after picking the AMI, before any
   technical configuration -- moved up from the end of the flow per
   feedback that naming the instance should come early.
-- Security groups and subnet are pick lists fetched from the AMI's
-  region (ec2:DescribeSecurityGroups/DescribeSubnets) -- this replaces
-  the earlier free-text-only UX where typing a security group *name*
-  instead of an ID caused a real `InvalidParameterCombination` AWS
-  error. Key pair name stays free text: unlike opaque `sg-.../subnet-...`
-  IDs, key pair names are already human-readable, and a flat list of
-  every key pair in the account (regardless of relevance to this AMI)
-  turned out to be noise rather than help.
-- Security groups accept a comma-separated mix of list numbers and raw
+- [ ] Security groups, subnet, and key pair are all pick lists fetched
+  from the AMI's region (ec2:DescribeSecurityGroups/DescribeSubnets/
+  DescribeKeyPairs) -- this replaces earlier free-text-only UX that hit
+  two separate real bugs (a security group *name* instead of an ID
+  causing `InvalidParameterCombination`, and a key pair that only
+  existed in a different region causing `InvalidKeyPair.NotFound` after
+  every other prompt was already answered).
+- [ ] At "Select a key pair", confirm the list shows only key pairs that
+  actually exist in the AMI's region (not every key pair in the
+  account), plus "Create new key pair". Picking an existing one launches
+  using it directly -- no free-text step at all for the common case.
+- [ ] If the AMI's region has zero key pairs (this is the fix for the
+  real bug this session surfaced): confirm the list shows "No key pairs
+  found in this region." followed by a 1-item list ("Create new key
+  pair") -- not a dead end, and no ambiguous free-text guess offered.
+- [ ] "Create new key pair" (from the pick list, either with existing
+  keys present or none): confirm it prompts "New key pair name", calls
+  ec2:CreateKeyPair, and prints "Created key pair "<name>" (ED25519);
+  private key saved to ~/.ssh/<name>.pem (mode 0600)". Confirm the file
+  exists at that path with `-rw-------` permissions
+  (`ls -l ~/.ssh/<name>.pem`), and that the instance launches using it
+  (verify in the AWS console under EC2 > Key Pairs, and
+  `ssh -i ~/.ssh/<name>.pem ...` into the running instance once it's up).
+- [ ] "Create new key pair" -> a name that already exists: confirm it's
+  rejected ("invalid input: a key pair named "<name>" already exists --
+  choose a different name") and re-prompts for a different name, without
+  restarting the whole launch flow.
+- [ ] Security groups accept a comma-separated mix of list numbers and raw
   `sg-...` IDs (e.g. "1,2" or "1,sg-0abc123"). Type an out-of-range
   number: confirm it's rejected ("invalid selection ...") and re-prompts.
   Leave it blank: confirm "at least one security group ID is required"
   and re-prompts.
-- If your account/region has zero subnets or zero security groups
+- [ ] If your account/region has zero subnets or zero security groups
   (unlikely, but worth spot-checking once), confirm each falls back
   cleanly to its old free-text prompt instead of showing an empty,
   unusable list.
-- Leave Name tag or Key pair name blank once each: confirm each is
-  rejected ("invalid input: this field is required and cannot be
-  blank") and re-prompts -- note the message is field-agnostic, not the
-  old hardcoded cloud-init-YAML wording that used to leak into
-  unrelated prompts.
-- Type "new" (any case) at "Key pair name": confirm it prompts "New key
-  pair name" instead, then calls ec2:CreateKeyPair and prints "Created
-  key pair "<name>" (ED25519); private key saved to
-  ~/.ssh/<name>.pem (mode 0600)". Confirm the file actually exists at
-  that path with `-rw-------` permissions (`ls -l ~/.ssh/<name>.pem`),
-  and that the instance launches using that new key pair (verify in the
-  AWS console under EC2 > Key Pairs, and that you can
-  `ssh -i ~/.ssh/<name>.pem ...` into the running instance once it's up).
-- Type "new" -> a name that already exists as a key pair in your
-  account: confirm it's rejected ("invalid input: a key pair named
-  "<name>" already exists -- choose a different name") and re-prompts
-  for a different new name, without restarting the whole launch flow.
-- Type an Environment value other than production/development/test:
+- [ ] Leave Name tag blank once: confirm it's rejected ("invalid input:
+  this field is required and cannot be blank") and re-prompts -- note
+  the message is field-agnostic, not the old hardcoded cloud-init-YAML
+  wording that used to leak into unrelated prompts.
+- [ ] If you can simulate a permissions issue for `ec2:DescribeKeyPairs`
+  (or just note this as a code-review-level check if you can't easily
+  force it): confirm "Select a key pair" falls back entirely to the
+  original free-text prompt ("Key pair name ... type 'new' to create
+  one ...") instead of failing the whole launch -- and that within that
+  fallback, both "new" and typing a private key filename/path (e.g.
+  `~/.ssh/etd-ami-test.pem`, or a bare `etd-ami-test.pem` for a key
+  saved under `~/.ssh/`) still work exactly as before, including
+  rejecting a path that doesn't exist anywhere ("invalid input: cannot
+  read key file ...") and re-prompting.
+- [ ] At "Select a subnet", pick an instance type known to have limited
+  AZ availability in this account (e.g. `t2.micro`, which per this
+  session's real failure isn't offered in `us-west-2d`): confirm the
+  subnet list itself only shows subnets in AZs that actually support it
+  -- e.g. a subnet in `us-west-2d` should simply not appear -- rather
+  than being offered and then rejected after the fact. This is now the
+  primary path; the reactive incompatibility pick list below should be
+  rare in normal use.
+- [ ] If you can force the reactive path (e.g. by picking an instance
+  type/AMI/subnet combination the filtering step can't see coming, or by
+  temporarily revoking `ec2:DescribeInstanceTypeOfferings` to force the
+  AZ lookup to fail): confirm awsops prints the incompatibility plus (if
+  available) which AZs the type *is* offered in, then shows a pick list
+  -- "Change instance type", "Pick a different subnet", "Abort this
+  launch" -- instead of sending a doomed `RunInstances` call.
+  - [ ] "Change instance type" to one that IS supported in that AZ:
+    confirm the launch proceeds using the new type and the original
+    subnet.
+  - [ ] "Pick a different subnet" whose AZ DOES support the original
+    instance type: confirm the launch proceeds using the original type
+    and the new subnet.
+  - [ ] "Abort this launch": confirm it prints "Cancelled." and returns
+    to the Compute menu without calling `RunInstances`, the same as
+    declining the final "Launch this instance?" confirmation.
+- [ ] At "Select an instance type", confirm each curated ENA-requiring
+  entry (t3/m5/c5/r5) says "(requires ENA)" and t2.micro/t2.medium say
+  "no ENA required, works with older/legacy AMIs"; confirm "Other"
+  accepts any typed value (e.g. a Graviton type like `c6g.medium`).
+- [ ] Pick an instance type that requires ENA (e.g. `t3.small`) against
+  an AMI that is NOT ENA-enabled (e.g. `ami-0da49db6a772dda02` or a
+  legacy AMI like `etd-workflow-v0.0.1`, per this session's real
+  failures): confirm awsops prints the incompatibility, explicitly
+  names `t2.micro`/`t2.medium` as working alternatives plus a pointer to
+  the out-of-scope permanent fix (enable ENA on the source instance,
+  re-create the AMI), then shows a pick list -- "Change instance type",
+  "Abort this launch" (no "pick a different AMI" option) -- instead of
+  sending a doomed `RunInstances` call.
+  - [ ] "Change instance type" to `t2.micro` or `t2.medium`: confirm the
+    launch proceeds using the new type -- this is the actual unblock for
+    an AMI with no ENA-enabled type in the curated list otherwise.
+  - [ ] "Abort this launch": confirm it prints "Cancelled." and returns
+    to the Compute menu without calling `RunInstances`.
+- [ ] Pick an instance type/AMI pair that both requires ENA and is
+  ENA-enabled: confirm no incompatibility message appears and the launch
+  proceeds normally (this check should be invisible on the happy path).
+- [ ] Type an Environment value other than production/development/test:
   confirm it's rejected and re-prompts.
-- Point User data at a real file from a local clone of
+- [ ] At "Select an IAM instance profile", pick an existing instance
+  profile by number: confirm the instance launches with that exact
+  profile attached (verify in the AWS console under EC2 > Instances >
+  <instance> > Security > IAM Role, or `aws ec2 describe-instances`).
+  This is the fix for the real bug this session surfaced: typing a role
+  name (e.g. "ec2-invenio-role") as free text failed with AWS's own
+  "Invalid IAM Instance Profile name" error because the role's name and
+  its instance profile's name aren't always the same -- the pick list
+  only ever offers real instance profile names, so this class of error
+  shouldn't be reproducible anymore.
+- [ ] Pick "(none)": confirm the instance launches with no instance
+  profile attached, same as leaving the old free-text prompt blank.
+- [ ] Pick "Create new instance profile (attach an existing role)":
+  confirm it lists real IAM roles, lets you pick one, defaults the new
+  instance profile's name to the role's own name, and after creating it
+  prints a note that a newly created instance profile can take a few
+  seconds to propagate. Confirm the instance profile now exists in the
+  AWS console (IAM > Roles > <role> > "Instance profile ARNs", or
+  IAM > Access management > Roles doesn't show instance profiles
+  directly -- check via `aws iam list-instance-profiles-for-role
+  --role-name <role>`) with the picked role attached, and that the
+  launch itself succeeds using it (retry once if you hit an
+  instance-profile-not-found error immediately after creation --
+  that's the propagation delay the printed note warns about, not a new
+  bug).
+- [ ] "Create new instance profile" with a name that already exists:
+  confirm it's rejected ("invalid input: an instance profile named
+  "<name>" already exists -- choose a different name") and re-prompts
+  for a different name, without restarting the whole launch flow.
+- [ ] If your account has zero IAM roles (unlikely, but worth
+  spot-checking once): confirm "Create new instance profile" prints "No
+  IAM roles found in this account..." and redisplays the instance
+  profile picker instead of failing the whole launch.
+- [ ] Point User data at a real file from a local clone of
   caltechlibrary/cloud-init-examples via "@/path/to/file.yaml": confirm
   the file's contents (not the literal string) get used.
-- Decline the final confirmation once: confirm "Cancelled." and no
+- [ ] Point User data at a real file with no "@" prefix (e.g.
+  `newt-machine.yaml` for a file in the current directory) -- this is
+  the fix for the real bug this session surfaced (typing the filename
+  without "@" used to silently become the literal user-data string, not
+  the file's contents): confirm awsops prints `"<name>" looks like an
+  existing file -- loading its contents (prefix with "@" to make this
+  explicit next time)` and proceeds using the file's actual contents.
+- [ ] Type a bare string that happens not to match any real file (e.g.
+  `not-a-real-file.yaml`): confirm it's used as literal inline text with
+  no auto-detection message.
+- [ ] Decline the final confirmation once: confirm "Cancelled." and no
   instance is created.
-- Accept: confirm the instance launches, awsops polls until running
+- [ ] Accept: confirm the instance launches, awsops polls until running
   (bounded, ~5 minutes) and prints connection info (public/private IP,
-  ssh command if a public IP exists).
-- If you supplied user data: confirm awsops waits for SSM Online, runs
+  ssh command if a public IP exists). Confirm this succeeds reliably,
+  not just sometimes -- this session hit a real failure here
+  (`Error: AWS error [InvalidInstanceID.NotFound]: The instance ID
+  '...' does not exist`, immediately after a successful launch, from
+  AWS's own brief post-RunInstances visibility delay) that should no
+  longer be reproducible; run this check a few times if the first
+  attempt succeeds cleanly, since the original bug was a race, not a
+  guaranteed repro.
+- [ ] If you supplied user data: confirm awsops waits for SSM Online, runs
   `cloud-init status --wait`, and reports "cloud-init completed
   successfully" or an error status -- not just that the instance reached
   running. If SSM never comes online, confirm it says so and skips
-  cleanly (not an error).
-- Confirm the new instance's tags in the AWS console match what you
+  cleanly (not an error). Confirm this succeeds reliably, not just
+  sometimes -- this session hit a real failure here too
+  (`Error: AWS error [InvocationDoesNotExist]: `, immediately after a
+  successful ssm:SendCommand, from AWS's own brief post-SendCommand
+  visibility delay -- the identical bug shape as the RunInstances one
+  above, just on the SSM side) that should no longer be reproducible;
+  again, run this check a few times since the original bug was a race.
+- [ ] Confirm the new instance's tags in the AWS console match what you
   entered (Name/Project/Environment), and that its region matches the
   AMI's region.
 
 2. Create EC2 instance from cloud-init YAML (menu option 2)
 ----------------------------------------------------------------
-Prompts, in order: "Cloud-init YAML (inline text or @file path)"
-(required, non-empty) -> pick a base AMI -> the same
+Prompts, in order: "Cloud-init YAML file path" (required, non-empty) ->
+pick a base AMI -> the same
 Name/InstanceType/KeyPair/SecurityGroups-pick-list/Subnet-pick-list/
 IAMProfile/Project/Environment prompts as option 1, in the same order --
 but no separate user-data prompt, since the cloud-init YAML collected
-first *is* the user data.
+first *is* the user data. Unlike option 1's optional "User data" field,
+this prompt no longer accepts inline text at all -- it always reads from
+a file (DECISIONS.md, "Create EC2 Instance from Cloud-Init YAML always
+reads from a file"), a follow-up to this session's real bug where typing
+a bare filename (e.g. `newt-machine.yaml`) without the `@` prefix
+silently became the literal user-data string instead of the file's
+contents.
 
-- Leave the cloud-init prompt blank: confirm it's rejected and
+- [ ] Leave the cloud-init prompt blank: confirm it's rejected and
   re-prompts (this is the one workflow where user data is mandatory,
   not optional).
-- Point it at a real file via "@/path/...": confirm the base AMI pick
-  list appears *after* the cloud-init prompt, not before.
-- Accept through to launch: confirm it shares the exact same execution
+- [ ] Type a real file's path directly, with no "@" prefix (e.g.
+  `newt-machine.yaml` for a file in the current directory): confirm it
+  loads that file's contents and the base AMI pick list appears
+  *after* the cloud-init prompt, not before. This should just work now
+  without needing "@" at all.
+- [ ] Type the same real file's path *with* a leading "@" (old muscle
+  memory from option 1's User data prompt): confirm it's tolerated --
+  the "@" is stripped and the file loads normally.
+- [ ] Type a path to a file that doesn't exist (e.g.
+  `/no/such/file.yaml`): confirm it's rejected with `invalid input:
+  cannot read "...": ...` and re-prompts, rather than silently using the
+  path string as literal user-data (the old bug's failure mode).
+- [ ] Accept through to launch: confirm it shares the exact same execution
   path as option 1 (poll until running, then SSM + cloud-init-status
   check) -- this should behave identically to option 1's user-data path,
   just with a different prompt order.
 
 3. Start EC2 instance (menu option 3)
 ------------------------------------------
-- With no stopped instances anywhere: confirm "No stopped instances
+- [ ] With no stopped instances anywhere: confirm "No stopped instances
   found." and a clean return to the menu (no pick list shown).
-- With at least one stopped instance: pick list shows only stopped
+- [ ] With at least one stopped instance: pick list shows only stopped
   instances. Confirm "Start instance <id> (<name>)?", decline once
   (confirm nothing happens), then accept: confirm ec2:StartInstances is
   called, awsops polls until running, and displays connection info plus
@@ -191,8 +355,8 @@ first *is* the user data.
 
 4. Stop EC2 instance (menu option 4)
 -----------------------------------------
-- With no running instances: confirm "No running instances found."
-- With at least one running instance: pick list shows only running
+- [ ] With no running instances: confirm "No running instances found."
+- [ ] With at least one running instance: pick list shows only running
   instances. Confirm "Stop instance <id> (<name>)?", decline once, then
   accept: confirm ec2:StopInstances is called, awsops polls until
   stopped, and prints "Instance <id> is now stopped." (no connection
@@ -202,23 +366,23 @@ first *is* the user data.
 -------------------------------------------------------------------------
 Use a genuinely disposable test instance for this section.
 
-- Pick any instance (running or stopped -- both are valid targets).
+- [ ] Pick any instance (running or stopped -- both are valid targets).
   Confirm the dry-run header "=== DRY RUN: terminating <id> (<name>)
   ===" appears before anything is touched.
-- If the instance has any EBS volume with DeleteOnTermination=true,
+- [ ] If the instance has any EBS volume with DeleteOnTermination=true,
   confirm the WARNING naming the affected device(s) appears; if none do,
   confirm no such warning appears.
-- If the instance is tagged Environment=production, confirm the extra
+- [ ] If the instance is tagged Environment=production, confirm the extra
   "WARNING: this instance is tagged Environment=production." appears
   before type-to-confirm; confirm it's absent otherwise.
-- At the type-to-confirm prompt, type something wrong once: confirm it
+- [ ] At the type-to-confirm prompt, type something wrong once: confirm it
   cancels immediately with no retry loop (this is deliberate -- a
   mismatch cancels rather than re-prompting, unlike every other
   validation in this tool). Re-run and type the exact instance ID: it
   should terminate. Re-run once more and type the instance's Name tag
   instead of its ID: confirm that's also accepted (DESIGN.md says
   "ID or name").
-- Confirm the instance actually terminates in the AWS console.
+- [ ] Confirm the instance actually terminates in the AWS console.
 
 6. Manage tags for an instance or AMI (menu option 6)
 ----------------------------------------------------------
@@ -228,23 +392,23 @@ tag key" [required, non-empty] then "New tag value"; Update: pick an
 existing key from a list, then a new value defaulted to the current
 one; Remove: pick an existing key from a list) -> confirm.
 
-- Run this once against an instance and once against an AMI to cover
+- [ ] Run this once against an instance and once against an AMI to cover
   both resource types (DESIGN.md explicitly calls out that AMI tag
   editing was a real gap before this tool).
-- Add: leave the key blank once, confirm it's rejected and re-prompts;
+- [ ] Add: leave the key blank once, confirm it's rejected and re-prompts;
   then supply a real key/value, confirm, and verify via
   `aws ec2 describe-tags` (or the console) that it landed.
-- Update: pick an existing tag, confirm the new-value prompt shows the
+- [ ] Update: pick an existing tag, confirm the new-value prompt shows the
   current value as the default (pressing Enter keeps it unchanged).
-- Update the Environment tag specifically: confirm the on-screen note
+- [ ] Update the Environment tag specifically: confirm the on-screen note
   ("Environment is the same tag this tool uses elsewhere... to gate
   production warnings") appears.
-- Remove: pick an existing tag, confirm, verify it's actually gone.
-- With a resource that has no tags at all, try Update or Remove: confirm
+- [ ] Remove: pick an existing tag, confirm, verify it's actually gone.
+- [ ] With a resource that has no tags at all, try Update or Remove: confirm
   "No existing tags to update/remove." and a clean return, no crash.
-- Decline the final confirmation once: confirm no CreateTags/DeleteTags
+- [ ] Decline the final confirmation once: confirm no CreateTags/DeleteTags
   call happens (check the console/CLI to be sure nothing changed).
-- Confirm this never touches an AMI's Name *attribute* -- only tags. An
+- [ ] Confirm this never touches an AMI's Name *attribute* -- only tags. An
   AMI's Name in the console should be unchanged even after editing its
   tags.
 
@@ -253,14 +417,14 @@ one; Remove: pick an existing key from a list) -> confirm.
 This is the most involved workflow -- budget real time for AMI creation
 itself (see the estimate table below).
 
-- Pick a stopped instance first. Confirm the volume-size summary lists
+- [ ] Pick a stopped instance first. Confirm the volume-size summary lists
   total attached-volume size and an estimated creation time bucket
   matching: <20GB -> 5-15 min, 20-100GB -> 15-45 min, 100-200GB -> 45-90
   min, 200GB+ -> 1.5-3+ hours. If any volume has a prior snapshot,
   confirm the "only changed blocks will be copied" note appears.
-- Confirm NO crash-consistency guidance and NO fstrim offer appear for a
+- [ ] Confirm NO crash-consistency guidance and NO fstrim offer appear for a
   stopped instance (those are running-instance-only).
-- Repeat against a running instance: confirm the crash-consistency text
+- [ ] Repeat against a running instance: confirm the crash-consistency text
   (PostgreSQL/OpenSearch WAL replay, Redis ephemeral loss, Docker
   images unaffected) appears before the fstrim offer.
   - If SSM is online: confirm "Run fstrim via SSM before snapshotting?"
@@ -269,28 +433,28 @@ itself (see the estimate table below).
   - Against your second (SSM-absent) instance: confirm "SSM is not
     available on this instance; skipping fstrim." and no prompt at all
     for the fstrim step -- a clean skip, not an error.
-- AMI name prompt: confirm the default suggestion is
+- [ ] AMI name prompt: confirm the default suggestion is
   "<name-or-id>-copy-<today's date>". Try clearing it and typing an
   invalid name (e.g. containing a semicolon, or 2 characters): confirm
   it's rejected with a message about the 3-128 character / allowed-
   character constraint, then accept a valid name.
-- No-reboot: only offered for a running instance; confirm it's skipped
+- [ ] No-reboot: only offered for a running instance; confirm it's skipped
   entirely for a stopped one.
-- Project/Environment: confirm Project defaults to the source instance's
+- [ ] Project/Environment: confirm Project defaults to the source instance's
   Project tag if it has one.
-- Accept the final confirmation: confirm AMI creation starts, and that
+- [ ] Accept the final confirmation: confirm AMI creation starts, and that
   awsops prints a periodic "... waiting for AMI to become available
   (elapsed ...)" status line (Phase 15's loading indicator) rather than
   going silent for the whole duration.
-- This is the single most important regression check for this whole
+- [ ] This is the single most important regression check for this whole
   project: confirm the poll does NOT give up after 10 minutes. Watch it
   through to completion (or budget the real time from the estimate
   above) and confirm it reports "AMI <id> is now available (took
   <duration>)." with a correct elapsed-time format.
-- Confirm the resulting AMI's ID, name, state, creation date, and region
+- [ ] Confirm the resulting AMI's ID, name, state, creation date, and region
   match the AWS console, and that its Tags include the Name/Project/
   Environment you entered.
-- If feasible, deliberately trigger a failure (e.g. terminate the source
+- [ ] If feasible, deliberately trigger a failure (e.g. terminate the source
   instance mid-creation, or use insufficient permissions) and confirm
   awsops reports "AMI <id> creation failed after <duration>." rather
   than hanging or giving a generic timeout.
@@ -299,32 +463,32 @@ itself (see the estimate table below).
 --------------------------------------------------------------
 Use an AMI you created in section 7 for this, not a production AMI.
 
-- Pick an AMI. Confirm the dry-run header "=== DRY RUN: removing AMI
+- [ ] Pick an AMI. Confirm the dry-run header "=== DRY RUN: removing AMI
   <id> (<name>) ===" appears.
-- If any instance still references this AMI's ImageId, confirm a
+- [ ] If any instance still references this AMI's ImageId, confirm a
   WARNING lists it by instance ID and name; pick an AMI with no
   dependents and confirm no such warning appears.
-- If the AMI is tagged Environment=production, confirm the extra
+- [ ] If the AMI is tagged Environment=production, confirm the extra
   production warning appears before type-to-confirm; confirm it's absent
   otherwise.
-- Type-to-confirm: try a wrong value once (confirm it cancels
+- [ ] Type-to-confirm: try a wrong value once (confirm it cancels
   immediately, no retry), then the exact AMI ID (confirm it works), then
   repeat once more typing the AMI's Name instead (confirm that's also
   accepted).
-- Confirm the AMI is actually deregistered in the console.
+- [ ] Confirm the AMI is actually deregistered in the console.
 
 9. Show/export cloud-init for an instance or AMI (menu option 9)
 ------------------------------------------------------------------------
 Prompts: pick "Instance" or "AMI".
 
 Instance path (free, instant):
-- Pick an instance that was launched with user data (e.g. one from
+- [ ] Pick an instance that was launched with user data (e.g. one from
   section 1 or 2): confirm the exact decoded cloud-init/user-data text
   is displayed between "--- cloud-init ---" markers.
-- Pick an instance launched with no user data: confirm "No user-data was
+- [ ] Pick an instance launched with no user data: confirm "No user-data was
   set at launch for <id>." and a clean return -- not an error, and no
   export prompt.
-- After a successful display, confirm the "Save to file (blank to
+- [ ] After a successful display, confirm the "Save to file (blank to
   skip)" export prompt appears; leave it blank once (confirm nothing is
   written), then re-run and give it a real path (confirm the file is
   written with the exact decoded content, and "Saved to <path>"
@@ -333,17 +497,17 @@ Instance path (free, instant):
   actual point of this feature.
 
 AMI path (costs real time and a temporary instance -- confirm carefully):
-- Pick an AMI. Confirm the explicit warning ("Extracting cloud-init from
+- [ ] Pick an AMI. Confirm the explicit warning ("Extracting cloud-init from
   an AMI launches a temporary billable instance. Proceed?") appears and
   requires an explicit accept -- decline once and confirm no instance is
   launched.
-- Accept: confirm awsops launches a small (t3.micro) disposable
+- [ ] Accept: confirm awsops launches a small (t3.micro) disposable
   instance tagged Purpose=cloud-init-extraction, shows the "...
   extracting cloud-init..." periodic status line, waits for running and
   SSM Online (bounded timeout -- this should fail cleanly within a few
   minutes if SSM never comes online, not hang indefinitely), reads
   /var/lib/cloud/instance/user-data.txt via SSM, and displays it.
-- Critical check: after the extraction finishes (success, SSM timeout,
+- [ ] Critical check: after the extraction finishes (success, SSM timeout,
   or command failure -- try to hit at least the success case and one
   failure case), confirm in the AWS console that the temporary instance
   was actually terminated. This "always terminate" guarantee is the
@@ -364,35 +528,61 @@ Prompts, in order: pick an instance -> "Backup directory (e.g.
 /opt/rdm_sql_backups)" -> "Age threshold in days" -> "S3 bucket" ->
 dry-run list -> type-to-confirm (instance ID or name).
 
-- Leave directory/bucket blank once each: confirm rejected and
+- [ ] Leave directory/bucket blank once each: confirm rejected and
   re-prompted. Type a non-numeric or zero/negative age threshold:
   confirm rejected and re-prompted.
-- Confirm the dry-run lists exactly the files older than the threshold,
+- [ ] Confirm the dry-run lists exactly the files older than the threshold,
   with size and age, before anything is touched -- and that it excludes
   files younger than the threshold.
-- With zero files matching the threshold: confirm "No files match the
+- [ ] With zero files matching the threshold: confirm "No files match the
   age threshold. Nothing to do." and a clean return with no
   type-to-confirm step at all.
-- Type-to-confirm: wrong value cancels immediately (no retry); correct
+- [ ] Type-to-confirm: wrong value cancels immediately (no retry); correct
   instance ID or name proceeds.
-- Confirm the upload phase shows the "... uploading backup files to S3"
+- [ ] Confirm the upload phase shows the "... uploading backup files to S3"
   periodic status, then the "... verifying uploads via s3:HeadObject"
   status -- these are two distinct phases, not one.
-- Independent verification is the safety-critical part of this feature:
+- [ ] Independent verification is the safety-critical part of this feature:
   if you can arrange a partial failure (e.g. revoke the instance's S3
   permission mid-upload, or use a bucket the instance can't reach),
   confirm that only the files the tool's own HeadObject call actually
   verified get deleted -- unverified files must be left on disk and
   named in the final report, never silently dropped or deleted based on
   the instance's own self-report.
-- Confirm fstrim runs after deletion regardless of whether every file
+- [ ] Confirm fstrim runs after deletion regardless of whether every file
   verified (partial success should still trigger fstrim on whatever was
   actually freed).
-- Confirm the final report states the count of files freed, total bytes
+- [ ] Confirm the final report states the count of files freed, total bytes
   freed, and lists any files that failed verification.
-- Verify in the S3 console that the uploaded objects exist with the
+- [ ] Verify in the S3 console that the uploaded objects exist with the
   correct size, and on the instance that only the verified files were
   actually removed from disk.
+
+~/.awsops config file
+-----------------------
+See DESIGN.md, "Configuration", and DECISIONS.md, "Add a `~/.awsops`
+YAML config file for awsops' own operational settings".
+
+- [ ] With no ~/.awsops file present (rename it aside if you have one):
+  confirm awsops still starts normally and behaves exactly as before,
+  using the default regions (us-west-1, us-west-2).
+- [ ] Create ~/.awsops with:
+    regions:
+      - us-west-1
+  Confirm awsops now only lists/operates against us-west-1 (the initial
+  listing, and every region-scoped picker, e.g. subnet/instance-type
+  pickers, only shows us-west-1 resources).
+- [ ] Create ~/.awsops with invalid YAML (e.g. `regions: [oops`). Confirm
+  awsops fails fast at startup with a clear "parsing ~/.awsops: ..."
+  message -- not a raw YAML library stack trace, and not a silent
+  fallback to defaults.
+- [ ] Create ~/.awsops with valid YAML but no `regions` key at all (e.g.
+  just a comment). Confirm the default regions apply, same as a missing
+  file.
+- [ ] `-config <path>`: point at a config file in a non-default location
+  (e.g. `awsops -config ./test-awsops.yaml`) and confirm it's used
+  instead of ~/.awsops.
+- [ ] Restore your real ~/.awsops (or remove the test one) when done.
 
 Pass/fail
 ----------

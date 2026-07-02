@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/awstools/internal/awsclient"
 )
@@ -82,10 +84,10 @@ func WaitForAMIAvailable(ctx context.Context, client awsclient.EC2API, imageID s
 	input := &ec2.DescribeImagesInput{ImageIds: []string{imageID}}
 	for {
 		out, err := client.DescribeImages(ctx, input)
-		if err != nil {
+		switch {
+		case err != nil && !isImageNotYetVisible(err):
 			return "", err
-		}
-		if len(out.Images) > 0 {
+		case err == nil && len(out.Images) > 0:
 			state := out.Images[0].State
 			if state == types.ImageStateAvailable || state == types.ImageStateFailed {
 				return state, nil
@@ -97,4 +99,16 @@ func WaitForAMIAvailable(ctx context.Context, client awsclient.EC2API, imageID s
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+// isImageNotYetVisible is WaitForAMIAvailable's analog of
+// launch_execute.go's isInstanceNotYetVisible: AWS's own
+// InvalidAMIID.NotFound is expected for the first few seconds after
+// ec2:CreateImage returns a new image ID, before it's visible to
+// ec2:DescribeImages -- not a real failure. See DECISIONS.md, "Tolerate
+// DescribeInstances' post-RunInstances eventual-consistency window"
+// (the AMI side of the same class of bug).
+func isImageNotYetVisible(err error) bool {
+	apiErr, ok := errors.AsType[smithy.APIError](err)
+	return ok && apiErr.ErrorCode() == "InvalidAMIID.NotFound"
 }
