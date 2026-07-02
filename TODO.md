@@ -1,6 +1,14 @@
 
 # Action items
 
+- [ ] UI bug, we should check to make sure aws cli is on remote system before invoking it, that way we can explicitly say it is missing and how to install it, ```shell
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+```
+
+
+
 ## Now testing (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
 
 PLAN.md Phases 0 through 15.2 are implemented and green (`go build ./...`,

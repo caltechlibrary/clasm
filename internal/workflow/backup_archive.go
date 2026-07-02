@@ -37,8 +37,13 @@ type BackupArchiveParams struct {
 }
 
 // BackupArchiveAndTrim runs the full Backup Archive & Trim workflow
-// (DESIGN.md, Feature 11): pick an instance, prompt for the backup
-// directory and age threshold (both explicit, no default) and the S3
+// (DESIGN.md, Feature 11): pick an instance, immediately check
+// CheckAWSCLIAvailable (see DECISIONS.md, "Preflight check: AWS CLI
+// availability before Backup Archive & Trim") -- this project's most
+// common real-AWS failure so far, now surfaced as one clear error
+// before any prompts, instead of every subsequent upload silently
+// reporting FAIL -- then prompt for the backup directory and age
+// threshold (both explicit, no default) and the S3
 // bucket -- immediately followed by BucketRegion + newS3Client to build
 // an S3 client actually scoped to that bucket's region (a bucket can be
 // in any region, unrelated to the instance's -- see DECISIONS.md,
@@ -75,6 +80,9 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 	}
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
+		return err
+	}
+	if err := CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 

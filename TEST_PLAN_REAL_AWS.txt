@@ -546,11 +546,19 @@ over a production one where practical (per PLAN.md Phase 16's own
 constraint) -- this note is about how to test safely going forward, not
 a blocker on using the feature for real.
 
-Prompts, in order: pick an instance -> "Backup directory (e.g.
-/opt/rdm_sql_backups)" -> "Age threshold in days" -> "S3 bucket" ->
-[S3 bucket access preflight check] -> dry-run list -> type-to-confirm
-(instance ID or name).
+Prompts, in order: pick an instance -> [AWS CLI availability preflight
+check] -> "Backup directory (e.g. /opt/rdm_sql_backups)" -> "Age
+threshold in days" -> "S3 bucket" -> [S3 bucket access preflight check]
+-> dry-run list -> type-to-confirm (instance ID or name).
 
+- [ ] AWS CLI availability preflight check (DECISIONS.md, "Preflight
+  check: AWS CLI availability before Backup Archive & Trim" -- hit
+  twice for real, on newauthors then data-new): pick an instance that
+  doesn't have the AWS CLI installed. Confirm the tool aborts
+  immediately after the instance pick with a clear "AWS CLI not found
+  on instance <id>" error -- before the Backup directory prompt even
+  appears. Then pick an instance that does have it installed and
+  confirm the workflow proceeds normally.
 - [ ] Leave directory/bucket blank once each: confirm rejected and
   re-prompted. Type a non-numeric or zero/negative age threshold:
   confirm rejected and re-prompted.

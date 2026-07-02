@@ -1328,6 +1328,32 @@ avoid truncating the OK/FAIL signal".
 
 ---
 
+## Phase 15.26 — Preflight check: AWS CLI availability before Backup Archive & Trim (done)
+
+**Effort:** ~1 hour
+**Priority:** High
+
+Hit twice in a row in real-AWS testing (newauthors, then data-new) --
+see DECISIONS.md, "Preflight check: AWS CLI availability before Backup
+Archive & Trim".
+
+### Work Items
+
+- [x] `internal/workflow/backup_cli_check.go`: `CheckAWSCLIAvailable(ctx,
+      client, instanceID, timeout, pollInterval) error` -- `command -v
+      aws` via SSM, non-Success status -> a clear, actionable error
+      naming the instance
+- [x] `internal/workflow/backup_archive.go`: `BackupArchiveAndTrim` calls
+      it immediately after picking the instance, before any other
+      prompt or the dry-run list
+- [x] `internal/workflow/backup_archive_test.go`: five existing fakes'
+      `responses` gained a `"command -v aws"` entry; four
+      `sendCommandCalls()` count assertions incremented by one
+
+**Dependency:** Phase 11 (Backup Archive & Trim)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

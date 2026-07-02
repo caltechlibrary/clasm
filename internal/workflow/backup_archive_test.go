@@ -53,8 +53,8 @@ func TestBackupArchiveAndTrim_DryRunEmptyResult(t *testing.T) {
 	if !strings.Contains(buf.String(), "No files match") {
 		t.Errorf("expected a no-matches message, got:\n%s", buf.String())
 	}
-	if ssmClient.sendCommandCalls() != 1 {
-		t.Errorf("sendCommandCalls = %d, want 1 (only the list command)", ssmClient.sendCommandCalls())
+	if ssmClient.sendCommandCalls() != 2 {
+		t.Errorf("sendCommandCalls = %d, want 2 (CLI check, list command)", ssmClient.sendCommandCalls())
 	}
 }
 
@@ -138,8 +138,8 @@ func TestBackupArchiveAndTrim_AbortsWhenBucketInaccessible(t *testing.T) {
 	if !strings.Contains(err.Error(), "my-backup-bucket") {
 		t.Errorf("expected the bucket name in the error, got: %v", err)
 	}
-	if ssmClient.sendCommandCalls() != 0 {
-		t.Errorf("sendCommandCalls = %d, want 0 (the dry-run list must not run before the bucket check)", ssmClient.sendCommandCalls())
+	if ssmClient.sendCommandCalls() != 1 {
+		t.Errorf("sendCommandCalls = %d, want 1 (only the CLI check; the dry-run list must not run before the bucket check)", ssmClient.sendCommandCalls())
 	}
 }
 
@@ -156,6 +156,7 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
 				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
 			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
@@ -178,8 +179,8 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 		t.Errorf("expected a file count in output, got:\n%s", out)
 	}
 	// list, upload, delete, fstrim = 4 SendCommand calls
-	if ssmClient.sendCommandCalls() != 4 {
-		t.Errorf("sendCommandCalls = %d, want 4 (list, upload, delete, fstrim)", ssmClient.sendCommandCalls())
+	if ssmClient.sendCommandCalls() != 5 {
+		t.Errorf("sendCommandCalls = %d, want 5 (CLI check, list, upload, delete, fstrim)", ssmClient.sendCommandCalls())
 	}
 }
 
@@ -192,6 +193,7 @@ func TestBackupArchiveAndTrim_UsesBucketRegionScopedS3Client(t *testing.T) {
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
 				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
 			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
@@ -239,6 +241,7 @@ func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
 				stdout: "1024\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
 		},
@@ -249,8 +252,8 @@ func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if ssmClient.sendCommandCalls() != 1 {
-		t.Errorf("sendCommandCalls = %d, want 1 (only the list command; upload must not run)", ssmClient.sendCommandCalls())
+	if ssmClient.sendCommandCalls() != 2 {
+		t.Errorf("sendCommandCalls = %d, want 2 (CLI check, list command; upload must not run)", ssmClient.sendCommandCalls())
 	}
 }
 
@@ -263,6 +266,7 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
 				stdout: "1000\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/good.sql.gz\n" +
 					"2000\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/bad.sql.gz\n"},
@@ -319,6 +323,7 @@ func TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix(t *testing.T) {
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
 		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
 				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
 			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
@@ -341,6 +346,26 @@ func TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix(t *testing.T) {
 	}
 	if !strings.Contains(uploadCmd, "s3://my-backup-bucket/i-untagged/old-1.sql.gz") {
 		t.Errorf("upload command = %q, want the instance ID used as the key prefix for an untagged instance", uploadCmd)
+	}
+}
+
+func TestBackupArchiveAndTrim_AbortsWhenAWSCLIMissing(t *testing.T) {
+	instances := []inventory.Instance{{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}}
+	input := "1\n" // pick instance -- nothing else should be needed
+
+	term, le, _ := newPipeEditor(t, input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
+	s3Client := &fakeS3Client{}
+
+	err := BackupArchiveAndTrim(context.Background(), term, le, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), instances, nil)
+	if err == nil {
+		t.Fatal("expected an error when the AWS CLI is missing on the target instance")
+	}
+	if !strings.Contains(err.Error(), "AWS CLI") || !strings.Contains(err.Error(), "i-1") {
+		t.Errorf("expected an actionable error naming the instance and the AWS CLI, got: %v", err)
+	}
+	if ssmClient.sendCommandCalls() != 1 {
+		t.Errorf("sendCommandCalls = %d, want 1 (only the CLI check; no directory/age/bucket prompts should even matter)", ssmClient.sendCommandCalls())
 	}
 }
 

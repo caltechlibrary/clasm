@@ -550,7 +550,11 @@ backups" chore into a supervised, verified operation (see `DECISIONS.md`,
 "Add Backup Archive & Trim as a v1 primitive"). This is a genuinely
 destructive workflow (it deletes real backup files), so it gets the same
 safety tier as Feature 9 (Remove AMI):
-1. Pick an instance
+1. Pick an instance, immediately followed by a `command -v aws`
+   preflight check on that instance (see `DECISIONS.md`, "Preflight
+   check: AWS CLI availability before Backup Archive & Trim") — aborts
+   fast with a clear, actionable error if the AWS CLI isn't installed,
+   before any further prompt or the dry-run list
 2. Prompt for the backup directory — pre-filled from `~/.awsops`'s
    `backup_directories` (see "Configuration" above) when the picked
    instance's Name tag matches a configured pattern (e.g. RDM instances
