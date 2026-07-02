@@ -266,9 +266,9 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
 				stdout: "1000\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/good.sql.gz\n" +
 					"2000\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/bad.sql.gz\n"},
-			{substring: "aws s3 cp '/opt/rdm_sql_backups/good.sql.gz'", status: types.CommandInvocationStatusSuccess,
+			{substring: "aws s3 cp --only-show-errors '/opt/rdm_sql_backups/good.sql.gz'", status: types.CommandInvocationStatusSuccess,
 				stdout: "OK\tnewauthors/good.sql.gz\t1000\n"},
-			{substring: "aws s3 cp '/opt/rdm_sql_backups/bad.sql.gz'", status: types.CommandInvocationStatusSuccess,
+			{substring: "aws s3 cp --only-show-errors '/opt/rdm_sql_backups/bad.sql.gz'", status: types.CommandInvocationStatusSuccess,
 				stdout: "OK\tnewauthors/bad.sql.gz\t2000\n"},
 			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
 			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},

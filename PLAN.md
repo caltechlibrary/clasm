@@ -1307,6 +1307,27 @@ See DECISIONS.md, "Show instance IP addresses in the main listing".
 
 ---
 
+## Phase 15.25 — Suppress aws s3 cp's progress output to avoid truncating the OK/FAIL signal (done)
+
+**Effort:** ~1 hour
+**Priority:** High
+
+Real-AWS regression found immediately after the IAM permission fix
+above -- see DECISIONS.md, "Suppress aws s3 cp's progress output to
+avoid truncating the OK/FAIL signal".
+
+### Work Items
+
+- [x] `internal/workflow/backup_upload.go`: `buildUploadCommand`'s
+      `aws s3 cp` invocation gains `--only-show-errors`
+- [x] `internal/workflow/backup_archive_test.go`: two `ssmCommandResponse`
+      substrings updated to match the new command text
+      (`"aws s3 cp --only-show-errors '...'"`)
+
+**Dependency:** Phase 15.20 (Per-file upload progress)
+
+---
+
 ## Phase 16 — Testing
 
 **Effort:** ~6 hours

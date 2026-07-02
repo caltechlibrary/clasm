@@ -532,13 +532,19 @@ AMI path (costs real time and a temporary instance -- confirm carefully):
 
 10. Archive stale backups to S3 and trim disk space (menu option 10)
 --------------------------------------------------------------------------
-BLOCKED as of this writing: the S3 bucket and the target instance's IAM
-instance profile grant (s3:PutObject/s3:ListBucket) don't exist yet (see
-DESIGN.md Assumptions #3-4). Do not attempt this section until both are
-in place. Once they are, test against a throwaway instance launched from
-an existing AMI that already has real backup files baked in -- never
-directly against a production instance (per PLAN.md Phase 16's own
-constraint).
+No longer blocked: the sql-backups.library.caltech.edu bucket exists,
+and AWS-QuickSetup-SSM-DefaultEC2MgmtRole-us-west-2 (the shared SSM
+management role) has been granted s3:PutObject/s3:ListBucket on it (see
+DECISIONS.md, "Suppress aws s3 cp's progress output to avoid truncating
+the OK/FAIL signal" and the two decisions immediately before it for the
+full diagnosis trail -- AWS CLI missing, then IAM AccessDenied, then a
+large-file output-truncation bug, each found and fixed in turn). A first
+real run against `newauthors` completed successfully: files uploaded,
+independently verified, and deleted with no failures. For testing any
+*future* changes to this workflow, still prefer a throwaway instance
+over a production one where practical (per PLAN.md Phase 16's own
+constraint) -- this note is about how to test safely going forward, not
+a blocker on using the feature for real.
 
 Prompts, in order: pick an instance -> "Backup directory (e.g.
 /opt/rdm_sql_backups)" -> "Age threshold in days" -> "S3 bucket" ->
@@ -570,6 +576,14 @@ Prompts, in order: pick an instance -> "Backup directory (e.g.
   root. Run the workflow against a second, differently-named instance
   and confirm its files land under its own prefix without touching the
   first instance's.
+- [ ] Large-file upload doesn't misreport success as failure
+  (DECISIONS.md, "Suppress aws s3 cp's progress output to avoid
+  truncating the OK/FAIL signal" -- the real bug hit on a ~972 MB
+  backup file): run against at least one file large enough to take more
+  than a few seconds to upload. Confirm the per-file progress line
+  reports "OK", the object actually lands in S3 (check the console), and
+  it passes independent verification and gets deleted from the
+  instance -- not reported as "FAIL" despite a real, successful upload.
 - [ ] Per-instance backup directory default (DECISIONS.md, "Configure
   per-instance backup directories by Name pattern"): add a
   `backup_directories` rule to ~/.awsops matching the test instance's

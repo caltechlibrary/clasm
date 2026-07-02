@@ -580,8 +580,13 @@ safety tier as Feature 9 (Remove AMI):
    multi-hundred-MB files — see Feature 10's AMI-path constraint),
    printing a live "N/M (bytes of total) — OK/FAIL key" line as each
    file completes rather than a generic heartbeat (see `DECISIONS.md`,
-   "Per-file upload progress for Backup Archive & Trim"). Nothing is
-   deleted at this point
+   "Per-file upload progress for Backup Archive & Trim"). The remote
+   `aws s3 cp` runs with `--only-show-errors` so its own progress-meter
+   output can never fill `ssm:GetCommandInvocation`'s 24,000-character
+   output cap and truncate away this script's own OK/FAIL signal on a
+   large file (see `DECISIONS.md`, "Suppress aws s3 cp's progress output
+   to avoid truncating the OK/FAIL signal"). Nothing is deleted at this
+   point
 6. **Independent verification**: the tool itself — using its own AWS
    credentials, not the instance's self-report — calls `s3:HeadObject` on
    every uploaded key and confirms it exists with the expected size
