@@ -636,7 +636,15 @@ AWS — fail locally with a clear message rather than surfacing AWS’s raw
 <code>ec2:ImportKeyPair</code> 6. Confirm success</p>
 <p>Unlike Create Key Pair, there is no private key material to save —
 <code>ec2:ImportKeyPair</code> never returns one, since AWS never sees
-the private half.</p>
+the private half. This is the reverse direction from Create Key Pair:
+Create is for when AWS generates the pair and hands you the private
+<code>.pem</code> half; Import is for when you already generated a
+keypair yourself (e.g. via <code>ssh-keygen</code>) and want AWS to
+trust its public half. A <code>.pem</code> file from this tool’s own
+Create Key Pair is a <em>private</em> key and will always be rejected
+here — the prompt hints at deriving a <code>.pub</code> file from one
+with <code>ssh-keygen -y -f &lt;private-key&gt; &gt; file.pub</code> if
+that’s the operator’s actual starting point.</p>
 <h3 id="delete-key-pair">16. Delete Key Pair</h3>
 <p>Safety-tier workflow, one notch below Terminate/Remove AMI’s dry-run
 + type-to-confirm tier (deleting a key pair doesn’t destroy running

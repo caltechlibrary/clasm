@@ -4,6 +4,180 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-08 — Fix termlib's LineEditor.Prompt for overlong prompt labels; keep awstools' own prompts short
+
+**Context.** A real bug, hit live: Import Key Pair's "Public key file
+path" prompt initially embedded a long (~180 character) explanatory hint
+directly in the prompt label passed to `ui.Prompt`/
+`termlib.LineEditor.Prompt`. `LineEditor.Prompt`'s raw-mode redraw logic
+computes its input viewport as `terminal width - prompt length`,
+assuming the whole prompt fits on one terminal row, and repaints via
+`"\r"`, which only returns to column 0 of the terminal's *current* row.
+Once the prompt itself was wider than the terminal, printing it wrapped
+onto multiple rows; every subsequent keystroke's redraw then reprinted
+the *entire* prompt again after only a `"\r"`, re-wrapping and pushing
+the display down further each time -- garbled, repeated prompt text,
+with the input viewport (`vw`) clamped to 1 column, so typed characters
+were never visibly readable. Not a cosmetic line-wrap issue.
+
+**Decision.** Two changes, at two levels:
+1. **Fixed the actual root cause in `termlib` itself**
+   (`~/Laboratory/termlib/lineeditor.go`, this team's own library, not an
+   external one): a new `splitSafePrompt(prompt, termWidth)` helper splits
+   any prompt into a `head` (everything up to and including the last
+   embedded `\n`, printed once and never revisited) and a `tail` (only
+   the portion that could ever share a terminal row with typed input).
+   If `tail` is still `>= termWidth` runes wide on its own, it's folded
+   into `head` too (with a trailing newline), and `tail` becomes empty --
+   editing then starts on its own blank row with the full terminal width
+   available, instead of trying to redraw a prompt too wide for the
+   existing single-row cursor math to track. `Prompt()` now calls this
+   before entering its edit loop and uses the (now guaranteed-short)
+   `tail` as `prompt` throughout the rest of the function -- `redraw()`
+   itself needed no changes, since `curPromptLen`/`vw` now always operate
+   on a value that's safe by construction.
+2. **Simplified awstools' own prompt** back down to a short label,
+   `"Public key file path (.pub -- e.g. ~/.ssh/id_ed25519.pub)"`, with the
+   longer "not a private key / derive with `ssh-keygen -y -f
+   <private-key> > file.pub`" guidance moved into
+   `validatePublicKeyFile`'s own rejection error message instead --
+   delivered reactively, exactly when the operator actually makes that
+   mistake, rather than proactively in every single prompt.
+
+**Rationale.**
+- Fixing `termlib` closes this whole bug class everywhere it's used, not
+  just this one prompt -- including this project's own pre-existing
+  ~137-character "Key pair name (...)" prompt (`create_key_pair.go`) and
+  ~116-character "IAM instance profile (...)" prompt
+  (`create_instance_profile.go`), both of which had the same latent risk
+  on a narrow enough terminal without ever being reported broken.
+- `splitSafePrompt` also incidentally fixes embedded-newline prompts,
+  which were never explicitly tested before and would have hit the same
+  miscounted-`curPromptLen` problem (newlines counted toward row width
+  even though they occupy zero visual columns).
+- A short, single-purpose prompt label matches this project's dominant
+  convention (see `backup_archive.go`'s "Backup directory (e.g.
+  /opt/rdm_sql_backups)") better than either the original overlong
+  version or the printed-hint-then-short-prompt workaround tried first
+  -- and, now that `termlib` itself is fixed, the workaround is no longer
+  load-bearing for correctness, just a style preference.
+
+**Rejected alternatives.**
+- *Insert a literal `\n` inside the prompt string, unfixed* — doesn't
+  work on its own; the pre-fix `redraw()` counted the entire prompt
+  (including embedded newlines) as occupying one row, so this needed the
+  `termlib` fix to actually behave correctly.
+- *Print the hint separately via `t.Println`, leave `termlib` alone* —
+  tried first as a same-day workaround; superseded once the actual
+  `termlib` bug was fixed properly, since papering over it in every
+  affected caller (there were at least two pre-existing ones) is more
+  maintenance than fixing the one shared library function.
+
+**Consequences.** The fix was committed and pushed to `termlib`'s `main`
+branch (commit `354195d`, "fix prompt and input bug"); `awstools/go.mod`
+pins it directly by commit via a pseudo-version
+(`github.com/rsdoiel/termlib v0.0.10-0.20260708184214-354195d36c57`,
+resolved from the real GitHub remote, not a local-path `replace`) --
+bump this to a proper tagged release version once `termlib` cuts one.
+The new `splitSafePrompt` logic is fully unit-tested in `termlib` itself
+(`lineeditor_test.go`, `TestSplitSafePrompt_*`), since it's a pure
+function; the actual redraw behavior it fixes is still not reproducible
+in either project's pipe-based test harness (`os.Pipe()` is never a TTY,
+so `LineEditor.Prompt` always takes its plain `fallback()` path in
+tests) -- confirming the real-terminal symptom is gone required manual
+interactive testing, which the user did: Show, Create, Import, and
+Delete Key Pair all confirmed working against real AWS on 2026-07-08.
+
+---
+
+## 2026-07-08 — Key Management independently refreshes instances for Delete Key Pair's dependency check
+
+**Context.** Phase 19 (Key Management domain) implements Delete Key Pair
+(DESIGN.md Feature 16), which warns about instances launched with the
+key pair being deleted -- the same dependency-check pattern Remove AMI
+(Phase 11) already uses, filtering an already-fetched `ListInstances`
+result rather than making a fresh AWS call. But Compute's `state.instances`
+in `cmd/awsops/main.go` is only populated once the operator has entered
+the Compute domain at least once in the current run -- if Key Management
+is entered first, that slice is nil, and Delete Key Pair's warning would
+silently under-report (or entirely miss) real dependents.
+
+**Decision.** Key Management's own `refreshKeyMgmt` closure in `main.go`
+independently calls `inventory.ListInstances` (not just `ListKeyPairs`)
+every time the domain is entered or its listing is refreshed, purely to
+keep the dependency check correct -- the fetched instances aren't
+displayed by Key Management, only used internally.
+
+**Rationale.**
+- Correctness of a safety-tier warning matters more than saving one
+  cheap, two-region `DescribeInstances` call -- consistent with this
+  project's existing bias (e.g. Compute already refreshes its own
+  listing on every domain entry, not just once at startup, specifically
+  so displayed/used data is never stale).
+- The alternative -- sharing a single `state.instances` across both
+  domains, refreshed only by whichever domain is entered -- would make
+  Key Management's correctness depend on navigation order, which is a
+  subtle, easy-to-miss bug class (works fine in every manual test that
+  happens to visit Compute first).
+
+**Rejected alternatives.**
+- *Share Compute's `state.instances` unconditionally* — rejected for the
+  navigation-order fragility above.
+- *Only fetch instances lazily inside `DeleteKeyPair` itself, not on every
+  Key Management refresh* — rejected; it would mean the Show Resource
+  Lists refresh and the Delete Key Pair action could see different data
+  if instances changed in between, and it complicates `DeleteKeyPair`'s
+  signature (already takes `instances []inventory.Instance` like
+  `RemoveAMI` does for images) for no real benefit over fetching once per
+  Key Management refresh.
+
+**Consequences.** One extra `ec2:DescribeInstances` fan-out (across
+configured regions) on every Key Management domain entry and every
+"Show resource lists" refresh within it. Negligible cost; Key Management
+still displays only its own key pair listing, not instances.
+
+---
+
+## 2026-07-08 — Add public-key format validation for Import Key Pair
+
+**Context.** DESIGN.md Feature 15 (Import Key Pair) specifies that a
+local `.pub` file should be "read and validated... fail locally with a
+clear message rather than surfacing AWS's raw `InvalidKeyPair.Format`
+error." No existing helper in this codebase validates SSH public-key
+*format* -- `isReadableFile` (used elsewhere for private-key-path
+detection) only checks the file opens, and the cloud-init "@file" loader
+just reads raw bytes with no format check at all.
+
+**Decision.** New `validatePublicKeyFile` (`internal/workflow/keypair_import.go`)
+checks the file is readable, then that its first whitespace-delimited
+field is a recognized SSH key-type token (`ssh-ed25519`, `ssh-rsa`,
+`ecdsa-sha2-nistp256/384/521`) and that a second field (the base64 key
+body) is present. Not a full RFC4253 parse -- just enough to catch "this
+obviously isn't a public key" (a private key pasted by mistake, an empty
+file, random text) locally before ever calling AWS.
+
+**Rationale.**
+- Matches this project's established preference for local, actionable
+  validation over letting AWS's own error surface raw (the same
+  reasoning behind the AMI-name-length check, the security-group-ID
+  format check, etc.) -- see the Bash-to-Go retarget's core motivation.
+- Full cryptographic parsing (base64-decoding and structurally validating
+  the key blob per RFC4253) would catch more malformed inputs but adds
+  real complexity for a false-input class (a resembles-but-isn't-a-key
+  file) that hasn't actually been observed as a real failure the way the
+  Bash version's three real bugs were -- not worth the added surface
+  area pre-emptively.
+
+**Rejected alternatives.**
+- *Full RFC4253 key-blob parsing* — rejected per the rationale above;
+  revisit if a real malformed-but-prefix-matching file is ever seen in
+  practice.
+- *No local validation, let `ec2:ImportKeyPair` reject it* — rejected;
+  DESIGN.md explicitly calls for local validation here, and AWS's own
+  `InvalidKeyPair.Format` error is not actionable on its own.
+
+---
+
 ## 2026-07-08 — Retire ec2_ami_manager.bash, ami_copy.bash, and the Bash test suite
 
 **Context.** Phase 16's manual real-AWS verification (`TEST_PLAN_REAL_AWS.txt`)

@@ -674,7 +674,14 @@ public key they want registered instead of generating a new one:
 
 Unlike Create Key Pair, there is no private key material to save —
 `ec2:ImportKeyPair` never returns one, since AWS never sees the private
-half.
+half. This is the reverse direction from Create Key Pair: Create is for
+when AWS generates the pair and hands you the private `.pem` half; Import
+is for when you already generated a keypair yourself (e.g. via
+`ssh-keygen`) and want AWS to trust its public half. A `.pem` file from
+this tool's own Create Key Pair is a *private* key and will always be
+rejected here — the prompt hints at deriving a `.pub` file from one with
+`ssh-keygen -y -f <private-key> > file.pub` if that's the operator's
+actual starting point.
 
 ### 16. Delete Key Pair
 

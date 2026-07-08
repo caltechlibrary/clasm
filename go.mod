@@ -11,7 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.69.5
 	github.com/aws/aws-sdk-go-v2/service/sts v1.43.5
 	github.com/aws/smithy-go v1.27.3
-	github.com/rsdoiel/termlib v0.0.9
+	github.com/rsdoiel/termlib v0.0.10-0.20260708184214-354195d36c57
 	golang.org/x/term v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
 )

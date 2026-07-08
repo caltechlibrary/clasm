@@ -24,9 +24,9 @@ fails fast with a clear message rather than a raw SDK error.
 On startup you choose a domain to work in:
 
 - **Compute** (EC2 & AMI) -- fully implemented, see below
-- **Key Management**, **S3**, **CloudFront** -- planned, not yet
-  implemented (see [DESIGN.md](DESIGN.md), [PLAN.md](PLAN.md) Phases
-  19-21)
+- **Key Management** -- fully implemented, see below
+- **S3**, **CloudFront** -- planned, not yet implemented (see
+  [DESIGN.md](DESIGN.md), [PLAN.md](PLAN.md) Phases 20-21)
 
 ## Compute Menu
 
@@ -54,6 +54,32 @@ require typing the exact instance/AMI ID or Name tag to confirm). Every
 successful operation automatically refreshes the resource listing
 afterward. See [DESIGN.md](DESIGN.md), "Core Features" for the full
 prompt sequence and behavior of each item.
+
+## Key Management Menu
+
+Choosing Key Management lists the account's current EC2 key pairs
+(aggregated across both configured regions), then presents:
+
+1. Show resource lists
+2. Create Key Pair
+3. Import Key Pair
+4. Delete Key Pair
+5. Back to domain picker
+
+**Create Key Pair** picks a region, generates a new ED25519 key pair via
+AWS, and saves the private key to `~/.ssh/<name>.pem` at mode `0600` --
+the same underlying primitive Compute's "Create EC2 instance from AMI"
+uses for its inline "type `new`" key-pair shortcut. **Import Key Pair**
+registers an existing public key (a local `.pub` file -- not a private
+key/`.pem` file; if you only have a private key, derive its public half
+with `ssh-keygen -y -f <private-key> > file.pub`) with AWS instead of
+generating a new one; awsops validates the file looks like a well-formed
+SSH public key before calling AWS. **Delete Key Pair** warns
+about any instances that were launched with the key pair being deleted
+(they keep running; the key pair just can't be used for new launches
+afterward) and requires typing the exact key pair name to confirm. See
+[DESIGN.md](DESIGN.md), "Key Management Domain" for the full prompt
+sequence.
 
 ## Command-line Options
 

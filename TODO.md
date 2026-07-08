@@ -20,12 +20,14 @@ fully checked off, 112/112 items).
       `ec2_ami_manager.bash`/`ami_copy.bash`/`tests/*.bats` -- done
       2026-07-08, see DECISIONS.md, "Retire ec2_ami_manager.bash,
       ami_copy.bash, and the Bash test suite"
+- [x] Phase 19 (PLAN.md): Key Management domain (list/create/import/
+      delete key pairs) -- done 2026-07-08, wired into the domain picker
 
 ## Not yet started
 
-- Key Management, S3, and CloudFront domains (PLAN.md Phases 19-22):
-  designed in DESIGN.md/PLAN.md, no code written yet -- needs scope
-  questions answered before starting
+- S3 and CloudFront domains (PLAN.md Phases 20-22): designed in
+  DESIGN.md/PLAN.md, no code written yet -- needs scope questions
+  answered before starting
 
 ## Discussed but not yet designed/implemented
 

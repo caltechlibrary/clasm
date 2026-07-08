@@ -130,3 +130,32 @@ func DisplayImages(t *termlib.Terminal, images []inventory.Image) {
 	t.Println()
 	t.Refresh()
 }
+
+// DisplayKeyPairs prints a formatted table of EC2 key pairs (DESIGN.md,
+// Feature 13: "List Key Pairs").
+func DisplayKeyPairs(t *termlib.Terminal, keyPairs []inventory.KeyPair) {
+	if len(keyPairs) == 0 {
+		t.Println("No key pairs found.")
+		t.Refresh()
+		return
+	}
+
+	t.Println("===== KEY PAIRS =====")
+	t.Println()
+	t.Printf("%s %s %s %s %s\n",
+		termlib.PadRight("KEY NAME", 24),
+		termlib.PadRight("REGION", 10),
+		termlib.PadRight("TYPE", 8),
+		termlib.PadRight("KEY ID", 22),
+		"FINGERPRINT")
+	for _, kp := range keyPairs {
+		t.Printf("%s %s %s %s %s\n",
+			termlib.PadRight(termlib.Truncate(kp.KeyName, 24), 24),
+			termlib.PadRight(kp.Region, 10),
+			termlib.PadRight(kp.KeyType, 8),
+			termlib.PadRight(termlib.Truncate(kp.KeyPairID, 22), 22),
+			kp.KeyFingerprint)
+	}
+	t.Println()
+	t.Refresh()
+}

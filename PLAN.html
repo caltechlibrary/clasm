@@ -1567,33 +1567,56 @@ loop; Compute’s existing workflow tests continue to pass unmodified;
 “Back”/“Exit” behavior from within a domain menu</p>
 <p><strong>Dependency:</strong> Phase 14 (Main Menu and Integration)</p>
 <hr />
-<h2 id="phase-19-key-management-domain">Phase 19 — Key Management
-Domain</h2>
+<h2 id="phase-19-key-management-domain-done">Phase 19 — Key Management
+Domain (done)</h2>
 <p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> Medium
 <strong>Files:</strong> <code>internal/inventory/keypairs.go</code>,
-<code>internal/workflow/{keypair_create,keypair_import,keypair_delete}.go</code></p>
+<code>internal/workflow/{keypair_create,keypair_import,keypair_delete,keymgmt_common,keymgmt_menu}.go</code></p>
 <p>Implements <code>DESIGN.md</code> Features 13-16.</p>
 <h3 id="work-items-44">Work Items</h3>
-<ul>
-<li><code>ListKeyPairs(ctx)</code> across all four regions
-(<code>internal/inventory</code>)</li>
-<li>List Key Pairs display: Name, Region, Type, Fingerprint/Key ID</li>
-<li>Create Key Pair: prompt name + region,
-<code>ec2:CreateKeyPair</code>, save private key to
-<code>~/.ssh/&lt;name&gt;.pem</code> at <code>0600</code> — refactor
-Phase 15.2’s inline create-key-pair logic into this standalone primitive
-so both call sites (this menu entry and Feature 2’s inline “type
-<code>new</code>” shortcut) share one implementation</li>
-<li>Import Key Pair: prompt name + region + local <code>.pub</code> file
-path, validate the file locally before calling AWS,
-<code>ec2:ImportKeyPair</code></li>
-<li>Delete Key Pair: pick a key pair, show dependent instances (filter
-the already-fetched <code>ListInstances</code> result by
-<code>KeyName</code> — no fresh AWS call, same pattern as Phase 11’s
-AMI-dependency check), type-to-confirm,
-<code>ec2:DeleteKeyPair</code></li>
-<li>Wire into the domain picker from Phase 18</li>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>ListKeyPairs(ctx)</code> across the configured
+regions (<code>internal/inventory</code>)</label></li>
+<li><label><input type="checkbox" checked="" />List Key Pairs display:
+Name, Region, Type, Fingerprint/Key ID</label></li>
+<li><label><input type="checkbox" checked="" />Create Key Pair: prompt
+region + name, <code>ec2:CreateKeyPair</code>, save private key to
+<code>~/.ssh/&lt;name&gt;.pem</code> at <code>0600</code> — reuses Phase
+15.2’s existing
+<code>createNewKeyPairInteractive</code>/<code>createKeyPair</code>
+primitives directly (region picked first via a new
+<code>promptRegion</code> helper, then delegates to the unchanged
+inline-flow code) so both call sites (this menu entry and Feature 2’s
+inline “type <code>new</code>” shortcut) share one
+implementation</label></li>
+<li><label><input type="checkbox" checked="" />Import Key Pair: prompt
+region + name + local <code>.pub</code> file path, validate the file
+locally before calling AWS (new <code>validatePublicKeyFile</code>, no
+prior precedent in this codebase – see DECISIONS.md),
+<code>ec2:ImportKeyPair</code></label></li>
+<li><label><input type="checkbox" checked="" />Delete Key Pair: pick a
+key pair, show dependent instances (filter the already-fetched
+<code>ListInstances</code> result by the new
+<code>Instance.KeyName</code> field — no fresh AWS call, same pattern as
+Phase 11’s AMI-dependency check), type-to-confirm,
+<code>ec2:DeleteKeyPair</code></label></li>
+<li><label><input type="checkbox" checked="" />Wire into the domain
+picker from Phase 18 – Key Management’s own <code>refresh</code> also
+independently calls <code>ListInstances</code> (see DECISIONS.md) so
+Delete Key Pair’s dependency check is correct regardless of whether
+Compute was visited first in this run</label></li>
 </ul>
+<p><strong>Tests:</strong>
+<code>internal/inventory/keypairs_test.go</code>,
+<code>internal/workflow/{keypair_create,keypair_import,keypair_delete,keymgmt_menu}_test.go</code>
+– fakes for
+<code>DescribeKeyPairs</code>/<code>CreateKeyPair</code>/<code>ImportKeyPair</code>/<code>DeleteKeyPair</code>
+covering success, name-collision re-prompt (Create and Import),
+malformed public key file, dependent-instance detection, and the menu
+loop’s dispatch/refresh/error/exit-signal behavior.
+<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l .</code> all clean.</p>
 <p><strong>Tests:</strong> fakes for
 <code>DescribeKeyPairs</code>/<code>CreateKeyPair</code>/<code>ImportKeyPair</code>/
 <code>DeleteKeyPair</code> covering success, name-collision re-prompt,

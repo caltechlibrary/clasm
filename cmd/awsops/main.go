@@ -180,6 +180,32 @@ func main() {
 		return nil
 	}
 
+	var keyMgmtState struct {
+		keyPairs []inventory.KeyPair
+	}
+	refreshKeyMgmt := func(ctx context.Context) error {
+		keyPairs, err := inventory.ListKeyPairs(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing key pairs: %w", err)
+		}
+		// Also independently fetch instances (not just key pairs): Delete
+		// Key Pair's dependency check needs current instance data
+		// regardless of whether the operator has visited Compute yet in
+		// this run -- state.instances is only populated once Compute has
+		// been entered at least once, and would otherwise silently
+		// under-report dependents (see DECISIONS.md, "Key Management
+		// independently refreshes instances for Delete Key Pair's
+		// dependency check").
+		instances, err := inventory.ListInstances(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing instances: %w", err)
+		}
+		state.instances = instances
+		keyMgmtState.keyPairs = keyPairs
+		ui.DisplayKeyPairs(term, keyMgmtState.keyPairs)
+		return nil
+	}
+
 	actions := workflow.MenuActions{
 		CreateInstanceFromAMI: func(ctx context.Context) error {
 			return workflow.CreateInstanceFromAMI(ctx, term, le, ec2Clients, ssmClients, iamClient, state.images)
@@ -214,6 +240,19 @@ func main() {
 		Refresh: refresh,
 	}
 
+	keyMgmtActions := workflow.KeyMgmtActions{
+		CreateKeyPair: func(ctx context.Context) error {
+			return workflow.CreateKeyPairStandalone(ctx, term, le, ec2Clients)
+		},
+		ImportKeyPair: func(ctx context.Context) error {
+			return workflow.ImportKeyPairStandalone(ctx, term, le, ec2Clients)
+		},
+		DeleteKeyPair: func(ctx context.Context) error {
+			return workflow.DeleteKeyPair(ctx, term, le, ec2Clients, keyMgmtState.keyPairs, state.instances)
+		},
+		Refresh: refreshKeyMgmt,
+	}
+
 	domains := workflow.DomainActions{
 		Compute: func(ctx context.Context) error {
 			// Fetch and display the Compute listing on every entry into
@@ -226,7 +265,10 @@ func main() {
 			return workflow.RunMainMenu(ctx, term, le, actions)
 		},
 		KeyManagement: func(ctx context.Context) error {
-			return workflow.NotYetImplemented(term, "Key Management")
+			if err := refreshKeyMgmt(ctx); err != nil {
+				return err
+			}
+			return workflow.RunKeyMgmtMenu(ctx, term, le, keyMgmtActions)
 		},
 		S3: func(ctx context.Context) error {
 			return workflow.NotYetImplemented(term, "S3")

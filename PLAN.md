@@ -1442,31 +1442,46 @@ behavior from within a domain menu
 
 ---
 
-## Phase 19 — Key Management Domain
+## Phase 19 — Key Management Domain (done)
 
 **Effort:** ~6 hours
 **Priority:** Medium
 **Files:** `internal/inventory/keypairs.go`,
-`internal/workflow/{keypair_create,keypair_import,keypair_delete}.go`
+`internal/workflow/{keypair_create,keypair_import,keypair_delete,keymgmt_common,keymgmt_menu}.go`
 
 Implements `DESIGN.md` Features 13-16.
 
 ### Work Items
 
-- `ListKeyPairs(ctx)` across all four regions (`internal/inventory`)
-- List Key Pairs display: Name, Region, Type, Fingerprint/Key ID
-- Create Key Pair: prompt name + region, `ec2:CreateKeyPair`, save
-  private key to `~/.ssh/<name>.pem` at `0600` — refactor Phase 15.2's
-  inline create-key-pair logic into this standalone primitive so both
-  call sites (this menu entry and Feature 2's inline "type `new`"
-  shortcut) share one implementation
-- Import Key Pair: prompt name + region + local `.pub` file path,
-  validate the file locally before calling AWS, `ec2:ImportKeyPair`
-- Delete Key Pair: pick a key pair, show dependent instances (filter the
-  already-fetched `ListInstances` result by `KeyName` — no fresh AWS
-  call, same pattern as Phase 11's AMI-dependency check), type-to-confirm,
-  `ec2:DeleteKeyPair`
-- Wire into the domain picker from Phase 18
+- [x] `ListKeyPairs(ctx)` across the configured regions (`internal/inventory`)
+- [x] List Key Pairs display: Name, Region, Type, Fingerprint/Key ID
+- [x] Create Key Pair: prompt region + name, `ec2:CreateKeyPair`, save
+      private key to `~/.ssh/<name>.pem` at `0600` — reuses Phase 15.2's
+      existing `createNewKeyPairInteractive`/`createKeyPair` primitives
+      directly (region picked first via a new `promptRegion` helper, then
+      delegates to the unchanged inline-flow code) so both call sites
+      (this menu entry and Feature 2's inline "type `new`" shortcut)
+      share one implementation
+- [x] Import Key Pair: prompt region + name + local `.pub` file path,
+      validate the file locally before calling AWS (new
+      `validatePublicKeyFile`, no prior precedent in this codebase --
+      see DECISIONS.md), `ec2:ImportKeyPair`
+- [x] Delete Key Pair: pick a key pair, show dependent instances (filter
+      the already-fetched `ListInstances` result by the new
+      `Instance.KeyName` field — no fresh AWS call, same pattern as
+      Phase 11's AMI-dependency check), type-to-confirm, `ec2:DeleteKeyPair`
+- [x] Wire into the domain picker from Phase 18 -- Key Management's own
+      `refresh` also independently calls `ListInstances` (see
+      DECISIONS.md) so Delete Key Pair's dependency check is correct
+      regardless of whether Compute was visited first in this run
+
+**Tests:** `internal/inventory/keypairs_test.go`,
+`internal/workflow/{keypair_create,keypair_import,keypair_delete,keymgmt_menu}_test.go`
+-- fakes for `DescribeKeyPairs`/`CreateKeyPair`/`ImportKeyPair`/`DeleteKeyPair`
+covering success, name-collision re-prompt (Create and Import), malformed
+public key file, dependent-instance detection, and the menu loop's
+dispatch/refresh/error/exit-signal behavior. `go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l .` all clean.
 
 **Tests:** fakes for `DescribeKeyPairs`/`CreateKeyPair`/`ImportKeyPair`/
 `DeleteKeyPair` covering success, name-collision re-prompt, malformed

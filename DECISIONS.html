@@ -31,6 +31,186 @@ interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
 <hr />
 <h2
+id="fix-termlibs-lineeditor.prompt-for-overlong-prompt-labels-keep-awstools-own-prompts-short">2026-07-08
+— Fix termlib’s LineEditor.Prompt for overlong prompt labels; keep
+awstools’ own prompts short</h2>
+<p><strong>Context.</strong> A real bug, hit live: Import Key Pair’s
+“Public key file path” prompt initially embedded a long (~180 character)
+explanatory hint directly in the prompt label passed to
+<code>ui.Prompt</code>/ <code>termlib.LineEditor.Prompt</code>.
+<code>LineEditor.Prompt</code>’s raw-mode redraw logic computes its
+input viewport as <code>terminal width - prompt length</code>, assuming
+the whole prompt fits on one terminal row, and repaints via
+<code>"\r"</code>, which only returns to column 0 of the terminal’s
+<em>current</em> row. Once the prompt itself was wider than the
+terminal, printing it wrapped onto multiple rows; every subsequent
+keystroke’s redraw then reprinted the <em>entire</em> prompt again after
+only a <code>"\r"</code>, re-wrapping and pushing the display down
+further each time – garbled, repeated prompt text, with the input
+viewport (<code>vw</code>) clamped to 1 column, so typed characters were
+never visibly readable. Not a cosmetic line-wrap issue.</p>
+<p><strong>Decision.</strong> Two changes, at two levels: 1.
+<strong>Fixed the actual root cause in <code>termlib</code>
+itself</strong> (<code>~/Laboratory/termlib/lineeditor.go</code>, this
+team’s own library, not an external one): a new
+<code>splitSafePrompt(prompt, termWidth)</code> helper splits any prompt
+into a <code>head</code> (everything up to and including the last
+embedded <code>\n</code>, printed once and never revisited) and a
+<code>tail</code> (only the portion that could ever share a terminal row
+with typed input). If <code>tail</code> is still
+<code>&gt;= termWidth</code> runes wide on its own, it’s folded into
+<code>head</code> too (with a trailing newline), and <code>tail</code>
+becomes empty – editing then starts on its own blank row with the full
+terminal width available, instead of trying to redraw a prompt too wide
+for the existing single-row cursor math to track. <code>Prompt()</code>
+now calls this before entering its edit loop and uses the (now
+guaranteed-short) <code>tail</code> as <code>prompt</code> throughout
+the rest of the function – <code>redraw()</code> itself needed no
+changes, since <code>curPromptLen</code>/<code>vw</code> now always
+operate on a value that’s safe by construction. 2. <strong>Simplified
+awstools’ own prompt</strong> back down to a short label,
+<code>"Public key file path (.pub -- e.g. ~/.ssh/id_ed25519.pub)"</code>,
+with the longer “not a private key / derive with
+<code>ssh-keygen -y -f    &lt;private-key&gt; &gt; file.pub</code>”
+guidance moved into <code>validatePublicKeyFile</code>’s own rejection
+error message instead – delivered reactively, exactly when the operator
+actually makes that mistake, rather than proactively in every single
+prompt.</p>
+<p><strong>Rationale.</strong> - Fixing <code>termlib</code> closes this
+whole bug class everywhere it’s used, not just this one prompt –
+including this project’s own pre-existing ~137-character “Key pair name
+(…)” prompt (<code>create_key_pair.go</code>) and ~116-character “IAM
+instance profile (…)” prompt (<code>create_instance_profile.go</code>),
+both of which had the same latent risk on a narrow enough terminal
+without ever being reported broken. - <code>splitSafePrompt</code> also
+incidentally fixes embedded-newline prompts, which were never explicitly
+tested before and would have hit the same
+miscounted-<code>curPromptLen</code> problem (newlines counted toward
+row width even though they occupy zero visual columns). - A short,
+single-purpose prompt label matches this project’s dominant convention
+(see <code>backup_archive.go</code>’s “Backup directory (e.g.
+/opt/rdm_sql_backups)”) better than either the original overlong version
+or the printed-hint-then-short-prompt workaround tried first – and, now
+that <code>termlib</code> itself is fixed, the workaround is no longer
+load-bearing for correctness, just a style preference.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Insert a literal
+<code>\n</code> inside the prompt string, unfixed</em> — doesn’t work on
+its own; the pre-fix <code>redraw()</code> counted the entire prompt
+(including embedded newlines) as occupying one row, so this needed the
+<code>termlib</code> fix to actually behave correctly. - <em>Print the
+hint separately via <code>t.Println</code>, leave <code>termlib</code>
+alone</em> — tried first as a same-day workaround; superseded once the
+actual <code>termlib</code> bug was fixed properly, since papering over
+it in every affected caller (there were at least two pre-existing ones)
+is more maintenance than fixing the one shared library function.</p>
+<p><strong>Consequences.</strong> The fix was committed and pushed to
+<code>termlib</code>’s <code>main</code> branch (commit
+<code>354195d</code>, “fix prompt and input bug”);
+<code>awstools/go.mod</code> pins it directly by commit via a
+pseudo-version
+(<code>github.com/rsdoiel/termlib v0.0.10-0.20260708184214-354195d36c57</code>,
+resolved from the real GitHub remote, not a local-path
+<code>replace</code>) – bump this to a proper tagged release version
+once <code>termlib</code> cuts one. The new <code>splitSafePrompt</code>
+logic is fully unit-tested in <code>termlib</code> itself
+(<code>lineeditor_test.go</code>, <code>TestSplitSafePrompt_*</code>),
+since it’s a pure function; the actual redraw behavior it fixes is still
+not reproducible in either project’s pipe-based test harness
+(<code>os.Pipe()</code> is never a TTY, so
+<code>LineEditor.Prompt</code> always takes its plain
+<code>fallback()</code> path in tests) – confirming the real-terminal
+symptom is gone required manual interactive testing, which the user did:
+Show, Create, Import, and Delete Key Pair all confirmed working against
+real AWS on 2026-07-08.</p>
+<hr />
+<h2
+id="key-management-independently-refreshes-instances-for-delete-key-pairs-dependency-check">2026-07-08
+— Key Management independently refreshes instances for Delete Key Pair’s
+dependency check</h2>
+<p><strong>Context.</strong> Phase 19 (Key Management domain) implements
+Delete Key Pair (DESIGN.md Feature 16), which warns about instances
+launched with the key pair being deleted – the same dependency-check
+pattern Remove AMI (Phase 11) already uses, filtering an already-fetched
+<code>ListInstances</code> result rather than making a fresh AWS call.
+But Compute’s <code>state.instances</code> in
+<code>cmd/awsops/main.go</code> is only populated once the operator has
+entered the Compute domain at least once in the current run – if Key
+Management is entered first, that slice is nil, and Delete Key Pair’s
+warning would silently under-report (or entirely miss) real
+dependents.</p>
+<p><strong>Decision.</strong> Key Management’s own
+<code>refreshKeyMgmt</code> closure in <code>main.go</code>
+independently calls <code>inventory.ListInstances</code> (not just
+<code>ListKeyPairs</code>) every time the domain is entered or its
+listing is refreshed, purely to keep the dependency check correct – the
+fetched instances aren’t displayed by Key Management, only used
+internally.</p>
+<p><strong>Rationale.</strong> - Correctness of a safety-tier warning
+matters more than saving one cheap, two-region
+<code>DescribeInstances</code> call – consistent with this project’s
+existing bias (e.g. Compute already refreshes its own listing on every
+domain entry, not just once at startup, specifically so displayed/used
+data is never stale). - The alternative – sharing a single
+<code>state.instances</code> across both domains, refreshed only by
+whichever domain is entered – would make Key Management’s correctness
+depend on navigation order, which is a subtle, easy-to-miss bug class
+(works fine in every manual test that happens to visit Compute
+first).</p>
+<p><strong>Rejected alternatives.</strong> - <em>Share Compute’s
+<code>state.instances</code> unconditionally</em> — rejected for the
+navigation-order fragility above. - <em>Only fetch instances lazily
+inside <code>DeleteKeyPair</code> itself, not on every Key Management
+refresh</em> — rejected; it would mean the Show Resource Lists refresh
+and the Delete Key Pair action could see different data if instances
+changed in between, and it complicates <code>DeleteKeyPair</code>’s
+signature (already takes <code>instances []inventory.Instance</code>
+like <code>RemoveAMI</code> does for images) for no real benefit over
+fetching once per Key Management refresh.</p>
+<p><strong>Consequences.</strong> One extra
+<code>ec2:DescribeInstances</code> fan-out (across configured regions)
+on every Key Management domain entry and every “Show resource lists”
+refresh within it. Negligible cost; Key Management still displays only
+its own key pair listing, not instances.</p>
+<hr />
+<h2 id="add-public-key-format-validation-for-import-key-pair">2026-07-08
+— Add public-key format validation for Import Key Pair</h2>
+<p><strong>Context.</strong> DESIGN.md Feature 15 (Import Key Pair)
+specifies that a local <code>.pub</code> file should be “read and
+validated… fail locally with a clear message rather than surfacing AWS’s
+raw <code>InvalidKeyPair.Format</code> error.” No existing helper in
+this codebase validates SSH public-key <em>format</em> –
+<code>isReadableFile</code> (used elsewhere for private-key-path
+detection) only checks the file opens, and the cloud-init “<span
+class="citation" data-cites="file">@file</span>” loader just reads raw
+bytes with no format check at all.</p>
+<p><strong>Decision.</strong> New <code>validatePublicKeyFile</code>
+(<code>internal/workflow/keypair_import.go</code>) checks the file is
+readable, then that its first whitespace-delimited field is a recognized
+SSH key-type token (<code>ssh-ed25519</code>, <code>ssh-rsa</code>,
+<code>ecdsa-sha2-nistp256/384/521</code>) and that a second field (the
+base64 key body) is present. Not a full RFC4253 parse – just enough to
+catch “this obviously isn’t a public key” (a private key pasted by
+mistake, an empty file, random text) locally before ever calling
+AWS.</p>
+<p><strong>Rationale.</strong> - Matches this project’s established
+preference for local, actionable validation over letting AWS’s own error
+surface raw (the same reasoning behind the AMI-name-length check, the
+security-group-ID format check, etc.) – see the Bash-to-Go retarget’s
+core motivation. - Full cryptographic parsing (base64-decoding and
+structurally validating the key blob per RFC4253) would catch more
+malformed inputs but adds real complexity for a false-input class (a
+resembles-but-isn’t-a-key file) that hasn’t actually been observed as a
+real failure the way the Bash version’s three real bugs were – not worth
+the added surface area pre-emptively.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Full RFC4253 key-blob
+parsing</em> — rejected per the rationale above; revisit if a real
+malformed-but-prefix-matching file is ever seen in practice. - <em>No
+local validation, let <code>ec2:ImportKeyPair</code> reject it</em> —
+rejected; DESIGN.md explicitly calls for local validation here, and
+AWS’s own <code>InvalidKeyPair.Format</code> error is not actionable on
+its own.</p>
+<hr />
+<h2
 id="retire-ec2_ami_manager.bash-ami_copy.bash-and-the-bash-test-suite">2026-07-08
 — Retire ec2_ami_manager.bash, ami_copy.bash, and the Bash test
 suite</h2>

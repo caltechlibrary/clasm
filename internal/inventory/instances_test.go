@@ -20,6 +20,7 @@ type fakeEC2Client struct {
 	awsclient.EC2API
 	reservations []types.Reservation
 	images       []types.Image
+	keyPairs     []types.KeyPairInfo
 	err          error
 
 	lastDescribeImagesInput *ec2.DescribeImagesInput
@@ -38,6 +39,13 @@ func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.Describe
 		return nil, f.err
 	}
 	return &ec2.DescribeImagesOutput{Images: f.images}, nil
+}
+
+func (f *fakeEC2Client) DescribeKeyPairs(ctx context.Context, params *ec2.DescribeKeyPairsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &ec2.DescribeKeyPairsOutput{KeyPairs: f.keyPairs}, nil
 }
 
 func sdkInstance(id, name, state, imageID, project, environment string) types.Instance {

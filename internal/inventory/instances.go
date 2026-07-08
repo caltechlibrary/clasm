@@ -32,6 +32,10 @@ type Instance struct {
 	Environment string
 	PublicIP    string
 	PrivateIP   string
+	// KeyName is the EC2 key pair name the instance was launched with, if
+	// any -- used by Key Management's Delete Key Pair to detect dependent
+	// instances (see internal/workflow/keypair_delete.go).
+	KeyName string
 }
 
 // ListInstances queries ec2:DescribeInstances in each region concurrently,
@@ -106,6 +110,7 @@ func instanceFromSDK(inst types.Instance, region string) Instance {
 		Environment: environment,
 		PublicIP:    aws.ToString(inst.PublicIpAddress),
 		PrivateIP:   aws.ToString(inst.PrivateIpAddress),
+		KeyName:     aws.ToString(inst.KeyName),
 	}
 }
 

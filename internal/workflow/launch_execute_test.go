@@ -112,6 +112,14 @@ type fakeEC2Client struct {
 	createKeyPairErrOnce     bool // if true, only the first CreateKeyPair call errors
 	lastCreateKeyPairInput   *ec2.CreateKeyPairInput
 	createKeyPairKeyMaterial string
+
+	importKeyPairCalls     int
+	lastImportKeyPairInput *ec2.ImportKeyPairInput
+	importKeyPairErr       error
+	importKeyPairErrOnce   bool // if true, only the first ImportKeyPair call errors
+
+	lastDeleteKeyPairInput *ec2.DeleteKeyPairInput
+	deleteKeyPairErr       error
 }
 
 func (f *fakeEC2Client) CreateKeyPair(ctx context.Context, params *ec2.CreateKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
@@ -136,6 +144,26 @@ func (f *fakeEC2Client) DescribeKeyPairs(ctx context.Context, params *ec2.Descri
 		return nil, f.describeKeyPairsErr
 	}
 	return &ec2.DescribeKeyPairsOutput{KeyPairs: f.keyPairs}, nil
+}
+
+func (f *fakeEC2Client) ImportKeyPair(ctx context.Context, params *ec2.ImportKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.ImportKeyPairOutput, error) {
+	f.importKeyPairCalls++
+	f.lastImportKeyPairInput = params
+	if f.importKeyPairErr != nil && (!f.importKeyPairErrOnce || f.importKeyPairCalls == 1) {
+		return nil, f.importKeyPairErr
+	}
+	return &ec2.ImportKeyPairOutput{
+		KeyName:   params.KeyName,
+		KeyPairId: aws.String("key-fake0123456789"),
+	}, nil
+}
+
+func (f *fakeEC2Client) DeleteKeyPair(ctx context.Context, params *ec2.DeleteKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.DeleteKeyPairOutput, error) {
+	f.lastDeleteKeyPairInput = params
+	if f.deleteKeyPairErr != nil {
+		return nil, f.deleteKeyPairErr
+	}
+	return &ec2.DeleteKeyPairOutput{}, nil
 }
 
 func (f *fakeEC2Client) DescribeSecurityGroups(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {

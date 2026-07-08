@@ -45,6 +45,18 @@ func (w *loggingEC2Client) DescribeKeyPairs(ctx context.Context, params *ec2.Des
 	})
 }
 
+func (w *loggingEC2Client) ImportKeyPair(ctx context.Context, params *ec2.ImportKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.ImportKeyPairOutput, error) {
+	return logAWSCall(w.dl, "EC2.ImportKeyPair", w.region, params, func() (*ec2.ImportKeyPairOutput, error) {
+		return w.inner.ImportKeyPair(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DeleteKeyPair(ctx context.Context, params *ec2.DeleteKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.DeleteKeyPairOutput, error) {
+	return logAWSCall(w.dl, "EC2.DeleteKeyPair", w.region, params, func() (*ec2.DeleteKeyPairOutput, error) {
+		return w.inner.DeleteKeyPair(ctx, params, optFns...)
+	})
+}
+
 func (w *loggingEC2Client) DescribeSecurityGroups(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
 	return logAWSCall(w.dl, "EC2.DescribeSecurityGroups", w.region, params, func() (*ec2.DescribeSecurityGroupsOutput, error) {
 		return w.inner.DescribeSecurityGroups(ctx, params, optFns...)

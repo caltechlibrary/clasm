@@ -194,13 +194,9 @@ func looksLikeKeyFilename(s string) bool {
 // since a bare filename most plausibly refers to a key this tool itself
 // saved there.
 func keyPairNameFromFilePath(path, keyDir string) (string, error) {
-	candidate := path
-	if strings.HasPrefix(candidate, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolving home directory for %q: %w", path, err)
-		}
-		candidate = filepath.Join(home, strings.TrimPrefix(candidate, "~"))
+	candidate, err := expandHome(path)
+	if err != nil {
+		return "", err
 	}
 
 	if !isReadableFile(candidate) {
@@ -220,6 +216,20 @@ func keyPairNameFromFilePath(path, keyDir string) (string, error) {
 		return "", fmt.Errorf("cannot derive a key pair name from %q", path)
 	}
 	return name, nil
+}
+
+// expandHome expands a leading "~" in path to the user's home directory
+// -- the convention every key-file-path prompt in this tool follows.
+// Returns path unchanged if it doesn't start with "~".
+func expandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory for %q: %w", path, err)
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
 }
 
 func isReadableFile(path string) bool {

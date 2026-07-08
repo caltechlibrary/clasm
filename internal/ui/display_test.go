@@ -105,3 +105,32 @@ func TestDisplayImages_Populated(t *testing.T) {
 		t.Errorf("output missing untagged image's %q rendering:\n%s", "unknown", out)
 	}
 }
+
+func TestDisplayKeyPairs_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	term := termlib.New(&buf)
+
+	DisplayKeyPairs(term, nil)
+
+	if !strings.Contains(buf.String(), "No key pairs found.") {
+		t.Errorf("output = %q, want it to mention no key pairs found", buf.String())
+	}
+}
+
+func TestDisplayKeyPairs_Populated(t *testing.T) {
+	var buf bytes.Buffer
+	term := termlib.New(&buf)
+
+	keyPairs := []inventory.KeyPair{
+		{KeyName: "my-laptop-key", KeyPairID: "key-0abc123", KeyFingerprint: "aa:bb:cc", KeyType: "ed25519", Region: "us-west-1"},
+	}
+
+	DisplayKeyPairs(term, keyPairs)
+	out := buf.String()
+
+	for _, want := range []string{"my-laptop-key", "key-0abc123", "aa:bb:cc", "ed25519", "us-west-1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}

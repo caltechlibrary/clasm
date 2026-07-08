@@ -42,10 +42,10 @@ fails fast with a clear message rather than a raw SDK error.</p>
 <ul>
 <li><strong>Compute</strong> (EC2 &amp; AMI) – fully implemented, see
 below</li>
-<li><strong>Key Management</strong>, <strong>S3</strong>,
-<strong>CloudFront</strong> – planned, not yet implemented (see <a
-href="DESIGN.html">DESIGN.md</a>, <a href="PLAN.html">PLAN.md</a> Phases
-19-21)</li>
+<li><strong>Key Management</strong> – fully implemented, see below</li>
+<li><strong>S3</strong>, <strong>CloudFront</strong> – planned, not yet
+implemented (see <a href="DESIGN.html">DESIGN.md</a>, <a
+href="PLAN.html">PLAN.md</a> Phases 20-21)</li>
 </ul>
 <h2 id="compute-menu">Compute Menu</h2>
 <p>Choosing Compute lists the account’s current EC2 instances and owned
@@ -72,6 +72,32 @@ require typing the exact instance/AMI ID or Name tag to confirm). Every
 successful operation automatically refreshes the resource listing
 afterward. See <a href="DESIGN.html">DESIGN.md</a>, “Core Features” for
 the full prompt sequence and behavior of each item.</p>
+<h2 id="key-management-menu">Key Management Menu</h2>
+<p>Choosing Key Management lists the account’s current EC2 key pairs
+(aggregated across both configured regions), then presents:</p>
+<ol type="1">
+<li>Show resource lists</li>
+<li>Create Key Pair</li>
+<li>Import Key Pair</li>
+<li>Delete Key Pair</li>
+<li>Back to domain picker</li>
+</ol>
+<p><strong>Create Key Pair</strong> picks a region, generates a new
+ED25519 key pair via AWS, and saves the private key to
+<code>~/.ssh/&lt;name&gt;.pem</code> at mode <code>0600</code> – the
+same underlying primitive Compute’s “Create EC2 instance from AMI” uses
+for its inline “type <code>new</code>” key-pair shortcut. <strong>Import
+Key Pair</strong> registers an existing public key (a local
+<code>.pub</code> file – not a private key/<code>.pem</code> file; if
+you only have a private key, derive its public half with
+<code>ssh-keygen -y -f &lt;private-key&gt; &gt; file.pub</code>) with
+AWS instead of generating a new one; awsops validates the file looks
+like a well-formed SSH public key before calling AWS. <strong>Delete Key
+Pair</strong> warns about any instances that were launched with the key
+pair being deleted (they keep running; the key pair just can’t be used
+for new launches afterward) and requires typing the exact key pair name
+to confirm. See <a href="DESIGN.html">DESIGN.md</a>, “Key Management
+Domain” for the full prompt sequence.</p>
 <h2 id="command-line-options">Command-line Options</h2>
 <dl>
 <dt><code>-config &lt;path&gt;</code></dt>
