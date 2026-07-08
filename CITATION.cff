@@ -4,7 +4,7 @@ message: "If you use this software, please cite it as below."
 type: software
 title: awstools
 abstract: |-
-  This is a toolset for managing our RDM collection of AMI and EC2 instances.
+  Interactive Go CLI (awsops) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
 authors:
   - family-names: Doiel
     given-names: R. S.

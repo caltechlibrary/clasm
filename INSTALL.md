@@ -1,7 +1,7 @@
 Installation **awstools**
 ============================
 
-**awstools** This is a collaction of Bash scripts, some interactive, for managing our RDM collection of AMI and EC2 instances.
+**awstools** is an interactive Go CLI (`awsops`) for managing our RDM collection of AMI and EC2 instances.
 
 Quick install with curl or irm
 ------------------------------
@@ -32,12 +32,9 @@ Installing from source
 
 ### Required software
 
-- Bash
-- AWS CLI >= v2
-- jq >= 1.8
-- BATS (Bash Automated Testing System)
+- Go >= 1.26 (only needed to build from source -- not required to run a
+  pre-built release binary)
 - git >= v2
-- shellcheck >= 0.11
 
 ### Steps
 

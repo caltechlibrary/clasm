@@ -2,254 +2,91 @@
 
 ## Overview
 
-This document lists all software dependencies required to develop and run the AWS Tools scripts.
+This document lists the software dependencies for building and running
+`awsops`, the interactive Go CLI in this repository.
 
 ---
 
-## Core Requirements
+## To Build From Source
 
-### 1. Bash
+### 1. Go
 
-- **Version:** 4.0 or higher recommended
-- **Purpose:** Script execution environment
-- **Check:** `bash --version`
-- **Install:** Pre-installed on macOS and most Linux distributions
+- **Version:** 1.26 or higher
+- **Purpose:** compiles the `awsops` binary
+- **Check:** `go version`
+- **Install:** https://go.dev/dl/
 
----
-
-### 2. AWS CLI v2
-
-- **Version:** 2.x (latest recommended)
-- **Purpose:** AWS API interaction for EC2 and AMI operations
-- **Check:** `aws --version`
-- **Install:**
-  - **macOS (MacPorts):** `sudo port install awscli`
-  - **macOS (Homebrew):** `brew install awscli`
-  - **Linux (apt):** `sudo apt install awscli`
-  - **Linux (yum):** `sudo yum install awscli`
-  - **Official:** https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
-- **Post-install:** Configure credentials with `aws configure` or via environment variables
-
----
-
-### 3. jq
-
-- **Version:** 1.6 or higher
-- **Purpose:** JSON parsing for AWS CLI output
-- **Check:** `jq --version`
-- **Install:**
-  - **macOS (MacPorts):** `sudo port install jq`
-  - **macOS (Homebrew):** `brew install jq`
-  - **Linux (apt):** `sudo apt install jq`
-  - **Linux (yum):** `sudo yum install jq`
-- **Website:** https://stedolan.github.io/jq/
-
----
-
-## Development & Testing Requirements
-
-### 4. BATS (Bash Automated Testing System)
-
-- **Version:** 1.13.0 (or latest)
-- **Purpose:** Unit testing framework for Bash scripts
-- **Check:** `bats --version`
-- **Install:**
-  - **macOS (MacPorts):** `sudo port install bats-core`
-  - **macOS (Homebrew):** `brew install bats-core`
-  - **Linux:** See https://github.com/bats-core/bats-core
-- **Website:** https://github.com/bats-core/bats-core
-
----
-
-### 5. Git
+### 2. Git
 
 - **Version:** 2.x
-- **Purpose:** Version control
+- **Purpose:** version control
 - **Check:** `git --version`
-- **Install:**
-  - **macOS:** `xcode-select --install` or via MacPorts/Homebrew
-  - **Linux:** `sudo apt install git` or `sudo yum install git`
+
+Build with:
+
+~~~shell
+git clone https://github.com/caltechlibrary/awstools
+cd awstools
+make
+make test
+make install
+~~~
 
 ---
 
-### 6. shellcheck
+## To Run `awsops`
 
-- **Version:** 0.9.0 or higher
-- **Purpose:** Static analysis tool for Bash scripts (linting)
-- **Check:** `shellcheck --version`
-- **Install:**
-  - **macOS (MacPorts):** `sudo port install shellcheck`
-  - **macOS (Homebrew):** `brew install shellcheck`
-  - **Linux (apt):** `sudo apt install shellcheck`
-  - **Linux (snap):** `sudo snap install shellcheck --classic`
-  - **Official:** See https://github.com/koalaman/shellcheck
-- **Usage:** Run `shellcheck script.sh` to check Bash scripts for common issues
-- **Website:** https://www.shellcheck.net/
+No runtime dependencies beyond the compiled binary itself -- it's a
+single static Go binary that calls AWS directly via aws-sdk-go-v2 (the
+`aws` CLI is not required on the machine running `awsops`).
 
----
+### AWS Credentials
 
-## Optional Dependencies
+Resolved via the AWS SDK's default credential chain -- one of:
 
-### 6. fzf (Optional)
-
-- **Version:** Any recent version
-- **Purpose:** Fuzzy finder for enhanced pick list UX (future enhancement)
-- **Install:**
-  - **macOS (MacPorts):** `sudo port install fzf`
-  - **macOS (Homebrew):** `brew install fzf`
-- **Website:** https://github.com/junegunn/fzf
-
----
-
-## AWS Configuration
-
-The scripts assume AWS credentials are configured. Set up one of:
-
-### Option A: AWS CLI Configuration File
-```bash
-aws configure
-# Enter Access Key ID, Secret Access Key, default region, output format
-```
-File location: `~/.aws/credentials` and `~/.aws/config`
-
-### Option B: Environment Variables
-```bash
-export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_DEFAULT_REGION=us-east-1
-```
-
-### Option C: IAM Role (EC2, ECS, etc.)
-Automatically picked up when running on AWS infrastructure with appropriate IAM role.
+- `~/.aws/credentials` / `~/.aws/config` (`aws configure`)
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_DEFAULT_REGION`)
+- AWS SSO
+- An IAM role (EC2 instance profile, ECS task role, etc.)
 
 ### Required IAM Permissions
 
-Minimum permissions required for the scripts to function:
+- **EC2:** `Describe*`, `RunInstances`, `StartInstances`,
+  `StopInstances`, `TerminateInstances`, `CreateImage`,
+  `DeregisterImage`, `CreateTags`, `DeleteTags`,
+  `DescribeInstanceAttribute`, `DescribeVolumes`
+- **SSM:** `SendCommand`, `GetCommandInvocation`,
+  `DescribeInstanceInformation`
+- **S3:** `HeadBucket`, `HeadObject`, `PutObject`, `ListBucket`,
+  `GetBucketLocation` (for Backup Archive & Trim)
+- **IAM:** `ListInstanceProfilesForRole`, `CreateInstanceProfile`,
+  `AddRoleToInstanceProfile`, `ListRoles` (for the instance-profile
+  pick-or-create step)
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ec2:DescribeInstances",
-        "ec2:DescribeImages",
-        "ec2:DescribeKeyPairs",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeVpcs",
-        "ec2:DescribeIamInstanceProfileAssociations",
-        "ec2:RunInstances",
-        "ec2:CreateImage",
-        "ec2:DeregisterImage",
-        "ec2:CreateTags",
-        "ec2:DescribeTags"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
+See [DESIGN.md](DESIGN.md), "Assumptions" for the complete list.
 
----
+### On the Target EC2 Instance (optional features)
 
-## Installation Verification
+Two Compute features reach the target instance via SSM and need these
+installed there -- not on the machine running `awsops`:
 
-Run the following commands to verify all dependencies are installed:
-
-```bash
-# Check all core requirements
-echo "=== Bash ===" && bash --version
-echo "=== AWS CLI ===" && aws --version
-echo "=== jq ===" && jq --version
-echo "=== BATS ===" && bats --version
-echo "=== Git ===" && git --version
-
-# Check development tools
-echo "=== shellcheck ===" && shellcheck --version
-```
-
-All commands should return version information without errors.
+- **SSM Agent**, running and online -- required for cloud-init-status
+  checking and Backup Archive & Trim. Both features degrade gracefully
+  (skip cleanly, not an error) if SSM isn't available on the instance.
+- **AWS CLI v2** on the instance -- required only for Backup Archive &
+  Trim's S3 upload step. awsops checks for this immediately after
+  picking the instance and aborts with a clear, actionable error naming
+  the instance if it's missing, rather than letting every subsequent
+  upload silently fail (see [DECISIONS.md](DECISIONS.md), "Preflight
+  check: AWS CLI availability before Backup Archive & Trim").
 
 ---
 
-## macOS Quick Install (MacPorts)
+## Optional (maintainers / documentation)
 
-For a fresh macOS setup with MacPorts:
-
-```bash
-# Install MacPorts if not already installed
-# https://www.macports.org/install.php
-
-# Install all core dependencies
-sudo port install awscli jq bats-core git shellcheck
-
-# Verify
-bats --version
-aws --version
-jq --version
-shellcheck --version
-```
-
----
-
-## Troubleshooting
-
-### BATS: Command not found
-- Ensure `/opt/local/bin` is in your PATH (MacPorts default)
-- Run: `export PATH="/opt/local/bin:$PATH"`
-- Or add to your shell config (`~/.bashrc`, `~/.bash_profile`, or `~/.zshrc`)
-
-### AWS CLI: Not configured
-- Run `aws configure`
-- Or set environment variables as shown above
-
-### jq: Command not found
-- Verify installation: `port installed jq` or `brew list jq`
-- Reinstall if needed
-
-### Permission errors
-- Verify IAM user has the required permissions listed above
-- Check AWS credentials are correct and not expired
-- Verify the AWS region matches where your resources exist
-
-### shellcheck: Command not found
-- Ensure shellcheck is installed (see installation instructions above)
-- Verify `/opt/local/bin` is in your PATH (MacPorts default)
-- Run: `export PATH="/opt/local/bin:$PATH"`
-
----
-
-## Code Quality Tools
-
-### Running shellcheck on the Project
-
-To check all Bash scripts in the project for potential issues:
-
-```bash
-# Check main script
-shellcheck ec2_ami_manager.bash
-
-# Check test infrastructure
-shellcheck tests/lib/test_helper.bash
-shellcheck tests/*.bats
-
-# Check all Bash files
-find . -name "*.bash" -o -name "*.bats" | xargs shellcheck
-```
-
-This helps catch common Bash scripting issues early in the development process.
-
----
-
-## Version Compatibility Notes
-
-| Dependency | Minimum Version | Tested Version | Notes |
-|------------|-----------------|----------------|-------|
-| Bash | 4.0 | 5.x | Some features may require 4.0+ (associative arrays) |
-| AWS CLI | 2.0 | 2.15+ | v1 is deprecated and unsupported |
-| jq | 1.6 | 1.7+ | Earlier versions may lack some features |
-| BATS | 1.0 | 1.13.0 | All 1.x versions should work |
-| Git | 2.0 | Any | Used for version control only |
-| shellcheck | 0.9.0 | 0.10.0 | Linting tool for development |
+- **CMTools** >= 0.0.46 -- regenerates `version.go`, `about.md`,
+  `CITATION.cff`, and the installer scripts from `codemeta.json`
+- **GNU Make** >= 3.8 -- runs the Makefile targets above
+- **Pandoc** >= 3.9 -- builds this repo's static documentation site
+  (`make website`)

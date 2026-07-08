@@ -1383,22 +1383,23 @@ Archive & Trim".
 
 ---
 
-## Phase 17 — Documentation and Bash Retirement
+## Phase 17 — Documentation and Bash Retirement (done)
 
 **Effort:** ~2 hours
 **Priority:** Medium
 
 ### Work Items
 
-- [ ] `README.md`: overview, prerequisites (Go toolchain removed for end
+- [x] `README.md`: overview, prerequisites (Go toolchain removed for end
       users — ship a built binary), installation, usage, examples
-- [ ] Update `DESIGN.md`/`DECISIONS.md`/`PLAN.md` with any changes made
+- [x] Update `DESIGN.md`/`DECISIONS.md`/`PLAN.md` with any changes made
       during implementation
-- [ ] Once Phase 16's real-AWS verification passes: retire
+- [x] Once Phase 16's real-AWS verification passes: retire
       `ec2_ami_manager.bash`, `ami_copy.bash`, `ami_copy_basic_steps.md`,
       and the `tests/*.bats` suite (record the retirement as a new
       `DECISIONS.md` entry, per this project's existing retire-after-verify
-      pattern)
+      pattern) -- done 2026-07-08, see DECISIONS.md, "Retire
+      ec2_ami_manager.bash, ami_copy.bash, and the Bash test suite"
 
 **Dependency:** Phase 16
 

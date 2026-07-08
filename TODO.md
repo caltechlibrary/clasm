@@ -1,29 +1,31 @@
 
 # Action items
 
-- [ ] UI bug, we should check to make sure aws cli is on remote system before invoking it, that way we can explicitly say it is missing and how to install it, ```shell
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip
-sudo ./aws/install
-```
+- [x] UI bug, we should check to make sure aws cli is on remote system before invoking it, that way we can explicitly say it is missing and how to install it -- implemented as `CheckAWSCLIAvailable` (`internal/workflow/backup_cli_check.go`), see DECISIONS.md, "Preflight check: AWS CLI availability before Backup Archive & Trim" (2026-07-02).
 
 
 
-## Now testing (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
+## Done (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
 
-PLAN.md Phases 0 through 15.2 are implemented and green (`go build ./...`,
-`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). The user is
-actively running `bin/awsops` against a real AWS account, working through
-`TEST_PLAN_REAL_AWS.txt`.
+PLAN.md Phases 0 through 17 are implemented, tested, and verified against
+real AWS as of 2026-07-08 (`go build ./...`, `go vet ./...`,
+`go test ./... -race`, `gofmt -l` all clean; `TEST_PLAN_REAL_AWS.txt`
+fully checked off, 112/112 items).
 
-- [ ] Continue working through `TEST_PLAN_REAL_AWS.txt` against real AWS,
-      both configured regions (us-west-1, us-west-2 -- narrowed from four; see DECISIONS.md, "Narrow configured regions to us-west-1/us-west-2"); mark items `[ok]` as confirmed (existing markers
-      must be preserved, not overwritten)
-- [ ] Phase 16 (PLAN.md): once the manual test plan is fully run, close
-      out any gaps it surfaces
-- [ ] Phase 17 (PLAN.md): documentation pass + retire `ec2_ami_manager.bash`/
-      `ami_copy.bash`/`tests/*.bats` once the Go binary has reached parity
-      and passed the manual test plan
+- [x] Work through `TEST_PLAN_REAL_AWS.txt` against real AWS, both
+      configured regions (us-west-1, us-west-2 -- narrowed from four; see
+      DECISIONS.md, "Narrow configured regions to us-west-1/us-west-2")
+- [x] Phase 16 (PLAN.md): manual test plan fully run, no open gaps
+- [x] Phase 17 (PLAN.md): documentation pass + retire
+      `ec2_ami_manager.bash`/`ami_copy.bash`/`tests/*.bats` -- done
+      2026-07-08, see DECISIONS.md, "Retire ec2_ami_manager.bash,
+      ami_copy.bash, and the Bash test suite"
+
+## Not yet started
+
+- Key Management, S3, and CloudFront domains (PLAN.md Phases 19-22):
+  designed in DESIGN.md/PLAN.md, no code written yet -- needs scope
+  questions answered before starting
 
 ## Discussed but not yet designed/implemented
 
@@ -51,14 +53,16 @@ actively running `bin/awsops` against a real AWS account, working through
 - [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
 - [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
 
-## Superseded (Bash version — kept for reference, see DECISIONS.md)
+## Superseded (Bash version — retired 2026-07-08, see DECISIONS.md)
 
 Real-world use surfaced three bugs (`eval` quoting crash in the interactive
 picker, a locale-dependent `grep` failure, and a malformed AWS CLI tag
 string that silently prevented AMI creation) that led to the decision to
-retarget to Go rather than keep patching. `ec2_ami_manager.bash` and its
-BATS suite remain untouched as the working spec/reference until Phase 17
-retires them.
+retarget to Go rather than keep patching. `ec2_ami_manager.bash`,
+`ami_copy.bash`, `ami_copy_basic_steps.md`, and the BATS suite have now
+been deleted from this repo (see DECISIONS.md, "Retire
+ec2_ami_manager.bash, ami_copy.bash, and the Bash test suite") -- the
+items below are historical record only, not actionable.
 
 - [x] Phase 5b (PLAN.md, Bash version): port ami_copy.bash's volume-size
       estimate, SSM fstrim step, unbounded creation polling, and

@@ -1,7 +1,7 @@
 ---
 title: awstools
 abstract: |-
-  This is a toolset for managing our RDM collection of AMI and EC2 instances.
+  Interactive Go CLI (awsops) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
 authors:
   - family_name: Doiel
     given_name: R. S.
@@ -27,7 +27,7 @@ About this software
 
 ## awstools 0.0.0
 
-proof of concept
+Real-AWS verified 2026-07-08: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim, across two AWS regions.
 
 ## Authors
 
@@ -38,7 +38,7 @@ proof of concept
 
 
 
-This is a toolset for managing our RDM collection of AMI and EC2 instances.
+Interactive Go CLI (awsops) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
 
 
 - [Code Repository](https://github.com/caltechlibrary/awstools)

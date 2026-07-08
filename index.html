@@ -17,43 +17,63 @@
     <li><a href="/">All Library Apps</a></li>
     <li><a href="index.html">Home</a></li>
     <li><a href="LICENSE">LICENSE</a></li>
-    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <!-- <li><a href="search.html">Search</a></li> -->
     <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
 </ul>
 </nav>
 <section id="main-content">
 <h1 id="awstools">awstools</h1>
-<p>This is a collaction of Bash scripts, some interactive, for managing
-our RDM collection of AMI and EC2 instances.</p>
+<p>Interactive Go CLI (<code>awsops</code>) for administering AWS EC2
+instances, AMIs, and S3 backup archives for Caltech Library DLD’s
+infrastructure. Its primary use case today is managing instances behind
+this team’s Invenio RDM deployments, but nothing in its mechanisms
+(tagging, backup archival, cloud-init inspection) is RDM-specific.</p>
+<p>Run <code>awsops</code> with no arguments to launch the interactive
+menu: pick a domain (today: Compute – EC2 &amp; AMI; Key Management, S3,
+and CloudFront are planned, see <a href="DESIGN.html">DESIGN.md</a>),
+and it lists current resources before presenting a numbered menu of
+operations.</p>
 <h2 id="release-notes">Release Notes</h2>
 <ul>
 <li>version: 0.0.0</li>
-<li>status: concept</li>
+<li>status: active</li>
 </ul>
-<p>proof of concept</p>
+<p>Real-AWS verified as of 2026-07-08
+(<code>TEST_PLAN_REAL_AWS.txt</code>, 112/112 checks): EC2 instance and
+AMI lifecycle management, tag management, cloud-init inspection, and S3
+backup archive &amp; trim, across two AWS regions (us-west-1,
+us-west-2).</p>
 <h3 id="authors">Authors</h3>
 <ul>
 <li>Doiel, R. S.</li>
 </ul>
 <h2 id="software-requirements">Software Requirements</h2>
 <ul>
-<li>Bash</li>
-<li>AWS CLI &gt;= v2</li>
-<li>jq &gt;= 1.8</li>
-<li>BATS (Bash Automated Testing System)</li>
-<li>git &gt;= v2</li>
-<li>shellcheck &gt;= 0.11</li>
+<li>Go &gt;= 1.26 (to build from source; a pre-built release binary
+needs nothing else)</li>
+<li>AWS credentials resolvable by the AWS SDK’s default chain
+(<code>~/.aws/credentials</code>, <code>~/.aws/config</code>,
+environment variables, or SSO)</li>
+<li>SSM Agent (and, for backup archival specifically, the AWS CLI) on
+target EC2 instances – only required for the cloud-init-status and
+Backup Archive &amp; Trim features</li>
+</ul>
+<p>See <a href="software_requirements.html">software_requirements.md</a>
+for the full list, including required IAM permissions.</p>
+<h2 id="documentation">Documentation</h2>
+<ul>
+<li><a href="user_manual.html">User Manual</a></li>
+<li><a href="INSTALL.html">Installation</a></li>
+<li><a href="DESIGN.html">Design</a></li>
+<li><a href="DECISIONS.html">Decisions</a></li>
+<li><a href="about.html">About</a></li>
 </ul>
 <h2 id="related-resources">Related resources</h2>
 <ul>
-<li><p><a
-href="https://github.com/caltechlibrary/awstools/issues">Getting Help,
-Reporting bugs</a></p></li>
-<li><p><a href="INSTALL.html">Installation</a></p></li>
-<li><p><a href="about.html">About</a></p></li>
+<li><a href="https://github.com/caltechlibrary/awstools/issues">Getting
+Help, Reporting bugs</a></li>
 </ul>
 </section>
 <footer-global></footer-global>

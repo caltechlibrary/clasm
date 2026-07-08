@@ -17,516 +17,1751 @@
     <li><a href="/">All Library Apps</a></li>
     <li><a href="index.html">Home</a></li>
     <li><a href="LICENSE">LICENSE</a></li>
-    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <!-- <li><a href="search.html">Search</a></li> -->
     <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
 </ul>
 </nav>
 <section id="main-content">
-<h1 id="aws-tools-interactive-ec2ami-manager-implementation-plan">AWS
-Tools — Interactive EC2/AMI Manager — Implementation Plan</h1>
+<h1 id="aws-tools-awsops-implementation-plan-go">AWS Tools — awsops —
+Implementation Plan (Go)</h1>
 <h2 id="source-design">Source Design</h2>
 <p>See <code>DESIGN.md</code> and <code>DECISIONS.md</code> for the
-complete design and decision rationale.</p>
+complete design and decision rationale, including why this plan
+retargets from Bash to Go (<code>DECISIONS.md</code>, 2026-07-01
+“Retarget implementation from Bash to Go”).</p>
+<h2 id="status-2026-07-01">Status (2026-07-01)</h2>
+<p>Starting from scratch. <code>ec2_ami_manager.bash</code> remains in
+the repo as the working reference for expected behavior and stays in
+place, untouched, until this plan’s Phase 14 (main menu) is complete and
+<code>TEST_PLAN_REAL_AWS.txt</code> passes against the Go binary.
+Nothing below has been implemented yet.</p>
+<p>Unlike the Bash plan, the AMI-from-instance capabilities that were
+folded in later as “Phase 5b” (volume-size time estimate, fstrim/SSM
+step, unbounded polling, Invenio RDM crash-consistency guidance) are
+included in Phase 5 from the start — we already know they’re
+required.</p>
 <h2 id="phases">Phases</h2>
-<p>This implementation follows a phased approach with tests written
-before code (TDD).</p>
+<p>TDD throughout: write the <code>*_test.go</code> file (with fakes for
+the AWS SDK interfaces) before the implementation it covers.</p>
 <hr />
-<h2 id="phase-0-project-setup-test-infrastructure">Phase 0 — Project
-Setup &amp; Test Infrastructure</h2>
+<h2 id="phase-0-project-setup">Phase 0 — Project Setup</h2>
 <p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong> High</p>
 <h3 id="tasks">Tasks</h3>
 <ul class="task-list">
-<li><label><input type="checkbox" />Create <code>tests/</code> directory
-structure</label></li>
-<li><label><input type="checkbox" />Install BATS (Bash Automated Testing
-System) if not present</label></li>
-<li><label><input type="checkbox" />Create <code>test_helper.bash</code>
-with common test setup (mock AWS CLI responses)</label></li>
-<li><label><input type="checkbox" />Create BATS test scaffold for main
-script</label></li>
-<li><label><input type="checkbox" />Set up GitHub Actions or local CI
-for test execution</label></li>
-</ul>
-<h3 id="deliverables">Deliverables</h3>
-<ul>
-<li><code>tests/</code> directory with helper scripts</li>
-<li>Basic test infrastructure that can mock AWS CLI calls</li>
-<li>Documentation on running tests locally</li>
-</ul>
-<h3 id="dependencies">Dependencies</h3>
-<ul>
-<li>BATS installation</li>
-<li>Mock AWS CLI response files for testing</li>
+<li><label><input type="checkbox" checked="" /><code>go mod init</code>
+for the module (name TBD — matches repo import path)</label></li>
+<li><label><input type="checkbox" checked="" />Add
+<code>github.com/aws/aws-sdk-go-v2</code> and its <code>ec2</code>,
+<code>ssm</code>, <code>s3</code>, <code>sts</code> submodules, plus the
+config module for credential resolution</label></li>
+<li><label><input type="checkbox" checked="" />Create
+<code>cmd/awsops/main.go</code> stub (prints version,
+exits)</label></li>
+<li><label><input type="checkbox" checked="" />Create
+<code>internal/{awsclient,inventory,ui,workflow}</code> package
+skeletons</label></li>
+<li><label><input type="checkbox" checked="" />Confirm
+<code>go build ./...</code> and <code>go vet ./...</code> are clean on
+the empty skeleton</label></li>
 </ul>
 <hr />
-<h2 id="phase-1-aws-cli-wrapper-layer">Phase 1 — AWS CLI Wrapper
-Layer</h2>
-<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High</p>
+<h2 id="phase-1-aws-client-layer">Phase 1 — AWS Client Layer</h2>
+<p><strong>Effort:</strong> ~3 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>internal/awsclient/</code></p>
 <h3 id="work-items">Work Items</h3>
-<h4 id="w0-dependency-check">W0 — Dependency Check</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Create <code>check_dependencies()</code> function</li>
-<li>Verify AWS CLI v2 is installed and configured</li>
-<li>Verify jq is installed</li>
-<li>Verify AWS credentials are available</li>
-<li>Exit with clear error message if dependencies missing</li>
+<li>Define the four configured regions as a package-level constant/slice
+(<code>Regions = []string{"us-east-1", "us-east-2", "us-west-1", "us-west-2"}</code>)</li>
+<li><code>NewEC2Client(ctx, region) (EC2API, error)</code> — constructs
+a region-scoped EC2 client from the SDK’s default config/credential
+chain</li>
+<li><code>NewSSMClient(ctx, region) (SSMAPI, error)</code> — same, for
+the fstrim step</li>
+<li><code>NewS3Client(ctx, region) (S3API, error)</code> — for Backup
+Archive &amp; Trim’s independent verification (<code>HeadObject</code>)
+using the operator’s own credentials, distinct from the target
+instance’s own IAM instance profile (see <code>DESIGN.md</code>
+Assumptions)</li>
+<li>Define <code>EC2API</code>/<code>SSMAPI</code>/<code>S3API</code> as
+narrow interfaces covering only the SDK methods actually used (enables
+fakes in tests without a real client)</li>
+<li>Startup credential check: fail fast with a clear message if
+<code>sts:GetCallerIdentity</code> fails (replaces
+<code>check_dependencies</code>’s AWS CLI/jq checks — there’s no
+external binary to check for anymore)</li>
 </ul>
-<p><strong>Tests:</strong> - Test with all dependencies present (expect
-pass) - Test with missing AWS CLI (expect clear error) - Test with
-missing jq (expect clear error) - Test with missing credentials (expect
-clear error)</p>
+<p><strong>Tests:</strong> credential-check failure path; region client
+construction; retry/backoff behavior on throttling errors (table-driven,
+using a fake that returns a throttling error N times then succeeds)</p>
 <p><strong>Dependency:</strong> Phase 0</p>
 <hr />
-<h4 id="w1-region-configuration">W1 — Region Configuration</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Define array of four regions:
-<code>REGIONS=(us-east-1 us-east-2 us-west-1 us-west-2)</code></li>
-<li>Create <code>for_all_regions()</code> helper function to iterate
-across regions</li>
-<li>Create <code>aws_ec2()</code> wrapper that adds
-<code>--region</code> parameter</li>
-</ul>
-<p><strong>Tests:</strong> - Test that all four regions are defined -
-Test that region iteration works correctly</p>
-<p><strong>Dependency:</strong> Phase 0</p>
-<hr />
-<h4 id="w2-aws-cli-error-handling">W2 — AWS CLI Error Handling</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>aws_cli_call()</code> wrapper function</li>
-<li>Parse AWS CLI JSON output for errors</li>
-<li>Extract and display error messages clearly</li>
-<li>Handle common error types (AccessDenied, InvalidParameter,
-etc.)</li>
-<li>Implement retry logic with exponential backoff (max 3 attempts)</li>
-</ul>
-<p><strong>Tests:</strong> - Test successful AWS CLI call (expect JSON
-output) - Test AWS CLI error parsing (expect error message extraction) -
-Test retry logic (mock failures then success) - Test max retry exceeded
-(expect error exit)</p>
-<p><strong>Dependency:</strong> W0</p>
-<hr />
-<h2 id="phase-2-resource-listing-functions">Phase 2 — Resource Listing
-Functions</h2>
-<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High</p>
+<h2 id="phase-2-resource-listing">Phase 2 — Resource Listing</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>internal/inventory/</code></p>
 <h3 id="work-items-1">Work Items</h3>
-<h4 id="l0-list-ec2-instances-across-all-regions">L0 — List EC2
-Instances Across All Regions</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Create <code>list_ec2_instances()</code> function</li>
-<li>Call <code>aws ec2 describe-instances</code> for each of the four
-regions</li>
-<li>Filter for non-terminated instances</li>
-<li>Extract: InstanceId, InstanceType, State, ImageId, Tags (Name),
-Region</li>
-<li>Aggregate results from all regions into single array</li>
-<li>Sort by Region, then InstanceId</li>
+<li><code>ListInstances(ctx, clients map[string]EC2API) ([]Instance, error)</code>
+— queries <code>DescribeInstances</code> per region concurrently
+(goroutines + errgroup or similar), aggregates, excludes terminated
+instances</li>
+<li><code>ListImages(ctx, clients map[string]EC2API) ([]Image, error)</code>
+— queries <code>DescribeImages</code> with <code>Owners: [self]</code>
+per region, aggregates, filters to <code>State == available</code></li>
+<li><code>Instance</code>/<code>Image</code> structs carry the same
+fields the Bash version displayed: InstanceId/ImageId, Name (from tags),
+State, ImageId, Region / Name, CreationDate, Region — plus
+<code>Project</code> and <code>Environment</code> (from tags, empty
+string if untagged — display layer renders empty as “unknown”, see
+<code>DECISIONS.md</code> “Introduce a light Project/Environment tagging
+convention”)</li>
+<li>Group/filter helpers over the aggregated results: by
+<code>Project</code>, by <code>Environment</code> — used by Phase 3’s
+display and the main menu’s listing</li>
 </ul>
-<p><strong>Tests:</strong> - Test with no instances (expect empty list)
-- Test with instances in multiple regions (expect aggregated list) -
-Test with instances having Name tags (expect name displayed) - Test with
-instances without Name tags (expect empty name)</p>
-<p><strong>Dependency:</strong> W2</p>
+<p><strong>Tests:</strong> aggregation across regions; empty-region
+handling; terminated- instance filtering; Name/Project/Environment-tag
+extraction (present/ absent); group/filter by Project and by
+Environment</p>
+<p><strong>Dependency:</strong> Phase 1</p>
 <hr />
-<h4 id="l1-list-owned-amis-across-all-regions">L1 — List Owned AMIs
-Across All Regions</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>list_amis()</code> function</li>
-<li>Call <code>aws ec2 describe-images --owners self</code> for each
-region</li>
-<li>Filter for available AMIs</li>
-<li>Extract: ImageId, Name, CreationDate, State, Region</li>
-<li>Aggregate results from all regions into single array</li>
-<li>Sort by Region, then CreationDate (newest first)</li>
-</ul>
-<p><strong>Tests:</strong> - Test with no owned AMIs (expect empty list)
-- Test with AMIs in multiple regions (expect aggregated list) - Test
-sorting (expect newest first within each region)</p>
-<p><strong>Dependency:</strong> W2</p>
-<hr />
-<h4 id="l2-display-formatting">L2 — Display Formatting</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>display_instances()</code> function</li>
-<li>Format instance list as table with columns: ID, Name, State, AMI ID,
-Region</li>
-<li>Truncate long values with ellipsis (e.g., IDs to 12 chars)</li>
-<li>Create <code>display_amis()</code> function</li>
-<li>Format AMI list as table with columns: AMI ID, Name, Creation Date,
-Region</li>
-<li>Add visual separators between sections</li>
-</ul>
-<p><strong>Tests:</strong> - Test display with empty lists - Test
-display with multiple items - Test truncation of long values</p>
-<p><strong>Dependency:</strong> L0, L1</p>
-<hr />
-<h2 id="phase-3-pick-list-implementation">Phase 3 — Pick List
-Implementation</h2>
-<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High</p>
+<h2 id="phase-3-terminal-ui-done">Phase 3 — Terminal UI (done)</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>internal/ui/</code></p>
+<p>Built on <code>github.com/rsdoiel/termlib</code> rather than a
+stdlib-only implementation — see <code>DECISIONS.md</code>, “Use
+github.com/rsdoiel/termlib for the Terminal UI”.</p>
 <h3 id="work-items-2">Work Items</h3>
-<h4 id="p0-generic-pick-list-function">P0 — Generic Pick List
-Function</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Create <code>show_pick_list()</code> function</li>
-<li>Accept array of items as input</li>
-<li>Display numbered list (1-N)</li>
-<li>Accept user input with validation</li>
-<li>Return selected index or exit on invalid/cancel</li>
-<li>Handle empty list case</li>
+<li><code>DisplayInstances(t *termlib.Terminal, []inventory.Instance)</code>
+/ <code>DisplayImages(t *termlib.Terminal, []inventory.Image)</code> —
+formatted table output via
+<code>termlib.PadRight</code>/<code>termlib.Truncate</code> (replaces
+<code>display_instances</code>/<code>display_amis</code>); untagged
+Project/Environment render as <code>"unknown"</code>, untagged Name
+renders blank, matching the Bash version</li>
+<li><code>PickList[T any](t *termlib.Terminal, le *termlib.LineEditor, items []T, label func(T) string, prompt string) (T, error)</code>
+— generic numbered pick list; returns an error (not a panic/crash) on
+invalid input, re-prompts on out-of-range/non-numeric input, entering
+<code>0</code> cancels (<code>ErrCancelled</code>)</li>
+<li><code>Prompt(t *termlib.Terminal, le *termlib.LineEditor, label string, opts ...PromptOption) (string, error)</code>
+— single free-text prompt with optional default value
+(<code>WithDefault</code>) and validator function
+(<code>WithValidator</code>), re-prompting on validation failure
+(replaces the repeated <code>echo -n ...; read -r ...</code>
+pattern)</li>
 </ul>
-<p><strong>Tests:</strong> - Test with empty list (expect error message,
-return to menu) - Test with single item (expect auto-select or prompt) -
-Test with multiple items (expect correct selection) - Test with invalid
-input (expect re-prompt) - Test with cancel input (expect return to
-menu)</p>
+<p><strong>Tests:</strong> pick list with valid/invalid/cancel input,
+and prompt with default/validator, driven through
+<code>termlib.LineEditor</code> via an <code>os.Pipe()</code> (not a
+TTY) rather than a real terminal – <code>LineEditor.Prompt</code>
+detects the non-TTY input and falls back to plain line reading, which is
+<code>termlib</code>’s own documented/intended way to drive it in tests.
+This is the Go equivalent of the Bash version’s skipped “interactive
+testing is hard” tests, and is not skipped here.</p>
 <p><strong>Dependency:</strong> Phase 2</p>
 <hr />
-<h4 id="p1-ami-pick-list">P1 — AMI Pick List</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>pick_ami()</code> function</li>
-<li>Call <code>list_amis()</code> to get current AMI list</li>
-<li>Pass to <code>show_pick_list()</code> with appropriate display
-formatting</li>
-<li>Return selected AMI (full object with all fields)</li>
-</ul>
-<p><strong>Tests:</strong> - Test selection from AMI list - Test cancel
-behavior</p>
-<p><strong>Dependency:</strong> P0, L1</p>
-<hr />
-<h4 id="p2-instance-pick-list">P2 — Instance Pick List</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>pick_instance()</code> function</li>
-<li>Call <code>list_ec2_instances()</code> to get current instance
-list</li>
-<li>Filter by state if needed (running, stopped, or both)</li>
-<li>Pass to <code>show_pick_list()</code> with appropriate display
-formatting</li>
-<li>Return selected instance (full object with all fields)</li>
-</ul>
-<p><strong>Tests:</strong> - Test selection from instance list - Test
-filtering by state - Test cancel behavior</p>
-<p><strong>Dependency:</strong> P0, L0</p>
-<hr />
-<h2 id="phase-4-create-ec2-instance-from-ami">Phase 4 — Create EC2
-Instance from AMI</h2>
-<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> High</p>
+<h2 id="phase-4-create-ec2-instance-from-ami-done">Phase 4 — Create EC2
+Instance from AMI (done)</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High
+<strong>Files:</strong>
+<code>internal/workflow/{launch_instance,launch_execute,cloud_init_check,confirm,ssm,userdata}.go</code></p>
+<p>Implemented as several smaller files rather than one, each
+independently tested: <code>confirm.go</code> (the reusable yes/no gate
+— see below), <code>ssm.go</code>
+(<code>WaitForSSMOnline</code>/<code>RunShellCommand</code>, generic
+building blocks reused by Phases 10/12/13), <code>userdata.go</code>
+(<code>@file</code> vs. inline text), <code>cloud_init_check.go</code>
+(the launch-time completion check), <code>launch_instance.go</code>
+(params struct + interactive collection), <code>launch_execute.go</code>
+(<code>Launch</code>/<code>WaitUntilRunning</code>), and
+<code>create_instance_from_ami.go</code> (the orchestrator PLAN.md
+originally called out as this phase’s one file).</p>
+<p><code>Confirm(t, le, question) (bool, error)</code> is the first
+instance of the “reusable confirmation/dry-run gate”
+<code>DECISIONS.md</code>’s “Structure workflows for future
+record/replay” calls for — a simple yes/no tier for reversible actions.
+Phase 8/11/13’s heavier dry-run + type-to-confirm tier is a separate
+function, added when those phases need it.</p>
 <h3 id="work-items-3">Work Items</h3>
-<h4 id="c0-parameter-collection">C0 — Parameter Collection</h4>
-<p><strong>Effort:</strong> ~3 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Create <code>collect_instance_params()</code> function</li>
-<li>After AMI selection, prompt for:
-<ul>
-<li>Instance type: list available types, allow user selection</li>
-<li>Key pair name: list available key pairs, allow selection</li>
-<li>Security group IDs: list available security groups, allow
-multi-select</li>
-<li>Subnet ID: list available subnets, allow selection</li>
-<li>IAM instance profile: list available, optional</li>
-<li>User data: text input, optional</li>
-<li>Tags: key=value pairs, optional</li>
-</ul></li>
-<li>Validate each parameter</li>
-<li>Allow back/redo for any parameter</li>
+<li>Pick an AMI (Phase 3’s <code>PickList</code> over
+<code>ListImages</code> results)</li>
+<li>Collect instance type, key pair, security group(s), subnet, IAM
+instance profile (optional), user data (optional — accepts inline text
+<strong>or a local file path</strong>, e.g. a file from a local clone of
+<code>cloud-init-examples</code>), tags — mirroring
+<code>collect_instance_params()</code>’s parameter set, plus
+<code>Project</code> (default: the source AMI’s <code>Project</code> tag
+if set) and <code>Environment</code> (always an explicit prompt, no
+default — see <code>DECISIONS.md</code> “Introduce a light
+Project/Environment tagging convention”)</li>
+<li>Confirm and call <code>ec2.RunInstances</code></li>
+<li>Poll <code>DescribeInstances</code> until <code>running</code>
+(bounded — 5 minutes, matching current Bash behavior) or report a
+timeout; display connection info (public/private IP, SSH command) on
+success</li>
+<li><strong>If user-data was provided</strong>: wait for SSM to report
+<code>Online</code>, then run <code>cloud-init status --wait</code> via
+SSM (bounded timeout — see <code>DECISIONS.md</code>, “Enhance Create
+Instance from AMI: cloud-init file input + completion check”), reporting
+cloud-init’s actual completion status (<code>done</code> vs
+<code>error</code>). Skip cleanly (not an error) if SSM never comes
+online</li>
+<li>Structure as: build a resolved <code>LaunchInstanceParams</code>
+struct (from prompts) → reusable confirmation/dry-run gate → execute
+against <code>ec2.RunInstances</code>. This is the seam a future replay
+engine reuses rather than reimplementing (see <code>DECISIONS.md</code>,
+“Structure workflows for future record/replay”)</li>
 </ul>
-<p><strong>Helper functions needed:</strong> -
-<code>list_instance_types()</code> — call AWS for available types in
-region - <code>list_key_pairs()</code> — call AWS for available key
-pairs in region - <code>list_security_groups()</code> — call AWS for
-available security groups - <code>list_subnets()</code> — call AWS for
-available subnets - <code>list_instance_profiles()</code> — call AWS for
-available IAM instance profiles</p>
-<p><strong>Tests:</strong> - Test parameter collection with valid inputs
-- Test validation of invalid instance types - Test validation of
-non-existent key pairs - Test cancel behavior at any prompt</p>
-<p><strong>Dependency:</strong> P1, W2</p>
+<p><strong>Tests:</strong> parameter collection with a fake reader;
+user-data-from-file loading (success and file-not-found); launch
+success/failure; poll-until-running with a fake that transitions state
+after N calls; poll timeout path; cloud-init completion check
+(done/error/SSM-unavailable)</p>
+<p><strong>Dependency:</strong> Phase 1 (for the SSM client), Phase
+3</p>
 <hr />
-<h4 id="c1-confirmation-and-launch">C1 — Confirmation and Launch</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>confirm_and_launch()</code> function</li>
-<li>Display all collected parameters in readable format</li>
-<li>Ask for final confirmation</li>
-<li>Call <code>aws ec2 run-instances</code> with all parameters</li>
-<li>Parse response for new InstanceId</li>
-<li>Display success message with new instance details</li>
-</ul>
-<p><strong>Tests:</strong> - Test confirmation flow - Test cancel at
-confirmation - Test successful launch (mock AWS response) - Test failed
-launch (mock AWS error)</p>
-<p><strong>Dependency:</strong> C0</p>
-<hr />
-<h4 id="c2-post-launch-actions">C2 — Post-Launch Actions</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>After successful launch:
-<ul>
-<li>Wait for instance to reach running state (optional, with
-timeout)</li>
-<li>Display connection information (public IP, SSH command)</li>
-<li>Refresh resource lists</li>
-<li>Return to main menu</li>
-</ul></li>
-</ul>
-<p><strong>Tests:</strong> - Test post-launch refresh - Test connection
-info display</p>
-<p><strong>Dependency:</strong> C1</p>
-<hr />
-<h2 id="phase-5-create-ami-from-ec2-instance">Phase 5 — Create AMI from
-EC2 Instance</h2>
-<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong>
-Medium</p>
+<h2 id="phase-5-create-ec2-instance-from-cloud-init-yaml-done">Phase 5 —
+Create EC2 Instance from Cloud-Init YAML (done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong>
+<code>internal/workflow/launch_from_cloud_init.go</code>,
+<code>create_instance_from_cloud_init.go</code>; extracted the shared
+execution logic from Phase 4’s <code>create_instance_from_ami.go</code>
+into a new <code>runLaunch</code> function in
+<code>launch_execute.go</code>, confirmed behavior-preserving against
+Phase 4’s existing tests before adding this phase’s own.</p>
 <h3 id="work-items-4">Work Items</h3>
-<h4 id="a0-instance-selection-and-validation">A0 — Instance Selection
-and Validation</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Use <code>pick_instance()</code> with filter for running/stopped
-states</li>
-<li>Validate instance is not terminated</li>
-<li>Display selected instance details for confirmation</li>
-<li>Warn if instance is running (potential inconsistency in AMI)</li>
+<li>Prompt for the cloud-init YAML first — inline text or a local file
+path (reuses Phase 4’s file-loading logic)</li>
+<li>Pick a base AMI (Phase 3’s <code>PickList</code> over
+<code>ListImages</code>)</li>
+<li>Collect the remaining parameters and execute via the <em>same</em>
+<code>LaunchInstanceParams</code> struct and execution function Phase 4
+uses — this phase only adds a different front-end prompt sequence, not
+new execution logic (see <code>DECISIONS.md</code>, “Add Create EC2
+Instance from Cloud-Init YAML as a v1 primitive”)</li>
+<li>Same post-launch behavior as Phase 4: poll until
+<code>running</code>, then wait for SSM +
+<code>cloud-init status --wait</code>, reporting completion status</li>
 </ul>
-<p><strong>Tests:</strong> - Test selection of running instance - Test
-selection of stopped instance - Test that terminated instances are
-excluded</p>
-<p><strong>Dependency:</strong> P2</p>
+<p><strong>Tests:</strong> prompt-ordering test confirming cloud-init is
+collected before the AMI pick list; otherwise covered by Phase 4’s
+execution-path tests (no new execution logic to test independently)</p>
+<p><strong>Dependency:</strong> Phase 4 (shares its execution path
+directly)</p>
 <hr />
-<h4 id="a1-ami-creation-parameters">A1 — AMI Creation Parameters</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Prompt for:
-<ul>
-<li>AMI name (required, validate length/characters)</li>
-<li>AMI description (optional)</li>
-<li>No-reboot flag (default: false, only for running instances)</li>
-<li>Tags (optional)</li>
-</ul></li>
-<li>Validate AMI name meets AWS requirements</li>
-</ul>
-<p><strong>Tests:</strong> - Test valid AMI name - Test invalid AMI name
-(too long, invalid characters) - Test no-reboot flag only offered for
-running instances</p>
-<p><strong>Dependency:</strong> A0</p>
-<hr />
-<h4 id="a2-create-and-verify-ami">A2 — Create and Verify AMI</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>create_ami_from_instance()</code> function</li>
-<li>Call <code>aws ec2 create-image</code> with parameters</li>
-<li>Parse response for new ImageId</li>
-<li>Wait for AMI to reach available state (with timeout)</li>
-<li>Display success message with new AMI details</li>
-<li>Refresh resource lists</li>
-<li>Return to main menu</li>
-</ul>
-<p><strong>Tests:</strong> - Test successful AMI creation (mock
-response) - Test AMI creation failure (mock error) - Test timeout
-waiting for available state</p>
-<p><strong>Dependency:</strong> A1</p>
-<hr />
-<h2 id="phase-6-remove-ami">Phase 6 — Remove AMI</h2>
-<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong>
-Medium</p>
+<h2 id="phase-6-start-ec2-instance-done">Phase 6 — Start EC2 Instance
+(done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong>
+<code>internal/workflow/power_state.go</code></p>
+<p>Reuses Phase 4’s <code>WaitUntilRunning</code> (poll-until-running)
+and the <code>displayConnectionInfo</code> helper extracted from
+<code>launch_execute.go</code> when Phase 5 shared its execution path —
+no new poll/display logic needed here, so the timeout path is covered by
+Phase 4’s existing tests rather than re-tested at this orchestrator
+level (same reuse pattern as Phase 5’s own Tests note).</p>
 <h3 id="work-items-5">Work Items</h3>
-<h4 id="r0-ami-selection">R0 — AMI Selection</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Use <code>pick_ami()</code> to select AMI to remove</li>
-<li>Display selected AMI details</li>
+<li>Pick a stopped instance</li>
+<li>Confirm (simple yes/no, via the same reusable confirmation gate as
+every other workflow)</li>
+<li>Call <code>ec2.StartInstances</code></li>
+<li>Poll <code>DescribeInstances</code> until <code>running</code>
+(bounded timeout)</li>
+<li>Display connection info (public/private IP, SSH command) — note the
+public IP may have changed since the instance was last running, unless
+it uses an Elastic IP</li>
 </ul>
-<p><strong>Tests:</strong> - Test AMI selection for removal</p>
-<p><strong>Dependency:</strong> P1</p>
+<p><strong>Tests:</strong> start success/failure; poll-until-running
+with a fake state transition; poll timeout path; confirmation decline
+(no API call made)</p>
+<p><strong>Dependency:</strong> Phase 3</p>
 <hr />
-<h4 id="r1-dry-run-display">R1 — Dry Run Display</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>show_removal_dry_run()</code> function</li>
-<li>Display what would be deleted (AMI ID, Name, Region)</li>
-<li>Ask user to confirm they want to proceed to dependency check</li>
-</ul>
-<p><strong>Tests:</strong> - Test dry run display - Test cancel at dry
-run</p>
-<p><strong>Dependency:</strong> R0</p>
-<hr />
-<h4 id="r2-dependency-check">R2 — Dependency Check</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>check_ami_dependencies()</code> function</li>
-<li>Query all regions for instances using this AMI (by ImageId)</li>
-<li>Display list of dependent instances with details</li>
-<li>If dependencies exist, warn user and ask if they want to
-continue</li>
-<li>If no dependencies, display “No instances currently using this
-AMI”</li>
-</ul>
-<p><strong>Tests:</strong> - Test with no dependencies (expect clean
-message) - Test with dependencies in same region (expect warning) - Test
-with dependencies in different regions (expect warning with all
-regions)</p>
-<p><strong>Dependency:</strong> R1</p>
-<hr />
-<h4 id="r3-type-to-confirm">R3 — Type-to-Confirm</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>type_to_confirm()</code> function</li>
-<li>Prompt user: “Type the AMI ID to confirm deletion:”</li>
-<li>Compare input exactly (case-sensitive) with selected AMI ID</li>
-<li>On match, proceed to deletion</li>
-<li>On mismatch, display error and return to previous step</li>
-<li>Allow cancel option</li>
-</ul>
-<p><strong>Tests:</strong> - Test correct AMI ID input (expect proceed)
-- Test incorrect AMI ID input (expect error, re-prompt) - Test cancel at
-confirmation</p>
-<p><strong>Dependency:</strong> R2</p>
-<hr />
-<h4 id="r4-execute-removal">R4 — Execute Removal</h4>
-<p><strong>Effort:</strong> ~1 hour <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
-<ul>
-<li>Create <code>remove_ami()</code> function</li>
-<li>Call <code>aws ec2 deregister-image</code> for the AMI</li>
-<li>Handle potential errors (AMI in use, permissions, etc.)</li>
-<li>Verify removal was successful</li>
-<li>Display confirmation message</li>
-<li>Refresh resource lists</li>
-<li>Return to main menu</li>
-</ul>
-<p><strong>Tests:</strong> - Test successful removal (mock response) -
-Test removal failure (mock error - AMI in use) - Test removal failure
-(mock error - permissions)</p>
-<p><strong>Dependency:</strong> R3</p>
-<hr />
-<h2 id="phase-7-main-menu-and-integration">Phase 7 — Main Menu and
-Integration</h2>
-<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High</p>
+<h2 id="phase-7-stop-ec2-instance-done">Phase 7 — Stop EC2 Instance
+(done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong>
+<code>internal/workflow/power_state.go</code></p>
+<p><code>WaitUntilRunning</code> (Phase 4) was refactored into a shared
+<code>waitUntilState</code> helper in <code>launch_execute.go</code>
+(confirmed behavior-preserving against Phase 4/6’s existing tests
+first), so <code>WaitUntilStopped</code> here is a one-line wrapper
+rather than duplicated polling logic.</p>
 <h3 id="work-items-6">Work Items</h3>
-<h4 id="m0-main-menu-display">M0 — Main Menu Display</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
 <ul>
-<li>Create <code>show_main_menu()</code> function</li>
-<li>Display header with script name and regions</li>
-<li>Display current EC2 instances section</li>
-<li>Display current AMIs section</li>
-<li>Display menu options:
+<li>Pick a running instance</li>
+<li>Confirm (simple yes/no — reversible, unlike Phase 8’s
+terminate)</li>
+<li>Call <code>ec2.StopInstances</code></li>
+<li>Poll <code>DescribeInstances</code> until <code>stopped</code>
+(bounded timeout)</li>
+</ul>
+<p><strong>Tests:</strong> stop success/failure; poll-until-stopped with
+a fake state transition; poll timeout path; confirmation decline (no API
+call made)</p>
+<p><strong>Dependency:</strong> Phase 3</p>
+<hr />
+<h2 id="phase-8-terminate-ec2-instance-done">Phase 8 — Terminate EC2
+Instance (done)</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High
+<strong>Files:</strong>
+<code>internal/workflow/terminate_instance.go</code>; added
+<code>ConfirmDestructive</code> to <code>confirm.go</code> – the heavier
+type-to-confirm gate <code>DECISIONS.md</code>’s “Structure workflows
+for future record/replay” anticipated. Single-shot (no retry loop on
+mismatch), matching <code>ec2_ami_manager.bash</code>’s
+<code>type_to_confirm</code>; accepts either the instance ID or Name
+(DESIGN.md says “ID or name,” though the Bash version’s actual
+<code>remove_ami</code> call site only ever passed the ID – Go version
+honors the doc’s stated intent).</p>
+<h3 id="work-items-7">Work Items</h3>
+<ul>
+<li>Pick an instance</li>
+<li>Dry-run display: what would be destroyed, <strong>including whether
+any attached EBS volume has
+<code>DeleteOnTermination=true</code></strong> (query
+<code>BlockDeviceMappings</code> on the instance) — that data is
+destroyed along with the instance, potentially including
+not-yet-archived backups (see Phase 13)</li>
+<li>Environment check: if <code>Environment=production</code>, show an
+additional explicit warning before type-to-confirm (see
+<code>DECISIONS.md</code>, “Introduce a light Project/Environment
+tagging convention”)</li>
+<li>Type-to-confirm: user must type the instance ID or name exactly</li>
+<li>Call <code>ec2.TerminateInstances</code></li>
+<li>Structure as: build a resolved <code>TerminateInstanceParams</code>
+struct → reusable confirmation/dry-run gate → execute against
+<code>ec2.TerminateInstances</code> (see <code>DECISIONS.md</code>,
+“Structure workflows for future record/replay”)</li>
+</ul>
+<p><strong>Tests:</strong> dry-run display, including the
+<code>DeleteOnTermination</code> warning present/absent; production-tag
+warning shown/not-shown; type-to-confirm match/mismatch; termination
+success/failure</p>
+<p><strong>Dependency:</strong> Phase 3</p>
+<hr />
+<h2 id="phase-9-manage-tags-done">Phase 9 — Manage Tags (done)</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong>
+<code>internal/workflow/manage_tags.go</code></p>
+<p>Current tags are fetched fresh via
+<code>ec2:DescribeInstances</code>/<code>DescribeImages</code> (both
+already return the full <code>Tags</code> list) rather than a separate
+<code>ec2:DescribeTags</code> call. <code>TagChangeParams</code> stays
+minimal (resource ID, action, key, value), matching Phase 8’s
+<code>TerminateInstanceParams</code> precedent for the
+params-struct/confirm-gate seam.</p>
+<h3 id="work-items-8">Work Items</h3>
+<ul>
+<li>Pick a resource — an instance or an AMI</li>
+<li>Display its current tags</li>
+<li>Choose an action: add (new key/value), update (pick existing key,
+prompt new value), or remove (pick existing key)</li>
+<li>Confirm (simple yes/no — this is cheap and reversible, not the
+dry-run/type-to-confirm tier used for AMI removal or backup deletion)
+via the same reusable confirmation gate used throughout this project’s
+workflows, for consistency and future replay support (see
+<code>DECISIONS.md</code>, “Structure workflows for future
+record/replay”)</li>
+<li>Call <code>ec2.CreateTags</code> (add/update) or
+<code>ec2.DeleteTags</code> (remove)</li>
+<li>Renaming an instance is just updating its <code>Name</code> tag
+through this same flow — no separate code path. This never touches an
+AMI’s <code>Name</code> attribute itself, which is immutable via the AWS
+API once set at <code>CreateImage</code> time — see
+<code>DECISIONS.md</code>, “Add Rename Instance as a v1 primitive; AMI
+Name is immutable”</li>
+<li>If the edited key is <code>Environment</code>, show a brief note
+that it’s the same tag used elsewhere in this tool (Phase 11, Remove
+AMI, and Phase 8, Terminate Instance) to gate production warnings</li>
+</ul>
+<p><strong>Tests:</strong> add/update/remove success paths, for both an
+instance and an AMI target; confirmation decline (no API call made);
+<code>CreateTags</code>/ <code>DeleteTags</code> failure handling</p>
+<p><strong>Dependency:</strong> Phase 3</p>
+<hr />
+<h2 id="phase-10-create-ami-from-ec2-instance-done">Phase 10 — Create
+AMI from EC2 Instance (done)</h2>
+<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> High
+<strong>Files:</strong>
+<code>internal/workflow/{volume_info,fstrim,create_ami_execute,create_ami_from_instance}.go</code></p>
+<p><code>ec2:DescribeVolumes</code> was missing from both the
+<code>EC2API</code> interface and DESIGN.md’s Assumptions list – added
+to both once this phase’s volume- info gathering needed it.
+<code>isSSMOnline</code> is a single-shot check (not Phase 4’s
+poll-based <code>WaitForSSMOnline</code>), matching
+<code>ec2_ami_manager.bash</code>’s <code>check_ssm_availability</code>
+for an instance that’s presumably been running a while already.
+<code>WaitForAMIAvailable</code> has no internal timeout at all (unlike
+every other poll in this codebase) – only the caller’s <code>ctx</code>
+can end it – since the Bash version’s fixed 600-second timeout for this
+exact operation was itself a correctness bug (DECISIONS.md,
+2026-06-30).</p>
+<h3 id="work-items-9">Work Items</h3>
+<ul>
+<li>Pick an instance (running or stopped)</li>
+<li>Gather attached volume info (sizes, prior-snapshot detection) and
+show the volume-size time estimate table (see <code>DESIGN.md</code>,
+“Domain Knowledge Carried Forward”)</li>
+<li>If running: show Invenio RDM (Postgres/OpenSearch/Redis/Docker)
+crash-consistency guidance; offer an SSM fstrim pass (skip cleanly, not
+an error, if SSM is unavailable on the instance)</li>
+<li>Collect AMI name (default suggestion:
+<code>&lt;instance-name-or-id&gt;-copy-&lt;date&gt;</code>, user may
+override), description, no-reboot flag (running instances only), tags —
+<code>Project</code> defaults to the source instance’s
+<code>Project</code> tag if set; <code>Environment</code> is always an
+explicit prompt, no default</li>
+<li>Call <code>ec2.CreateImage</code></li>
+<li>Poll <code>DescribeImages</code> unboundedly until
+<code>available</code> or <code>failed</code> (large Invenio RDM
+volumes: 20–60+ minutes) — no fixed timeout, matching the fix already
+made in the Bash version for this same reason</li>
+<li>Build the <code>TagSpecifications</code> request field as a typed
+SDK struct, not a hand-built string — this is the exact bug class
+(malformed AWS CLI shorthand for tags) that broke the Bash version in
+real use</li>
+<li>Structure as: build a resolved <code>CreateAMIParams</code> struct →
+reusable confirmation/dry-run gate → execute against
+<code>ec2.CreateImage</code> (see <code>DECISIONS.md</code>, “Structure
+workflows for future record/replay”)</li>
+</ul>
+<p><strong>Tests:</strong> volume-info gathering; SSM-unavailable path;
+fstrim success/decline; AMI-name default generation and validation;
+create success/failure; unbounded-poll transitions (available/failed)
+with a fake clock or call-count-based fake</p>
+<p><strong>Dependency:</strong> Phase 3</p>
+<hr />
+<h2 id="phase-11-remove-ami-done">Phase 11 — Remove AMI (done)</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>internal/workflow/remove_ami.go</code></p>
+<p>The dependency check (<code>instancesUsingAMI</code>) filters the
+already-fetched inventory listing by <code>ImageID</code> rather than
+making a fresh AWS call – Phase 2’s <code>ListInstances</code> already
+carries each instance’s <code>ImageID</code>. Reuses
+<code>ConfirmDestructive</code> from Phase 8 unchanged.</p>
+<h3 id="work-items-10">Work Items</h3>
+<ul>
+<li>Pick an owned AMI</li>
+<li>Dry-run display: what would be deleted</li>
+<li>Dependency check: list instances currently referencing this AMI’s
+<code>ImageId</code></li>
+<li>Environment check: if the AMI’s <code>Environment</code> tag is
+<code>production</code>, show an additional explicit warning before
+type-to-confirm (see <code>DECISIONS.md</code> “Introduce a light
+Project/Environment tagging convention”)</li>
+<li>Type-to-confirm: user must type the AMI ID or name exactly</li>
+<li>Call <code>ec2.DeregisterImage</code></li>
+<li>Structure as: build a resolved <code>RemoveAMIParams</code> struct →
+reusable confirmation/dry-run gate → execute against
+<code>ec2.DeregisterImage</code> (see <code>DECISIONS.md</code>,
+“Structure workflows for future record/replay”)</li>
+</ul>
+<p><strong>Tests:</strong> dry-run display; dependency detection (AMI in
+use / not in use); production-tag warning shown/not-shown;
+type-to-confirm match/mismatch; removal success/failure</p>
+<p><strong>Dependency:</strong> Phase 3</p>
+<hr />
+<h2 id="phase-12-showexport-cloud-init-done">Phase 12 — Show/Export
+Cloud-Init (done)</h2>
+<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> High
+<strong>Files:</strong>
+<code>internal/workflow/{cloud_init_instance,cloud_init_ami,cloud_init_export,show_cloud_init}.go</code></p>
+<p>The always-terminate guarantee is a <code>defer</code> against a
+cleanup-scoped
+<code>context.WithTimeout(context.Background(), 30s)</code>,
+deliberately decoupled from the caller’s <code>ctx</code> so cleanup
+isn’t skipped by an early return <em>or</em> by <code>ctx</code> itself
+being cancelled. Verified with dedicated tests asserting
+<code>TerminateInstances</code> is called exactly once across every
+failure path (SSM never online, command fails, instance never reaches
+running) and exactly zero times when launch itself fails (nothing to
+clean up).</p>
+<h3 id="work-items-11">Work Items</h3>
+<ul>
+<li>Pick an instance or an AMI (either is a valid target)</li>
+<li><strong>Instance path</strong>: call
+<code>ec2.DescribeInstanceAttribute</code> (attribute
+<code>userData</code>), base64-decode, display; report plainly (not as
+an error) if no user-data was set</li>
+<li><strong>AMI path</strong> — costs real time/money, so requires its
+own explicit confirmation before proceeding (see <code>DESIGN.md</code>
+Security Considerations):
 <ol type="1">
-<li>Create EC2 instance from AMI</li>
-<li>Create AMI from EC2 instance</li>
-<li>Remove AMI</li>
-<li>Refresh resource lists</li>
-<li>Exit</li>
+<li>Launch the smallest available instance type from the AMI, tagged to
+mark it disposable
+(e.g. <code>Purpose=cloud-init-extraction</code>)</li>
+<li>Poll until <code>running</code> and SSM reports <code>Online</code>,
+with a <strong>bounded</strong> timeout (this is a diagnostic
+side-operation, not core creation — unlike Phase 10’s unbounded poll, it
+should fail cleanly rather than wait indefinitely)</li>
+<li><code>ssm.SendCommand</code> to read
+<code>/var/lib/cloud/instance/user-data.txt</code>, then
+<code>ssm.GetCommandInvocation</code> for the output</li>
+<li><strong>Always</strong> call <code>ec2.TerminateInstances</code> on
+the temporary instance afterward — including when SSM never comes online
+or the command fails. This must be structured so cleanup cannot be
+skipped by an early return (Go’s <code>defer</code>, or an equivalent
+explicit cleanup path covered by tests)</li>
 </ol></li>
-<li>Accept user input with validation</li>
+<li>The AMI path’s launch-confirmation step uses the same reusable
+confirmation gate used throughout this project’s workflows, not a
+one-off implementation (see <code>DECISIONS.md</code>, “Structure
+workflows for future record/replay”)</li>
+<li><strong>Export</strong>: prompt for a local file path and write the
+decoded YAML there, for manual comparison against a local clone of
+<code>caltechlibrary/cloud-init-examples</code>. No inline
+fetch-and-diff against the GitHub repo in v1 (see
+<code>DECISIONS.md</code>, “Add Show/Export Cloud-Init as a v1
+primitive”, and the Deferred section below)</li>
 </ul>
-<p><strong>Tests:</strong> - Test menu display with data - Test menu
-display with no data - Test valid menu selection - Test invalid menu
-selection (expect re-prompt)</p>
-<p><strong>Dependency:</strong> Phase 2, Phase 3</p>
+<p><strong>Tests:</strong> instance-path success; instance-path
+no-user-data-set; AMI-path full happy path with a fake SSM client;
+AMI-path cleanup-on-SSM-timeout (assert <code>TerminateInstances</code>
+is still called); AMI-path cleanup-on-command-failure; export-to-file
+success and path-error handling</p>
+<p><strong>Dependency:</strong> Phase 1, Phase 2, Phase 3</p>
 <hr />
-<h4 id="m1-main-loop">M1 — Main Loop</h4>
-<p><strong>Effort:</strong> ~2 hours <strong>Files:</strong>
-<code>ec2_ami_manager.bash</code></p>
+<h2 id="phase-13-backup-archive-trim-done-unit-tests-only">Phase 13 —
+Backup Archive &amp; Trim (done, unit tests only)</h2>
+<p><strong>Effort:</strong> ~10 hours <strong>Priority:</strong> High
+<strong>Files:</strong>
+<code>internal/workflow/{backup_list,backup_upload,backup_verify,backup_delete,backup_archive}.go</code></p>
+<p>Age filtering happens in Go (<code>FilterByAge</code>), not in the
+remote <code>find</code> command – the SSM command only lists every
+file’s size/mtime; all threshold logic is local and independently
+testable, avoiding fragile shell-arithmetic date math. Building the
+remote upload/delete scripts reintroduces the shell-quoting risk
+category this whole rewrite exists to eliminate for <em>local</em>
+command construction – SSM’s API only accepts a command string, so it’s
+unavoidable here. Caught a real quoting bug in review: the upload
+script’s S3 destination URI and echoed key were unquoted (only the
+source path was), which would have broken on any filename containing a
+single quote – fixed by routing every dynamic value through
+<code>shellQuote</code> and passing it as a separate <code>printf</code>
+argument rather than interpolating into a double-quoted string.</p>
+<p>Real-AWS verification remains blocked on the S3 bucket and target
+instance IAM policy the user still needs to set up outside this repo
+(per <code>DESIGN.md</code> Assumptions #3-4) – flagged rather than
+guessed at.</p>
+<h3 id="work-items-12">Work Items</h3>
 <ul>
-<li>Create main loop that:
-<ul>
-<li>Calls <code>show_main_menu()</code></li>
-<li>Dispatches to appropriate function based on selection</li>
-<li>Handles errors gracefully</li>
-<li>Refreshes data after state-changing operations</li>
-<li>Exits cleanly on option 5</li>
-</ul></li>
-<li>Implement signal handling (Ctrl+C) for graceful exit</li>
+<li>Pick an instance</li>
+<li>Prompt for the backup directory and an age threshold in days — both
+explicit, no baked-in default (same reasoning as the
+<code>Environment</code> tag having no default: force a deliberate
+choice)</li>
+<li><strong>Dry-run list</strong> (SSM, read-only): candidate files
+matching the age threshold, with size and age, shown before anything
+else happens</li>
+<li><strong>Type-to-confirm</strong> before proceeding — same safety
+tier as Phase 11’s (Remove AMI) destructive-action pattern</li>
+<li><strong>Upload phase</strong> (SSM): instance uploads each candidate
+file to S3 via its own AWS CLI/credentials, reports back a small
+per-file JSON summary (S3 key, size). Nothing deleted yet</li>
+<li><strong>Independent verification</strong>: the tool’s own
+<code>S3API.HeadObject</code> (Phase 1), using the operator’s
+credentials, confirms each uploaded key exists with the expected size —
+this, not the instance’s self-report, is what authorizes deletion</li>
+<li><strong>Delete phase</strong> (a <em>second</em>, separate SSM
+command): instance deletes exactly the tool-verified file list, not a
+re-derived one</li>
+<li><strong>fstrim</strong> (reuse Phase 10’s SSM fstrim mechanism),
+then report bytes freed and any files that failed verification (left
+untouched)</li>
+<li>Structure as: build a resolved <code>BackupArchiveParams</code>
+struct (directory, age threshold, bucket) → reusable
+confirmation/dry-run gate → execute the upload/verify/delete/fstrim
+sequence (see <code>DECISIONS.md</code>, “Structure workflows for future
+record/replay”)</li>
 </ul>
-<p><strong>Tests:</strong> - Test menu navigation - Test operation
-dispatch - Test refresh after operations - Test clean exit</p>
-<p><strong>Dependency:</strong> M0, all Phase 4-6 items</p>
+<p><strong>Tests:</strong> dry-run empty result; dry-run with matches;
+type-to-confirm mismatch; full happy path (all files verified, deleted,
+fstrim runs) with fake
+<code>EC2API</code>/<code>SSMAPI</code>/<code>S3API</code>;
+partial-verification-failure path (only verified files deleted, failures
+reported, fstrim still runs on whatever was freed); SSM-unavailable
+path</p>
+<p><strong>Dependency:</strong> Phase 1 (including the
+<code>S3API</code>), Phase 2, Phase 3. Real-AWS verification (Phase 16)
+additionally depends on Phase 4, since the live test target is a
+throwaway instance launched from an existing AMI that already has these
+backups baked in — never tested directly against a production
+instance.</p>
 <hr />
-<h2 id="phase-8-polish-and-error-handling">Phase 8 — Polish and Error
-Handling</h2>
+<h2 id="phase-14-main-menu-and-integration-done">Phase 14 — Main Menu
+and Integration (done)</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>cmd/awsops/main.go</code>,
+<code>internal/workflow/menu.go</code></p>
+<p>Closed an architectural gap Phases 4-13 deliberately deferred here:
+each of the ten orchestrators originally took a single-region
+<code>EC2API</code>/ <code>SSMAPI</code>, but Phase 2 aggregates
+instances/AMIs across all four regions, so the right client isn’t known
+until <em>after</em> a resource is picked inside the orchestrator. Fixed
+by changing each orchestrator to take per-region client maps and resolve
+(<code>internal/workflow/region_clients.go</code>) by the picked
+resource’s <code>Region</code> field immediately after the pick –
+touched all ten orchestrator files and their tests, verified
+build/vet/race clean after each one before moving to the next.</p>
+<p><code>menu.go</code>’s <code>MenuActions</code> struct of
+<code>func(ctx) error</code> closures (bound by <code>main.go</code> to
+live clients and a mutable instance/AMI snapshot) lets menu dispatch
+itself be tested with fakes, without driving any workflow’s full
+interactive prompt sequence. Ctrl+C between prompts cancels
+<code>ctx</code> via <code>signal.NotifyContext</code> (every poll loop
+already selects on <code>ctx.Done()</code>); Ctrl+C/Ctrl+D
+<em>during</em> an active prompt surfaces as
+<code>termlib.ErrInterrupted</code>/ <code>io.EOF</code> instead,
+handled the same way in the menu loop.</p>
+<h3 id="work-items-13">Work Items</h3>
+<ul>
+<li><code>ShowMainMenu</code> — header, live instance/AMI listings
+(Phase 2 + 3), 12-option menu, input validation loop</li>
+<li>Main loop: dispatch to Phase 4/5/6/7/8/9/10/11/12/13 workflows,
+refresh listings after each state-changing operation, handle
+<code>Ctrl+C</code> (<code>os/signal</code>) for a clean exit</li>
+<li>Wire real AWS clients (Phase 1) into the workflows at startup</li>
+</ul>
+<p><strong>Tests:</strong> menu navigation and dispatch (fake
+workflows); refresh-after- operation; clean exit; signal handling</p>
+<p><strong>Dependency:</strong> Phase 4, 5, 6, 7, 8, 9, 10, 11, 12,
+13</p>
+<hr />
+<h2 id="phase-15-polish-and-error-handling-done">Phase 15 — Polish and
+Error Handling (done)</h2>
 <p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong>
 Medium</p>
-<h3 id="work-items-7">Work Items</h3>
+<h3 id="work-items-14">Work Items</h3>
 <ul class="task-list">
-<li><label><input type="checkbox" />Add loading indicators for long
-operations</label></li>
-<li><label><input type="checkbox" />Add color coding for states
-(green=running, red=stopped, etc.)</label></li>
-<li><label><input type="checkbox" />Add comprehensive error messages
-with actionable advice</label></li>
-<li><label><input type="checkbox" />Add input validation for all user
-inputs</label></li>
-<li><label><input type="checkbox" />Add timeout handling for AWS CLI
-calls</label></li>
-<li><label><input type="checkbox" />Add pagination for large lists
-(&gt;50 items)</label></li>
+<li><label><input type="checkbox" checked="" />Loading indicators for
+long operations (AMI creation polling, cloud-init AMI extraction, backup
+archive upload/verify) – <code>progress_ticker.go</code>’s
+<code>startProgressTicker</code>, a goroutine-backed periodic status
+line whose <code>stop()</code> blocks until the goroutine has fully
+exited (no race with the caller’s next write)</label></li>
+<li><label><input type="checkbox" checked="" />Color output for state
+(running=green, stopped/failed=red, etc.), with a
+<code>NO_COLOR</code>/non-TTY fallback – <code>ui.ColorEnabled()</code>
+(checked once at startup in <code>main.go</code>) +
+<code>DisplayInstances</code>’s new <code>colorEnabled</code> parameter;
+<code>DisplayImages</code> needed no change since AMIs carry no varying
+state after Phase 2’s <code>available</code>-only filter</label></li>
+<li><label><input type="checkbox" checked="" />Actionable error messages
+(unwrap AWS SDK errors to their API error code, not just the raw Go
+error string) – <code>formatError</code>, wired into
+<code>menu.go</code>’s two error-display sites</label></li>
+<li><label><input type="checkbox" checked="" />Input validation for all
+prompts – audited every prompt; added validators for
+previously-unvalidated required fields (KeyName,
+SecurityGroupIDs-at-least-one, SubnetID, Name tag in both launch flows;
+the AMI name’s AWS character/length constraint; a non-empty tag key on
+Manage Tags’ Add action)</label></li>
+<li><label><input type="checkbox" checked="" />Context-based timeouts
+for AWS calls (<code>context.WithTimeout</code>) –
+<code>call_timeout.go</code>’s <code>withCallTimeout</code> (30s),
+applied to every one-shot (non-polling) AWS call across ~13 call sites;
+polling functions already bound themselves via their own timeout
+parameter</label></li>
+<li><label><input type="checkbox" checked="" />Pagination for large
+lists (&gt;50 items) – rewrote <code>ui.PickList</code> to paginate
+(<code>'n'</code>/<code>'p'</code> navigation) once
+<code>len(items)</code> exceeds the 50-item page size; selection numbers
+stay global across pages so a page boundary never changes what number
+picks a given item</label></li>
 </ul>
+<p><strong>Dependency:</strong> Phase 14</p>
 <hr />
-<h2 id="phase-9-testing">Phase 9 — Testing</h2>
-<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> High</p>
-<h3 id="work-items-8">Work Items</h3>
-<ul class="task-list">
-<li><label><input type="checkbox" />Write BATS tests for all
-functions</label></li>
-<li><label><input type="checkbox" />Create mock AWS CLI responses for
-testing</label></li>
-<li><label><input type="checkbox" />Test error scenarios</label></li>
-<li><label><input type="checkbox" />Test edge cases (empty lists,
-missing resources, etc.)</label></li>
-<li><label><input type="checkbox" />Run full test suite against real AWS
-(with test account)</label></li>
-<li><label><input type="checkbox" />Performance testing with many
-resources</label></li>
-</ul>
-<hr />
-<h2 id="phase-10-documentation">Phase 10 — Documentation</h2>
+<h2 id="phase-15.1-debug-logging--debug-done">Phase 15.1 — Debug Logging
+(-debug) (done)</h2>
 <p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
 Medium</p>
-<h3 id="work-items-9">Work Items</h3>
+<h3 id="work-items-15">Work Items</h3>
 <ul class="task-list">
-<li><label><input type="checkbox" />Add usage instructions to script
-header</label></li>
-<li><label><input type="checkbox" />Create README.md with:</label>
+<li><label><input type="checkbox"
+checked="" /><code>internal/debuglog</code>: nil-receiver-safe
+<code>*DebugLog</code> type
+(<code>Log</code>/<code>Path</code>/<code>Close</code>), JSONL sink,
+timestamped default path (see DESIGN.md, “Debug Logging”; DECISIONS.md,
+“Add -debug: a JSONL log of every AWS SDK call”)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient</code>:
+<code>WrapEC2</code>/<code>WrapSSM</code>/<code>WrapS3</code>/<code>WrapSTS</code>
+logging decorators over
+<code>EC2API</code>/<code>SSMAPI</code>/<code>S3API</code>/<code>STSAPI</code>,
+all four built on one shared generic helper (<code>logAWSCall</code>);
+each returns the client unwrapped when the debug log is nil</label></li>
+<li><label><input type="checkbox" checked="" /><code>cmd/awsops</code>:
+<code>-debug</code> flag, wraps every client right after construction,
+prints the log’s path to stderr once at startup</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>helptext.go</code>/<code>awsops.1.md</code>: document
+<code>-debug</code> in OPTIONS</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 1 (AWS Client Layer)</p>
+<hr />
+<h2 id="phase-15.2-create-key-pair-inline-done">Phase 15.2 — Create Key
+Pair inline (done)</h2>
+<p><strong>Effort:</strong> ~1.5 hours <strong>Priority:</strong>
+Medium</p>
+<h3 id="work-items-16">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient</code>:
+<code>EC2API.CreateKeyPair</code>; <code>-debug</code> logging wrapper
+redacts <code>KeyMaterial</code> instead of using the shared
+<code>logAWSCall</code> helper (see DESIGN.md, “Debug Logging”;
+DECISIONS.md, “Support creating a new key pair from within
+awsops”)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/create_key_pair.go</code>:
+<code>createKeyPair</code> (calls <code>ec2:CreateKeyPair</code>, saves
+the private key to <code>~/.ssh/&lt;name&gt;.pem</code> at
+<code>0600</code>) and <code>promptKeyPairNameOrCreate</code> (typing
+<code>new</code> at the Key pair name prompt switches into the
+create-a-new-one sub-flow; a name collision re-prompts, any other error
+propagates)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+both launch flows’ Key pair name prompt goes through
+<code>promptKeyPairNameOrCreate</code> instead of a plain
+<code>ui.Prompt</code></label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from
+AMI)</p>
+<hr />
+<h2 id="phase-15.3-iam-instance-profile-pick-or-create-done">Phase 15.3
+— IAM Instance Profile pick-or-create (done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
+Medium</p>
+<p>Real-AWS testing hit
+<code>InvalidParameterValue: ... Invalid IAM Instance Profile name</code>
+at launch – see DECISIONS.md, “Support picking or creating an IAM
+instance profile from within awsops”.</p>
+<h3 id="work-items-17">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient</code>: new <code>IAMAPI</code>
+interface (<code>ListInstanceProfiles</code>, <code>ListRoles</code>,
+<code>CreateInstanceProfile</code>,
+<code>AddRoleToInstanceProfile</code>), <code>NewIAMClient</code>
+(single global client, like STS), <code>WrapIAM</code>
+(<code>-debug</code> logging via the shared <code>logAWSCall</code>
+helper – no special redaction needed, unlike
+<code>CreateKeyPair</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/resource_lists.go</code>:
+<code>InstanceProfileInfo</code>/ <code>listInstanceProfiles</code>,
+<code>RoleInfo</code>/<code>listRoles</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/create_instance_profile.go</code>:
+<code>promptIAMInstanceProfileOrCreate</code> (pick list + “(none)” +
+“Create new instance profile (attach an existing role)”, always offered
+even when the list is empty; falls back to free text only if the list
+call itself errors), <code>createInstanceProfileInteractive</code> (pick
+a role, prompt a name defaulting to the role’s name, retry on
+<code>EntityAlreadyExists</code>),
+<code>createInstanceProfileFromRole</code>
+(<code>iam:CreateInstanceProfile</code> +
+<code>iam:AddRoleToInstanceProfile</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>/
+<code>create_instance_from_ami.go</code>/<code>create_instance_from_cloud_init.go</code>:
+threaded a new <code>awsclient.IAMAPI</code> parameter through; the IAM
+instance profile prompt goes through
+<code>promptIAMInstanceProfileOrCreate</code> instead of a plain
+<code>ui.Prompt</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/awsops/main.go</code>: constructs one global IAM
+client (wrapped for <code>-debug</code>), passed to both Create Instance
+workflows</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from
+AMI)</p>
+<hr />
+<h2
+id="phase-15.4-derive-key-pair-name-from-a-private-key-filenamepath-done">Phase
+15.4 — Derive key pair name from a private key filename/path (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong>
+Medium</p>
+<p>Real-AWS testing hit <code>InvalidKeyPair.NotFound</code> from typing
+a private key file path at “Key pair name” – see DECISIONS.md, “Derive
+the AWS key pair name from a private key filename/path”.</p>
+<h3 id="work-items-18">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/create_key_pair.go</code>:
+<code>looksLikeKeyFilename</code> (path separator, <code>~</code>
+prefix, or <code>.pem</code>/<code>.ppk</code>/<code>.key</code>
+extension), <code>keyPairNameFromFilePath</code> (expands
+<code>~</code>, falls back to checking <code>keyDir</code> for a bare
+filename, derives the name from the basename),
+<code>isReadableFile</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>promptKeyPairNameOrCreate</code>: recognized
+key-filename input is validated as readable and derived into an AWS key
+pair name instead of being sent to AWS as-is; an unreadable path
+re-prompts with a local error. Existing “new” sub-flow extracted
+unchanged into <code>createNewKeyPairInteractive</code> so the outer
+loop could add this without duplicating retry logic</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.2 (Create Key Pair inline)</p>
+<hr />
+<h2
+id="phase-15.5-pre-flight-check-instance-type-vs.-subnet-availability-zone-done">Phase
+15.5 — Pre-flight check: instance type vs. subnet Availability Zone
+(done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
+Medium</p>
+<p>Real-AWS testing (via the <code>-debug</code> log) hit
+<code>Unsupported: ... instance type ... is not supported in ... Availability Zone</code>
+– see DECISIONS.md, “Pre-flight check: instance type vs. subnet
+Availability Zone”.</p>
+<h3 id="work-items-19">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient</code>:
+<code>EC2API.DescribeInstanceTypeOfferings</code>; <code>-debug</code>
+logging wrapper via the shared <code>logAWSCall</code>
+helper</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/instance_type_az_check.go</code>:
+<code>instanceTypeOfferedInAZ</code>,
+<code>instanceTypeOfferedAZs</code>,
+<code>ensureInstanceTypeSupportedInSubnet</code> (pick list: change
+instance type / pick a different subnet / abort – “abort” returns
+<code>ui.ErrCancelled</code>, reusing the existing cancellation
+path)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>promptSubnetID</code>
+(<code>launch_prompts.go</code>): return type changed from
+<code>(string, error)</code> to <code>(SubnetInfo, error)</code> so the
+picked subnet’s Availability Zone is available without a redundant
+lookup; the free-text fallback path returns an empty
+<code>AvailabilityZone</code> (“unknown, skip the check”)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+call <code>ensureInstanceTypeSupportedInSubnet</code> right after the
+subnet is picked, using its (possibly updated) instance type and subnet
+for the rest of the flow</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from
+AMI)</p>
+<hr />
+<h2 id="phase-15.6-instance-type-curated-pick-list-done">Phase 15.6 —
+Instance type: curated pick list (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Instance type pick list: curated shortlist, not
+the full AWS catalog”.</p>
+<h3 id="work-items-20">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/launch_prompts.go</code>:
+<code>curatedInstanceTypes</code> (~11 hand-picked types with
+vCPU/memory labels, including t2.micro/t2.medium as the only
+non-ENA-required entries – see DECISIONS.md, “Add non-ENA-required
+options to the curated instance type list”),
+<code>instanceTypeChoice</code>/<code>instanceTypeChoiceLabel</code>,
+<code>promptInstanceType</code> (pick list + “Other” free-text
+fallback)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+“Instance type” prompt goes through <code>promptInstanceType</code>
+instead of a plain <code>ui.Prompt</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>instance_type_az_check.go</code>’s “Change instance
+type” recovery step also goes through <code>promptInstanceType</code>,
+for consistency</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from
+AMI)</p>
+<hr />
+<h2
+id="phase-15.7-pre-flight-check-instance-type-vs.-ami-ena-support-done">Phase
+15.7 — Pre-flight check: instance type vs. AMI ENA support (done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
+Medium</p>
+<p>Real-AWS testing hit
+<code>InvalidParameterCombination: Enhanced networking ... is required for the '&lt;type&gt;' instance type</code>
+– see DECISIONS.md, “Pre-flight check: instance type vs. AMI ENA
+support”. Closes the ENA item queued in TODO.md since an earlier
+session.</p>
+<h3 id="work-items-21">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/inventory/images.go</code>:
+<code>Image.EnaSupport bool</code>, populated from the existing
+<code>DescribeImages</code> call (no new AWS call)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient</code>:
+<code>EC2API.DescribeInstanceTypes</code>; <code>-debug</code> logging
+wrapper via the shared <code>logAWSCall</code> helper</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/instance_type_ena_check.go</code>:
+<code>instanceTypeRequiresENA</code>,
+<code>ensureInstanceTypeENACompatible</code> (pick list: change instance
+type / abort – no “pick a different AMI” option, unlike the AZ check’s
+“pick a different subnet”)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+call <code>ensureInstanceTypeENACompatible</code> right after the
+instance type is picked, using the already-known AMI’s
+<code>EnaSupport</code></label></li>
+<li><label><input type="checkbox" checked="" />Incompatibility message
+names <code>t2.micro</code>/<code>t2.medium</code> explicitly and points
+at the out-of-scope permanent fix (enable ENA on the source instance,
+re-create the AMI) – see DECISIONS.md, “Add non-ENA-required options to
+the curated instance type list” (real-world use showed every curated
+type failing this check for a legacy AMI, with no way to recover without
+already knowing an answer outside awsops)</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from AMI),
+Phase 15.6 (reuses <code>promptInstanceType</code>)</p>
+<hr />
+<h2
+id="phase-15.8-tolerate-post-launchpost-create-eventual-consistency-windows-done">Phase
+15.8 — Tolerate post-launch/post-create eventual-consistency windows
+(done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong> High</p>
+<p>A real, confirmed launch failed immediately after
+<code>RunInstances</code> succeeded – see DECISIONS.md, “Tolerate
+DescribeInstances’ post- RunInstances eventual-consistency window”. Not
+an edge case: a near-certain race on every launch that happened to hit
+AWS’s brief propagation window.</p>
+<h3 id="work-items-22">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/launch_execute.go</code>:
+<code>isInstanceNotYetVisible</code>; <code>waitUntilState</code>
+tolerates <code>InvalidInstanceID.NotFound</code> as “not visible yet”
+instead of a hard failure</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/create_ami_execute.go</code>:
+<code>isImageNotYetVisible</code>; <code>WaitForAMIAvailable</code>
+tolerates the AMI-side analog, <code>InvalidAMIID.NotFound</code> –
+fixed preemptively, same failure class, same code shape, not yet
+reported but certain to recur</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from AMI),
+Phase 5 (Create AMI from EC2 Instance)</p>
+<hr />
+<h2
+id="phase-15.9-filter-the-subnet-picker-by-instance-type-availability-zone-support-done">Phase
+15.9 — Filter the subnet picker by instance-type Availability Zone
+support (done)</h2>
+<p><strong>Effort:</strong> ~1.5 hours <strong>Priority:</strong>
+Medium</p>
+<p>Real-AWS testing surfaced repeated instance-type/subnet
+back-and-forth – see DECISIONS.md, “Filter the subnet picker by
+instance-type Availability Zone support”.</p>
+<h3 id="work-items-23">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/instance_type_az_check.go</code>:
+<code>filterSubnetsByInstanceTypeAZ</code> (best-effort narrowing; falls
+back to the unfiltered list on lookup error or if filtering would leave
+zero subnets)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>promptSubnetID</code>
+(<code>launch_prompts.go</code>): gained an <code>instanceType</code>
+parameter, applies the filter before building its pick list</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>/
+<code>instance_type_az_check.go</code>’s “Pick a different subnet”
+branch: updated to pass the already-known instance type
+through</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>ensureInstanceTypeSupportedInSubnet</code> (Phase
+15.5) unchanged – remains the safety net for cases filtering can’t
+cover</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.5 (Pre-flight check: instance
+type vs. subnet Availability Zone)</p>
+<hr />
+<h2
+id="phase-15.10-move-show-resource-lists-to-the-top-of-the-compute-menu-done">Phase
+15.10 — Move “Show resource lists” to the top of the Compute menu
+(done)</h2>
+<p><strong>Effort:</strong> ~30 minutes <strong>Priority:</strong>
+Low</p>
+<p>See DECISIONS.md, “Move ‘Show resource lists’ to the top of the
+Compute menu; rename from ‘Refresh’”.</p>
+<h3 id="work-items-24">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/menu.go</code>: renamed “Refresh
+resource lists” to “Show resource lists”, moved to position 1;
+<code>MenuActions.Refresh</code> field name unchanged</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>menu_test.go</code>: updated every menu-item-number
+reference</label></li>
+<li><label><input type="checkbox" checked="" /><code>DESIGN.md</code>’s
+Compute Menu ASCII diagram and <code>TEST_PLAN_REAL_AWS.txt</code>’s
+menu-order checklist updated to match, preserving existing
+<code>[ok]</code> markers against renamed/renumbered items</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 14 (Main Menu and Integration)</p>
+<hr />
+<h2
+id="phase-15.11-auto-detect-a-bare-existing-file-path-in-user-data-cloud-init-yaml-input-done">Phase
+15.11 — Auto-detect a bare existing-file path in User data / Cloud-init
+YAML input (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong>
+Medium</p>
+<p>Real-world use: typing <code>newt-machine.yaml</code> (no
+<code>@</code> prefix) at the Cloud-init YAML prompt silently became the
+instance’s literal user-data instead of loading the file – see
+DECISIONS.md, “Auto-detect a bare existing-file path in User data /
+Cloud-init YAML input”.</p>
+<h3 id="work-items-25">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/userdata.go</code>:
+<code>loadUserData</code> gained a <code>*termlib.Terminal</code>
+parameter; when input has no <code>@</code> prefix but a file exists at
+that exact path, load it anyway with an on-screen note, instead of
+silently using the filename as literal text</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+updated call sites (both already had <code>t</code> in
+scope)</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from AMI),
+Phase 5 (Create EC2 Instance from Cloud-Init YAML)</p>
+<hr />
+<h2
+id="phase-15.12-create-ec2-instance-from-cloud-init-yaml-always-reads-from-a-file-done">Phase
+15.12 — Create EC2 Instance from Cloud-Init YAML always reads from a
+file (done)</h2>
+<p><strong>Effort:</strong> ~1.5 hours <strong>Priority:</strong>
+Medium</p>
+<p>Follow-up to Phase 15.11: for this specific prompt, “inline text or
+<span class="citation" data-cites="file">@file</span> path” was itself
+the wrong shape – see DECISIONS.md, “Create EC2 Instance from Cloud-Init
+YAML always reads from a file”.</p>
+<h3 id="work-items-26">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/userdata.go</code>:
+<code>promptCloudInitYAMLFile</code> – always treats input as a file
+path (optional leading <code>@</code> tolerated, not required),
+re-prompts with a clear error on a missing/unreadable file instead of
+falling back to literal text</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_from_cloud_init.go</code>: cloud-init prompt
+now calls <code>promptCloudInitYAMLFile</code> instead of
+<code>ui.Prompt</code> + <code>loadUserData</code>; no longer shares
+<code>loadUserData</code> with Feature 2’s optional “User data” field at
+all</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_from_cloud_init_test.go</code>/<code>create_instance_from_cloud_init_test.go</code>:
+rewrote every test that exercised this prompt with inline
+<code>"#cloud-config"</code> text to use a real temp-file fixture
+(<code>writeCloudInitFixture</code> helper) instead; added coverage for
+the leading-<code>@</code> tolerance and the retry-on-unreadable-file
+path</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.11 (Auto-detect a bare
+existing-file path in User data / Cloud-init YAML input)</p>
+<hr />
+<h2
+id="phase-15.13-offer-official-ubuntu-lts-amis-alongside-owned-amis-done">Phase
+15.13 — Offer official Ubuntu LTS AMIs alongside owned AMIs (done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Offer official Ubuntu LTS AMIs alongside owned
+AMIs when picking a base AMI”.</p>
+<h3 id="work-items-27">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/official_ubuntu_amis.go</code>:
+<code>ubuntuAMIOwnerID</code> constant (Canonical’s public AWS account
+ID), <code>curatedUbuntuReleases</code> (24.04, 22.04, amd64 only),
+<code>latestUbuntuAMI</code> (most recent match per release/region via
+<code>ec2:DescribeImages</code>),
+<code>listOfficialUbuntuAMIsInRegion</code>,
+<code>listOfficialUbuntuAMIs</code> (sequential per-region aggregation),
+<code>imagesWithOfficialUbuntu</code> (best-effort merge with owned
+AMIs; falls back to owned-only on lookup error)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+both AMI pick lists now call <code>imagesWithOfficialUbuntu</code>
+before display</label></li>
+<li><label><input type="checkbox" checked="" /><code>EnaSupport</code>
+carried through from the real <code>DescribeImages</code> response for
+curated Ubuntu entries, so the ENA pre-flight check (Phase 15.7) doesn’t
+false-positive on a modern, actually-ENA- enabled official
+AMI</label></li>
+<li><label><input type="checkbox" checked="" />Real-AWS testing (via
+<code>-debug</code>) caught a wrong <code>name</code> filter pattern
+(missing the <code>ubuntu/images/hvm-ssd*/</code> prefix Canonical’s
+real AMI names carry) that silently matched zero AMIs in every region –
+see DECISIONS.md, “Fix official Ubuntu AMI name filter pattern”;
+corrected in both curated release patterns</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from AMI),
+Phase 15.6 (curated instance-type list), Phase 15.7 (ENA pre-flight
+check)</p>
+<hr />
+<h2
+id="phase-15.14-narrow-configured-regions-to-us-west-1us-west-2-done">Phase
+15.14 — Narrow configured regions to us-west-1/us-west-2 (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong> High</p>
+<p>See DECISIONS.md, “Narrow configured regions to us-west-1/us-west-2”
+– follow-up to the official-Ubuntu-AMI feature surfacing a region
+(<code>us-west-1</code>) with no provisioned key pairs.</p>
+<h3 id="work-items-28">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient/regions.go</code>,
+<code>regions_test.go</code>: <code>Regions</code> narrowed from four
+regions to <code>{us-west-1, us-west-2}</code></label></li>
+<li><label><input type="checkbox" checked="" /><code>helptext.go</code>,
+<code>DESIGN.md</code> (Overview, ASCII diagram, generic “four regions”
+references genericized to avoid re-hardcoding a count): updated to
+match. <code>awsops.1.md</code> regenerates from
+<code>helptext.go</code> via the existing <code>cmt</code>/Makefile
+pipeline, not edited by hand</label></li>
+<li><label><input type="checkbox" checked="" /><code>TODO.md</code>,
+<code>TEST_PLAN_REAL_AWS.txt</code>: active (non-historical) “four
+regions” mentions updated; historical <code>DECISIONS.md</code> entries
+describing what was true when originally decided left
+unchanged</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 1 (region configuration)</p>
+<hr />
+<h2
+id="phase-15.15-validate-key-pair-name-against-the-amis-region-done">Phase
+15.15 — Validate key pair name against the AMI’s region (done)</h2>
+<p><strong>Effort:</strong> ~3 hours <strong>Priority:</strong> High</p>
+<p>A real launch failed with <code>InvalidKeyPair.NotFound</code> after
+every prompt was already answered and confirmed – see DECISIONS.md,
+“Validate key pair name against the AMI’s region”.</p>
+<h3 id="work-items-29">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/resource_lists.go</code>:
+<code>listKeyPairs</code>
+(<code>ec2:DescribeKeyPairs</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/create_key_pair.go</code>:
+<code>promptKeyPairNameOrCreate</code> rewritten to a region-scoped pick
+list (existing key pairs + “Create new key pair”, no “Other” escape
+hatch – key pairs are a complete, enumerable list, unlike AMIs/instance
+types); original free-text logic (the “new” keyword, key-file-path
+auto-detection) preserved verbatim as
+<code>promptKeyPairNameFreeText</code>, now solely the fallback for when
+<code>ec2:DescribeKeyPairs</code> itself errors</label></li>
+<li><label><input type="checkbox" checked="" />Updated every test
+exercising the full launch flow with a zero-key-pairs fake
+(<code>launch_instance_test.go</code>,
+<code>launch_from_cloud_init_test.go</code>,
+<code>create_instance_from_ami_test.go</code>,
+<code>create_instance_from_cloud_init_test.go</code>) to select “Create
+new key pair” from the now-shown pick list instead of typing a bare name
+directly</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from AMI),
+Phase 15.2 (Create Key Pair inline), Phase 15.4 (key filename/path
+derivation)</p>
+<hr />
+<h2
+id="phase-15.16-tolerate-getcommandinvocations-post-sendcommand-eventual-consistency-window-done">Phase
+15.16 — Tolerate GetCommandInvocation’s post-SendCommand
+eventual-consistency window (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong> High</p>
+<p>Third instance of the same eventual-consistency bug pattern found
+this session – see DECISIONS.md, “Tolerate GetCommandInvocation’s
+post-SendCommand eventual-consistency window”.</p>
+<h3 id="work-items-30">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/ssm.go</code>:
+<code>isInvocationNotYetVisible</code>; <code>RunShellCommand</code>’s
+poll loop tolerates <code>InvocationDoesNotExist</code> as “not visible
+yet” instead of a hard failure, matching
+<code>isInstanceNotYetVisible</code>/<code>isImageNotYetVisible</code>’s
+shape exactly</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 4 (Create EC2 Instance from AMI –
+introduced <code>RunShellCommand</code>/the cloud-init completion
+check)</p>
+<hr />
+<h2 id="phase-15.17-.awsops-yaml-config-file-done">Phase 15.17 —
+<code>~/.awsops</code> YAML config file (done)</h2>
+<p><strong>Effort:</strong> ~2.5 hours <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Add a <code>~/.awsops</code> YAML config file for
+awsops’ own operational settings”.</p>
+<h3 id="work-items-31">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>go get gopkg.in/yaml.v3</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/config/config.go</code>: <code>Config</code>
+struct (<code>Regions []string</code>, <code>yaml:"regions"</code>),
+<code>DefaultRegions</code> (<code>[us-west-1, us-west-2]</code>),
+<code>DefaultPath()</code> (<code>~/.awsops</code>, falling back to a
+cwd-relative <code>.awsops</code> if the home directory can’t be
+resolved, matching <code>sshKeyDir()</code>’s existing fallback
+pattern), <code>Load(path)</code> (missing file -&gt; defaults, not an
+error; malformed YAML -&gt; a real error; valid file with
+<code>regions</code> unset/empty -&gt;
+<code>DefaultRegions</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient/regions.go</code>/<code>regions_test.go</code>
+removed; <code>client_test.go</code>’s sanity test now uses a small
+test-local region literal instead of the removed shared var</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/awsops/main.go</code>: new <code>-config</code>
+flag (default <code>config.DefaultPath()</code>), loads config early
+(fails fast on a parse error, matching every other startup failure
+mode), uses <code>cfg.Regions</code> everywhere
+<code>awsclient.Regions</code> was read</label></li>
+<li><label><input type="checkbox" checked="" /><code>helptext.go</code>:
+documents <code>-config</code></label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.14 (Narrow configured regions
+to us-west-1/us-west-2)</p>
+<hr />
+<h2 id="phase-15.18-highlight-picklists-prompt-header-done">Phase 15.18
+— Highlight PickList’s prompt header (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong> Low</p>
+<p>See DECISIONS.md, “Highlight PickList’s prompt header when color is
+enabled”.</p>
+<h3 id="work-items-32">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/color.go</code>: package-level
+<code>colorEnabled</code> flag + <code>SetColorEnabled(bool)</code>
+setter; <code>Highlight(s string) string</code> wraps <code>s</code> in
+<code>termlib.Bold</code>/<code>termlib.Reset</code> when enabled, else
+returns <code>s</code> unchanged</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/picklist.go</code>: <code>PickList</code>
+prints <code>Highlight(prompt)</code> as its own line before the
+numbered list, not just as the trailing input query – so a wrong menu
+selection is visible before reading through the list</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/awsops/main.go</code>:
+<code>ui.SetColorEnabled(colorEnabled)</code> alongside the existing
+<code>ui.ColorEnabled()</code> call</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15 (Color output for state –
+<code>ui.ColorEnabled()</code>, <code>NO_COLOR</code>/non-TTY
+fallback)</p>
+<hr />
+<h2
+id="phase-15.19-configure-per-instance-backup-directories-by-name-pattern-done">Phase
+15.19 — Configure per-instance backup directories by Name pattern
+(done)</h2>
+<p><strong>Effort:</strong> ~1.5 hours <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Configure per-instance backup directories by Name
+pattern”.</p>
+<h3 id="work-items-33">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/config/config.go</code>:
+<code>BackupDirectoryRule</code> struct (<code>Pattern</code>,
+<code>Directory</code>, both <code>string</code>),
+<code>Config.BackupDirectories     []BackupDirectoryRule</code>
+(<code>yaml:"backup_directories"</code>),
+<code>BackupDirectoryFor(rules, instanceName) string</code> (first
+<code>path.Match</code> hit wins, in list order; “” for no match or an
+empty instanceName)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>BackupArchiveAndTrim</code> takes a new
+<code>backupDirRules []config.BackupDirectoryRule</code> parameter;
+pre-fills the “Backup directory” prompt via <code>ui.WithDefault</code>
+when <code>config.BackupDirectoryFor</code> matches, otherwise unchanged
+(required, no default)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/awsops/main.go</code>: passes
+<code>cfg.BackupDirectories</code> through</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.17 (<code>~/.awsops</code> YAML
+config file)</p>
+<hr />
+<h2
+id="phase-15.20-per-file-upload-progress-for-backup-archive-trim-done">Phase
+15.20 — Per-file upload progress for Backup Archive &amp; Trim
+(done)</h2>
+<p><strong>Effort:</strong> ~1.5 hours <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Per-file upload progress for Backup Archive &amp;
+Trim”.</p>
+<h3 id="work-items-34">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_upload.go</code>:
+<code>UploadProgress</code> struct (<code>Done</code>,
+<code>Total</code>, <code>BytesDone</code>, <code>BytesTotal</code>,
+<code>Result</code>); <code>UploadBackupFiles</code> runs one
+<code>ssm:SendCommand</code> per file (was one batched script for the
+whole list) and takes a new <code>onProgress func(UploadProgress)</code>
+parameter (nil-safe), invoked after each file completes</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>formatBytes</code> helper (human-scaled sizes, e.g. “1.2 GiB”);
+upload phase now prints “… uploading N/M (bytes of total) - OK/FAIL key”
+per file via the new callback, replacing the generic 30s heartbeat
+ticker for this phase only (the verify phase keeps its existing
+heartbeat)</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 11 (Backup Archive &amp; Trim)</p>
+<hr />
+<h2
+id="phase-15.21-preflight-check-s3-bucket-access-before-backup-archive-trims-dry-run-list-done">Phase
+15.21 — Preflight check: S3 bucket access before Backup Archive &amp;
+Trim’s dry-run list (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Preflight check: S3 bucket access before Backup
+Archive &amp; Trim’s dry-run list”.</p>
+<h3 id="work-items-35">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient/s3.go</code>: <code>S3API</code>
+gains <code>HeadBucket</code>; real client (via the SDK),
+<code>internal/awsclient/logging_s3.go</code>’s decorator, and the test
+fake all implement it</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_verify.go</code>:
+<code>CheckS3BucketAccess(ctx,     client, bucket) error</code> –
+<code>s3:HeadBucket</code>, wraps any error with the bucket name and a
+permissions hint</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>BackupArchiveAndTrim</code> calls <code>CheckS3BucketAccess</code>
+immediately after the “S3 bucket” prompt, aborting before the dry-run
+list, type-to-confirm, or upload</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 11 (Backup Archive &amp; Trim)</p>
+<hr />
+<h2
+id="phase-15.22-resolve-a-buckets-actual-region-before-backup-archive-trims-access-check-done">Phase
+15.22 — Resolve a bucket’s actual region before Backup Archive &amp;
+Trim’s access check (done)</h2>
+<p><strong>Effort:</strong> ~1.5 hours <strong>Priority:</strong>
+High</p>
+<p>Real-AWS regression found immediately after Phase 15.21 shipped – see
+DECISIONS.md, “Resolve a bucket’s actual region before Backup Archive
+&amp; Trim’s access check”.</p>
+<h3 id="work-items-36">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient/s3.go</code>: <code>S3API</code>
+gains <code>GetBucketLocation</code>; real client,
+<code>internal/awsclient/logging_s3.go</code>’s decorator, and the test
+fake all implement it</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_verify.go</code>:
+<code>BucketRegion(ctx, client,     bucket) (string, error)</code> –
+<code>s3:GetBucketLocation</code>, mapping “” -&gt; “us-east-1” and the
+legacy “EU” -&gt; “eu-west-1”</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>BackupArchiveAndTrim</code> gains a
+<code>newS3Client func(ctx, region) (awsclient.S3API, error)</code>
+parameter; after the “S3 bucket” prompt, calls <code>BucketRegion</code>
+on the original <code>s3Client</code>, then <code>newS3Client</code> to
+build a region-scoped client used for <code>CheckS3BucketAccess</code>
+and every later <code>s3:HeadObject</code> verification
+call</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/awsops/main.go</code>: supplies the
+<code>newS3Client</code> factory closure alongside the original probe
+<code>s3Client</code></label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.21 (Preflight check: S3 bucket
+access)</p>
+<hr />
+<h2 id="phase-15.23-namespace-backup-uploads-by-instance-done">Phase
+15.23 — Namespace backup uploads by instance (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Namespace backup uploads by instance”.</p>
+<h3 id="work-items-37">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_upload.go</code>:
+<code>uploadKey(prefix, filePath)     string</code>
+(<code>path.Join</code>, prefix dropped if empty);
+<code>buildUploadCommand</code> and <code>UploadBackupFiles</code> both
+gain a <code>prefix</code> parameter, used for every destination
+key</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>BackupArchiveAndTrim</code> derives the prefix from the picked
+instance’s Name tag (falls back to its instance ID if blank), passes it
+to <code>UploadBackupFiles</code>, and uses the same
+<code>uploadKey</code> to build <code>pathByKey</code> for delete
+resolution</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 11 (Backup Archive &amp; Trim)</p>
+<hr />
+<h2
+id="phase-15.24-show-instance-ip-addresses-in-the-main-listing-done">Phase
+15.24 — Show instance IP addresses in the main listing (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong>
+Medium</p>
+<p>See DECISIONS.md, “Show instance IP addresses in the main
+listing”.</p>
+<h3 id="work-items-38">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/inventory/instances.go</code>:
+<code>Instance</code> gains <code>PublicIP</code>/<code>PrivateIP</code>
+(from the same <code>DescribeInstances</code> response already fetched);
+<code>instanceFromSDK</code> populates both</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/display.go</code>: <code>orNone</code>
+helper (“none” for a blank IP, distinct from <code>orUnknown</code>’s
+“unknown” for untagged Project/ Environment);
+<code>DisplayInstances</code> adds “PUBLIC IP”/“PRIVATE IP” as two new
+trailing columns</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 1 (Unified Resource Listing)</p>
+<hr />
+<h2
+id="phase-15.25-suppress-aws-s3-cps-progress-output-to-avoid-truncating-the-okfail-signal-done">Phase
+15.25 — Suppress aws s3 cp’s progress output to avoid truncating the
+OK/FAIL signal (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong> High</p>
+<p>Real-AWS regression found immediately after the IAM permission fix
+above – see DECISIONS.md, “Suppress aws s3 cp’s progress output to avoid
+truncating the OK/FAIL signal”.</p>
+<h3 id="work-items-39">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_upload.go</code>:
+<code>buildUploadCommand</code>’s <code>aws s3 cp</code> invocation
+gains <code>--only-show-errors</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive_test.go</code>: two
+<code>ssmCommandResponse</code> substrings updated to match the new
+command text
+(<code>"aws s3 cp --only-show-errors '...'"</code>)</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 15.20 (Per-file upload
+progress)</p>
+<hr />
+<h2
+id="phase-15.26-preflight-check-aws-cli-availability-before-backup-archive-trim-done">Phase
+15.26 — Preflight check: AWS CLI availability before Backup Archive
+&amp; Trim (done)</h2>
+<p><strong>Effort:</strong> ~1 hour <strong>Priority:</strong> High</p>
+<p>Hit twice in a row in real-AWS testing (newauthors, then data-new) –
+see DECISIONS.md, “Preflight check: AWS CLI availability before Backup
+Archive &amp; Trim”.</p>
+<h3 id="work-items-40">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_cli_check.go</code>:
+<code>CheckAWSCLIAvailable(ctx,     client, instanceID, timeout, pollInterval) error</code>
+– <code>command -v     aws</code> via SSM, non-Success status -&gt; a
+clear, actionable error naming the instance</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>BackupArchiveAndTrim</code> calls it immediately after picking the
+instance, before any other prompt or the dry-run list</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive_test.go</code>: five
+existing fakes’ <code>responses</code> gained a
+<code>"command -v aws"</code> entry; four
+<code>sendCommandCalls()</code> count assertions incremented by
+one</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 11 (Backup Archive &amp; Trim)</p>
+<hr />
+<h2 id="phase-16-testing">Phase 16 — Testing</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High</p>
+<h3 id="work-items-41">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" /><code>go test ./...</code> covers
+all packages; target meaningful coverage on
+<code>internal/workflow</code> (the highest-risk, most-interactive
+code)</label></li>
+<li><label><input type="checkbox" />Fakes for
+<code>EC2API</code>/<code>SSMAPI</code>/<code>S3API</code> covering
+error scenarios (throttling, access denied, not-found) — no real AWS
+calls in unit tests</label></li>
+<li><label><input type="checkbox" /><code>TEST_PLAN_REAL_AWS.txt</code>
+run manually against a real AWS account, all four regions, covering
+create-instance, create-instance-from- cloud-init-YAML, create-AMI, tag
+management (add/update/remove, instance and AMI), start/stop/terminate
+(including the <code>DeleteOnTermination</code> warning), both
+Show/Export Cloud-Init paths (including verifying the temporary instance
+from the AMI path is actually terminated), and Backup Archive &amp; Trim
+(against a throwaway instance launched from an existing AMI with real
+backups baked in — not production; requires the S3 bucket and target
+instance profile to exist first)</label></li>
+<li><label><input type="checkbox" />Update
+<code>TEST_PLAN_REAL_AWS.txt</code> if the Go CLI’s exact prompts/flow
+differ from the Bash version’s</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 14</p>
+<hr />
+<h2 id="phase-17-documentation-and-bash-retirement-done">Phase 17 —
+Documentation and Bash Retirement (done)</h2>
+<p><strong>Effort:</strong> ~2 hours <strong>Priority:</strong>
+Medium</p>
+<h3 id="work-items-42">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>README.md</code>:
+overview, prerequisites (Go toolchain removed for end users — ship a
+built binary), installation, usage, examples</label></li>
+<li><label><input type="checkbox" checked="" />Update
+<code>DESIGN.md</code>/<code>DECISIONS.md</code>/<code>PLAN.md</code>
+with any changes made during implementation</label></li>
+<li><label><input type="checkbox" checked="" />Once Phase 16’s real-AWS
+verification passes: retire <code>ec2_ami_manager.bash</code>,
+<code>ami_copy.bash</code>, <code>ami_copy_basic_steps.md</code>, and
+the <code>tests/*.bats</code> suite (record the retirement as a new
+<code>DECISIONS.md</code> entry, per this project’s existing
+retire-after-verify pattern) – done 2026-07-08, see DECISIONS.md,
+“Retire ec2_ami_manager.bash, ami_copy.bash, and the Bash test
+suite”</label></li>
+</ul>
+<p><strong>Dependency:</strong> Phase 16</p>
+<hr />
+<h2 id="phase-18-domain-picker-refactor">Phase 18 — Domain Picker
+Refactor</h2>
+<p><strong>Effort:</strong> ~4 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>internal/ui/domainmenu.go</code>,
+<code>cmd/awsops/main.go</code>,
+<code>internal/workflow/menu.go</code></p>
+<p>Per <code>DECISIONS.md</code>, 2026-07-02 “Redesign navigation as a
+domain picker; add Key Management, S3, and CloudFront domains”. Pure
+navigation refactor — no new AWS calls, and Compute’s existing workflows
+and tests are untouched. Runs alongside Phase 16/17, not blocking or
+blocked by them.</p>
+<h3 id="work-items-43">Work Items</h3>
 <ul>
-<li>Overview</li>
-<li>Prerequisites</li>
-<li>Installation</li>
-<li>Usage</li>
-<li>Examples</li>
-<li>Troubleshooting</li>
-</ul></li>
-<li><label><input type="checkbox" />Update DESIGN.md, DECISIONS.md,
-PLAN.md with any changes from implementation</label></li>
+<li>New top-level domain picker: Compute / Key Management / S3 /
+CloudFront / Exit (see <code>DESIGN.md</code>, “Navigation: Domain
+Picker”)</li>
+<li>Extract Compute’s existing “fetch resources → display → numbered
+menu → dispatch → refresh → loop” pattern into a shared
+<code>internal/ui/domainmenu.go</code> loop, parameterized by a
+resource-fetch function, a display function, and a menu-item list</li>
+<li>Wire Compute’s existing <code>menu.go</code> through the new shared
+loop as the first domain; behavior must be identical to today’s — this
+phase adds no new Compute-visible behavior</li>
+<li>“Back to domain picker” in every domain menu; “Exit” from inside any
+domain menu exits the whole program, not just that domain</li>
+<li>Stub Key Management/S3/CloudFront picker entries as “not yet
+implemented” placeholders until Phases 19-21 land, so this phase can be
+merged and tested independently of them</li>
+</ul>
+<p><strong>Tests:</strong> domain picker dispatches to the right domain
+loop; Compute’s existing workflow tests continue to pass unmodified;
+“Back”/“Exit” behavior from within a domain menu</p>
+<p><strong>Dependency:</strong> Phase 14 (Main Menu and Integration)</p>
+<hr />
+<h2 id="phase-19-key-management-domain">Phase 19 — Key Management
+Domain</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong> <code>internal/inventory/keypairs.go</code>,
+<code>internal/workflow/{keypair_create,keypair_import,keypair_delete}.go</code></p>
+<p>Implements <code>DESIGN.md</code> Features 13-16.</p>
+<h3 id="work-items-44">Work Items</h3>
+<ul>
+<li><code>ListKeyPairs(ctx)</code> across all four regions
+(<code>internal/inventory</code>)</li>
+<li>List Key Pairs display: Name, Region, Type, Fingerprint/Key ID</li>
+<li>Create Key Pair: prompt name + region,
+<code>ec2:CreateKeyPair</code>, save private key to
+<code>~/.ssh/&lt;name&gt;.pem</code> at <code>0600</code> — refactor
+Phase 15.2’s inline create-key-pair logic into this standalone primitive
+so both call sites (this menu entry and Feature 2’s inline “type
+<code>new</code>” shortcut) share one implementation</li>
+<li>Import Key Pair: prompt name + region + local <code>.pub</code> file
+path, validate the file locally before calling AWS,
+<code>ec2:ImportKeyPair</code></li>
+<li>Delete Key Pair: pick a key pair, show dependent instances (filter
+the already-fetched <code>ListInstances</code> result by
+<code>KeyName</code> — no fresh AWS call, same pattern as Phase 11’s
+AMI-dependency check), type-to-confirm,
+<code>ec2:DeleteKeyPair</code></li>
+<li>Wire into the domain picker from Phase 18</li>
+</ul>
+<p><strong>Tests:</strong> fakes for
+<code>DescribeKeyPairs</code>/<code>CreateKeyPair</code>/<code>ImportKeyPair</code>/
+<code>DeleteKeyPair</code> covering success, name-collision re-prompt,
+malformed public key file, dependent-instance detection</p>
+<p><strong>Dependency:</strong> Phase 18; reuses Phase 15.2’s
+<code>CreateKeyPair</code> wrapper</p>
+<hr />
+<h2 id="phase-20-s3-domain-buckets-static-websites">Phase 20 — S3 Domain
+(Buckets &amp; Static Websites)</h2>
+<p><strong>Effort:</strong> ~10 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong> <code>internal/awsclient/s3.go</code>
+(broadened), <code>internal/inventory/buckets.go</code>,
+<code>internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse}.go</code></p>
+<p>Implements <code>DESIGN.md</code> Features 17-21 and the 2026-07-02
+“CloudFront + OAC by default for static websites” decision.</p>
+<h3 id="work-items-45">Work Items</h3>
+<ul>
+<li>Broaden the <code>S3API</code> interface beyond Feature 11’s
+<code>HeadObject</code>-only scope: <code>ListBuckets</code>,
+<code>GetBucketLocation</code>, <code>GetBucketWebsite</code>,
+<code>CreateBucket</code>, <code>PutPublicAccessBlock</code>,
+<code>PutBucketWebsite</code>, <code>PutBucketPolicy</code>,
+<code>PutObject</code>, <code>ListObjectsV2</code>,
+<code>GetObject</code>, <code>DeleteObject</code></li>
+<li><code>ListBuckets(ctx)</code> with per-bucket region +
+static-website-hosting status (<code>internal/inventory</code>) — treat
+<code>GetBucketWebsite</code>’s <code>NoSuchWebsiteConfiguration</code>
+error as “not configured,” not a failure</li>
+<li>Create Bucket: prompt name + region, <code>s3:CreateBucket</code>,
+then <code>s3:PutPublicAccessBlock</code> (all four settings on) by
+default</li>
+<li>Configure Static Website Hosting: pick bucket, prompt index/error
+documents, <code>s3:PutBucketWebsite</code>; a public-read bucket policy
+is an explicit, separately-confirmed opt-out path, never the
+default</li>
+<li>Sync Local Directory to Bucket: dry-run diff (by key + size) against
+the local directory, confirm, upload new/changed
+(<code>s3:PutObject</code>), then a <strong>separate</strong>
+confirm-and-delete step for bucket-only objects
+(<code>s3:DeleteObject</code>) — never bundled into the upload
+confirmation</li>
+<li>Browse/Manage Objects: paginated object listing (reuse Phase 15’s
+PickList pagination for &gt;50 items), metadata display, per-object
+delete with a plain yes/no confirm</li>
+<li>Wire into the domain picker from Phase 18</li>
+</ul>
+<p><strong>Tests:</strong> fakes for each new S3 call covering
+success/error paths (bucket-name-taken, website-not-configured treated
+as non-error, sync diff correctness, upload/delete confirmations never
+bundled)</p>
+<p><strong>Dependency:</strong> Phase 18</p>
+<hr />
+<h2 id="phase-21-cloudfront-domain">Phase 21 — CloudFront Domain</h2>
+<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> Medium
+<strong>Files:</strong> <code>internal/awsclient/cloudfront.go</code>,
+<code>internal/inventory/distributions.go</code>,
+<code>internal/workflow/{distribution_create,distribution_invalidate}.go</code></p>
+<p>Implements <code>DESIGN.md</code> Features 22-25.</p>
+<h3 id="work-items-46">Work Items</h3>
+<ul>
+<li><code>CloudFrontAPI</code> interface:
+<code>ListDistributions</code>, <code>GetDistribution</code>,
+<code>CreateDistribution</code>, <code>CreateOriginAccessControl</code>,
+<code>CreateInvalidation</code>, <code>GetInvalidation</code></li>
+<li>Single <code>us-east-1</code> client construction — no per-region
+fan-out; CloudFront’s control plane is global (see
+<code>DESIGN.md</code>, “Navigation: Domain Picker”)</li>
+<li><code>ListDistributions(ctx)</code>
+(<code>internal/inventory</code>)</li>
+<li>Show Distribution Detail: read-only,
+<code>cloudfront:GetDistribution</code></li>
+<li>Create Distribution: pick or create a bucket (hands off to Phase
+20’s Create Bucket), create or reuse an Origin Access Control for that
+bucket, prompt default root object + optional alternate domain name(s),
+confirm (billable-infrastructure notice, plain confirm not
+type-to-confirm), <code>cloudfront:CreateDistribution</code>, then
+update the bucket policy scoped to this distribution’s ARN
+(<code>s3:PutBucketPolicy</code>), then poll (unbounded) until
+<code>Deployed</code></li>
+<li>Invalidate Cache Paths: pick a distribution, prompt path pattern(s)
+(default <code>/*</code>), confirm,
+<code>cloudfront:CreateInvalidation</code>, poll until
+<code>Completed</code></li>
+<li>Wire into the domain picker from Phase 18</li>
+</ul>
+<p><strong>Tests:</strong> fakes for each new CloudFront call;
+OAC-then-bucket-policy sequencing;
+poll-until-<code>Deployed</code>/<code>Completed</code> with bounded
+test timeouts</p>
+<p><strong>Dependency:</strong> Phase 18, Phase 20 (Create Distribution
+hands off to Create Bucket)</p>
+<hr />
+<h2 id="phase-22-real-aws-testing-key-management-s3-cloudfront">Phase 22
+— Real-AWS Testing: Key Management, S3, CloudFront</h2>
+<p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High
+<strong>Files:</strong> <code>TEST_PLAN_REAL_AWS.txt</code> (extended
+with new sections)</p>
+<p>Mirrors Phase 16’s manual-verification approach, extended to the
+three new domains. Independent of Phase 16/17 (Compute’s own
+verification and Bash retirement) — see <code>DECISIONS.md</code>,
+2026-07-02.</p>
+<h3 id="work-items-47">Work Items</h3>
+<ul>
+<li>Extend <code>TEST_PLAN_REAL_AWS.txt</code> with sections for Key
+Management (create/import/delete against real AWS, all four regions), S3
+(create bucket, configure website hosting, sync a small test site,
+browse/ delete objects), and CloudFront (create a distribution for a
+real test bucket, verify it actually serves content, invalidate, confirm
+the cache refreshes)</li>
+<li>Run manually against the real AWS account, same
+<code>[ok]</code>-marker convention as Phase 16</li>
+<li>Update <code>TEST_PLAN_REAL_AWS.txt</code> if the Go CLI’s exact
+prompts/flow differ from what’s documented</li>
+</ul>
+<p><strong>Dependency:</strong> Phase 19, 20, 21</p>
+<hr />
+<h2 id="deferred-to-a-later-version-phase-23-not-scheduled">Deferred to
+a Later Version (Phase 23+, not scheduled)</h2>
+<p>Not part of v1/v2 — see <code>DECISIONS.md</code>, “V1 scope: ship
+the four primitives first, defer composite workflows”, “Add Show/Export
+Cloud-Init as a v1 primitive”, “Add Backup Archive &amp; Trim as a v1
+primitive”, “Add Rename Instance as a v1 primitive; AMI Name is
+immutable”, “Add Create EC2 Instance from Cloud-Init YAML as a v1
+primitive”, “Add Start/Stop/ Terminate EC2 Instance as v1 primitives”,
+“Structure workflows for future record/replay”, “Redesign navigation as
+a domain picker…”, “CloudFront + OAC by default for static websites”,
+and <code>DESIGN.md</code>, “Deferred to a Later Version”. Recorded here
+so they’re scheduled deliberately once Phase 16/22 pass, not lost:</p>
+<ul>
+<li><strong>Recorded Scripts (“session playbooks”)</strong> — capture an
+interactive session’s actions as an editable, templated YAML script and
+replay it later, with the same confirmation gates as interactive mode
+always enforced (never bypassable for
+<code>Environment=production</code>). Phases 4-13 are already structured
+(params-struct/confirm-gate seam) to support this without rework once
+it’s built; whether Phases 19-21’s new workflows get the same seam is an
+open question for when this is actually built, not decided now</li>
+<li><strong>Clone instance for testing</strong>, <strong>Upgrade with
+rollback point</strong>, and <strong>Bake AMI from cloud-init</strong> —
+composite sequences built from v1’s primitives (Phase 4 + Phase 10, plus
+Phase 12’s SSM/poll/cleanup pattern for the cloud-init case). Once
+Recorded Scripts exist, these likely become example saved scripts rather
+than bespoke Go workflows</li>
+<li><strong>Inline diff against
+<code>cloud-init-examples</code></strong> — fetch a comparison file from
+the GitHub repo and show a unified diff in the tool, instead of Phase
+12’s export-then-manual-diff. Deferred until the repo’s files have a
+clear mapping to this account’s <code>Project</code> tag values</li>
+<li><strong>Edit AMI Description</strong> — an AMI’s <code>Name</code>
+is immutable, but <code>Description</code> can be changed after creation
+via <code>ec2.ModifyImageAttribute</code>. The closest thing to a
+“rename” AWS actually allows for an AMI. Not requested for v1; noted
+here so it isn’t lost (see <code>DECISIONS.md</code>, “Add Rename
+Instance as a v1 primitive; AMI Name is immutable”)</li>
+<li><strong>ACM certificate provisioning</strong> for a CloudFront
+distribution’s alternate domain name — Phase 21 assumes a matching
+certificate already exists in <code>us-east-1</code>;
+requesting/validating a new one is out of scope</li>
+<li><strong>CloudFront functions / Lambda@Edge / WAF
+association</strong> — Phase 21 creates a plain S3-origin distribution
+only</li>
+<li><strong>S3 bucket versioning and lifecycle rules</strong> — Phase
+20’s Create Bucket uses default settings (no versioning, no lifecycle
+policy)</li>
+<li><strong><code>Environment=production</code> safety-gate
+extension</strong> to Delete Key Pair, bucket/object deletion, or
+distribution changes — not extended in Phases 19-21; a candidate for a
+later pass (see <code>DESIGN.md</code> Feature 26)</li>
 </ul>
 <hr />
 <h2 id="priority-order-for-implementation">Priority Order for
@@ -550,13 +1785,13 @@ Implementation</h2>
 <tr>
 <td>Phase 1</td>
 <td>High</td>
-<td>4h</td>
+<td>3h</td>
 <td>Phase 0</td>
 </tr>
 <tr>
 <td>Phase 2</td>
 <td>High</td>
-<td>6h</td>
+<td>4h</td>
 <td>Phase 1</td>
 </tr>
 <tr>
@@ -568,68 +1803,125 @@ Implementation</h2>
 <tr>
 <td>Phase 4</td>
 <td>High</td>
-<td>8h</td>
-<td>Phase 3</td>
-</tr>
-<tr>
-<td>Phase 7</td>
-<td>High</td>
-<td>4h</td>
-<td>Phase 4</td>
+<td>6h</td>
+<td>Phase 1, 3</td>
 </tr>
 <tr>
 <td>Phase 5</td>
 <td>Medium</td>
-<td>6h</td>
-<td>Phase 3</td>
+<td>2h</td>
+<td>Phase 4</td>
 </tr>
 <tr>
 <td>Phase 6</td>
 <td>Medium</td>
-<td>6h</td>
+<td>2h</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Phase 7</td>
+<td>Medium</td>
+<td>2h</td>
 <td>Phase 3</td>
 </tr>
 <tr>
 <td>Phase 8</td>
-<td>Medium</td>
-<td>4h</td>
-<td>Phase 7</td>
+<td>High</td>
+<td>6h</td>
+<td>Phase 3</td>
 </tr>
 <tr>
 <td>Phase 9</td>
-<td>High</td>
-<td>8h</td>
-<td>All</td>
+<td>Medium</td>
+<td>4h</td>
+<td>Phase 3</td>
 </tr>
 <tr>
 <td>Phase 10</td>
+<td>High</td>
+<td>8h</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Phase 11</td>
+<td>High</td>
+<td>6h</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Phase 12</td>
+<td>High</td>
+<td>8h</td>
+<td>Phase 1, 2, 3</td>
+</tr>
+<tr>
+<td>Phase 13</td>
+<td>High</td>
+<td>10h</td>
+<td>Phase 1, 2, 3</td>
+</tr>
+<tr>
+<td>Phase 14</td>
+<td>High</td>
+<td>4h</td>
+<td>Phase 4, 5, 6, 7, 8, 9, 10, 11, 12, 13</td>
+</tr>
+<tr>
+<td>Phase 15</td>
+<td>Medium</td>
+<td>4h</td>
+<td>Phase 14</td>
+</tr>
+<tr>
+<td>Phase 16</td>
+<td>High</td>
+<td>6h</td>
+<td>Phase 14</td>
+</tr>
+<tr>
+<td>Phase 17</td>
 <td>Medium</td>
 <td>2h</td>
-<td>All</td>
+<td>Phase 16</td>
+</tr>
+<tr>
+<td>Phase 18</td>
+<td>High</td>
+<td>4h</td>
+<td>Phase 14 (runs alongside 16/17)</td>
+</tr>
+<tr>
+<td>Phase 19</td>
+<td>Medium</td>
+<td>6h</td>
+<td>Phase 18</td>
+</tr>
+<tr>
+<td>Phase 20</td>
+<td>Medium</td>
+<td>10h</td>
+<td>Phase 18</td>
+</tr>
+<tr>
+<td>Phase 21</td>
+<td>Medium</td>
+<td>8h</td>
+<td>Phase 18, Phase 20</td>
+</tr>
+<tr>
+<td>Phase 22</td>
+<td>High</td>
+<td>6h</td>
+<td>Phase 19, 20, 21</td>
+</tr>
+<tr>
+<td>Phase 23+</td>
+<td>Deferred</td>
+<td>—</td>
+<td>Phase 16, 22 (see above)</td>
 </tr>
 </tbody>
 </table>
-<h2 id="total-estimated-effort">Total Estimated Effort</h2>
-<p><strong>Total:</strong> ~54 hours - Phase 0-4, 7: Core functionality
-(~28 hours) - Phase 5-6: AMI creation/removal (~12 hours) - Phase 8-10:
-Polish, testing, docs (~14 hours)</p>
-<h2 id="milestones">Milestones</h2>
-<ol type="1">
-<li><strong>Milestone 1 (MVP):</strong> Phase 0-4, 7 complete — Basic
-listing and instance creation (~32 hours)</li>
-<li><strong>Milestone 2:</strong> Phase 5-6 complete — Full AMI
-lifecycle management (~40 hours total)</li>
-<li><strong>Milestone 3:</strong> Phase 8-10 complete — Production ready
-(~54 hours total)</li>
-</ol>
-<h2 id="testing-strategy">Testing Strategy</h2>
-<p>All code follows TDD approach: 1. Write tests first for each function
-2. Implement function to pass tests 3. Refactor as needed 4. Maintain
-&gt;80% test coverage</p>
-<p>Test types: - Unit tests: Individual functions with mocked AWS CLI -
-Integration tests: Function interactions with mocked AWS CLI -
-End-to-end tests: Full workflows with mocked AWS CLI - Manual tests:
-Against real AWS with test account</p>
 </section>
 <footer-global></footer-global>
 </body>

@@ -16,6 +16,13 @@
 > in parallel with this redesign — see `PLAN.md`. See `DECISIONS.md`,
 > "Redesign navigation as a domain picker; add Key Management, S3, and
 > CloudFront domains".
+>
+> **2026-07-08: Bash retired.** Phase 16's real-AWS verification
+> (`TEST_PLAN_REAL_AWS.txt`, 112/112 checks) is complete. `ec2_ami_manager.bash`,
+> `ami_copy.bash`, `ami_copy_basic_steps.md`, and `tests/*.bats` have been
+> deleted from this repo; `awsops` is now the sole implementation and the
+> working reference for Compute domain behavior. See `DECISIONS.md`,
+> "Retire ec2_ami_manager.bash, ami_copy.bash, and the Bash test suite".
 
 ## Overview
 

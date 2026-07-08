@@ -17,10 +17,9 @@
     <li><a href="/">All Library Apps</a></li>
     <li><a href="index.html">Home</a></li>
     <li><a href="LICENSE">LICENSE</a></li>
-    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <!-- <li><a href="search.html">Search</a></li> -->
     <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
 </ul>
 </nav>
@@ -30,6 +29,2611 @@
 <p>This file records significant architectural and UX decisions for the
 interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
+<hr />
+<h2
+id="retire-ec2_ami_manager.bash-ami_copy.bash-and-the-bash-test-suite">2026-07-08
+— Retire ec2_ami_manager.bash, ami_copy.bash, and the Bash test
+suite</h2>
+<p><strong>Context.</strong> Phase 16’s manual real-AWS verification
+(<code>TEST_PLAN_REAL_AWS.txt</code>) is now fully signed off: all 112
+checklist items confirmed against real AWS across EC2/AMI instance and
+AMI lifecycle management, tag management, cloud-init inspection, Backup
+Archive &amp; Trim, and the <code>~/.awsops</code> config file. Per this
+project’s own retire-after-verify criterion (see “Retarget
+implementation from Bash to Go” and the 2026-06-30 entries below),
+<code>ec2_ami_manager.bash</code> and <code>ami_copy.bash</code> were
+kept, unchanged, purely as the working reference for the Go rewrite’s
+behavior until parity was verified against real AWS. That condition is
+now met.</p>
+<p><strong>Decision.</strong> <strong>Delete
+<code>ec2_ami_manager.bash</code>, <code>ami_copy.bash</code>,
+<code>ami_copy_basic_steps.md</code>/<code>.html</code>, and the entire
+<code>tests/</code> directory (<code>tests/*.bats</code>,
+<code>tests/lib/test_helper.bash</code>, <code>tests/README.md</code>)
+from the repository.</strong> <code>awsops</code> (Go) is now the sole
+implementation.</p>
+<p><strong>Rationale.</strong> - Two parallel implementations of the
+same functionality is a maintenance cost with no offsetting benefit,
+once the newer one is verified equivalent or better – the same reasoning
+as the 2026-06-30 retirement of
+<code>check_ami.bash</code>/<code>check_ec2_instances.bash</code>. -
+<code>tests/lib/test_helper.bash</code> sources
+<code>ec2_ami_manager.bash</code> directly, and
+<code>tests/README.md</code> documents that BATS suite specifically –
+neither has any purpose once the Bash script they test is gone, so the
+whole <code>tests/</code> directory retires together, not just the
+<code>.bats</code> files. - Verified before deleting: the Makefile,
+<code>website.mak</code>, and Go source under
+<code>cmd/</code>/<code>internal/</code> have no functional dependency
+on these files (some Go source comments cite
+<code>ec2_ami_manager.bash</code> for historical lineage only, which
+don’t affect
+<code>go build</code>/<code>go vet</code>/<code>go test</code>).</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep the Bash files as
+an archived reference</em> — rejected; git history already preserves
+them in full (see the 2026-06-30 entries’ precedent of actual deletion,
+not archival), and a live copy in the tree invites someone eventually
+running the stale, unmaintained version by mistake.</p>
+<p><strong>Consequences.</strong> - <code>TODO.md</code>’s “Superseded
+(Bash version)” section and its remaining Bash-specific items are now
+historical only – the files they describe no longer exist in the working
+tree. - <code>DESIGN.md</code>’s top-of-file banner note about
+<code>ec2_ami_manager.bash</code> “remaining unchanged… until the Go
+version reaches parity” is updated to record this retirement. -
+<code>README.md</code>, <code>INSTALL.md</code>,
+<code>user_manual.md</code>, <code>software_requirements.md</code>, and
+<code>codemeta.json</code> (and its generated
+<code>about.md</code>/<code>CITATION.cff</code>) were rewritten in the
+same pass to describe the Go <code>awsops</code> binary instead of the
+retired Bash scripts – they had drifted since the 2026-07-01 Bash-to-Go
+retarget and still described the original proof-of-concept.</p>
+<hr />
+<h2
+id="preflight-check-aws-cli-availability-before-backup-archive-trim">2026-07-02
+— Preflight check: AWS CLI availability before Backup Archive &amp;
+Trim</h2>
+<p><strong>Context.</strong> A missing AWS CLI on the target instance
+was, by a wide margin, the most common real-AWS failure this project hit
+while verifying Backup Archive &amp; Trim – it happened on
+<code>newauthors</code>, then again on <code>data-new</code>. Both times
+the symptom was identical and indirect: every file in the upload phase
+reported <code>FAIL</code>, with the real cause
+(<code>aws: not found</code>) buried in the -debug JSONL log’s stderr
+capture, several prompts and a full dry-run list deep into the workflow.
+The user’s own framing: “That should be an explicit error we check for
+much like with shell scripts we check if a command exists before trying
+to execute it.”</p>
+<p><strong>Decision.</strong> <code>BackupArchiveAndTrim</code> now
+calls a new <code>CheckAWSCLIAvailable</code>, right after picking the
+instance and before any other prompt, which runs
+<code>command -v aws</code> via SSM and aborts immediately with
+<code>"AWS CLI not found on instance &lt;id&gt; -- install it before running Backup Archive &amp; Trim"</code>
+if it’s missing.</p>
+<p><strong>Rationale.</strong> - <code>command -v aws</code> is the same
+POSIX-portable existence check idiom this project already reaches for
+elsewhere (shellQuote’s own doc comment references similar shell-safety
+discipline) – no new pattern introduced, just applied one layer earlier.
+- Checking immediately after instance selection, before the directory/
+age/bucket prompts and the dry-run list, means a missing CLI is caught
+in the time of one quick SSM round-trip instead of after several prompts
+and a potentially large <code>find</code> listing have already run for
+nothing. - A dedicated check (not just “let the first
+<code>aws s3 cp</code> fail naturally”) turns a misleading generic
+<code>FAIL</code> on every file – requiring a debug-log trip to explain
+– into one specific, actionable, immediate error.</p>
+<p><strong>Consequences.</strong> One extra <code>ssm:SendCommand</code>
+round-trip per Backup Archive &amp; Trim run (negligible cost against
+the dry-run list and uploads that follow).
+<code>internal/workflow/backup_cli_check.go</code> is new; five existing
+tests’ fake SSM clients needed a <code>"command -v aws"</code> response
+entry added, and four <code>sendCommandCalls()</code> count assertions
+shifted by one to account for the new leading check.</p>
+<hr />
+<h2
+id="suppress-aws-s3-cps-progress-output-to-avoid-truncating-the-okfail-signal">2026-07-02
+— Suppress aws s3 cp’s progress output to avoid truncating the OK/FAIL
+signal</h2>
+<p><strong>Context.</strong> After fixing the target instance’s IAM
+permissions, real-AWS testing against <code>newauthors</code> still
+reported every file as <code>FAIL</code> in <code>awsops</code>’s own
+upload progress line – but the debug log showed the underlying
+<code>aws s3 cp</code> had actually succeeded (real transfer progress,
+no error). Inspecting the full <code>ssm:GetCommandInvocation</code>
+<code>StandardOutputContent</code> showed it was truncated at exactly
+24,000 characters – SSM’s documented cap on captured command output –
+cut off mid-way through <code>aws s3 cp</code>’s own
+<code>\r</code>-updated progress meter (“Completed 350.0 MiB/972.0 MiB
+…”), with this script’s own
+<code>printf 'OK\t&lt;key&gt;\t&lt;size&gt;\n'</code> signal never
+reached because the noise ahead of it already filled the entire captured
+buffer.</p>
+<p><strong>Decision.</strong> The remote <code>aws s3 cp</code>
+invocation in <code>buildUploadCommand</code> now runs with
+<code>--only-show-errors</code>, which suppresses its normal per-chunk
+progress output entirely while still writing real error messages to
+stderr (confirmed still working via the earlier
+<code>AccessDenied</code> diagnosis). This keeps stdout limited to just
+this script’s own short <code>OK</code>/<code>FAIL</code> line,
+regardless of file size.</p>
+<p><strong>Rationale.</strong> - The bug scaled with file size, not a
+fixed defect – small files never produced enough progress-meter text to
+hit the 24,000-character cap, which is why it wasn’t caught until
+testing against real, multi-hundred-MB backup files. -
+<code>--only-show-errors</code> (rather than redirecting
+<code>aws s3 cp</code>’s stdout to <code>/dev/null</code> inline, or
+post-processing to strip progress lines) is the AWS CLI’s own supported
+way to ask for exactly this: quiet on success, verbose on failure – no
+fragile string-stripping needed.</p>
+<p><strong>Consequences.</strong> No result-shape or parsing change –
+<code>parseUploadResults</code> and <code>UploadResult</code> are
+unchanged; the fix is entirely in what the remote script asks
+<code>aws s3 cp</code> to emit. Retroactively, this also means any
+earlier “FAIL” report for a large file could have been a false negative
+if the underlying IAM/CLI issue had otherwise been fixed at the time –
+not a concern in practice here, since every prior real-AWS run failed
+for an unrelated, definitively-confirmed reason (missing AWS CLI, then
+missing IAM permission) before ever reaching a file large enough to
+trigger this truncation.</p>
+<hr />
+<h2 id="show-instance-ip-addresses-in-the-main-listing">2026-07-02 —
+Show instance IP addresses in the main listing</h2>
+<p><strong>Context.</strong> While troubleshooting the AWS-CLI-missing
+backup failure, the operator installed the AWS CLI on the wrong EC2
+instance because there was no easy way to see which instance had which
+IP address and SSH to the right one – the main “CURRENT EC2 INSTANCES”
+listing showed ID/Name/State/AMI/Region/Project/Environment, but no IP
+at all. Connection info (<code>displayConnectionInfo</code>) already
+existed, but only as a one-shot printout right after Create/Start – not
+something you could look up for an already-running instance days
+later.</p>
+<p><strong>Decision.</strong> <code>inventory.Instance</code> gains
+<code>PublicIP</code>/<code>PrivateIP</code> fields, populated from the
+same <code>ec2:DescribeInstances</code> call already made for every
+listing (no new API calls). <code>DisplayInstances</code> adds “PUBLIC
+IP” and “PRIVATE IP” as two new trailing columns, rendering “none” (not
+“unknown” – this isn’t missing data, it’s a real, common state for a
+stopped instance or one without a public IP) when blank.</p>
+<p><strong>Rationale.</strong> - Adding columns to the always-shown
+listing, rather than a separate “show connection info” action, means the
+whole fleet’s reachability is visible on every refresh with no extra
+menu step – exactly the “which IP do I SSH to” question that triggered
+this. - Zero additional AWS calls:
+<code>PublicIpAddress</code>/<code>PrivateIpAddress</code> are already
+present on every <code>DescribeInstances</code> response object; this is
+populating fields that were already being fetched and discarded. -
+“none” instead of “unknown” for blank IPs distinguishes a legitimate
+state (no IP assigned) from <code>orUnknown</code>’s existing meaning
+(missing tag data) used for Project/Environment in the same table.</p>
+<p><strong>Consequences.</strong> The table grows two more columns (~26
+more characters per row) – accepted since the existing table (~115
+characters) already assumes a reasonably wide terminal, and no width
+budget was documented as a hard constraint anywhere.</p>
+<hr />
+<h2 id="namespace-backup-uploads-by-instance">2026-07-02 — Namespace
+backup uploads by instance</h2>
+<p><strong>Context.</strong>
+<code>sql-backups.library.caltech.edu</code> is meant to hold backups
+from multiple systems, not just one instance – but every upload key was
+just <code>path.Base</code> of the source file
+(e.g. <code>caltechauthors-db-1-...sql.gz</code> directly at the bucket
+root). Two instances producing identically- or similarly-named backup
+files (a very real possibility – not every system’s backup script embeds
+a distinguishing name the way this one happens to) would silently
+collide and overwrite each other in the shared bucket.</p>
+<p><strong>Decision.</strong> Every upload key is now namespaced by the
+source instance’s Name tag:
+<code>s3://bucket/&lt;name&gt;/&lt;filename&gt;</code>.
+<code>uploadKey(prefix, filePath)</code> builds this from
+<code>path.Join</code>, used consistently for the <code>aws s3 cp</code>
+destination, the <code>printf</code>’d key the instance reports back,
+and the tool’s own <code>s3:HeadObject</code> verification and
+<code>rm -f</code> path resolution. An untagged instance (blank Name)
+falls back to its instance ID as the prefix – every instance needs
+<em>some</em> non-empty, distinguishing prefix, and the ID is always
+available.</p>
+<p><strong>Rationale.</strong> - Name (not instance ID) as the primary
+prefix keeps the bucket browsable by a human restoring from backup –
+<code>newauthors/...</code> reads far better than
+<code>i-0c4c81336aea33d27/...</code>. The ID-on-blank-Name fallback
+covers the one case where Name alone wouldn’t be usable at all. -
+Building the prefix once, in <code>BackupArchiveAndTrim</code>, and
+threading it through as a single <code>prefix</code> parameter to
+<code>UploadBackupFiles</code> (rather than each of upload/verify/delete
+separately reconstructing “which instance is this for”) keeps the same
+value used everywhere a key is built or matched, so upload,
+verification, and delete can never disagree about a file’s key.</p>
+<p><strong>Consequences.</strong> <code>buildUploadCommand</code> and
+<code>UploadBackupFiles</code> gain a <code>prefix</code> parameter;
+<code>BackupArchiveParams</code>’s
+<code>Directory</code>/<code>Bucket</code>-style plain fields didn’t
+need to change since the prefix is derived from the already-available
+picked instance, not a new prompt. Existing backups already sitting at
+the bucket root today are not automatically migrated – an operator
+restoring from a backup uploaded before this change should account for
+that when scripting a bulk migration into the new per-instance prefixes,
+if desired.</p>
+<hr />
+<h2
+id="resolve-a-buckets-actual-region-before-backup-archive-trims-access-check">2026-07-02
+— Resolve a bucket’s actual region before Backup Archive &amp; Trim’s
+access check</h2>
+<p><strong>Context.</strong> Real-AWS testing against
+<code>sql-backups.library.caltech.edu</code> failed with
+<code>AWS error [MovedPermanently]: Moved Permanently</code> on the
+brand-new <code>s3:HeadBucket</code> preflight check (above). The debug
+log showed the call went out scoped to <code>us-west-1</code>
+(<code>cfg.Regions[0]</code>, the region <code>awsops</code>’ single
+global S3 client has always used) – but the bucket isn’t in that region.
+<code>HeadBucket</code>/<code>HeadObject</code> return a bare 301 with
+no useful detail when the calling client’s region doesn’t match the
+bucket’s; DESIGN.md’s “a bucket’s home region is unrelated to the
+instance’s” was correct, but the code never actually resolved
+<em>which</em> region a given bucket is in before talking to it.</p>
+<p><strong>Decision.</strong> <code>BackupArchiveAndTrim</code> now
+takes both the original <code>s3Client</code> (used only to call the new
+<code>BucketRegion</code>, which resolves a bucket’s true region via
+<code>s3:GetBucketLocation</code> – a control-plane call that, unlike
+<code>HeadBucket</code>, works from a client scoped to any region) and a
+<code>newS3Client func(ctx, region) (awsclient.S3API, error)</code>
+factory. Once the bucket’s region is known, <code>newS3Client</code>
+builds a client actually scoped to that region, used for the
+<code>CheckS3BucketAccess</code> preflight and every later
+<code>s3:HeadObject</code> verification call in the run.</p>
+<p><strong>Rationale.</strong> - <code>s3:GetBucketLocation</code>
+exists specifically to answer “what region is this bucket in” without
+already knowing the answer – it’s the standard mechanism for this, not a
+workaround. - A factory function (rather than eagerly building N
+per-region S3 clients at startup, the way EC2/SSM clients are pre-built
+for every configured region) fits S3 better: buckets can be in any AWS
+region, not just the ones in <code>~/.awsops</code>’
+<code>regions</code> list, so there’s no fixed set to pre-build against.
+- Considered and rejected using
+<code>github.com/aws/aws-sdk-go-v2/feature/s3/manager</code>’s
+<code>GetBucketRegion</code> helper (which does something similar by
+inspecting a <code>HeadBucket</code> redirect’s
+<code>x-amz-bucket-region</code> header) – <code>go get</code> reported
+that module deprecated in favor of
+<code>feature/s3/transfermanager</code>, and
+<code>GetBucketLocation</code> alone, already available via the
+<code>service/s3</code> package already in use, needs no new dependency
+at all.</p>
+<p><strong>Consequences.</strong> <code>awsclient.S3API</code> gains
+<code>GetBucketLocation</code> alongside
+<code>HeadObject</code>/<code>HeadBucket</code> (real client, logging
+decorator, and test fake all updated).
+<code>BackupArchiveAndTrim</code>’s signature grows a
+<code>newS3Client</code> parameter; <code>main.go</code> supplies both
+the initial <code>cfg.Regions[0]</code>-scoped probe client and the
+factory closure.</p>
+<hr />
+<h2
+id="preflight-check-s3-bucket-access-before-backup-archive-trims-dry-run-list">2026-07-02
+— Preflight check: S3 bucket access before Backup Archive &amp; Trim’s
+dry-run list</h2>
+<p><strong>Context.</strong> Today’s
+<code>sql-backups.library.caltech.edu</code> bucket test run happened to
+fail for an unrelated reason (the target instance’s AWS CLI wasn’t
+installed), but it highlighted a gap: if the operator’s own credentials
+can’t reach the entered bucket at all (typo’d name, bucket doesn’t exist
+yet, missing <code>s3:ListBucket</code>), the workflow wouldn’t find out
+until the independent verification step, well after the dry-run list,
+the destructive type-to-confirm gate, and a potentially large upload
+have already run.</p>
+<p><strong>Decision.</strong> Right after the “S3 bucket” prompt,
+<code>BackupArchiveAndTrim</code> calls a new
+<code>CheckS3BucketAccess</code>, which does an
+<code>s3:HeadBucket</code> with the operator’s own credentials and
+aborts immediately with an actionable error (naming the bucket, and
+hinting at the likely cause) if it fails – before the dry-run list,
+before type-to-confirm, before any upload.</p>
+<p><strong>Rationale.</strong> - <code>s3:HeadBucket</code> is the
+standard cheap existence-and-access check: no object needs to exist, and
+both “bucket doesn’t exist” and “no permission” surface as an error from
+this one call. - Checking immediately after the bucket name is entered,
+rather than waiting for the independent verification step later, means
+an operator who mistypes a bucket name finds out in seconds, not after a
+dry-run list and (potentially large) upload have already run.</p>
+<p><strong>Consequences.</strong> <code>awsclient.S3API</code> gains
+<code>HeadBucket</code> alongside the existing <code>HeadObject</code>;
+every implementation (the real SDK client, the logging decorator, and
+the test fake) had to add it. No functional change to the
+upload/verify/delete pipeline itself.</p>
+<hr />
+<h2 id="per-file-upload-progress-for-backup-archive-trim">2026-07-02 —
+Per-file upload progress for Backup Archive &amp; Trim</h2>
+<p><strong>Context.</strong> Real-AWS testing on <code>newauthors</code>
+(85 files, ~85 GB total) surfaced that the upload phase’s only feedback
+was a generic “… uploading backup files to S3 (elapsed Xs)” heartbeat
+every 30 seconds – no file count, no bytes, no way to tell whether it
+was actually making progress or stuck, for a phase that can legitimately
+run for a long time on a large backup set.</p>
+<p><strong>Decision.</strong> <code>UploadBackupFiles</code> now runs
+one <code>ssm:SendCommand</code> per file instead of a single script
+covering the whole batch, and takes an
+<code>onProgress func(UploadProgress)</code> callback invoked after each
+file completes with a running <code>Done</code>/<code>Total</code> file
+count and <code>BytesDone</code>/ <code>BytesTotal</code>.
+<code>BackupArchiveAndTrim</code> uses this to print one line per file:
+<code>... uploading 12/84 (1.2 GiB of 85.5 GiB) - OK &lt;key&gt;</code>.</p>
+<p><strong>Rationale.</strong> - Real per-file progress requires the
+client to observe each file’s outcome individually, which is only
+possible if each file is its own SSM command –
+<code>ssm:GetCommandInvocation</code> doesn’t expose partial stdout
+mid-script for a single long-running batched command. - A callback (not
+a hardcoded print inside <code>UploadBackupFiles</code>) keeps the
+SSM-calling code testable without capturing terminal output, and leaves
+<code>nil</code> as a valid “don’t care” value for callers that don’t
+need a live display (as the existing unit tests exercise).</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep one batched
+script, just upgrade the heartbeat to a spinner.</em> Cheaper, but still
+can’t report which file or how far through the batch the operation
+actually is – doesn’t address the real ask.</p>
+<p><strong>Consequences.</strong> One
+<code>ssm:SendCommand</code>/<code>ssm:GetCommandInvocation</code>
+round-trip pair per file instead of one for the whole batch – more AWS
+API calls and a bit more wall-clock overhead per file (each carries its
+own poll-until-terminal wait), accepted in exchange for real progress
+visibility on backup sets that can take a long time regardless.
+<code>DefaultBackupUploadTimeout</code> (30 minutes) is now a per-file
+timeout rather than a whole-batch timeout, which is more generous in
+aggregate than before – appropriate since a single ~1 GB file uploading
+within 30 minutes is already a very loose bound.</p>
+<hr />
+<h2
+id="configure-per-instance-backup-directories-by-name-pattern">2026-07-02
+— Configure per-instance backup directories by Name pattern</h2>
+<p><strong>Context.</strong> Backup Archive &amp; Trim’s “Backup
+directory” prompt has no default, by design (DESIGN.md, Feature 11) —
+every run requires an explicit, deliberate value. In practice, though,
+the value is predictable per machine: RDM instances all use
+<code>/opt/rdm_sql_backups</code>, while some other service’s instances
+use a different fixed path. Typing the same known path from memory every
+run invites a typo, and there was no way to record “this is the answer
+for this kind of instance” now that <code>~/.awsops</code> (above)
+exists for exactly this kind of site-specific setting.</p>
+<p><strong>Decision.</strong> <code>~/.awsops</code> gains
+<code>backup_directories</code>, an ordered list of
+<code>{pattern, directory}</code> rules. <code>pattern</code> is matched
+against the picked instance’s Name tag using <code>path.Match</code>’s
+glob syntax (<code>*</code>, <code>?</code>, <code>[...]</code>); the
+first matching rule’s <code>directory</code> pre-fills the “Backup
+directory” prompt as an editable default (<code>ui.WithDefault</code>) —
+pressing Enter accepts it, typing something else overrides it. No match
+(including an untagged instance with a blank Name) leaves the prompt
+exactly as it behaved before this setting existed: required, no
+default.</p>
+<p><strong>Rationale.</strong> - Matching by Name (not the Project tag
+also carried by instances) was an explicit choice over Project-tag
+matching: Name tags already encode the kind of machine an operator is
+looking at (e.g. <code>rdm-*</code> covers every RDM instance across all
+its Projects) and glob patterns let one rule cover a whole family of
+instance names without requiring every instance to carry a distinct
+Project value. - Pre-filling as an <em>editable</em> default, not
+skipping the prompt entirely, keeps this consistent with every other
+field on this workflow’s confirmation gate: no field is silently
+accepted without the operator seeing it, since Backup Archive &amp; Trim
+is a genuinely destructive operation (DESIGN.md, Feature 11). - A
+malformed or non-matching pattern degrades to “no default” rather than
+an error — a typo’d pattern in <code>~/.awsops</code> shouldn’t be able
+to break the workflow, only fail to save a keystroke.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Match by Project tag
+instead of Name.</em> Simpler in principle (one tag already used for
+grouping elsewhere), but doesn’t fit the stated use case as well:
+multiple Projects can share the same backup directory convention
+(e.g. every RDM Project uses the same path), which a Name-glob
+(<code>rdm-*</code>) expresses in one rule where per-Project matching
+would need one entry per Project value. - <em>Skip the prompt entirely
+on a match.</em> Faster, but removes the deliberate per-run check this
+workflow’s other fields (age threshold, S3 bucket) also require with no
+silent defaults.</p>
+<p><strong>Consequences.</strong>
+<code>internal/config.BackupDirectoryRule</code> and
+<code>BackupDirectoryFor</code> are new;
+<code>internal/workflow.BackupArchiveAndTrim</code> gains a
+<code>backupDirRules []config.BackupDirectoryRule</code> parameter,
+wired from <code>cfg.BackupDirectories</code> in <code>main.go</code>.
+<code>internal/workflow</code> now imports <code>internal/config</code>
+for the first time.</p>
+<hr />
+<h2
+id="highlight-picklists-prompt-header-when-color-is-enabled">2026-07-02
+— Highlight PickList’s prompt header when color is enabled</h2>
+<p><strong>Context.</strong> Real-AWS testing surfaced a UX gap: after
+picking a main menu action by number (e.g. typing 4 for Start instead of
+5 for Stop), the resulting pick list looks the same regardless of which
+action was chosen – the operator has to read through the whole list of
+instances to notice the mismatch, since the only place the action name
+(“Select an instance to start”) appeared was buried at the bottom as the
+trailing input prompt.</p>
+<p><strong>Decision.</strong> <code>ui.PickList</code> now prints its
+<code>prompt</code> argument as its own line <em>before</em> the
+numbered list, wrapped in a bold ANSI escape when color output is
+enabled (<code>ui.Highlight</code>), so the action name is the first
+thing on screen. Color enablement for this is a new package-level flag
+(<code>ui.SetColorEnabled</code>, read by <code>Highlight</code>), set
+once in <code>main.go</code> from the same
+<code>ui.ColorEnabled()</code> result already computed for
+<code>DisplayInstances</code>’s STATE column.</p>
+<p><strong>Rationale.</strong> - The header must appear <em>before</em>
+the list, not just as the trailing input query, to actually save the
+reread the operator asked for – otherwise the highlighted text is the
+last thing read, not the first. - A package-level flag (rather than
+threading a <code>colorEnabled bool</code> parameter through
+<code>PickList</code> and the ~26 call sites across 16 workflow files
+that reach it) keeps this a small, low-risk change for a cosmetic
+feature. <code>DisplayInstances</code>/<code>DisplayImages</code> keep
+their existing explicit-parameter style since they’re called directly
+from <code>main.go</code> with no intervening call chain. - Bold (not a
+hue like green/red/yellow) avoids implying success, failure, or a
+warning – meanings already claimed by <code>stateColor</code>’s use of
+color for instance state.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Thread
+<code>colorEnabled</code> through every workflow function down to
+<code>PickList</code>.</em> Consistent with
+<code>DisplayInstances</code>’s style, but a large diff (16 files,
+dozens of function signatures) for a purely cosmetic feature; revisit if
+a second cross-cutting per-call setting emerges that would justify
+threading a shared options struct instead. - <em>Color the prompt only
+in its existing position (after the list).</em> Doesn’t address the
+actual complaint – the operator has already read the list by the time
+they reach it.</p>
+<p><strong>Consequences.</strong> <code>internal/ui/color.go</code>
+gains one small piece of mutable package state
+(<code>colorEnabled</code>, defaulting to <code>false</code>, set once
+at startup and never changed thereafter) – acceptable since it’s
+write-once and read-only from that point on, and every unit test that
+doesn’t call <code>SetColorEnabled</code> observes the same disabled
+default as before this change.</p>
+<hr />
+<h2
+id="add-a-.awsops-yaml-config-file-for-awsops-own-operational-settings">2026-07-02
+— Add a <code>~/.awsops</code> YAML config file for awsops’ own
+operational settings</h2>
+<p><strong>Context.</strong> Narrowing configured regions (above) meant
+editing a Go source constant and rebuilding. That’s fine for a one-off,
+but the conversation that led to it – and the mention of S3 bucket
+settings the S3 domain will eventually need – made clear this will keep
+happening as the tool grows into more domains (S3, CloudFront, Key
+Management), each likely wanting its own site-specific defaults.
+Rebuilding the binary to change a setting doesn’t scale past the first
+one or two changes.</p>
+<p><strong>Decision.</strong> <code>awsops</code> now reads its own
+operational settings from an optional YAML file at
+<code>~/.awsops</code> (overridable with
+<code>-config &lt;path&gt;</code>), parsed with
+<code>gopkg.in/yaml.v3</code>. Scope is deliberately narrow: this file
+covers only settings <code>awsops</code> itself needs to decide <em>how
+it operates</em> (starting with which regions to manage) – it explicitly
+does <strong>not</strong> cover AWS credentials, profiles, or SSO
+configuration, which remain entirely the AWS SDK’s own responsibility
+via the standard chain (<code>~/.aws/credentials</code>,
+<code>~/.aws/config</code>, environment variables) exactly as today.
+<code>internal/config.Config</code> is a single flat struct with one
+YAML-tagged field per setting (<code>Regions []string</code> today); the
+file is optional (missing = built-in defaults,
+<code>[us-west-1, us-west-2]</code> for regions), a field left unset in
+an otherwise-valid file falls back to its own default independently (not
+all-or-nothing), and a malformed file is a hard error, not a silent
+fallback.</p>
+<p><strong>Rationale.</strong> - Directly what was asked: config that
+will “grow to have more fields over time,” built for that now rather
+than retrofitted later, while keeping today’s actual change (regions)
+the only field that does anything yet. - The <code>~/.aws</code>
+boundary matters: conflating “which regions does awsops manage” with
+“which AWS account/credentials is this” would blur two genuinely
+different concerns and risk awsops silently reading or fighting with the
+AWS CLI’s/SDK’s own config files. - Per-field defaults (not
+all-or-nothing) mean a config file only ever needs to state what’s
+actually being overridden – a two-line <code>regions:</code> file today
+doesn’t need to also restate every future setting just because the file
+exists at all. - No versioning/migration machinery: this is a
+single-operator- maintained local dotfile, not a multi-tenant service
+config pushed to many machines by many people – schema evolution here is
+“add a field to the struct,” not a problem that needs solving in
+advance.</p>
+<p><strong>Rejected alternatives.</strong> - <em>JSON via the standard
+library, no new dependency</em> – raised as the no-new-dependency
+alternative; explicitly declined in favor of YAML for hand-editability,
+with <code>gopkg.in/yaml.v3</code> approved for this specific use. -
+<em>Environment variables only</em> – rejected as not scaling to
+structured/ list settings (a region list today; likely nested settings
+later, e.g. per-domain defaults) the way a YAML file naturally does. -
+<em>A versioned/migrating config schema</em> – rejected as solving a
+problem this tool doesn’t have: there’s one file, on one machine,
+maintained by the person running the tool, not a config format needing
+backward- compatibility guarantees across independently-upgrading
+consumers.</p>
+<p><strong>Consequences.</strong> - New dependency:
+<code>gopkg.in/yaml.v3</code>. - New package:
+<code>internal/config</code> (<code>Config</code>,
+<code>DefaultRegions</code>, <code>DefaultPath</code>,
+<code>Load</code>). - <code>internal/awsclient/regions.go</code> and
+<code>regions_test.go</code> removed – region-list ownership moves
+entirely to <code>internal/config</code>;
+<code>internal/awsclient/client_test.go</code>’s sanity test now
+iterates a small test-local region literal instead of a shared package
+var, decoupling it from wherever the “real” list lives. -
+<code>cmd/awsops/main.go</code> gains a <code>-config</code> flag
+(default <code>config.DefaultPath()</code>), loads the config early
+(failing fast on a parse error, matching every other startup failure
+mode), and uses <code>cfg.Regions</code> everywhere
+<code>awsclient.Regions</code> was read before.</p>
+<hr />
+<h2
+id="tolerate-getcommandinvocations-post-sendcommand-eventual-consistency-window">2026-07-02
+— Tolerate GetCommandInvocation’s post-SendCommand eventual-consistency
+window</h2>
+<p><strong>Context.</strong> A real launch succeeded all the way through
+<code>RunInstances</code> and reaching <code>running</code>, then failed
+during the cloud-init completion check:
+<code>Error: AWS error [InvocationDoesNotExist]:</code> immediately
+after <code>ssm:SendCommand</code>. The <code>-debug</code> log showed
+exactly one <code>SendCommand</code> followed by exactly one
+<code>GetCommandInvocation</code>, which failed – the identical shape of
+bug as
+<code>InvalidInstanceID.NotFound</code>/<code>InvalidAMIID.NotFound</code>
+(both fixed earlier this session), just on the SSM side: a newly
+submitted command invocation can be briefly invisible to
+<code>ssm:GetCommandInvocation</code> for a few seconds after
+<code>ssm:SendCommand</code> returns its ID.</p>
+<p><strong>Decision.</strong> <code>RunShellCommand</code>’s poll loop
+now tolerates AWS’s own <code>InvocationDoesNotExist</code> the same way
+it already tolerates “not in a terminal status yet” – keep polling
+instead of returning the error. Any other
+<code>GetCommandInvocation</code> error still fails immediately,
+unchanged.</p>
+<p><strong>Rationale.</strong> Exactly the precedent set by the two
+earlier fixes in this same family (DECISIONS.md, “Tolerate
+DescribeInstances’ post-RunInstances eventual-consistency window”): this
+is documented AWS eventual-consistency behavior, not something specific
+to this account, so the fix is to expect it during polling, not to work
+around it operationally.</p>
+<p><strong>Rejected alternatives.</strong> None – same reasoning as the
+two prior fixes in this family; no alternative was seriously
+considered.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/ssm.go</code>:
+<code>isInvocationNotYetVisible</code>, following the exact naming/shape
+convention of <code>isInstanceNotYetVisible</code>
+(<code>launch_execute.go</code>) and <code>isImageNotYetVisible</code>
+(<code>create_ami_execute.go</code>). - This is now the third instance
+of the identical bug pattern found in as many real-AWS testing sessions
+(<code>RunInstances</code>/<code>DescribeInstances</code>,
+<code>CreateImage</code>/<code>DescribeImages</code>,
+<code>SendCommand</code>/<code>GetCommandInvocation</code>) – worth
+remembering as a general AWS API shape (submit an async operation, get
+an ID back, immediately query that ID) rather than three unrelated
+one-off bugs, if a fourth case turns up in an unreviewed code path.</p>
+<hr />
+<h2 id="validate-key-pair-name-against-the-amis-region">2026-07-02 —
+Validate key pair name against the AMI’s region</h2>
+<p><strong>Context.</strong> A real launch failed with AWS’s own
+<code>InvalidKeyPair.NotFound: The key pair 'etd-ami-test' does not exist</code>,
+after every prompt in the flow had already been answered and confirmed.
+The <code>-debug</code> log traced it to the picked AMI resolving to
+<code>us-west-1</code> (a newly-surfaced official Ubuntu AMI region),
+while <code>etd-ami-test</code> only exists as a key pair in
+<code>us-west-2</code> – key pairs are per-region, and the “Key pair
+name” prompt has always been unvalidated free text with no way to know a
+typed name didn’t exist in the target region until this distant
+<code>RunInstances</code> failure. Narrowing configured regions (above)
+reduces how often this specific pairing can occur, but doesn’t fix the
+underlying gap: two regions this team genuinely uses can still have
+different key pairs.</p>
+<p><strong>Decision.</strong> “Key pair name” is now a pick list of key
+pairs that actually exist in the AMI’s region
+(<code>ec2:DescribeKeyPairs</code>), plus “Create new key pair”. Unlike
+Security group IDs/Subnet ID, there is no “Other: type a name” escape
+hatch – <code>ec2:DescribeKeyPairs</code> is a complete, small,
+fully-enumerable list for a region (key pairs, unlike AMIs or instance
+types, have no “public”/cross-account concept to escape to), so a name
+it doesn’t return is guaranteed not to work there. If the region has
+zero key pairs, the list is just “Create new key pair” (with a “No key
+pairs found in this region.” note first) – not a dead end, and no
+ambiguous free-text guess is ever offered as the default path. Falls
+back entirely to the original free-text prompt (with its “new” keyword
+and the key-file-path auto-detection added earlier this session) only if
+<code>ec2:DescribeKeyPairs</code> itself errors (e.g. missing
+permission) – in which case there’s nothing more reliable to offer than
+free text.</p>
+<p><strong>Rationale.</strong> Matches the pattern already established
+for Security group IDs/Subnet ID (and, earlier the same session, the
+subnet-vs- instance-type-AZ filtering): once a resource is region-scoped
+and can be listed, offering a validated pick list instead of unvalidated
+free text turns a distant, confusing AWS error into either a correct
+pick or an explicit, guided “create one” step.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Validate the typed
+free-text name after the fact (check it exists, re-prompt if not),
+keeping free text as the primary input</em> – rejected as strictly more
+code for the same outcome: a pick list validates by construction and
+additionally shows what’s actually available, which a post-hoc check
+alone wouldn’t. - <em>Add an “Other” escape hatch matching Security
+group IDs’ pattern</em> – rejected specifically for key pairs (see
+Decision above) since, unique among this tool’s region-scoped pick
+lists, there is no legitimate case where a name outside
+<code>DescribeKeyPairs</code>’ result could actually work.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/resource_lists.go</code>:
+<code>listKeyPairs</code>. -
+<code>internal/workflow/create_key_pair.go</code>:
+<code>promptKeyPairNameOrCreate</code> rewritten to pick-list-or-create;
+original free-text logic preserved verbatim as
+<code>promptKeyPairNameFreeText</code>, now solely the list-error
+fallback. - Every existing test exercising the full launch flow with a
+zero-key-pairs fake needed its key-pair input line updated from a bare
+typed name to “1) Create new key pair” + the name, since a bare fake
+with no configured key pairs now shows a 1-item pick list rather than
+accepting free text directly – a wide but entirely mechanical ripple
+across <code>launch_instance_test.go</code>,
+<code>launch_from_cloud_init_test.go</code>,
+<code>create_instance_from_ami_test.go</code>, and
+<code>create_instance_from_cloud_init_test.go</code>.</p>
+<hr />
+<h2 id="narrow-configured-regions-to-us-west-1us-west-2">2026-07-02 —
+Narrow configured regions to us-west-1/us-west-2</h2>
+<p><strong>Context.</strong> The official-Ubuntu-AMI addition (above)
+surfaced a real launch failure (<code>InvalidKeyPair.NotFound</code>)
+precisely because it made <code>us-west-1</code> – one of the four
+originally-configured regions this team doesn’t actually run anything in
+– selectable as a base-AMI region for the first time. The account’s real
+resources (key pairs, security groups, subnets already provisioned for
+real use) only exist in <code>us-west-1</code>/<code>us-west-2</code> in
+practice; <code>us-east-1</code>/<code>us-east-2</code> were configured
+from the start but never actually used.</p>
+<p><strong>Decision.</strong> <code>awsclient.Regions</code> narrowed
+from <code>{us-east-1, us-east-2, us-west-1, us-west-2}</code> to
+<code>{us-west-1, us-west-2}</code>. Every region-fanned-out listing,
+pick list, and lookup (instances, AMIs, key pairs once Key Management
+ships, official Ubuntu AMI lookup, etc.) automatically follows since
+they all iterate over this one slice – no other code changes needed.</p>
+<p><strong>Rationale.</strong> Directly shrinks the blast radius of the
+class of bug just found: every region-scoped resource (key pairs,
+security groups, subnets) that doesn’t exist in a region this team never
+uses can no longer surface unexpectedly through a feature (like the
+official-Ubuntu lookup) that fans out across every configured region.
+This doesn’t replace the deeper fix (validating a chosen key pair
+actually exists in the target region – tracked separately) but removes
+the two regions most likely to produce this exact surprise with zero
+cost, since nothing runs there anyway.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Leave all four regions
+configured, rely solely on per-resource validation</em> – rejected as
+not mutually exclusive with this change; both are worth doing. Narrowing
+regions fixes the “AMI in a region we don’t use” case at the root;
+validation (separate work) still matters for genuine two-region
+mismatches (e.g. a key pair that only exists in <code>us-west-2</code>
+being typed while launching into <code>us-west-1</code>).</p>
+<p><strong>Consequences.</strong> -
+<code>internal/awsclient/regions.go</code>, <code>regions_test.go</code>
+updated. - <code>DESIGN.md</code>/<code>helptext.go</code> updated;
+<code>awsops.1.md</code> regenerates from <code>helptext.go</code> via
+the existing <code>cmt</code>/Makefile pipeline, not edited by hand. -
+Every existing region-fanned-out feature (instance/AMI listing, official
+Ubuntu AMI lookup) now makes two round-trips instead of four per
+refresh/launch – strictly less work, no behavior change beyond which
+regions are included.</p>
+<hr />
+<h2 id="fix-official-ubuntu-ami-name-filter-pattern">2026-07-02 — Fix
+official Ubuntu AMI name filter pattern</h2>
+<p><strong>Context.</strong> Real-AWS testing of the just-added
+official-Ubuntu-AMI feature (above): the pick list showed only the
+account’s own AMIs, no Ubuntu entries, with no error printed – exactly
+the designed best- effort fallback behavior, which made it silent rather
+than obviously broken. The <code>-debug</code> JSONL log showed why:
+every <code>EC2.DescribeImages</code> call scoped to Canonical’s owner
+ID (<code>099720109477</code>) returned zero images, with no error, for
+both curated releases, every time. The <code>name</code> filter value
+(<code>"ubuntu-noble-24.04-amd64-server-*"</code>, no leading wildcard)
+only matches AMI names that <em>start</em> with that literal string –
+but Canonical’s real, published AMI names are prefixed with a path-like
+<code>ubuntu/images/hvm-ssd/</code> (or the newer
+<code>ubuntu/images/hvm-ssd-gp3/</code>), so the filter could never
+match anything, in any region, ever.</p>
+<p><strong>Decision.</strong> Both curated name patterns gained a
+leading <code>ubuntu/images/hvm-ssd*/</code> segment –
+<code>"ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-amd64-server-*"</code>
+and the Jammy equivalent – anchoring to Canonical’s actual documented
+naming convention (the trailing <code>*</code> after
+<code>hvm-ssd</code> covers both the <code>hvm-ssd</code> and
+<code>hvm-ssd-gp3</code> root-volume-type variants) instead of a bare
+suffix match.</p>
+<p><strong>Rationale.</strong> This is exactly the kind of mistake
+real-AWS testing (not unit tests against a fake) is positioned to catch:
+the fake’s <code>officialUbuntuImages</code> map is keyed by whatever
+literal string the production code happens to pass in, so a test using
+the same wrong literal for both “what the code searches for” and “what
+the fake returns” passes without ever validating that string against
+AWS’s actual naming rules. Nothing about the unit tests was wrong; they
+simply couldn’t have caught this class of error on their own – another
+concrete case for why <code>TEST_PLAN_REAL_AWS.txt</code> and
+<code>-debug</code> remain load- bearing, not just a formality after
+unit tests pass.</p>
+<p><strong>Rejected alternatives.</strong> None – this is a factual
+correction to match Canonical’s real naming convention, not a design
+trade-off.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/official_ubuntu_amis.go</code>:
+<code>curatedUbuntuReleases</code>’ <code>namePattern</code> values
+corrected; a code comment now records the exact failure mode (silent
+zero-match, not an error) so a future change to Canonical’s naming
+convention is easier to recognize if it recurs. - Test fixtures
+(<code>nobleNamePattern</code> constant, shared across
+<code>official_ubuntu_amis_test.go</code> and both launch-flow
+integration tests) updated to the corrected pattern for consistency,
+though as noted above this was necessary for consistency, not sufficient
+on its own to have caught the original bug.</p>
+<hr />
+<h2
+id="offer-official-ubuntu-lts-amis-alongside-owned-amis-when-picking-a-base-ami">2026-07-02
+— Offer official Ubuntu LTS AMIs alongside owned AMIs when picking a
+base AMI</h2>
+<p><strong>Context.</strong> Follow-up to clarifying the
+Create-from-Cloud-Init-YAML workflow: the user’s actual goal was
+launching an entirely new machine from a stock base image + cloud-init,
+not from one of the account’s existing, already-application-specific
+AMIs (<code>plots-backup</code>,
+<code>newauthers-clone-2026-06-25</code>,
+<code>authors-2024-03-07</code> – all pre-existing snapshots, not
+generic OS images). Since the AMI pick list is scoped to AMIs the
+account owns (a deliberate existing decision – otherwise the list would
+include every public AMI in existence), a stock Ubuntu AMI never
+appeared as an option. The user’s own framing: keep it simple, cover the
+likely common case (official Ubuntu images, plus what’s already owned);
+if something more exotic is needed, copying the specific public AMI into
+the account first (already-documented guidance) remains the answer.</p>
+<p><strong>Decision.</strong> The “Select an AMI”/“Select a base AMI”
+pick list (Feature 2/3) now also includes a small, curated list of
+official Ubuntu LTS releases – currently 24.04 (Noble Numbat) and 22.04
+(Jammy Jellyfish), amd64/x86_64 only – resolved via
+<code>ec2:DescribeImages</code> against Canonical’s well-known, publicly
+documented AWS account ID (<code>099720109477</code>), picking the
+single most recently published AMI per release per region. This lookup
+happens once, on demand, right before the AMI pick list is shown (not as
+part of the general resource-listing refresh, which stays
+owned-AMIs-only, unchanged) – launching an instance is an infrequent,
+deliberate action, so a handful of extra <code>DescribeImages</code>
+calls at that moment is not the same cost concern it would be if it ran
+on every screen refresh. Best-effort: if the lookup itself errors, the
+picker silently falls back to owned AMIs only, same as this tool’s other
+best-effort diagnostics.</p>
+<p><strong>Rationale.</strong> - Matches the explicit scope given:
+“pretty simple,” “cover the likely bases,” with anything more exotic
+staying a manual (already-documented) copy-the-public-AMI-in step – not
+a general public-AMI browser. - amd64-only matches the curated
+instance-type list’s architecture (2026-07-02, “Instance type pick list:
+curated shortlist, not the full AWS catalog”) – none of the curated
+instance types are Graviton/arm64, so offering arm64 Ubuntu AMIs would
+create options that don’t actually pair with anything in the other
+curated list. - Carrying <code>EnaSupport</code> through from the real
+<code>DescribeImages</code> response (not defaulting it) matters here
+specifically: official Ubuntu AMIs are modern and genuinely ENA-enabled,
+so without this the instance- type-vs-AMI-ENA-support pre-flight check
+(2026-07-02, above) would wrongly flag every one of them as incompatible
+with the curated instance types that actually work fine with them.</p>
+<p><strong>Rejected alternatives.</strong> - <em>A general public-AMI
+browser/search</em> – explicitly declined by the user in favor of a
+small curated set; a full public-AMI search is a much bigger feature
+(arbitrary owner IDs, name search, architecture filtering UI) that isn’t
+needed for the stated common case. - <em>Include arm64/Graviton variants
+now</em> – deferred: no curated instance type could launch one today;
+revisit if/when Graviton types are added to the curated instance-type
+list. - <em>Fetch these as part of the general resource-listing
+refresh</em> – rejected: that listing is specifically scoped to “what
+does this account own” (an oversight/inventory view); Canonical’s AMIs
+aren’t owned by the account and aren’t something this team needs to
+track, only something useful at the moment of picking a base image.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/official_ubuntu_amis.go</code> (new):
+<code>latestUbuntuAMI</code>,
+<code>listOfficialUbuntuAMIsInRegion</code>,
+<code>listOfficialUbuntuAMIs</code>,
+<code>imagesWithOfficialUbuntu</code>. -
+<code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>:
+both AMI pick lists now go through <code>imagesWithOfficialUbuntu</code>
+before display. - No new AWS permissions –
+<code>ec2:DescribeImages</code> is already required (DESIGN.md,
+Assumptions), and querying it against a different <code>Owners</code>
+value needs no additional IAM grant.</p>
+<hr />
+<h2
+id="create-ec2-instance-from-cloud-init-yaml-always-reads-from-a-file">2026-07-02
+— Create EC2 Instance from Cloud-Init YAML always reads from a file</h2>
+<p><strong>Context.</strong> Immediately after fixing the
+bare-filename-without-“@” bug (above) for the shared
+<code>loadUserData</code> path, follow-up feedback: for this specific
+workflow, the “inline text or <span class="citation"
+data-cites="file">@file</span> path” duality is itself the wrong shape.
+Feature 3’s whole premise is that the cloud-init YAML is the primary
+input, not an optional add-on – and a real cloud-init YAML document is
+realistically always authored as a file (e.g. from
+<code>cloud-init-examples</code>), never typed inline at a terminal
+prompt. The <code>@</code>-prefix convention exists specifically to
+disambiguate inline text from a file reference within one prompt; if
+inline text was never a realistic input for this prompt in the first
+place, the convention (and the exact mistake it enabled) doesn’t need to
+exist here at all.</p>
+<p><strong>Decision.</strong>
+<code>CollectLaunchInstanceParamsFromCloudInit</code>’s cloud-init
+prompt no longer shares <code>loadUserData</code> with Feature 2. It now
+calls a dedicated <code>promptCloudInitYAMLFile</code>, which always
+treats the input as a file path (an optional leading <code>@</code> is
+stripped if present, for muscle memory, but not required) and re-prompts
+with a clear “cannot read” message on a missing/unreadable file, instead
+of ever falling back to using the raw input as literal text. Feature 2’s
+separate, optional “User data” field is unchanged – it still supports
+genuine inline text via <code>loadUserData</code>, since an ad hoc
+one-line script typed directly is a realistic input there.</p>
+<p><strong>Rationale.</strong> Removes the entire failure mode
+(forgetting <code>@</code>) at its root for this specific prompt, rather
+than just detecting and recovering from the one shape of mistake found
+in real use (a bare filename that happens to match a real file). A
+missing or unreadable file now fails clearly and immediately, with a
+chance to retry, instead of either the old silent-literal-text behavior
+or the newer auto-detection’s narrower “only if a file happens to exist
+at that exact string” coverage.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep sharing
+<code>loadUserData</code>, rely on the auto-detection fix alone</em> –
+rejected: that fix only helps when the mistyped value happens to match a
+real file; a typo’d filename (or a path relative to the wrong directory)
+would still silently become literal garbage user-data, since
+<code>loadUserData</code> has no way to know this particular prompt
+never wants inline text. - <em>Also require file-only input for Feature
+2’s “User data” field</em> – out of scope for this decision: that field
+is optional and genuinely sometimes holds a short ad hoc script typed
+directly, unlike Feature 3’s mandatory, always-a-real-document
+cloud-init YAML.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/userdata.go</code>: new
+<code>promptCloudInitYAMLFile</code>. -
+<code>launch_from_cloud_init.go</code> no longer calls
+<code>loadUserData</code> at all – only
+<code>launch_instance.go</code>’s optional “User data” field does now. -
+Existing tests exercising this prompt with inline
+<code>"#cloud-config"</code> text were rewritten to use real temp-file
+fixtures (<code>writeCloudInitFixture</code> helper), since inline text
+is no longer a supported input here.</p>
+<hr />
+<h2
+id="auto-detect-a-bare-existing-file-path-in-user-data-cloud-init-yaml-input">2026-07-02
+— Auto-detect a bare existing-file path in User data / Cloud-init YAML
+input</h2>
+<p><strong>Context.</strong> Real-world use: at “Cloud-init YAML (inline
+text or <span class="citation" data-cites="file">@file</span> path)”,
+the operator typed <code>newt-machine.yaml</code> (a real file in the
+current directory) without the required <code>@</code> prefix.
+<code>loadUserData</code> correctly followed its documented contract –
+no <code>@</code>, so treat it as literal inline text – and the flow
+moved straight on to picking a base AMI, with the <em>filename
+itself</em> silently captured as the instance’s user-data. Nothing was
+technically wrong per the existing contract, but the outcome (an
+instance launched with <code>newt-machine.yaml</code> as its literal
+user-data, not the file’s contents) is never what an operator actually
+wants – a bare filename is not valid cloud-init YAML or any other
+sensible literal user-data.</p>
+<p><strong>Decision.</strong> <code>loadUserData</code> (shared by
+Features 2 and 3’s User data / Cloud-init YAML prompts) now checks, when
+given input with no <code>@</code> prefix, whether a file actually
+exists at that exact path (relative to the current directory, or
+absolute). If one does, it’s loaded anyway, with an on-screen note
+explaining what happened and reminding the operator to prefix with
+<code>@</code> next time. If no such file exists, the input is used as
+literal inline text exactly as before – this is additive, not a behavior
+change for genuine inline text (e.g. <code>#cloud-config...</code>,
+which never coincides with a real file on disk).</p>
+<p><strong>Rationale.</strong> Same reasoning as the key-pair-filename
+fix (2026-07-02, above): when a value can only plausibly be a mistake
+for a file reference – here, “this string is byte-for-byte the name of a
+real file, and is not itself valid YAML” – silently accepting it as
+literal text produces a working-looking launch with silently wrong data,
+which is worse than either rejecting it or (as chosen) just doing what
+the operator almost certainly meant.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Require <code>@</code>
+strictly, reject anything else that looks like a bare filename</em> –
+rejected: rejecting a value that unambiguously corresponds to a real,
+readable file just because of a missing prefix character is unhelpful
+friction for a case this tool can resolve with total confidence. -
+<em>Warn but don’t auto-load, forcing a re-prompt</em> – rejected as an
+unnecessary extra round-trip when the file both exists and is
+immediately loadable; the printed note already tells the operator what
+happened and how to be explicit next time, without making them retype
+anything.</p>
+<p><strong>Consequences.</strong> - <code>loadUserData</code>’s
+signature gained a <code>*termlib.Terminal</code> parameter (for the
+explanatory note); both call sites (<code>launch_instance.go</code>,
+<code>launch_from_cloud_init.go</code>) already had <code>t</code> in
+scope. - No new AWS permissions or calls – purely local
+filesystem/string handling around a value already being collected.</p>
+<hr />
+<h2
+id="move-show-resource-lists-to-the-top-of-the-compute-menu-rename-from-refresh">2026-07-02
+— Move “Show resource lists” to the top of the Compute menu; rename from
+“Refresh”</h2>
+<p><strong>Context.</strong> User feedback: “Refresh resource lists” sat
+near the bottom of the Compute menu (item 11 of 12), and “Refresh” was
+ambiguous about what it actually does (re-fetch from AWS and redisplay
+both tables, not just repaint the screen). Since every other successful
+action already triggers an automatic refresh afterward (2026-06-30,
+“Refresh data after each operation”), this item’s real purpose is
+letting the operator deliberately re-orient – see current state –
+without taking an action, which is a natural first move on entering the
+domain, not action #11 of 12.</p>
+<p><strong>Decision.</strong> Renamed to “Show resource lists” and moved
+to menu position 1; every other item shifts down by one, “Back to domain
+picker” stays last (position 12, unchanged, since the total item count
+didn’t change). The underlying behavior and
+<code>MenuActions.Refresh</code> field name are unchanged – this is a
+label and position change only.</p>
+<p><strong>Rationale.</strong> Matches how the operator actually uses
+this tool: check what’s running, then act – not “act ten times, and
+eleventh, maybe check.” “Show” also describes the operator-visible
+effect (the two tables reappear) rather than an AWS-side connotation
+(“refresh” could read as “refresh the AWS resources themselves”).</p>
+<p><strong>Rejected alternatives.</strong> None seriously considered –
+this is a small, low-risk UX tweak; no behavior, permissions, or data
+flow changes.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/menu.go</code>’s <code>mainMenuItems</code>
+reordered; every test in <code>menu_test.go</code> that referenced a
+menu item by number was updated to match (item numbers shift by one;
+“Back to domain picker” stays 12). - <code>DESIGN.md</code>’s Compute
+Menu ASCII diagram and <code>TEST_PLAN_REAL_AWS.txt</code>’s menu-order
+checklist updated to match, preserving existing <code>[ok]</code>
+markers against their renamed/renumbered items (the capability was
+already verified; only its label and position changed). Also fixed
+unrelated staleness noticed while there:
+<code>TEST_PLAN_REAL_AWS.txt</code> still said item 12 was “Exit” from
+before the domain-picker refactor (2026-07-02, “Redesign navigation as a
+domain picker…”) – corrected to “Back to domain picker”.</p>
+<hr />
+<h2
+id="filter-the-subnet-picker-by-instance-type-availability-zone-support">2026-07-02
+— Filter the subnet picker by instance-type Availability Zone
+support</h2>
+<p><strong>Context.</strong> Real-AWS testing surfaced repeated
+back-and-forth: pick an instance type, pick a subnet, get told after the
+fact (“Instance type … is not offered in … this subnet’s Availability
+Zone”) that the two don’t work together, then recover via a pick list.
+The user’s framing: “the choices are out of context” – since instance
+type is already chosen by the time Subnet ID is prompted, the tool
+already has enough information to never offer an incompatible subnet in
+the first place, rather than offering it and then walking the operator
+back out.</p>
+<p><strong>Decision.</strong> <code>promptSubnetID</code> now takes the
+already-chosen <code>instanceType</code> and narrows its subnet listing
+to those whose Availability Zone actually offers it
+(<code>filterSubnetsByInstanceTypeAZ</code>, reusing
+<code>instanceTypeOfferedAZs</code>) – instance type stays the first
+choice (unchanged position in the flow; it’s the workload-driven
+decision – cost, performance, ENA-compatibility with the AMI), and the
+network choice narrows around it, not the other way around. Filtering is
+best-effort and never a dead end: if the AZ-offerings lookup itself
+errors, or if filtering would leave zero subnets to pick from,
+<code>promptSubnetID</code> falls back to showing the full, unfiltered
+list. <code>ensureInstanceTypeSupportedInSubnet</code>’s reactive
+recovery pick list (2026-07-02, above) is unchanged and stays in place
+as the safety net for exactly those two fallback cases (and the
+free-text- fallback path, where the AZ isn’t known at all) – in the
+common case where filtering succeeds, that reactive check now simply
+finds the already-filtered subnet compatible on the first try and
+returns immediately, invisible to the operator.</p>
+<p><strong>Rationale.</strong> Matches the “different routes through the
+same choices should all reach a running system” framing directly:
+narrowing options before they’re offered, instead of discovering and
+recovering from an incompatible combination after the fact, removes a
+whole category of back-and-forth without removing any actual capability
+– every subnet that could have worked is still offered; only the ones
+that couldn’t are pre-filtered out.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Reorder to prompt for
+subnet before instance type</em> – rejected (see the exploratory
+discussion this decision follows from): instance type is the more
+workload-driven decision and should stay a free first choice; subnet is
+more of an implementation detail that can be narrowed once the type is
+known. Reordering would also do nothing for the unrelated
+instance-type-vs-AMI-ENA-support check, which depends on the AMI (chosen
+long before either instance type or subnet), not the network. -
+<em>Remove <code>ensureInstanceTypeSupportedInSubnet</code> now that
+filtering exists</em> – rejected: it’s still the only thing that catches
+an incompatibility when filtering itself couldn’t run (lookup error) or
+couldn’t narrow anything (all known subnets incompatible) or wasn’t
+attempted at all (free-text fallback, unknown AZ). Removing it would
+turn those cases back into dead ends.</p>
+<p><strong>Consequences.</strong> - <code>promptSubnetID</code>’s
+signature gained an <code>instanceType string</code> parameter; its
+three call sites (<code>launch_instance.go</code>,
+<code>launch_from_cloud_init.go</code>, and
+<code>ensureInstanceTypeSupportedInSubnet</code>’s “Pick a different
+subnet” branch) already had the instance type in scope, so no new
+plumbing was needed beyond passing it through. - No new AWS permissions
+or calls in the common case – the same
+<code>ec2:DescribeInstanceTypeOfferings</code> call
+<code>ensureInstanceTypeSupportedInSubnet</code> already made reactively
+now happens once, proactively, per launch.</p>
+<hr />
+<h2
+id="tolerate-describeinstances-post-runinstances-eventual-consistency-window">2026-07-02
+— Tolerate DescribeInstances’ post-RunInstances eventual-consistency
+window</h2>
+<p><strong>Context.</strong> A real launch (subnet/instance-type
+mismatch resolved, confirmed, <code>RunInstances</code> succeeded)
+immediately failed anyway:
+<code>Launched i-088ab06fb0c16eb0b, waiting for it to reach running... Error: AWS error [InvalidInstanceID.NotFound]: The instance ID 'i-088ab06fb0c16eb0b' does not exist</code>.
+This is documented AWS behavior, not a real failure: a newly launched
+instance ID can be briefly invisible to
+<code>ec2:DescribeInstances</code> for a few seconds after
+<code>ec2:RunInstances</code> returns it, before the instance is fully
+registered. <code>waitUntilState</code> (backing
+<code>WaitUntilRunning</code>, used by every launch and by Start
+Instance) treated <em>any</em> <code>DescribeInstances</code> error as
+fatal, so this blocked every single launch that happened to hit the
+window – not an edge case, a near-certain race every time.</p>
+<p><strong>Decision.</strong> <code>waitUntilState</code> now tolerates
+AWS’s own <code>InvalidInstanceID.NotFound</code> the same way it
+already tolerates “not in the wanted state yet” – keep polling instead
+of returning the error. Any other <code>DescribeInstances</code> error
+still fails immediately, unchanged. Found and fixed the identical
+exposure on the AMI side while here: <code>WaitForAMIAvailable</code>
+could hit the equivalent <code>InvalidAMIID.NotFound</code> right after
+<code>ec2:CreateImage</code> returns, before
+<code>ec2:DescribeImages</code> recognizes the new image – same
+tolerance added there (<code>isImageNotYetVisible</code>), even though
+it hadn’t been reported yet, since it’s the exact same class of bug on
+the exact same code path shape.</p>
+<p><strong>Rationale.</strong> This is a well-known, documented AWS
+eventual-consistency behavior (not specific to this account or these
+instances) – the fix is to expect it, not work around it operationally
+(e.g. “just retry the whole launch”). Fixing the AMI-side analog
+preemptively, rather than waiting for a second bug report, matches this
+session’s pattern of fixing the failure <em>class</em>, not just the
+exact reported instance of it.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Retry the whole launch
+flow on this error</em> – rejected: the instance already launched
+successfully; retrying <code>RunInstances</code> would create a second,
+redundant instance instead of just waiting a few more seconds for the
+first one to become visible. - <em>A fixed short sleep before the first
+<code>DescribeInstances</code> call</em> – rejected in favor of
+tolerating the specific error code during normal polling: simpler, no
+new timing constant to tune, and self-correcting regardless of how long
+the window actually is.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/launch_execute.go</code>:
+<code>isInstanceNotYetVisible</code>. -
+<code>internal/workflow/create_ami_execute.go</code>:
+<code>isImageNotYetVisible</code>. - No new AWS permissions – purely
+client-side error handling around calls this tool already makes.</p>
+<hr />
+<h2
+id="add-non-ena-required-options-to-the-curated-instance-type-list">2026-07-02
+— Add non-ENA-required options to the curated instance type list</h2>
+<p><strong>Context.</strong> Trying to launch from a real, legacy AMI
+(<code>etd-workflow-v0.0.1</code>) that isn’t ENA-enabled, every entry
+in the newly-added curated instance type list (t3/m5/c5/r5) failed
+<code>ensureInstanceTypeENACompatible</code> – all nine are Nitro-based
+and require ENA unconditionally. The “Change instance type” recovery
+pick list technically worked, but every alternative it could offer was
+equally incompatible: the operator was launch-blocked with no way to get
+unstuck without already knowing (from outside awsops) that
+e.g. <code>t2.micro</code> would work, and typing it via “Other”. This
+is a real gap in the curated list, not a one-off: any sufficiently old
+AMI (common for long-lived, hand-maintained gold images) hits the same
+dead end.</p>
+<p><strong>Decision.</strong> Add <code>t2.micro</code> and
+<code>t2.medium</code> to <code>curatedInstanceTypes</code> as the
+list’s only non-Nitro, no-ENA-required entries, each labeled “no ENA
+required, works with older/legacy AMIs” so they’re self-explanatory in
+the pick list, not just a name an operator has to already recognize.
+Every ENA-requiring entry’s label now also says “(requires ENA)” for the
+same reason – so the <em>first</em> pick, not just the recovery pick,
+can be an informed choice.
+<code>ensureInstanceTypeENACompatible</code>’s incompatibility message
+now explicitly suggests these two by name, plus a one-line pointer to
+the actual (out-of-scope-for-awsops) permanent fix: enabling ENA on the
+source instance and re-creating the AMI.</p>
+<p><strong>Rationale.</strong> The recovery pick list (DECISIONS.md,
+“Pre-flight check: instance type vs. AMI ENA support”) is only actually
+useful if it can offer <em>some</em> type that works; a list where every
+option shares the same failure mode isn’t a recovery path, it’s a longer
+way to the same dead end. Two low-cost, universally-available legacy
+types cover the common case without expanding the list’s scope back
+toward “the full AWS catalog,” which the curated-list decision (above)
+already rejected.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Make promptInstanceType
+AMI-aware (filter or reorder based on the picked AMI’s EnaSupport)</em>
+– rejected as unnecessary complexity for now: the static list already
+contains a working answer once it includes non-ENA options; the
+pre-flight check’s message pointing at them by name accomplishes the
+same practical outcome without the static-list design changing shape or
+<code>promptInstanceType</code> needing new parameters/context it didn’t
+have before. - <em>Only fix it via the incompatibility message, without
+adding to the curated list</em> – rejected because the <em>first</em>
+instance-type pick (before any AMI-compatibility check has even run)
+should also be able to make an informed choice for a known-legacy AMI,
+not just recover from a bad one after the fact.</p>
+<p><strong>Consequences.</strong> - <code>curatedInstanceTypes</code>
+grew from 9 to 11 entries; “Other” shifted from pick-list position 10 to
+12. - No new AWS permissions or calls – purely a static list change plus
+a message update.</p>
+<hr />
+<h2 id="pre-flight-check-instance-type-vs.-ami-ena-support">2026-07-02 —
+Pre-flight check: instance type vs. AMI ENA support</h2>
+<p><strong>Context.</strong> Real-AWS testing hit
+<code>AWS error [InvalidParameterCombination]: Enhanced networking with the Elastic Network Adapter (ENA) is required for the 't3.small' instance type. Ensure that you are using an AMI that is enabled for ENA.</code>
+– this is the ENA pre-flight check idea already queued in TODO.md since
+an earlier session (two real launch failures that day: AMI
+<code>ami-0da49db6a772dda02</code> isn’t ENA-enabled, both
+<code>t3.micro</code> and now <code>t3.small</code> require it). With
+the AZ pre-flight check (above) just implemented as a template, this was
+the natural next failure class to close.</p>
+<p><strong>Decision.</strong> - <code>inventory.Image</code> gained an
+<code>EnaSupport bool</code> field, populated for free from the same
+<code>ec2:DescribeImages</code> call <code>ListImages</code> already
+makes (the SDK’s <code>Image.EnaSupport</code> field) – no extra AWS
+call for the AMI side. - After Instance type is picked (Feature 2/3),
+check whether it requires ENA (<code>ec2:DescribeInstanceTypes</code>,
+<code>NetworkInfo.EnaSupport == Required</code>) and, if so, whether the
+already-picked AMI supports it. If not, print the incompatibility and
+show a pick list: <strong>Change instance type</strong> or <strong>Abort
+this launch</strong> – no “pick a different AMI” option, unlike the AZ
+check’s “pick a different subnet”: swapping the AMI this late would mean
+redoing earlier choices that depend on it (e.g. the Project tag
+default), so aborting and restarting covers that case instead, same as
+any other declined confirmation. - “Abort” reuses
+<code>ui.ErrCancelled</code>, same as the AZ check. - “Change instance
+type” reuses <code>promptInstanceType</code> (the curated pick list,
+below), not a bespoke free-text prompt – for consistency, both
+pre-flight checks’ recovery flows now go through the same instance- type
+entry point.</p>
+<p><strong>Rationale.</strong> - Closes the exact TODO.md item this team
+already flagged, using the same pick-list-recovery pattern just
+established for the AZ check rather than inventing a third UX shape. -
+Getting the AMI’s <code>EnaSupport</code> for free from data already
+fetched avoids adding a new per-check AWS call on the AMI side.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Also offer “pick a
+different AMI”</em> – rejected because the AMI’s already-collected
+downstream effects (Project tag default, region- scoped clients) would
+need to be redone; abort-and-restart is simpler and matches this tool’s
+existing cancellation semantics. - <em>A shared multi-check framework
+covering both AZ and ENA together</em> – still rejected for now, per the
+AZ check’s own decision above: two checks doesn’t justify an abstraction
+yet.</p>
+<p><strong>Consequences.</strong> - New EC2 permission required:
+<code>ec2:DescribeInstanceTypes</code> (see <code>DESIGN.md</code>,
+“Assumptions”). -
+<code>internal/workflow/instance_type_ena_check.go</code> (new):
+<code>instanceTypeRequiresENA</code>,
+<code>ensureInstanceTypeENACompatible</code>,
+<code>enaIncompatibilityChoices</code> (reuses
+<code>incompatibilityChoice</code>/
+<code>incompatibilityChoiceLabel</code> from the AZ check).</p>
+<hr />
+<h2
+id="instance-type-pick-list-curated-shortlist-not-the-full-aws-catalog">2026-07-02
+— Instance type pick list: curated shortlist, not the full AWS
+catalog</h2>
+<p><strong>Context.</strong> The “Instance type” prompt was free text
+with only a suggested default (<code>t3.micro</code>). Asked whether it
+could become a pick list like Security group IDs/Subnet ID. AWS offers
+600+ instance types per region – listing them all (even paginated) would
+reproduce, at a much larger scale, the exact “flat list of every key
+pair in the account… was noise, not help” problem already found and
+rejected for key pairs at just 16 entries (2026-07-01 decision, “Support
+creating a new key pair from within awsops”). A full list would also
+need architecture filtering (x86_64 vs. arm64) against the picked AMI to
+avoid creating a <em>new</em> incompatibility class right after fixing
+three others this session (key pair name, IAM instance profile,
+instance- type/AZ) – <code>inventory.Image</code> doesn’t carry AMI
+architecture today.</p>
+<p><strong>Decision.</strong> <code>promptInstanceType</code> offers a
+short, hand-picked list of ~9 types relevant to this team’s actual usage
+(t3 family for testing/ small Invenio RDM instances, m5/c5/r5 for
+steady-state/compute/memory- optimized needs), each labeled with
+vCPU/memory, plus “Other” to type any value not listed. No AWS call is
+made to build this list – it’s static. The instance-type-vs-AZ and
+instance-type-vs-ENA pre-flight checks (this file, both entries above)
+are what actually validate whatever value is chosen (curated or typed)
+against AWS, so the list itself doesn’t need to be exhaustive or live to
+be safe.</p>
+<p><strong>Rationale.</strong> Matches this project’s established
+preference (key pairs) for a short, curated list plus an escape hatch
+over an exhaustive one; the real safety net against picking an
+incompatible type is the two pre-flight checks, not an exhaustive
+picker.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Full list filtered by
+region + AMI architecture</em> – rejected for now: still likely 100-300+
+entries even filtered, and requires adding Architecture to
+<code>inventory.Image</code> and a new filtering call. Worth
+reconsidering if the curated list proves too restrictive in practice. -
+<em>Full list, region-only, no architecture filter</em> – rejected as
+the most noise for the least benefit: hundreds of entries, some of which
+wouldn’t even work with the picked AMI.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/launch_prompts.go</code> gained
+<code>promptInstanceType</code>, <code>curatedInstanceTypes</code>,
+<code>instanceTypeChoice</code>/<code>instanceTypeChoiceLabel</code>. No
+new AWS permissions – the list is static. - The “Change instance type”
+recovery step in both pre-flight checks (above) now goes through this
+same function, so a corrected value also comes from the curated list +
+“Other”, not a separate free-text prompt.</p>
+<hr />
+<h2
+id="pre-flight-check-instance-type-vs.-subnet-availability-zone">2026-07-02
+— Pre-flight check: instance type vs. subnet Availability Zone</h2>
+<p><strong>Context.</strong> The <code>-debug</code> JSONL log from the
+same real-AWS testing session that surfaced the key-filename bug (above)
+showed a second, unrelated real failure in the middle of that sequence:
+once the key pair name was correct, <code>RunInstances</code> failed
+with
+<code>Unsupported: Your requested instance type (t2.micro) is not supported in your requested Availability Zone (us-west-2d). Please retry your request by not specifying an Availability Zone or choosing us-west-2a, us-west-2b, us-west-2c.</code>
+– the picked subnet (<code>subnet-5870b473</code>) sits in
+<code>us-west-2d</code>, which doesn’t offer <code>t2.micro</code>. This
+is the same general class of problem as the already-deferred ENA
+pre-flight check idea (TODO.md) – an instance-type/launch-parameter
+incompatibility AWS only reports after the fact – but a different
+specific incompatibility (AZ offering, not ENA support).</p>
+<p><strong>Decision.</strong> - After the Subnet ID prompt (Feature
+2/3), check whether the already-chosen instance type is actually offered
+in the picked subnet’s Availability Zone
+(<code>ec2:DescribeInstanceTypeOfferings</code>,
+<code>LocationType=availability-zone</code>). - If it isn’t, print the
+incompatibility and (best-effort) the AZs the instance type <em>is</em>
+offered in, then show a pick list: <strong>Change instance
+type</strong>, <strong>Pick a different subnet</strong>, or
+<strong>Abort this launch</strong> – rather than a dead-end error
+message or silently sending a <code>RunInstances</code> call already
+known to fail. - “Abort this launch” returns
+<code>ui.ErrCancelled</code>, reusing the exact same cancellation path
+every other declined/cancelled confirmation in this tool already uses
+(<code>CreateInstanceFromAMI</code>/<code>CreateInstanceFromCloudInit</code>
+catch it and print “Cancelled.”, returning to the domain menu) – no new
+cancellation mechanism needed. - The check is skipped entirely (not just
+tolerantly failed) when the subnet’s Availability Zone is unknown –
+i.e. <code>promptSubnetID</code> fell back to its free-text prompt – or
+when the check call itself errors, matching this tool’s existing
+“best-effort diagnostic, never blocks the whole flow” pattern
+(e.g. SSM-unavailable fallbacks). - Scoped to this one incompatibility
+class for now, not a general multi-check framework – the ENA-support
+variant (TODO.md) remains a separate, not-yet-implemented item; if a
+third class of incompatibility turns up, that’s the point to reconsider
+a shared abstraction, not before.</p>
+<p><strong>Rationale.</strong> - Fixes a real failure found in the same
+debug-log session as the key- filename bug, using the tool that made it
+discoverable in the first place (the <code>-debug</code> log) rather
+than guessing. - A pick list of concrete remediation options (change
+type / change subnet / abort) is more actionable than a printed error
+the operator has to interpret and act on by restarting the flow – and
+matches an explicit request that error recovery should offer a pick
+list, not just a message. - Reusing <code>ui.ErrCancelled</code> for
+“abort” avoids inventing a second cancellation contract alongside the
+one this tool already has.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Generalize into a
+multi-check pre-flight framework covering ENA and AZ together</em> –
+rejected for now as premature: only one check is actually implemented;
+building shared abstraction for a framework of one (plus one
+still-deferred idea) isn’t justified yet. - <em>Just show a better error
+message, no recovery pick list</em> – rejected per explicit direction
+that a pick list to correct or abort is the right shape once a chosen
+setting turns out to be invalid.</p>
+<p><strong>Consequences.</strong> - <code>promptSubnetID</code>’s return
+type changed from <code>(string, error)</code> to
+<code>(SubnetInfo, error)</code>, so its caller has the picked subnet’s
+Availability Zone available without a redundant lookup –
+<code>SubnetInfo</code> already carried this field for the pick-list
+label. The free-text fallback path returns
+<code>SubnetInfo{SubnetID: ...}</code> with an empty
+<code>AvailabilityZone</code>, which is exactly the “unknown, skip the
+check” signal <code>ensureInstanceTypeSupportedInSubnet</code> looks
+for. - New EC2 permission required:
+<code>ec2:DescribeInstanceTypeOfferings</code> (see
+<code>DESIGN.md</code>, “Assumptions”). - No new AWS SDK dependency –
+<code>DescribeInstanceTypeOfferings</code> is already part of the
+<code>ec2</code> package this tool depends on.</p>
+<hr />
+<h2
+id="derive-the-aws-key-pair-name-from-a-private-key-filenamepath">2026-07-02
+— Derive the AWS key pair name from a private key filename/path</h2>
+<p><strong>Context.</strong> Real-AWS testing hit
+<code>AWS error [InvalidKeyPair.NotFound]: The key pair '~/.ssh/etd-ami-test.pem' does not exist</code>
+– the operator typed the private key’s file path at “Key pair name”
+instead of the AWS key pair name, despite the prompt’s own explicit “not
+a local file path” wording. The <code>-debug</code> JSONL log showed the
+full sequence of what was tried in one session:
+<code>etd-ami-test.pem</code> (bare filename with extension, no
+directory) failed the same way, then the correct bare name
+<code>etd-ami-test</code> worked (it got past <code>RunInstances</code>’
+key-pair check entirely and failed for an unrelated reason – see the
+separate instance-type/Availability-Zone finding this surfaced, tracked
+in TODO.md), then <code>~/.ssh/etd-ami-test.pem</code> was tried and
+failed again. <code>ssh -i</code> muscle memory makes typing the key
+<em>file</em> rather than the key <em>pair name</em> a recurring
+mistake, not a one-off typo.</p>
+<p><strong>Decision.</strong> - <code>promptKeyPairNameOrCreate</code>
+now recognizes input that looks like a private key filename or path –
+contains <code>/</code>, starts with <code>~</code>, or ends in
+<code>.pem</code>/<code>.ppk</code>/<code>.key</code> (case-insensitive)
+– as distinct from a bare AWS key pair name. - When recognized, the file
+is validated as actually readable (<code>~</code> is expanded against
+the home directory; a bare filename with no directory component that
+isn’t readable relative to the current directory is also checked against
+this tool’s own key directory, since that’s where Create Key Pair saves
+keys and where a bare filename most plausibly lives) before anything is
+derived from it – an unreadable path re-prompts with a clear local error
+instead of being sent to AWS, which would otherwise fail distantly and
+confusingly. - Once validated, the AWS key pair name is derived from the
+file’s basename with its extension stripped
+(e.g. <code>~/.ssh/etd-ami-test.pem</code> or bare
+<code>etd-ami-test.pem</code> -&gt; <code>etd-ami-test</code>) and used
+as the launch’s key pair name, with an on-screen note explaining what
+happened so the operator isn’t surprised by what gets sent to AWS. -
+This works because it’s this tool’s own convention: Create Key Pair
+(<code>createKeyPair</code>) always saves a new key’s private material
+to exactly <code>&lt;keyDir&gt;/&lt;name&gt;.pem</code>, so the filename
+reliably encodes the real AWS key pair name regardless of which
+directory (or none) the operator typed.</p>
+<p><strong>Rationale.</strong> - Fixes the actual reported failure and
+the two variants of it found in the same debug session (bare
+filename-with-extension, and full path), not just the one exact string
+from the bug report. - Auto-deriving (rather than just rejecting with a
+“that looks like a path” message) is safe specifically because this tool
+controls the naming convention on the writing side (Create Key Pair) as
+well as the reading side (this prompt) – it isn’t guessing at an
+external convention it doesn’t control.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Reject with a
+clarifying error instead of deriving</em> – raised as an explicit scope
+question and declined in favor of the more helpful auto-derive path,
+consistent with this project’s general preference (Security
+groups/Subnet ID, IAM instance profile) for fixing an AWS-error class
+locally rather than just describing it better.</p>
+<p><strong>Consequences.</strong> -
+<code>internal/workflow/create_key_pair.go</code> gained
+<code>looksLikeKeyFilename</code>, <code>keyPairNameFromFilePath</code>,
+and <code>isReadableFile</code>; the existing “new” sub-flow was
+extracted into <code>createNewKeyPairInteractive</code> unchanged, so
+<code>promptKeyPairNameOrCreate</code> could loop on a bad key-filename
+input without duplicating that retry logic. - No new AWS permissions or
+SDK dependencies – this is entirely local validation before any AWS call
+is made.</p>
+<hr />
+<h2
+id="support-picking-or-creating-an-iam-instance-profile-from-within-awsops">2026-07-02
+— Support picking or creating an IAM instance profile from within
+awsops</h2>
+<p><strong>Context.</strong> Real-AWS testing of Create EC2 Instance
+from AMI hit AWS’s own error:
+<code>AWS error [InvalidParameterValue]: Value (ec2-invenio-role) for parameter iamInstanceProfile.name is invalid. Invalid IAM Instance Profile name</code>.
+The “IAM instance profile” prompt was free text whose own hint pointed
+at “IAM console &gt; Roles” – but <code>ec2:RunInstances</code>’
+<code>IamInstanceProfile.Name</code> parameter needs the <em>instance
+profile</em> name, not the <em>role</em> name. The two are identical by
+convention when a role is created via the AWS console (which
+auto-creates a matching instance profile), but not by requirement – a
+role created via Terraform/CLI without an accompanying instance profile
+of the same name breaks that assumption silently, and free text let the
+mismatch through uncaught until AWS rejected it. The user asked for “a
+means to picking a profile (or creating one).”</p>
+<p><strong>Decision.</strong> - The “IAM instance profile” prompt
+becomes a pick list of real instance profiles
+(<code>iam:ListInstanceProfiles</code>), each labeled with its attached
+role name(s) for clarity – eliminating the role-name/profile-name mix-up
+at the source, since only real instance profile names are selectable. -
+Unlike Security group IDs/Subnet ID’s pick lists (which fall back to
+free text when the list is empty, since those fields are required and
+there’s nothing else useful to offer), this field’s list always includes
+a “(none)” entry (this field is optional) and a “Create new instance
+profile (attach an existing role)” entry, even when zero instance
+profiles currently exist – because covering “I don’t have one yet” is
+the whole point of the “or creating one” half of the request, not just a
+nice-to-have when profiles happen to already exist. The prompt falls
+back to the original free-text prompt only if the list call itself
+errors (e.g. missing <code>iam:ListInstanceProfiles</code> permission),
+matching the existing security-group/subnet fallback pattern for “can’t
+reliably present anything better.” - “Create new instance profile” is
+scoped to <strong>attaching an existing IAM role</strong>, not also
+creating a new role: pick a role via <code>iam:ListRoles</code>, prompt
+for a new instance profile name (defaulting to the role’s own name,
+matching the AWS console’s own convention), then
+<code>iam:CreateInstanceProfile</code> +
+<code>iam:AddRoleToInstanceProfile</code>. A name collision re-prompts
+for a different name, mirroring Create Key Pair’s collision handling
+(2026-07-01 decision, above). If there are zero IAM roles in the
+account, “Create new” prints an explanatory message and redisplays the
+instance-profile picker rather than failing outright. - The success
+message notes that a newly created instance profile can take a few
+seconds to propagate before <code>ec2:RunInstances</code> will accept it
+(a well-known IAM eventual-consistency behavior) – so a launch-time
+“instance profile not found” error right after creating one reads as
+“wait a moment and retry,” not a new bug.</p>
+<p><strong>Rationale.</strong> - Fixes the actual reported failure at
+its root: the field is now always populated (when non-blank) with a real
+instance profile name, not a free-text guess that might actually be a
+role name. - Scoping “create” to attaching an existing role avoids a
+much bigger, genuinely separate design question – what trust policy and
+what permissions a brand-new role should get by default – which is a
+real security-relevant default this project shouldn’t make silently. An
+operator who needs a new role can create it via the IAM console (or
+Terraform, matching how these roles are provisioned today) and then
+attach it here.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Also support creating a
+brand-new role</em> – rejected for this round; raised as an explicit
+scope question and declined in favor of the simpler,
+no-new-security-defaults “attach an existing role” path. - <em>Fall back
+to free text whenever the list is empty</em>, matching Security group
+IDs/Subnet ID exactly – rejected because it would leave “creating one”
+unreachable in the (arguably common) case of a fresh account or a team
+that has never made an instance profile through this tool before,
+defeating the point of the feature request.</p>
+<p><strong>Consequences.</strong> - New AWS SDK dependency:
+<code>github.com/aws/aws-sdk-go-v2/service/iam</code>. - New IAM
+permissions required: <code>iam:ListInstanceProfiles</code>,
+<code>iam:ListRoles</code>, <code>iam:CreateInstanceProfile</code>,
+<code>iam:AddRoleToInstanceProfile</code> (see <code>DESIGN.md</code>,
+“Assumptions”). -
+<code>CollectLaunchInstanceParams</code>/<code>CollectLaunchInstanceParamsFromAMI</code>/
+<code>CreateInstanceFromAMI</code>/<code>CreateInstanceFromCloudInit</code>
+all gained an <code>awsclient.IAMAPI</code> parameter (a single global
+client, like STS/S3 – IAM is account-wide, not region-scoped, so it
+doesn’t need the per-region client maps EC2/SSM use). -
+<code>-debug</code>’s JSONL log now covers IAM calls too
+(<code>internal/awsclient/logging_iam.go</code>, <code>WrapIAM</code>),
+via the same shared generic logging helper the other wrappers use – no
+special redaction needed here, unlike <code>CreateKeyPair</code>’s
+private-key material.</p>
+<hr />
+<h2
+id="cloudfront-oac-by-default-for-static-websites-not-public-read-buckets">2026-07-02
+— CloudFront + OAC by default for static websites, not public-read
+buckets</h2>
+<p><strong>Context.</strong> Scoping the new S3 domain’s static-website
+primitive (Feature 19/24 in <code>DESIGN.md</code>) raised a real
+security-relevant default: the classic “S3 static website hosting”
+pattern most tutorials show makes the bucket world-readable via a
+public-read bucket policy. This team already treats
+public-AMI/public-exposure as something to warn about explicitly
+(<code>DESIGN.md</code> Security Considerations #4), and a tool that
+makes “public S3 bucket” the path of least resistance for every new
+static site works against that stance.</p>
+<p><strong>Decision.</strong> Feature 18 (Create Bucket) enables
+<code>s3:PutPublicAccessBlock</code> (all four settings) by default on
+every new bucket. Feature 19 (Configure Static Website Hosting) only
+sets the bucket’s website document config; it does not open public
+access. Standing up an actual public-facing site is Feature 24 (Create
+Distribution): CloudFront + a per-distribution Origin Access Control,
+with the bucket policy scoped to that distribution’s ARN
+(<code>s3:PutBucketPolicy</code> restricted by
+<code>AWS:SourceArn</code>) so the bucket stays private and only that
+CloudFront distribution can read it. A public-read bucket policy remains
+available as an explicit opt-out inside Feature 19, gated by its own
+separate confirmation that plainly states the bucket becomes
+world-readable directly — never the default, never reachable by just
+accepting defaults through the flow.</p>
+<p><strong>Rationale.</strong> - Matches this tool’s existing posture
+toward exposure (dry-run/warn before anything that broadens what’s
+publicly reachable). - CloudFront in front of a private bucket is also
+just better practice independent of security — caching, HTTPS, and a
+real CDN domain name come for free, not just access control. - Keeping
+the public-read path available (not removed) avoids blocking a
+legitimate simple-case use if someone genuinely wants it, while making
+sure it’s never the accidental default.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Public-read bucket
+policy as an equal, unranked option</em> — considered and rejected in
+this session’s design discussion; the concern was that presenting both
+paths as equivalent choices, with no recommended default, makes it too
+easy to pick the less safe one out of habit or unfamiliarity with
+OAC.</p>
+<p><strong>Consequences.</strong> - Feature 24 (Create Distribution)
+needs write access to the bucket policy
+(<code>s3:PutBucketPolicy</code>) in addition to CloudFront permissions
+— see <code>DESIGN.md</code> Assumptions. - Standing up a fully working
+static site now requires walking through two features (19 then 24)
+rather than one; <code>DESIGN.md</code> notes the handoff between them
+explicitly so the flow doesn’t feel like two disconnected tasks. - ACM
+certificate provisioning for a custom domain name on the distribution is
+out of scope (see <code>DESIGN.md</code>, “Deferred to a Later Version”)
+— Feature 24 assumes the certificate already exists.</p>
+<hr />
+<h2
+id="redesign-navigation-as-a-domain-picker-add-key-management-s3-and-cloudfront-domains">2026-07-02
+— Redesign navigation as a domain picker; add Key Management, S3, and
+CloudFront domains</h2>
+<p><strong>Context.</strong> With Compute (EC2/AMI) at 12 features and
+real-AWS verification (Phase 16) underway, the user raised that
+<code>awsops</code>’s actual job spans more than EC2/AMI: this team’s
+AWS footprint is really “deploy and operate Invenio RDM” (Compute, plus
+the SSH key pairs instances launch with) and “publish static websites”
+(S3 + CloudFront) — and the existing single flat main menu doesn’t make
+that structure visible, nor does the current feature set actually cover
+the S3/CloudFront side of the job at all (S3 today is only ever a
+write-destination inside Backup Archive &amp; Trim, never a managed
+resource in its own right). Growing a single menu to cover all of this
+was rejected outright as unusable long before reaching a final feature
+count.</p>
+<p><strong>Decision.</strong> - Replace the single flat main menu with a
+domain picker: <strong>Compute (EC2 &amp; AMI)</strong>, <strong>Key
+Management</strong>, <strong>S3 (Buckets &amp; Static
+Websites)</strong>, <strong>CloudFront</strong>, <strong>Exit</strong>.
+Each domain has its own resource listing and its own numbered menu
+underneath (same shape Compute’s menu already has today), reached via
+the picker and returned to via a “Back to domain picker” entry in every
+domain menu. - <strong>EC2 and AMI stay one domain (“Compute”), not
+two.</strong> They’re already deeply interleaved — “Create Instance
+<em>from</em> AMI,” “Create AMI <em>from</em> Instance,” and both Manage
+Tags and Show/Export Cloud-Init operate on “an instance or an AMI” as a
+single pick — splitting them would force those cross-cutting workflows
+to pick an arbitrary home or be duplicated across two menus. -
+<strong>Key Management becomes a first-class domain</strong>, not just a
+label: key pairs get their own List/Create/Import/Delete primitives
+(<code>DESIGN.md</code> Features 13-16), not only the inline “type
+<code>new</code>” launch shortcut that already existed (2026-07-01
+decision above) — that shortcut now calls the same standalone Create Key
+Pair primitive. - <strong>S3 gets full static-website scope</strong>,
+not just a backup destination: bucket listing/creation, static website
+hosting configuration, local directory sync, and object browsing
+(<code>DESIGN.md</code> Features 17-21) — see the paired 2026-07-02
+“CloudFront + OAC by default” decision above for the specific
+access-pattern default. - <strong>CloudFront gets core lifecycle
+scope</strong>: list, show detail, create (S3 origin + OAC), and
+invalidate (<code>DESIGN.md</code> Features 22-25) — not just read-only
+listing, since creating and refreshing a distribution are routine parts
+of standing up and updating a static site, not rare one-time console
+tasks. - This redesign runs <strong>alongside</strong>, not blocking,
+Phase 16’s real-AWS verification of Compute — the domain picker is a
+navigation refactor around Compute’s existing, already-tested workflows,
+not a rewrite of them; see <code>PLAN.md</code> for how the new phases
+are sequenced relative to Phase 16/17.</p>
+<p><strong>Rationale.</strong> - A two-level menu keeps each screen’s
+numbered choices in the single-digit-to-low-teens range the interactive
+picker pattern (2026-06-30 decision, “Use numbered list selection…”) was
+designed for, instead of scaling that pattern past where it stays
+usable. - Merging EC2/AMI avoids fragmenting workflows that are, in
+AWS’s own model, already cross-cutting between the two resource types. -
+Scoping Key Management/S3/CloudFront generously now (rather than
+shipping thin listing-only versions and expanding later) matches this
+project’s stated goal — reduce manual, undocumented AWS console work for
+this team’s actual two use cases — instead of just adding a smaller
+surface that still leaves most of that work in the console.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Five separate top-level
+domains (EC2, AMI, Key Management, S3, CloudFront)</em> — matches the
+user’s original phrasing most literally, but splits Compute’s
+interleaved workflows for no real navigational benefit, since EC2 and
+AMI together are still a small enough menu on their own. - <em>Key
+Management as a label only, no new primitives</em> — rejected because it
+leaves key pairs exactly as under-managed as today (create-only, buried
+inside instance launch), which doesn’t actually close the gap that
+motivated calling it out as its own domain. - <em>S3 scoped to
+backup-only, static website deferred</em> — rejected because static
+website hosting is one of the two concrete, named use cases driving this
+whole redesign, not a hypothetical future one. - <em>CloudFront
+read-only for v1</em> — rejected because creating a distribution and
+invalidating its cache after a content update are both routine, not
+rare, once a site is live; deferring creation would leave the tool
+unable to actually finish standing up a site it just helped populate via
+S3 sync. - <em>Pause Phase 16 to do this redesign first</em> — rejected;
+the two are independent (navigation refactor vs. verifying
+already-implemented Compute workflows against real AWS), so serializing
+them would waste time for no coordination benefit.</p>
+<p><strong>Consequences.</strong> - <code>internal/ui</code> gains a
+<code>domainmenu.go</code> shared loop that Compute’s existing menu code
+is refactored to use, rather than owning its own bespoke top-level loop
+(see <code>DESIGN.md</code> Architecture). - Three new
+<code>internal/inventory</code> listers (<code>keypairs.go</code>,
+<code>buckets.go</code>, <code>distributions.go</code>) and a new
+<code>internal/awsclient/cloudfront.go</code> client are needed;
+<code>internal/awsclient/s3.go</code> is broadened well beyond Feature
+11’s original HeadObject-only scope. - New IAM permissions are required
+beyond what’s listed in <code>DESIGN.md</code> Assumptions as of
+2026-07-01 — see that section’s 2026-07-02 additions for the full list
+per domain. - <code>Environment=production</code>‘s extra safety-gate
+warning (today gating Compute’s Terminate/Remove AMI) is <em>not</em>
+extended to the new domains’ destructive operations in this round — an
+open item, not an oversight (see <code>DESIGN.md</code> Feature 26 and
+“Deferred to a Later Version”). - <code>PLAN.md</code> needs new phases
+for Key Management, S3, and CloudFront, sequenced after Phase 15 but not
+blocking Phase 16/17’s completion of Compute’s real-AWS verification and
+Bash retirement.</p>
+<hr />
+<h2 id="support-creating-a-new-key-pair-from-within-awsops">2026-07-01 —
+Support creating a new key pair from within awsops</h2>
+<p><strong>Context.</strong> The user asked “what is Key pair name”
+while testing the Key pair name prompt, and once it was explained (the
+name of an already-registered AWS key pair used to install its public
+half on the new instance, not a local file path), asked to be able to
+create a new one from inside awsops instead of leaving the tool: “I
+don’t like re-using keys… this seems like an option that is needed.”
+AWS’s <code>ec2:CreateKeyPair</code> generates a new key pair and
+returns the private key material exactly once — AWS never stores or
+re-displays it — so awsops has to capture and save it immediately or
+it’s gone.</p>
+<p><strong>Decision.</strong> - At the existing Key pair name prompt,
+typing <code>new</code> (case-insensitive) instead of a name switches
+into a small sub-flow: prompt for a new key pair’s name, call
+<code>ec2:CreateKeyPair</code> (<code>KeyType=ed25519</code>,
+<code>KeyFormat=pem</code>), save the returned private key to
+<code>~/.ssh/&lt;name&gt;.pem</code> with <code>0600</code> permissions
+(creating <code>~/.ssh</code> first if it doesn’t exist), print the
+saved path, and use that name as the launch’s key pair. - A name
+collision (<code>InvalidKeyPair.Duplicate</code>) re-prompts for a
+different name rather than failing the whole launch; any other
+<code>CreateKeyPair</code> error (e.g. missing IAM permission) is
+returned as a real error, same as any other unrecoverable AWS failure
+elsewhere in the tool. - Default key type is ED25519 (AWS’s own current
+recommendation for new key pairs — smaller, faster than RSA) rather than
+RSA. - <code>internal/awsclient</code>’s <code>-debug</code> logging
+decorator for <code>CreateKeyPair</code> does not use the shared generic
+<code>logAWSCall</code> helper — its response carries the private key
+material, which must never be written to the debug log even though
+everything else the tool does is logged in full. The wrapper logs
+everything except <code>KeyMaterial</code>, which it replaces with a
+fixed redaction marker.</p>
+<p><strong>Rationale.</strong> Inline (“type <code>new</code>”) beats a
+separate main-menu action because the natural point to decide “I want a
+fresh key for this one” is exactly when you’re being asked for a key
+pair name — a separate menu item would mean leaving the launch flow,
+remembering the name you picked, then re-entering the flow to use it.
+Saving straight to <code>~/.ssh/</code> with correct permissions means
+the key is immediately usable
+(<code>ssh -i ~/.ssh/&lt;name&gt;.pem ...</code>) without a manual
+<code>chmod</code> step.</p>
+<p><strong>Trade-off.</strong> awsops now writes files outside its own
+working directory (<code>~/.ssh</code>) for the first time. Accepted:
+this is the standard, expected location for SSH private keys, and the
+alternative (printing the key material to the terminal for the operator
+to save themselves) risks losing an unrecoverable secret in
+scrollback.</p>
+<hr />
+<h2 id="add--debug-a-jsonl-log-of-every-aws-sdk-call">2026-07-01 — Add
+-debug: a JSONL log of every AWS SDK call</h2>
+<p><strong>Context.</strong> The user asked for a <code>-debug</code>
+option to make awsops’ behavior easier to diagnose, pointing at a
+similar feature already built for <code>~/Laboratory/harvey</code> (a
+JSONL debug log of specific hand-instrumented events — LLM
+requests/responses, tool calls, etc., via a <code>*DebugLog</code> type
+whose methods are all nil-receiver-safe). Unlike Harvey, where
+“interesting events” are a hand-picked subset of a large surface area,
+awsops’ entire interesting surface <em>is</em> its AWS SDK calls — every
+EC2/SSM/S3/STS method it calls is already declared in one of four narrow
+interfaces (<code>internal/awsclient</code>’s <code>EC2API</code>/
+<code>SSMAPI</code>/<code>S3API</code>/<code>STSAPI</code>), the same
+interfaces the test fakes already implement.</p>
+<p><strong>Decision.</strong> - <code>internal/debuglog</code>: a new
+package with the same nil-safe <code>*DebugLog</code> shape as Harvey’s
+— <code>Log(event string, fields map[string]any)</code>,
+<code>Path()</code>, <code>Close()</code>, all safe on a nil receiver —
+so <code>-debug=false</code> needs no <code>if debug</code> conditionals
+anywhere else in the codebase. - Rather than hand-instrumenting ~15 call
+sites (Harvey’s approach), wrap each of the four client interfaces with
+a logging decorator (<code>internal/awsclient</code>’s
+<code>WrapEC2</code>/<code>WrapSSM</code>/<code>WrapS3</code>/<code>WrapSTS</code>)
+that implements every method mechanically via one shared generic helper
+(<code>logAWSCall</code>): log method name, region, request params,
+duration, and response-or-error, then delegate. This gets full coverage
+of every AWS action awsops takes, for about the same code as
+hand-picking a subset would have cost, because the interfaces were
+already narrow and enumerable. - <code>Wrap*</code> returns the original
+client unchanged when <code>dl</code> is nil, so there’s no
+wrapper-object overhead when <code>-debug</code> isn’t set. - Sink: a
+timestamped file in the current directory
+(<code>awsops-debug-&lt;timestamp&gt;.jsonl</code>,
+<code>debuglog.DefaultPath()</code>), printed to stderr once at startup
+— not <code>agents/logs/</code> like Harvey, since awsops has no
+<code>agents/</code> directory convention of its own.</p>
+<p><strong>Rationale.</strong> Decorating the interfaces instead of
+instrumenting call sites means new AWS calls added to
+<code>EC2API</code>/<code>SSMAPI</code>/<code>S3API</code>/<code>STSAPI</code>
+in the future are logged automatically (the interface’s method set is
+enumerable and the compiler enforces the decorator implements all of it)
+— no risk of a future workflow silently bypassing the debug log because
+nobody remembered to add a manual <code>dl.Log(...)</code> call at the
+new site.</p>
+<p><strong>Trade-off.</strong> Full-fidelity request/response logging
+(not just event names) means
+<code>DescribeInstances</code>/<code>DescribeImages</code> calls that
+return large collections write correspondingly large JSON records.
+Accepted: the log is opt-in, local, and meant for active debugging
+sessions, not continuous production telemetry — verbosity favors “can
+actually see what happened” over log-file size.</p>
+<hr />
+<h2 id="key-pair-stays-free-text-name-tag-moves-earlier">2026-07-01 —
+Key pair stays free text; Name tag moves earlier</h2>
+<p><strong>Context.</strong> A prior fix (this same day) added pick
+lists for key pair name, security group IDs, and subnet ID, fetched from
+the AMI’s region, after real-AWS testing surfaced a typo-prone free-text
+UX (typing a security group <em>name</em> instead of an ID caused a real
+AWS <code>InvalidParameterCombination</code> error). Further real-AWS
+testing then showed the key pair pick list didn’t help: unlike opaque
+<code>sg-xxxx</code>/ <code>subnet-xxxx</code> IDs, key pair names are
+already human-readable, and a flat, unsorted list of every key pair
+across the account (16+ entries in one real test run, most irrelevant to
+the AMI being launched) added noise without solving a real problem.
+Separately, the user noted the Name tag prompt landed too late in the
+flow — after all of instance type/key pair/security groups/subnet/IAM
+profile/user data — when naming the instance is a natural first step
+once the AMI is picked.</p>
+<p><strong>Decision.</strong> - Revert the key pair prompt to free text
+(<code>ui.Prompt</code> with <code>requireNonEmpty</code>), removing
+<code>listKeyPairNames</code> and the pick-list wrapper. Security group
+IDs and subnet ID keep their pick lists — those IDs are the genuinely
+opaque case the original gap was about. - Move the Name tag prompt to
+immediately after the AMI pick (and, for the cloud-init-first workflow,
+immediately after its own AMI pick), before Instance type and everything
+after it.</p>
+<p><strong>Rationale.</strong> Pick lists help when the identifier is
+opaque and the account/region has more of them than a person can
+remember (security groups, subnets). They don’t help when the identifier
+is already a name the user chose and knows — showing every key pair in
+the account regardless of relevance is worse than just typing the name.
+Naming the instance right after picking its AMI matches how a person
+actually thinks through the workflow (what is this, then how is it
+configured).</p>
+<p><strong>Trade-off.</strong> A key pair pick list would still catch a
+typo’d key pair name before <code>RunInstances</code> runs; free text
+defers that to AWS’s own error. Accepted, since
+<code>ec2:RunInstances</code> rejects an unknown key pair name
+immediately and unambiguously, unlike the security-group-name-vs-ID
+confusion this was originally meant to prevent.</p>
+<hr />
+<h2 id="use-github.comrsdoieltermlib-for-the-terminal-ui">2026-07-01 —
+Use github.com/rsdoiel/termlib for the Terminal UI</h2>
+<p><strong>Context.</strong> PLAN.md’s Phase 3 (Terminal UI) originally
+called for a stdlib-only implementation (<code>text/tabwriter</code> for
+tables, <code>bufio.Scanner</code> for the numbered pick list and
+free-text prompts) — no interactive-input library existed under the
+pre-approved <code>github.com/rsdoiel</code> or
+<code>github.com/caltechlibrary</code> namespaces (CLAUDE.md) at the
+time DESIGN.md was drafted. The user has since pointed at
+<code>github.com/rsdoiel/termlib</code> (“a light weight terminal
+interface library… ncurses light”), which already exists and is under
+the <code>github.com/rsdoiel</code> namespace, so no separate approval
+discussion is needed per CLAUDE.md’s pre-approved dependency list.</p>
+<p><strong>Decision.</strong> Build <code>internal/ui</code> on
+<code>termlib</code> instead of a hand-rolled stdlib-only
+implementation: -
+<code>DisplayInstances</code>/<code>DisplayImages</code> use
+<code>termlib.Terminal</code> (buffered output, flushed via
+<code>Refresh</code>) plus
+<code>termlib.PadRight</code>/<code>termlib.Truncate</code> for column
+formatting, replacing <code>ec2_ami_manager.bash</code>’s
+<code>printf "%-20s ..."</code> pattern - <code>PickList[T]</code> and
+<code>Prompt</code> are built on <code>termlib.LineEditor.Prompt</code>
+(readline-style editing, history,
+<code>Ctrl+C</code>/<code>Ctrl+D</code> handling) rather than a plain
+<code>bufio.Scanner</code> loop - Tests drive <code>LineEditor</code>
+through an <code>os.Pipe()</code> (not a TTY), which
+<code>LineEditor.Prompt</code> detects and falls back to plain line
+reading for — documented and intended by <code>termlib</code> itself for
+exactly this use case, so no fake/mock input abstraction was needed</p>
+<p><strong>Rationale.</strong> - <code>termlib</code> is pre-approved
+(CLAUDE.md: <code>github.com/rsdoiel</code> namespace) and already
+provides exactly what Phase 3 needs: buffered flicker-free terminal
+output, readline-style prompts with history and <code>Ctrl+C</code>/
+<code>Ctrl+D</code> handling, and column-formatting helpers
+(<code>PadRight</code>, <code>Truncate</code>) that map directly onto
+the Bash version’s <code>printf</code>/ <code>${var:0:N}</code>
+conventions - Still numbered-menu based, not raw-keystroke arrow
+navigation — consistent with the existing “Numbered menu for pick lists”
+decision (2026-06-30); <code>termlib</code>’s raw-mode keystroke reading
+(<code>ReadKey</code>/ <code>KeyReader</code>) is not used here - Avoids
+reimplementing readline-style editing/history/multi-line-paste handling
+that a hand-rolled <code>bufio.Scanner</code> loop would not have
+had</p>
+<p><strong>Rejected alternatives.</strong> - <em>Stdlib-only
+(<code>text/tabwriter</code> + <code>bufio.Scanner</code>)</em> — the
+original PLAN.md approach; works, but reinvents editing/history niceties
+<code>termlib</code> already provides, for no benefit now that an
+approved library covers it - <em>A third-party TUI/prompt library
+outside the <code>github.com/rsdoiel</code> /
+<code>github.com/caltechlibrary</code> namespaces</em> — would need
+discussion per CLAUDE.md; moot once <code>termlib</code> was pointed
+out</p>
+<p><strong>Consequences.</strong> - <code>go.mod</code> gains
+<code>github.com/rsdoiel/termlib</code> (direct) and its transitive
+<code>golang.org/x/term</code>/<code>golang.org/x/sys</code>
+dependencies - <code>DESIGN.md</code>’s Dependencies section and its “no
+dependency beyond the Go standard library and the AWS SDK” claim are
+updated to include <code>termlib</code> - If a gap surfaces in
+<code>termlib</code> while building later phases (e.g. a table-drawing
+helper <code>internal/ui</code> ends up hand-rolling), flag it back to
+the user for <code>~/Laboratory/termlib/TODO.md</code> rather than
+working around it silently in <code>awstools</code></p>
+<hr />
+<h2
+id="add-create-ec2-instance-from-cloud-init-yaml-as-a-v1-primitive">2026-07-01
+— Add Create EC2 Instance from Cloud-Init YAML as a v1 primitive</h2>
+<p><strong>Context.</strong> Feature 2 (Create Instance from AMI)
+already got a cloud-init file-input and completion-check enhancement
+(see “Enhance Create Instance from AMI” below), but the user pointed out
+that burying it as the 6th of 7 parameters inside an AMI-first workflow
+doesn’t serve the actual use case: someone who starts from “I have a
+cloud-init recipe, give me a machine” has a different mental model than
+someone who starts from “give me another copy of this AMI.” That
+deserves to be its own visible primitive, not an option nested inside
+Feature 2’s parameter list.</p>
+<p><strong>Decision.</strong> Add “Create EC2 Instance from Cloud-Init
+YAML” as its own v1 primitive (Feature 8): the cloud-init file is the
+<em>first</em> thing collected, then a base AMI is picked, then the same
+remaining launch parameters Feature 2 already collects. It shares
+Feature 2’s underlying execution path entirely (the same
+<code>LaunchInstanceParams</code> struct, the same
+launch/poll/cloud-init-completion-check logic) — the only difference is
+the order and framing of the interactive prompts. This is distinct from
+the deferred “Bake AMI from cloud-init” idea: that one snapshots the
+result into a new AMI and terminates the instance; this one leaves a
+real, running, usable instance.</p>
+<p><strong>Rationale.</strong> - Matches the user’s explicit ask: this
+needed to be visible in the primitive list, not folded into another
+feature’s parameter collection - Sharing execution logic with Feature 2
+avoids duplicating the launch/poll/cloud-init-check code — only the
+front-end prompt sequence differs, consistent with the
+params-struct/confirm-gate seam already required of every workflow (see
+“Structure workflows for future record/replay”) - Placed as Feature 8
+(after Backup Archive &amp; Trim, before Stop/Terminate Instance and the
+cross-cutting Project/Environment Tagging convention — see the companion
+decision below) rather than immediately after Feature 2, to avoid a
+costly renumbering cascade through Features 3-7 and their many existing
+cross-references, for a placement decision that doesn’t carry strong
+semantic weight either way</p>
+<p><strong>Rejected alternatives.</strong> - <em>A sub-mode within
+Feature 2 (“how do you want to start: AMI or cloud-init?”)</em> — was
+the initial implementation; rejected because the user wants it directly
+visible as its own primitive, not a branch hidden inside another
+feature’s flow - <em>Insert immediately after Feature 2, renumbering
+Features 3-7</em> — arguably better thematic grouping, but not worth the
+renumbering risk across this document’s many existing Feature N
+cross-references for a placement question without a strong correctness
+argument either way</p>
+<p><strong>Consequences.</strong> - <code>DESIGN.md</code> gets a new
+Feature 8 - <code>PLAN.md</code> gets a new Phase 10 (“Create Instance
+from Cloud-Init YAML”), inserted before Main Menu and Integration - No
+new IAM permissions — reuses exactly what Feature 2/Phase 4 already
+needs (<code>ec2:RunInstances</code>, SSM for the completion check)</p>
+<hr />
+<h2 id="add-startstopterminate-ec2-instance-as-v1-primitives">2026-07-01
+— Add Start/Stop/Terminate EC2 Instance as v1 primitives</h2>
+<p><strong>Context.</strong> Immediately after adding “Create Instance
+from Cloud-Init YAML,” the user pointed out more gaps: there’s no way to
+stop a running instance or to terminate/remove one, and then — while
+this very decision was being written up — no way to start a stopped one
+back up either. The v1 list only covered AMI lifecycle and instance
+<em>creation</em>, not the rest of an instance’s power-state
+lifecycle.</p>
+<p><strong>Decision.</strong> Add three more v1 primitives: -
+<strong>Start EC2 Instance</strong> (Feature 9): pick a stopped
+instance, simple yes/no confirm (safe and reversible, the symmetric
+counterpart to Stop), <code>ec2:StartInstances</code>, poll until
+<code>running</code>, display connection info (public IP may have
+changed unless an Elastic IP is in use) - <strong>Stop EC2
+Instance</strong> (Feature 10): pick a running instance, simple yes/no
+confirm (stopping is reversible — data on EBS volumes persists, the
+instance can be started again), <code>ec2:StopInstances</code>, poll
+until <code>stopped</code> (bounded timeout) - <strong>Terminate EC2
+Instance</strong> (Feature 11): pick an instance, dry-run showing what
+would be destroyed — <strong>including whether any attached EBS volume
+has <code>DeleteOnTermination=true</code></strong>, since that volume’s
+data (including any not-yet-archived backups — see Backup Archive &amp;
+Trim) is destroyed along with the instance — an
+<code>Environment=production</code> warning if tagged, type-to-confirm,
+then <code>ec2:TerminateInstances</code>. Same safety tier as Remove AMI
+(Feature 4)</p>
+<p><strong>Rationale.</strong> - Stopping/starting and terminating are
+fundamentally different risk levels (reversible vs. permanent), so they
+get different confirmation tiers — matching this project’s existing
+principle of scaling friction to actual risk rather than applying one
+blanket confirmation style everywhere - Surfacing
+<code>DeleteOnTermination</code> in the dry-run closes a real gap this
+project already cares about: an instance can be terminated with its root
+volume set to delete-on-termination, destroying exactly the kind of
+not-yet-archived backup data Backup Archive &amp; Trim exists to protect
+- <code>ec2:TerminateInstances</code> was already a planned permission
+(for Show/ Export Cloud-Init’s AMI-path cleanup); only
+<code>ec2:StartInstances</code>/ <code>ec2:StopInstances</code> are
+new</p>
+<p><strong>Rejected alternatives.</strong> - <em>One combined “manage
+instance power state” primitive covering start/ stop/terminate</em> —
+considered, but start/stop and terminate have different confirmation
+tiers and different risk profiles; combining them risks the
+lighter-weight start/stop confirmation habituating users to clicking
+through what should be a heavier gate for terminate</p>
+<p><strong>Consequences.</strong> - <code>DESIGN.md</code> gets three
+new Features (9, 10, 11); Project/Environment Tagging moves from Feature
+8 to Feature 12 (four new features inserted ahead of it: Feature 8
+Create-from-Cloud-Init-YAML, Feature 9 Start, Feature 10 Stop, Feature
+11 Terminate) - <code>PLAN.md</code> gets three new Phases after the
+Create-from-Cloud-Init-YAML phase, before Main Menu and Integration;
+later phases renumbered accordingly - <code>DESIGN.md</code>’s IAM
+permission list gains <code>ec2:StartInstances</code> and
+<code>ec2:StopInstances</code></p>
+<hr />
+<h2 id="name-the-cli-binary-awsops">2026-07-01 — Name the CLI binary
+<code>awsops</code></h2>
+<p><strong>Context.</strong> The Go CLI had been referred to as
+<code>ec2-ami-manager</code> throughout the Architecture sections, a
+name inherited from the original Bash script’s narrow scope. That name
+undersells what v1 now covers (instance/AMI lifecycle, cloud-init
+inspection, backup hygiene, tag management) and, worse, ties the tool’s
+identity to a single operation. The candidate <code>rdmctl</code> was
+also considered, but the user wants the name to make two things clear:
+it’s about AWS resource operational hygiene in general, not explicitly
+tied to the Invenio RDM project specifically — even though RDM instances
+are its primary use case today.</p>
+<p><strong>Decision.</strong> Name the CLI binary <code>awsops</code>
+(<code>cmd/awsops/</code>). The repository itself stays named
+<code>awstools</code> (already fixed by the CMTools scaffold —
+<code>codemeta.json</code>, <code>Makefile</code>’s
+<code>PROJECT = awstools</code>); the user may revisit the repository
+name separately later, but that’s not part of this decision.</p>
+<p><strong>Rationale.</strong> - Communicates general AWS operational
+hygiene rather than a single narrow operation
+(<code>ec2-ami-manager</code>) or a project-specific name
+(<code>rdmctl</code>) that would tie the tool’s identity to Invenio RDM
+even though its mechanisms (tagging, backup archival, cloud-init
+inspection) aren’t actually RDM-specific - Leaves room for the tool to
+be useful for non-RDM AWS resources later without a confusing name</p>
+<p><strong>Rejected alternatives.</strong> -
+<em><code>rdmctl</code></em> — clearer about the current primary use
+case, but locks the name to a project the tool isn’t actually coupled to
+at the implementation level - <em><code>awstools</code> (reuse the repo
+name for the binary too)</em> — simplest, but the user prefers a
+distinct binary name in case the repo hosts more than one tool later</p>
+<p><strong>Consequences.</strong> -
+<code>DESIGN.md</code>/<code>PLAN.md</code> Architecture sections and
+doc titles updated from <code>ec2-ami-manager</code> to
+<code>awsops</code> throughout - <code>ec2_ami_manager.bash</code> (the
+Bash file itself) is unaffected — it’s a filename, not the Go binary
+name, and stays as-is until retirement per the existing
+retire-after-verify plan</p>
+<hr />
+<h2
+id="enhance-create-instance-from-ami-cloud-init-file-input-completion-check">2026-07-01
+— Enhance Create Instance from AMI: cloud-init file input + completion
+check</h2>
+<p><strong>Context.</strong> Feature 2 (Create EC2 Instance from AMI)
+already had a generic, optional “user data” text prompt — a cloud-init
+YAML could technically go there today via freehand typing/pasting. Two
+real gaps remained: no way to load it from a file instead of
+typing/pasting multi-line YAML into a terminal, and no verification that
+cloud-init actually <em>finished successfully</em> after launch — the
+existing poll only waits for the EC2-level <code>running</code> state,
+not for cloud-init’s own completion. An instance can be “running” while
+its user-data provisioning silently failed partway through, which
+directly undermines the “test new versions/changes with confidence” goal
+this whole project is for.</p>
+<p><strong>Decision.</strong> Enhance Feature 2 with: 1. The user-data
+prompt accepts a local file path as an alternative to inline text
+(e.g. pointing at a file from a local clone of
+<code>cloud-init-examples</code>) — a plain local file read, no new AWS
+API surface 2. After the instance reaches <code>running</code>, if
+user-data was provided, wait for SSM to report <code>Online</code> and
+run <code>cloud-init status --wait</code> via SSM (bounded timeout —
+unlike Phase 5’s unbounded AMI-creation poll, a cloud-init run on launch
+should finish in a bounded, predictable time, so an unbounded wait would
+just mask a real hang), reporting the actual completion status
+(<code>done</code> vs <code>error</code>) rather than only EC2’s
+<code>running</code> state. If SSM never comes online, skip this check
+cleanly (not an error) — not every AMI has SSM configured</p>
+<p><strong>Rationale.</strong> - File-path loading avoids
+re-typing/pasting multi-line YAML in a terminal prompt, at essentially
+zero implementation cost - Verifying cloud-init’s actual completion
+status closes a real “looks fine but isn’t” gap — exactly the kind of
+silent failure that erodes confidence in a test environment - Reuses
+Phase 6’s SSM client/poll/bounded-timeout pattern rather than inventing
+a new mechanism</p>
+<p><strong>Rejected alternatives.</strong> - <em>Fetch templates
+directly from <code>cloud-init-examples</code> via the GitHub API</em> —
+deferred for the same reason “Inline diff against cloud-init-examples”
+is deferred (see the Show/Export Cloud-Init decision): no clean mapping
+from this account’s <code>Project</code> tags to the repo’s filenames
+yet. Pointing at a local file (from your own clone) gets the practical
+benefit without that dependency - <em>Unbounded wait for cloud-init
+completion</em> — rejected; unlike AMI creation, which can legitimately
+run for hours on large volumes, a launch-time cloud-init run should
+complete in a bounded, predictable window</p>
+<p><strong>Consequences.</strong> - <code>DESIGN.md</code> Feature 2 is
+updated with both changes (still Feature 2, no renumbering) -
+<code>PLAN.md</code> Phase 4 gains an explicit dependency on Phase 1
+(for the SSM client, alongside the EC2 client it already needed) and new
+work items for file-path loading and the completion check</p>
+<hr />
+<h2
+id="broaden-rename-instance-into-a-general-manage-tags-primitive">2026-07-01
+— Broaden Rename Instance into a general Manage Tags primitive</h2>
+<p><strong>Context.</strong> Immediately after adding “Rename Instance”
+(below), the user pointed out the obvious generalization: renaming is
+just “update the <code>Name</code> tag,” and if the tool can create
+tags, it should be able to manage tags generally — add, update, and
+remove, on any resource, not just set <code>Name</code> on an
+instance.</p>
+<p><strong>Decision.</strong> Replace Feature 5 (“Rename Instance”) with
+a general “Manage Tags” primitive: pick a resource (instance or AMI),
+see its current tags, then add a new tag, update an existing one, or
+remove one. Renaming is simply the common case of updating
+<code>Name</code> through this same flow — no separate operation.
+Confirmation stays at the same lightweight tier Rename Instance had
+(simple yes/no — tag edits are cheap and reversible, not the
+dry-run/type-to-confirm tier reserved for actually destructive
+operations), routed through the same reusable confirmation gate as every
+other workflow.</p>
+<p><strong>Rationale.</strong> - Avoids two overlapping menu items
+backed by the same underlying API (<code>ec2:CreateTags</code>) doing
+the same thing at different scopes - AMIs get tags too
+(Project/Environment are set at creation per Feature 3) but had no way
+to edit them after the fact — this closes that gap symmetrically for
+both resource types - One general primitive is simpler to reason about,
+test, and eventually expose to Recorded Scripts than two narrow ones</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep both Rename
+Instance and a separate Manage Tags primitive</em> — lets renaming stay
+a one-step action, but two menu items for the same underlying operation
+is redundant and was explicitly rejected in favor of consolidation -
+<em>Tag management as an instance-only feature</em> — considered, but
+AMIs need the same capability (they carry Project/Environment tags too),
+so scoping it to instances only would just recreate the same gap for
+AMIs</p>
+<p><strong>Consequences.</strong> - <code>DESIGN.md</code> Feature 5 is
+retitled “Manage Tags” and rewritten; no renumbering needed elsewhere
+since it’s a same-slot replacement - <code>DESIGN.md</code>’s IAM
+permission list gains <code>ec2:DeleteTags</code> (removal) —
+<code>CreateTags</code>/<code>DescribeTags</code> were already planned -
+<code>PLAN.md</code> Phase 9 is retitled “Manage Tags” and its work
+items rewritten to cover add/update/remove on both instances and AMIs;
+still Phase 9, no renumbering elsewhere</p>
+<hr />
+<h2
+id="add-rename-instance-as-a-v1-primitive-ami-name-is-immutable">2026-07-01
+— Add Rename Instance as a v1 primitive; AMI Name is immutable</h2>
+<p><strong>Context.</strong> The user noticed renaming was missing from
+the v1 primitive list and asked whether the AWS SDK supports it. The two
+resources behave completely differently: - An EC2 instance’s “Name” is
+not a real API attribute at all — it’s just the <code>Name</code> tag by
+convention (the same tag this project’s Project/ Environment tagging
+convention already reads/writes). Changing it is a plain
+<code>ec2:CreateTags</code> call, already a planned permission - An
+AMI’s <code>Name</code> is a real attribute, but it is set once at
+<code>CreateImage</code> time and <strong>cannot be changed afterward
+via the AWS API</strong> — this is an AWS EC2 limitation, not a gap in
+the SDK or this tool. <code>ModifyImageAttribute</code> allows changing
+<code>Description</code> and launch permissions, but not
+<code>Name</code>. The only way to get an AMI with a different name is
+<code>CopyImage</code> (produces a brand-new AMI with a new ID and
+duplicated snapshots) plus deregistering the original — a materially
+heavier operation than a rename, closer in cost/risk to Feature 3
+(create-AMI) than a quick edit</p>
+<p><strong>Decision.</strong> Add “Rename Instance” as a v1 primitive
+(pick an instance, prompt for a new <code>Name</code> tag value,
+confirm, <code>ec2.CreateTags</code>). Do not add an “AMI rename”
+primitive of any kind. Feature 3 (Create AMI from EC2 Instance) keeps
+its existing default-name-suggestion behavior unchanged, but gains an
+explicit note that the name is permanent once created, so the user isn’t
+surprised later. “Edit AMI Description” (the one AMI attribute that
+<em>is</em> mutable) is recorded as a deferred, not-yet-requested idea
+rather than built now.</p>
+<p><strong>Rationale.</strong> - Renaming an instance is cheap,
+reversible, and was a real gap — no reason to defer it - Silently
+supporting “rename” for AMIs by only updating a tag while the real
+<code>Name</code> attribute stays stale would be actively misleading,
+since AWS’s own console/CLI would keep showing the original name -
+Building a “rename via copy + deregister” primitive for AMIs was
+considered and rejected: it’s a different operation with different risk
+(storage duplication, a new AMI ID, anything referencing the old ID
+breaks) than what a user asking to “rename” would expect</p>
+<p><strong>Rejected alternatives.</strong> - <em>AMI rename via
+CopyImage + DeregisterImage</em> — technically the only way to get a
+differently-named AMI, but it’s a heavyweight operation disguised as a
+rename; not built for v1 - <em>Only update the AMI’s tags, leave Name
+attribute alone</em> — would create a confusing mismatch between this
+tool’s tag-based “name” and the AMI’s actual <code>Name</code> shown
+everywhere else in AWS</p>
+<p><strong>Consequences.</strong> - <code>DESIGN.md</code> gets a new
+Feature 5 (“Rename Instance”), renumbering Show/Export Cloud-Init,
+Backup Archive &amp; Trim, and Project/Environment Tagging by one -
+<code>PLAN.md</code> gets a new Phase 9 (“Rename Instance”); Phases 9-12
+in the prior draft are renumbered to 10-13 accordingly - No new IAM
+permission needed — <code>ec2:CreateTags</code> was already planned for
+the tagging convention</p>
+<hr />
+<h2
+id="structure-workflows-for-future-recordreplay-recorded-scripts">2026-07-01
+— Structure workflows for future record/replay (“Recorded Scripts”)</h2>
+<p><strong>Context.</strong> Discussing “bake an AMI from cloud-init”
+led to a bigger idea: capture the sequence of actions taken in an
+interactive session as an editable, replayable script — analogous to how
+a “skill” packages a procedure for a language model, but for this
+deterministic tool. The user wants this to use YAML (prior success with
+YAML-driven configuration in other projects, e.g. <code>dataset</code>’s
+web service config) and templated values (not just literal captured
+values), with safety gates enforced on replay, not bypassed. This is a
+substantial feature — a new execution mode (record / replay) that cuts
+across the whole menu/dispatch loop, not a single primitive — so it is
+not built in v1 (see “Recorded Scripts” under “Deferred to a Later
+Version” in <code>DESIGN.md</code>/<code>PLAN.md</code>). It also
+potentially subsumes the earlier-deferred “Clone instance for testing”,
+“Upgrade with rollback point”, and “Bake AMI from cloud-init” composite
+workflows: if a user can record a sequence once and replay it with
+different values, those don’t need to be bespoke Go features.</p>
+<p><strong>Decision.</strong> v1 does not build the recorder, the YAML
+schema, or the replay engine. It does structure every confirmation-gated
+workflow (Phases 4, 5, 6’s AMI path, 7, 8) around a specific seam so
+that adding record/replay later does not require reopening
+already-finished code: 1. Each workflow separates <strong>building a
+resolved parameters struct</strong> (interactive prompts fill it in v1)
+from <strong>executing it against AWS</strong>. The execution code takes
+a plain, typed struct (e.g.
+<code>CreateAMIParams{InstanceID, Name, Description, NoReboot, Tags}</code>)
+and never knows whether prompts or a future YAML file produced it 2. The
+<strong>confirmation/dry-run gate is its own reusable step</strong>, not
+inlined into each workflow’s prompt loop, so a future replay engine can
+route through the identical gate rather than a second, parallel
+implementation of “is this safe to do” 3. When templating is eventually
+built, it applies via Go’s standard library <code>text/template</code>
+to the YAML text before parsing — no new dependency, consistent with
+this project’s stdlib-first preference</p>
+<p><strong>Rationale.</strong> - The params-struct/execute split and the
+reusable confirmation gate are good structure on their own merits
+(testability, single source of truth for “is this safe”), so requiring
+them now costs nothing extra — it’s a constraint on code already being
+written, not additional code - Building the actual recorder/replay
+engine before v1’s primitives have proven themselves against real AWS
+would be scope creep on an already large rewrite (see “V1 scope” below)
+- Safety gates must not be bypassable by replay without deliberate,
+explicit opt-in — reusing the exact same gate function is the simplest
+way to guarantee that, rather than trusting a second implementation to
+stay in sync</p>
+<p><strong>Rejected alternatives.</strong> - <em>Build record/replay
+now, as part of v1</em> — most directly useful, but conflicts with “V1
+scope: ship the four primitives first” and adds a new execution mode on
+top of an already-large Bash→Go rewrite - <em>Defer without any
+structural constraint on v1’s workflows</em> — cheaper short-term, but
+risks having to rewrite Phase 4-8’s internals later to retrofit the
+params-struct/confirm-gate seam once record/replay is actually built -
+<em>Literal-only captured values (no templating)</em> — simpler, but the
+user specifically wants templating for repurposing a saved sequence
+across different targets (different instance, different environment),
+which a literal-only capture can’t do without hand-editing every value
+each time</p>
+<p><strong>Consequences.</strong> - <code>PLAN.md</code> Phases 4, 5, 6,
+7, 8 each get a work item noting this structural requirement - The
+“Deferred to a Later Version” entries for “Clone instance for testing”,
+“Upgrade with rollback point”, and “Bake AMI from cloud-init” are
+annotated as likely to become example Recorded Scripts rather than
+bespoke Go workflows, once the mechanism exists - No new third-party
+dependency is introduced by this decision — YAML parsing
+(<code>gopkg.in/yaml.v3</code> or similar) would be needed when the
+feature is actually built, and would need the same approval process as
+<code>aws-sdk-go-v2</code> did, at that time</p>
+<hr />
+<h2 id="add-backup-archive-trim-as-a-v1-primitive">2026-07-01 — Add
+Backup Archive &amp; Trim as a v1 primitive</h2>
+<p><strong>Context.</strong> Today, cleaning up stale Postgres backups
+on an RDM instance is a fully manual chore: log in, look at
+<code>/opt/rdm_sql_backups</code>, decide what’s old enough to remove,
+delete it by hand. A read-only SSM check of <code>newauthors</code>
+found the real scale of the problem: 87GB in
+<code>/opt/rdm_sql_backups</code>, one
+<code>&lt;project&gt;-db-&lt;n&gt;-&lt;project&gt;-&lt;date&gt;.sql.gz</code>
+file per day at ~980MB, with no rotation at all (root volume: 484GB
+total, 157GB used, 328GB free — the backups are over half of what’s
+used). This is the concrete cause of the “over-provisioned disk makes
+cloning slow” problem that motivated this whole design conversation. No
+S3 destination exists yet for these backups — that’s a separate
+infrastructure task the user still needs to do, not something this
+project creates.</p>
+<p>This conversation also surfaced a broader framing for the tool: it
+should help with ongoing <em>administration</em> of these instances (not
+just create/remove EC2/AMI lifecycle events), and with improving
+development, test, and deployment workflows more generally.</p>
+<p><strong>Decision.</strong> Add “Backup Archive &amp; Trim” as a v1
+primitive: given an instance, a backup directory, and an age threshold
+(both explicit prompts, no baked-in default — same reasoning as the
+<code>Environment</code> tag having no default), it uploads files older
+than the threshold to S3, independently verifies each upload, deletes
+only the verified files, then runs <code>fstrim</code>. The sequence is
+deliberately split into two separate remote steps with the tool itself
+as the arbiter in between, rather than one script that
+uploads-then-immediately-deletes based on its own success report:</p>
+<ol type="1">
+<li><strong>Dry-run list</strong> (SSM, read-only): candidate files
+matching the age threshold, with size/age, shown before anything
+happens</li>
+<li><strong>Type-to-confirm</strong> (matches the AMI-removal safety
+tier, since step 5 is irreversible)</li>
+<li><strong>Upload phase</strong> (SSM): the instance uploads each
+candidate file to S3 (<code>aws s3 cp</code>, run from the instance —
+see rejected alternatives) and reports back a small per-file JSON
+summary (S3 key, size). Nothing is deleted yet</li>
+<li><strong>Independent verification</strong>: the tool itself, using
+its own AWS credentials (not the instance’s self-report), calls
+<code>s3:HeadObject</code> on every uploaded key and confirms it exists
+with the expected size</li>
+<li><strong>Delete phase</strong> (a <em>second</em>, separate SSM
+command): the instance deletes exactly the tool-verified file list — it
+does not re-derive its own “what’s stale” list, avoiding a
+time-of-check/time-of-use gap</li>
+<li><strong>fstrim</strong>, then a report of bytes freed and any files
+that failed verification (left untouched, flagged, not deleted)</li>
+</ol>
+<p><strong>Rationale.</strong> - Matches this project’s existing safety
+pattern for destructive operations (dry-run, then explicit confirm — see
+“Multi-layer confirmation for AMI removal”) - SSM Run Command is not a
+bulk file-transfer channel (confirmed when designing Show/Export
+Cloud-Init) — ~980MB backup files are far too large to round-trip
+through SSM output, so the upload must happen <em>from</em> the instance
+itself via its own AWS CLI/credentials - Splitting upload and delete
+into two round-trips with independent verification in between means the
+tool — not the remote script — decides what’s safe to delete, based on a
+second, independent read from S3. Trusting a single script’s self-report
+to authorize an irreversible delete was considered and explicitly
+rejected (see below)</p>
+<p><strong>Rejected alternatives.</strong> - <em>Single script: upload
+then immediately delete on self-reported success</em> — simpler, one
+round-trip, but means a script bug or a transient S3 error that still
+reports “success” could delete backups with nothing actually saved.
+Rejected in favor of independent verification - <em>Tool
+downloads/re-uploads the files itself instead of the instance doing
+it</em> — would let the tool verify with certainty, but requires
+streaming multi-GB files through the operator’s machine or through SSM
+(impractical for the same reason raw file transfer was rejected for
+Show/Export Cloud-Init’s AMI path) - <em>Fold into the existing fstrim
+step</em> — considered, but the user chose a standalone primitive (see
+“Should v1 add composite workflows” discussion in the Show/Export
+Cloud-Init decision above); backup cleanup is useful on its own,
+independent of AMI creation</p>
+<p><strong>Consequences.</strong> - Each target instance’s IAM instance
+profile needs <code>s3:PutObject</code> (and likely
+<code>s3:ListBucket</code> scoped to its own prefix) on the destination
+bucket — this is a cloud-init/AMI change in
+<code>caltechlibrary/cloud-init-   examples</code>, not something this
+Go tool can retrofit from outside. This is in scope for this project to
+specify (per the earlier “prereq scope” decision) even though the actual
+bucket creation and IAM/Terraform work happens separately - The tool’s
+own IAM permissions (the operator’s identity, distinct from the
+instance’s own instance profile) need <code>s3:HeadObject</code> (or
+<code>s3:GetObject</code>) on the bucket, for independent verification -
+The S3 bucket itself does not exist yet — real-AWS verification of this
+primitive is blocked on that being created first (tracked in
+<code>TODO.md</code>, not by this project) - Testing plan (per
+discussion with the user): unit tests first, with fakes for
+<code>EC2API</code>/<code>SSMAPI</code>/a new <code>S3API</code>
+(covering <code>HeadObject</code>); then, once those pass, a live test
+against a <em>throwaway instance launched from an existing AMI that
+already has these backups baked in</em> — never directly against the
+production instance. This reuses Phase 4 (Create EC2 Instance from AMI)
+as a testing tool in its own right, and the throwaway instance must be
+terminated after the test, same cleanup discipline as Show/Export
+Cloud-Init’s AMI path - <code>DESIGN.md</code>’s Overview is broadened
+to describe ongoing instance administration and dev/test/deployment
+workflow support, not just EC2/AMI lifecycle management -
+<code>PLAN.md</code> gets a new Phase 7 (“Backup Archive &amp; Trim”);
+Phases 7-11 in the prior draft are renumbered to 8-12 accordingly</p>
+<hr />
+<h2 id="add-showexport-cloud-init-as-a-v1-primitive">2026-07-01 — Add
+Show/Export Cloud-Init as a v1 primitive</h2>
+<p><strong>Context.</strong> This team maintains a separate repository,
+<code>caltechlibrary/cloud-init-examples</code>, of hand-authored
+cloud-init YAML templates (e.g. <code>invenio-rdm.yaml</code>) used both
+for local Multipass development VMs and as the source of the
+<code>--user-data</code> passed when launching real EC2 instances. A
+live check found that <code>ec2: DescribeInstanceAttribute</code>
+(attribute <code>userData</code>) returns the exact base64-encoded
+cloud-init that launched a given instance, and that
+<code>newauthors</code>‘s actual deployed cloud-init has already drifted
+from <code>cloud-init-examples</code>’ <code>invenio-rdm.yaml</code>
+template (missing packages, no <code>write_files</code> onboarding
+scripts, a different <code>runcmd</code> approach). This is a real, live
+instance of the “accurate test environments” risk this whole project is
+meant to reduce.</p>
+<p><strong>Decision.</strong> Add “Show/export cloud-init” as a fifth v1
+primitive (alongside create-instance, create-AMI, remove-AMI, and the
+tagging convention), not deferred: - <strong>Instance path</strong>:
+<code>ec2:DescribeInstanceAttribute</code> — read-only, free, instant,
+works for any existing instance - <strong>AMI path</strong>: also
+supported in v1. Since an AMI has no user-data attribute of its own,
+extraction launches a temporary, disposable instance from the AMI, waits
+for SSM to come online (reusing the same SSM pattern already planned for
+the fstrim step), runs an SSM command to read
+<code>/var/lib/cloud/instance/user-data.txt</code> off disk, and
+<em>always</em> terminates the temporary instance afterward — including
+on failure or timeout. This path costs real AWS time/money (a running
+instance for several minutes) and requires an explicit confirmation
+before proceeding, unlike every other read in this tool -
+<strong>Export</strong>: decoded YAML can be saved to a local file path
+for manual diffing against a local clone of
+<code>cloud-init-examples</code>. No inline fetch-and-diff against the
+GitHub repo in v1 — see rejected alternatives</p>
+<p><strong>Rationale.</strong> - Directly serves the stated project
+goal: this is the concrete mechanism for detecting drift between what’s
+actually deployed and the team’s canonical cloud-init templates - The
+instance path is essentially free to build (one more typed SDK call,
+already-planned dependencies) — there’s no reason to defer it - The AMI
+path reuses the SSM client and “poll with bounded timeout, always clean
+up” pattern already needed elsewhere, rather than introducing a new
+mechanism (e.g. mounting the AMI’s snapshot on a helper instance, which
+would need an existing helper instance in every region and is more
+moving parts for the same result)</p>
+<p><strong>Rejected alternatives.</strong> - <em>Instances only, defer
+AMI extraction</em> — was the initial recommendation (cost/complexity),
+but the user explicitly wants AMI coverage in v1 since some of the AMIs
+this team manages have already outlived the instance they were created
+from - <em>Fetch + diff inline against
+<code>cloud-init-examples</code></em> — would directly answer “has this
+drifted?” without leaving the CLI, but requires solving a non-trivial
+file-mapping problem first (the repo’s files don’t map 1:1 to this
+account’s <code>Project</code> tag values today, e.g. there’s no
+<code>caltechauthors-init.yaml</code>) and adds a runtime network
+dependency on GitHub. Deferred — see
+<code>DESIGN.md</code>/<code>PLAN.md</code> “Deferred to a Later
+Version” - <em>Extract via snapshot-mount on a helper instance instead
+of launch+SSM</em> — avoids booting the AMI’s OS at all, but requires a
+pre-existing helper instance per region and more novel mechanics for the
+same outcome</p>
+<p><strong>Consequences.</strong> - <code>DESIGN.md</code>’s IAM
+permission list gains <code>ec2:DescribeInstanceAttribute</code>,
+<code>ec2:TerminateInstances</code>, and
+<code>ssm:GetCommandInvocation</code> (SendCommand and
+DescribeInstanceInformation were already listed for the fstrim step) -
+The AMI path needs its own explicit confirmation prompt (cost/time, not
+free like every other v1 read) and a cleanup guarantee — tests must
+verify the temporary instance is terminated even when the SSM command
+fails or times out - <code>PLAN.md</code> gets a new Phase 6
+(“Show/Export Cloud-Init”); Phases 6-10 in the prior draft are
+renumbered to 7-11 accordingly</p>
+<hr />
+<h2
+id="introduce-a-light-projectenvironment-tagging-convention">2026-07-01
+— Introduce a light Project/Environment tagging convention</h2>
+<p><strong>Context.</strong> The stated goal for this tool is to speed
+up upgrading RDM deployments and creating accurate test environments
+across production and development instances. A read-only check of the
+live account (<code>aws ec2 describe-instances</code>) found tagging is
+inconsistent today: a <code>project</code> tag exists on some instances
+(<code>caltechauthors</code>, <code>caltechdata</code>,
+<code>caltechthesis</code>) but not others (<code>new-plots</code>,
+<code>thesis</code>, <code>authors-test-recovery</code>), and there is
+no dedicated environment tag — production vs. test is encoded only in
+the instance <em>name string</em> (e.g. <code>caltechdata-test</code>
+vs. <code>oldcaltechdata</code>). <code>newauthors</code> is
+additionally managed via an EC2 Launch Template, not ad hoc
+parameters.</p>
+<p><strong>Decision.</strong> The tool suggests/requires
+<code>Project</code> and <code>Environment</code>
+(<code>production</code> | <code>development</code> | <code>test</code>)
+tags when creating new instances and AMIs, uses them to group the
+resource listing, and adds extra confirmation friction for destructive
+actions (AMI removal) on anything tagged <code>production</code>.
+Existing untagged resources display as “unknown” until tagged — the tool
+does not retroactively rewrite tags on resources it didn’t create.</p>
+<p><strong>Rationale.</strong> - Directly serves the stated goal:
+distinguishing production from development/test at a glance, and
+grouping by application (<code>Project</code>), is exactly what “manage
+our RDM production and development instances” requires - Inferring
+environment from free-text instance names (today’s de facto approach) is
+fragile and inconsistent, as the live-account check showed - Extra
+confirmation on production-tagged resources targets friction at the
+resource class where a mistake is most costly, rather than applying
+uniform friction everywhere</p>
+<p><strong>Rejected alternatives.</strong> - <em>Work with what exists,
+no enforcement</em> — keeps inferring environment from the name string
+with no structured signal; considered, but doesn’t move the account
+toward consistency and leaves “is this production?” a matter of reading
+a name carefully rather than checking a tag - <em>Retroactively tag all
+existing resources</em> — out of scope for this tool; a one-time cleanup
+task, not an ongoing tool responsibility</p>
+<p><strong>Consequences.</strong> - <code>PLAN.md</code> Phase 2
+(listing) groups/filters by
+<code>Project</code>/<code>Environment</code>; Phases 4/5 (creation)
+prompt for and default these tags; Phase 6 (removal) adds a heightened
+warning for <code>Environment=production</code> -
+<code>DESIGN.md</code>’s IAM permission list must include
+<code>ec2:CreateTags</code> and <code>ec2:DescribeTags</code> (already
+present in <code>software_requirements.md</code>’s policy but missing
+from <code>DESIGN.md</code>’s own Assumptions section — fixed in this
+update) - No migration or backfill of existing untagged resources is
+planned</p>
+<hr />
+<h2
+id="v1-scope-ship-the-four-primitives-first-defer-composite-workflows">2026-07-01
+— V1 scope: ship the four primitives first, defer composite
+workflows</h2>
+<p><strong>Context.</strong> The stated goal for this tool — speed up
+upgrading deployments, create accurate test environments with confidence
+— is naturally served by <em>composite</em> operations (e.g. “clone this
+instance for testing, inheriting its network/instance-type config” or
+“upgrade with a tracked rollback point”), not by the four raw primitives
+(create-instance-from-AMI / create-AMI-from-instance / remove-AMI /
+refresh) alone. Those primitives require the user to manually chain
+operations and re-enter configuration (instance type, security groups,
+subnet, IAM profile) from scratch each time, which is exactly the
+slowness/accuracy-drift risk the stated goal wants to eliminate.</p>
+<p><strong>Decision.</strong> V1 of the Go tool ships a faithful port of
+the four existing primitives (matching
+<code>ec2_ami_manager.bash</code>’s feature set), verified against real
+AWS, before any composite workflow is added. “Clone instance for
+testing” and “upgrade with a tracked rollback point” are recorded here
+as intended fast-follow work, not dropped.</p>
+<p><strong>Rationale.</strong> - Keeps the rewrite scoped and
+verifiable: Bash→Go parity is itself nontrivial (see “Retarget
+implementation from Bash to Go” below) and mixing in new composite
+behavior would make it harder to tell whether a bug is a porting
+regression or new-feature bug - The primitives are the building blocks
+the composite workflows will call — building them first, correctly, is
+not wasted work - Real-AWS verification
+(<code>TEST_PLAN_REAL_AWS.txt</code>) is easier to reason about against
+a known, already-specified feature set</p>
+<p><strong>Rejected alternatives.</strong> - <em>Build composite
+workflows into v1 directly</em> — more directly serves the stated goal
+sooner, but risks conflating porting bugs with new-feature bugs during
+the highest-risk phase (initial Go implementation)</p>
+<p><strong>Consequences.</strong> - <code>PLAN.md</code> gets a
+“Deferred / Future Work” section describing “Clone instance for testing”
+and “Upgrade with rollback point” so they aren’t lost, to be scheduled
+once Phase 9 (real-AWS verification) passes - The Project/Environment
+tagging convention (see companion decision above) is still built in v1,
+since the composite workflows will depend on it and it’s needed for the
+listing/removal-friction behavior anyway</p>
+<hr />
+<h2 id="retarget-implementation-from-bash-to-go">2026-07-01 — Retarget
+implementation from Bash to Go</h2>
+<p><strong>Context.</strong> <code>ec2_ami_manager.bash</code> reached
+feature parity with the design (Phases 0–7) but real-world use against
+production AWS resources surfaced a string of bugs rooted in Bash’s lack
+of static typing and its reliance on runtime string construction for
+control flow: - an <code>eval</code>-based array-copy helper
+(<code>show_pick_list</code>) had unbalanced quoting that crashed the
+interactive picker outright - the AMI-name validation regex broke under
+BSD <code>grep</code> combined with a UTF-8 locale
+(<code>invalid character range</code>) - the AMI-creation
+tag-specification string builder produced syntactically invalid AWS CLI
+shorthand that silently failed <code>create-image</code>, with no AMI
+created in any region and only a scrollback error message as
+evidence</p>
+<p>Each bug class (shell quoting/escaping, locale-dependent tool
+behavior, hand-built CLI argument strings) is structural to shelling out
+from Bash rather than incidental, and none would be caught by static
+analysis before runtime.</p>
+<p><strong>Decision.</strong> Set aside the Bash implementation and
+retarget the interactive EC2/AMI manager to Go, in place in this
+repository, targeting full feature parity with the existing design (all
+four operations: create instance from AMI, create AMI from instance,
+remove AMI, main menu) before the Bash version is retired.</p>
+<p><strong>Rationale.</strong> - Go is this workspace’s stated primary
+backend language (CLAUDE.md) - A typed AWS SDK (see companion decision
+below) replaces “aws CLI + jq + eval” with compiled, typed API calls —
+the entire class of quoting/ escaping bugs hit in this session becomes
+structurally impossible - Go’s <code>go test</code> and table-driven
+tests replace BATS plus a hand-rolled mock-<code>aws</code>-binary
+harness, and can mock the AWS SDK client via interfaces without shelling
+out at all - The feature set, UX flow, and hard-won domain knowledge
+(multi-region aggregation, owned-AMIs-only scope, three-layer removal
+confirmation, fstrim/SSM pre-snapshot step, Invenio RDM
+crash-consistency guidance, volume-size time estimates) all carry
+forward unchanged — this is a reimplementation, not a redesign</p>
+<p><strong>Rejected alternatives.</strong> - <em>Patch the specific bugs
+and stay in Bash</em> — would fix these three bugs but leaves the same
+eval/quoting/locale hazard class open for the next feature added -
+<em>Python + boto3</em> — also a strong, typed-enough option with less
+ceremony than Go, but Go is this workspace’s designated primary backend
+language (CLAUDE.md); Python/Perl are described there as
+secondary/legacy - <em>Deno + TypeScript</em> — this workspace reserves
+Deno/TypeScript for middleware/frontend, not backend CLI tools
+(CLAUDE.md’s layered architecture pattern)</p>
+<p><strong>Consequences.</strong> - <code>ec2_ami_manager.bash</code>,
+<code>ami_copy.bash</code>, and their supporting docs remain in the repo
+unchanged as a working reference/spec until the Go version reaches
+parity and is verified against real AWS (the same retire-after- verify
+pattern already used for <code>ami_copy.bash</code>, see below) -
+<code>DESIGN.md</code> and <code>PLAN.md</code> are retargeted for Go in
+this same update; the new <code>PLAN.md</code> phases restart from Phase
+0 (Go module setup) - BATS test debt for Phase 6/7
+(<code>test_remove_ami.bats</code>, <code>test_menu.bats</code>) is
+superseded — those workflows get Go tests instead, not backfilled BATS
+tests - <code>TEST_PLAN_REAL_AWS.txt</code>’s manual verification step
+now targets the Go binary, not <code>ec2_ami_manager.bash</code></p>
+<hr />
+<h2 id="use-official-aws-sdk-for-go-v2">2026-07-01 — Use official AWS
+SDK for Go v2</h2>
+<p><strong>Context.</strong> Retargeting to Go (see companion decision
+above) could either keep the Bash version’s shell-out pattern
+(<code>exec aws ...</code> from Go) or adopt AWS’s official Go SDK.</p>
+<p><strong>Decision.</strong> Use
+<code>github.com/aws/aws-sdk-go-v2</code> (with its <code>ec2</code> and
+<code>ssm</code> service packages) for all AWS API calls. This is a
+third-party dependency outside the pre-approved
+<code>github.com/rsdoiel</code> / <code>github.com/caltechlibrary</code>
+namespaces (CLAUDE.md); explicitly approved for this project.</p>
+<p><strong>Rationale.</strong> - Typed request/response structs
+eliminate the JSON-through-subshell-through- jq round trips that made
+the Bash version fragile - No runtime dependency on the <code>aws</code>
+CLI binary or <code>jq</code> being installed — only the Go binary and
+AWS credentials - Official, actively maintained by AWS - Enables
+interface-based mocking of AWS calls in tests without a hand-rolled mock
+CLI binary (the pattern <code>tests/lib/test_helper.bash</code>
+used)</p>
+<p><strong>Rejected alternatives.</strong> - <em>Shell out to the
+<code>aws</code> CLI from Go (<code>os/exec</code>)</em> — keeps the
+CLI-argument- quoting risk that caused this session’s tag-specification
+bug, just moved into Go’s <code>exec.Command</code> argument building;
+still requires the <code>aws</code> CLI as a runtime dependency -
+<em>Hand-rolled AWS API client (SigV4 signing, raw REST calls)</em> —
+reinventing a well-solved, well-maintained problem for no benefit</p>
+<p><strong>Consequences.</strong> - <code>go.mod</code> declares
+<code>github.com/aws/aws-sdk-go-v2</code> and its
+<code>ec2</code>/<code>ssm</code>/<code>sts</code> submodules as
+dependencies - Credential resolution (env vars,
+<code>~/.aws/credentials</code>, SSO) is handled by the SDK’s default
+credential chain, matching current Bash behavior - Region iteration (the
+four configured regions) becomes explicit per-region SDK client
+construction, replacing the <code>AWS_REGION</code> env var wrapper
+pattern used in <code>ec2_ami_manager.bash</code></p>
+<hr />
+<h2 id="retire-check_ami.bash-and-check_ec2_instances.bash">2026-06-30 —
+Retire check_ami.bash and check_ec2_instances.bash</h2>
+<p><strong>Context.</strong> <code>check_ami.bash</code> and
+<code>check_ec2_instances.bash</code> predate
+<code>ec2_ami_manager.bash</code>. Both are non-interactive, read-only
+listing scripts across the same four regions; their functionality is
+fully covered by
+<code>list_ec2_instances()</code>/<code>list_amis()</code> and
+<code>display_instances()</code>/<code>display_amis()</code> in
+<code>ec2_ami_manager.bash</code>, which additionally aggregate and sort
+consistently.</p>
+<p><strong>Decision.</strong> <strong>Retire both scripts; the unified
+manager is the single listing entry point.</strong></p>
+<p><strong>Rationale.</strong> - No functionality in either script is
+missing from the manager - Two parallel implementations of the same AWS
+queries is a maintenance cost with no offsetting benefit - DESIGN.md’s
+file-structure section listed them as “Existing” scripts to keep
+alongside the new manager without deciding their long-term role — this
+resolves that gap</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep as quick
+non-interactive utilities</em> — considered for cron/scripting use
+cases, but nothing in this project currently invokes them
+non-interactively, and <code>ec2_ami_manager.bash</code> could add a
+non-interactive <code>--list</code> flag later if that need arises</p>
+<p><strong>Consequences.</strong> - DESIGN.md’s file-structure section
+should drop these two scripts - Deletion is a separate, explicit step —
+not yet performed as of this entry</p>
+<hr />
+<h2
+id="ami-from-instance-fold-ami_copy.bash-capabilities-into-phase-5">2026-06-30
+— AMI-from-instance: fold ami_copy.bash capabilities into Phase 5</h2>
+<p><strong>Context.</strong> <code>ami_copy.bash</code> (and
+<code>ami_copy_basic_steps.md</code>) was merged in from a separate
+repository (<code>git log</code>: “merged ami copy from ami_copy repo”)
+before this project’s DESIGN.md/DECISIONS.md/PLAN.md existed. It was
+never reconciled with the design: it duplicates the “Create AMI from EC2
+Instance” feature (Phase 5 — see “Include both running and stopped
+instances for AMI creation” above) but is single-region only, and it
+contains capabilities Phase 5’s
+<code>create_ami_from_instance_workflow</code> lacks: volume-size-based
+time estimates, prior-snapshot detection, an SSM <code>fstrim</code>
+pre-snapshot optimization step, unbounded elapsed-time polling during
+creation, and Postgres/OpenSearch-specific crash-consistency guidance
+for running instances (relevant because this team’s primary AMI target
+is Invenio RDM instances).</p>
+<p>Separately, Phase 5’s <code>post_ami_creation_actions()</code> times
+out after 600 seconds (10 minutes) of polling. Per
+<code>ami_copy_basic_steps.md</code>’s own timing table, this is too
+short for real usage — even small volumes take 5–15 minutes, and an
+Invenio RDM instance is estimated at 20–60+ minutes.</p>
+<p><strong>Decision.</strong> <strong>Port <code>ami_copy.bash</code>’s
+capabilities into Phase 5’s multi-region workflow (tracked as Phase 5b
+in PLAN.md), then retire <code>ami_copy.bash</code>.</strong> Keep the
+multi-region aggregation Phase 5 already has rather than narrowing to
+<code>ami_copy.bash</code>’s single-region scope.</p>
+<p><strong>Rationale.</strong> - Multi-region aggregation (an earlier
+decision, see “All four regions aggregated in unified view” above) is
+more valuable than what <code>ami_copy.bash</code> offers and shouldn’t
+be lost - The volume-size estimate, fstrim step, and unbounded polling
+are real operational value specific to this team’s large, stateful
+instances — losing them by simply deleting <code>ami_copy.bash</code>
+would be a regression - The 600-second timeout in Phase 5 is a
+correctness bug independent of the consolidation question and should be
+fixed regardless</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep both scripts
+indefinitely</em> — two divergent implementations of the same operation
+with different region scope is confusing and doubles future maintenance
+- <em>Retire ami_copy.bash immediately without porting</em> — would
+silently drop working functionality (fstrim optimization, realistic time
+estimates, Invenio-specific guidance) that was never documented
+elsewhere</p>
+<p><strong>Consequences.</strong> - New PLAN.md Phase 5b enumerates the
+specific functions/behavior to port - <code>ami_copy.bash</code> and
+<code>ami_copy_basic_steps.md</code> are retired only after Phase 5b is
+implemented and verified, not before - DESIGN.md’s Core Features and
+File Structure sections should be updated once Phase 5b lands</p>
 <hr />
 <h2 id="ami-scope-limited-to-account-owned-only">2026-06-30 — AMI scope
 limited to account-owned only</h2>

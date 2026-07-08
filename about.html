@@ -17,23 +17,25 @@
     <li><a href="/">All Library Apps</a></li>
     <li><a href="index.html">Home</a></li>
     <li><a href="LICENSE">LICENSE</a></li>
-    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <!-- <li><a href="search.html">Search</a></li> -->
     <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
 </ul>
 </nav>
 <section id="main-content">
 <h1 id="about-this-software">About this software</h1>
 <h2 id="awstools-0.0.0">awstools 0.0.0</h2>
-<p>proof of concept</p>
+<p>Real-AWS verified 2026-07-08: EC2/AMI lifecycle management, tag
+management, cloud-init inspection, and S3 Backup Archive &amp; Trim,
+across two AWS regions.</p>
 <h2 id="authors">Authors</h2>
 <ul>
 <li><a href="https://orcid.org/0000-0003-0900-6903">R. S. Doiel</a></li>
 </ul>
-<p>This is a collaction of Bash scripts, some interactive, for managing
-our RDM collection of AMI and EC2 instances.</p>
+<p>Interactive Go CLI (awsops) for administering Caltech Library DLD’s
+AWS EC2 instances, AMIs, and S3 backup archives, with support for tag
+management, cloud-init inspection, and backup archival to S3.</p>
 <ul>
 <li><a href="https://github.com/caltechlibrary/awstools">Code
 Repository</a>
@@ -44,7 +46,7 @@ Tracker</a></li>
 </ul>
 <h2 id="programming-languages">Programming languages</h2>
 <ul>
-<li>Bash</li>
+<li>Go &gt;= 1.26.4</li>
 </ul>
 <h2 id="operating-systems">Operating Systems</h2>
 <ul>
@@ -52,12 +54,13 @@ Tracker</a></li>
 </ul>
 <h2 id="software-requirements">Software Requirements</h2>
 <ul>
-<li>Bash</li>
-<li>AWS CLI &gt;= v2</li>
-<li>jq &gt;= 1.8</li>
-<li>BATS (Bash Automated Testing System)</li>
-<li>git &gt;= v2</li>
-<li>shellcheck &gt;= 0.11</li>
+<li>Go &gt;= 1.26</li>
+<li>CMTools &gt;= 0.0.46</li>
+</ul>
+<h2 id="software-suggestions">Software Suggestions</h2>
+<ul>
+<li>GNU Make &gt;= 3.8</li>
+<li>Pandoc &gt;= 3.9</li>
 </ul>
 </section>
 <footer-global></footer-global>

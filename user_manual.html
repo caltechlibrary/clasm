@@ -17,17 +17,106 @@
     <li><a href="/">All Library Apps</a></li>
     <li><a href="index.html">Home</a></li>
     <li><a href="LICENSE">LICENSE</a></li>
-    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <!-- <li><a href="search.html">Search</a></li> -->
     <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
 </ul>
 </nav>
 <section id="main-content">
 <h1 id="user-manual">User Manual</h1>
-<p>This is a collection of Bash scripts for managing our RDM AWS EC2 and
-AMI instances.</p>
+<p><code>awsops</code> is an interactive command-line tool for
+administering AWS EC2 instances, AMIs, and S3 backup archives for
+Caltech Library DLD’s infrastructure, across the regions configured in
+<code>~/.awsops</code> (default: us-west-1, us-west-2).</p>
+<h2 id="starting-awsops">Starting awsops</h2>
+<p>Run with no arguments:</p>
+<pre class="shell"><code>awsops</code></pre>
+<p>awsops authenticates using the AWS SDK’s default credential chain and
+prints
+<code>awsops &lt;version&gt; -- authenticated as AWS account &lt;account-id&gt;</code>
+before showing the domain picker. If credentials aren’t resolvable, it
+fails fast with a clear message rather than a raw SDK error.</p>
+<h2 id="domain-picker">Domain Picker</h2>
+<p>On startup you choose a domain to work in:</p>
+<ul>
+<li><strong>Compute</strong> (EC2 &amp; AMI) – fully implemented, see
+below</li>
+<li><strong>Key Management</strong>, <strong>S3</strong>,
+<strong>CloudFront</strong> – planned, not yet implemented (see <a
+href="DESIGN.html">DESIGN.md</a>, <a href="PLAN.html">PLAN.md</a> Phases
+19-21)</li>
+</ul>
+<h2 id="compute-menu">Compute Menu</h2>
+<p>Choosing Compute lists the account’s current EC2 instances and owned
+AMIs (aggregated across both configured regions, with Public/Private IP
+columns and color-coded state), then presents:</p>
+<ol type="1">
+<li>Show resource lists</li>
+<li>Create EC2 instance from AMI</li>
+<li>Create EC2 instance from cloud-init YAML</li>
+<li>Start EC2 instance</li>
+<li>Stop EC2 instance</li>
+<li>Terminate EC2 instance</li>
+<li>Manage tags for an instance or AMI</li>
+<li>Create AMI from EC2 instance</li>
+<li>Remove AMI</li>
+<li>Show/export cloud-init for an instance or AMI</li>
+<li>Archive stale backups to S3 and trim disk space</li>
+<li>Back to domain picker</li>
+</ol>
+<p>Every item is interactive: awsops prompts for each required value in
+turn, validates input, and asks for explicit confirmation before any
+destructive or billable action (instance termination and AMI removal
+require typing the exact instance/AMI ID or Name tag to confirm). Every
+successful operation automatically refreshes the resource listing
+afterward. See <a href="DESIGN.html">DESIGN.md</a>, “Core Features” for
+the full prompt sequence and behavior of each item.</p>
+<h2 id="command-line-options">Command-line Options</h2>
+<dl>
+<dt><code>-config &lt;path&gt;</code></dt>
+<dd>
+path to awsops’ own YAML config file (regions, per-instance backup
+directory defaults); defaults to <code>~/.awsops</code>. AWS credentials
+are never read from here – they remain the AWS SDK’s responsibility.
+</dd>
+<dt><code>-debug</code></dt>
+<dd>
+write a JSONL debug log of every AWS SDK call to
+<code>./awsops-debug-&lt;timestamp&gt;.jsonl</code> in the current
+directory. When diagnosing an unexpected AWS error, check this log first
+– every entry has the exact API call, region, and either its output or
+error.
+</dd>
+<dt><code>-help</code>, <code>-license</code>,
+<code>-version</code></dt>
+<dd>
+standard informational flags.
+</dd>
+</dl>
+<h2 id="configuration-.awsops">Configuration
+(<code>~/.awsops</code>)</h2>
+<p>An optional YAML file for awsops’ own operational settings – never
+AWS credentials or profile selection:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">regions</span><span class="kw">:</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> us-west-1</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> us-west-2</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="fu">backup_directories</span><span class="kw">:</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/rdm_sql_backups</span></span></code></pre></div>
+<p><code>regions</code> narrows or changes which regions every listing
+and picker operates against (default: us-west-1, us-west-2, if the file
+or key is absent). <code>backup_directories</code> is an ordered list of
+<code>{pattern, directory}</code> rules, glob-matched against an
+instance’s Name tag, that pre-fill Backup Archive &amp; Trim’s “Backup
+directory” prompt (still editable, never a silent default). See <a
+href="DESIGN.html">DESIGN.md</a>, “Configuration” for the full schema
+and validation behavior.</p>
+<h2 id="getting-help">Getting Help</h2>
+<p>File an issue at <a
+href="https://github.com/caltechlibrary/awstools/issues"
+class="uri">https://github.com/caltechlibrary/awstools/issues</a>.</p>
 </section>
 <footer-global></footer-global>
 </body>

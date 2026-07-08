@@ -12,7 +12,7 @@
     }
   ],
   "dateCreated": "2026-06-30",
-  "description": "This is a toolset for managing our RDM collection of AMI and EC2 instances.",
+  "description": "Interactive Go CLI (awsops) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.",
   "name": "awstools",
   "operatingSystem": [
     "POSIX"
@@ -29,8 +29,8 @@
     "Pandoc >= 3.9"
   ],
   "version": "0.0.0",
-  "developmentStatus": "concept",
+  "developmentStatus": "active",
   "issueTracker": "https://github.com/caltechlibrary/awstools/issues",
-  "releaseNotes": "proof of concept",
+  "releaseNotes": "Real-AWS verified 2026-07-08: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim, across two AWS regions.",
   "copyrightYear": 2026
 }

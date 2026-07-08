@@ -17,19 +17,106 @@
     <li><a href="/">All Library Apps</a></li>
     <li><a href="index.html">Home</a></li>
     <li><a href="LICENSE">LICENSE</a></li>
-    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <!-- <li><a href="search.html">Search</a></li> -->
     <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
 </ul>
 </nav>
 <section id="main-content">
 <h1 id="action-items">Action items</h1>
-<h2 id="next">Next</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" />Merge the aws_copy repository
-scripts with awstools (~/WorkLab/aws_tools) repository</label></li>
+<li><label><input type="checkbox" checked="" />UI bug, we should check
+to make sure aws cli is on remote system before invoking it, that way we
+can explicitly say it is missing and how to install it – implemented as
+<code>CheckAWSCLIAvailable</code>
+(<code>internal/workflow/backup_cli_check.go</code>), see DECISIONS.md,
+“Preflight check: AWS CLI availability before Backup Archive &amp; Trim”
+(2026-07-02).</label></li>
+</ul>
+<h2 id="done-go-rewrite-see-plan.md-decisions.md-2026-07-01">Done (Go
+rewrite — see PLAN.md, DECISIONS.md 2026-07-01)</h2>
+<p>PLAN.md Phases 0 through 17 are implemented, tested, and verified
+against real AWS as of 2026-07-08 (<code>go build ./...</code>,
+<code>go vet ./...</code>, <code>go test ./... -race</code>,
+<code>gofmt -l</code> all clean; <code>TEST_PLAN_REAL_AWS.txt</code>
+fully checked off, 112/112 items).</p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Work through
+<code>TEST_PLAN_REAL_AWS.txt</code> against real AWS, both configured
+regions (us-west-1, us-west-2 – narrowed from four; see DECISIONS.md,
+“Narrow configured regions to us-west-1/us-west-2”)</label></li>
+<li><label><input type="checkbox" checked="" />Phase 16 (PLAN.md):
+manual test plan fully run, no open gaps</label></li>
+<li><label><input type="checkbox" checked="" />Phase 17 (PLAN.md):
+documentation pass + retire
+<code>ec2_ami_manager.bash</code>/<code>ami_copy.bash</code>/<code>tests/*.bats</code>
+– done 2026-07-08, see DECISIONS.md, “Retire ec2_ami_manager.bash,
+ami_copy.bash, and the Bash test suite”</label></li>
+</ul>
+<h2 id="not-yet-started">Not yet started</h2>
+<ul>
+<li>Key Management, S3, and CloudFront domains (PLAN.md Phases 19-22):
+designed in DESIGN.md/PLAN.md, no code written yet – needs scope
+questions answered before starting</li>
+</ul>
+<h2 id="discussed-but-not-yet-designedimplemented">Discussed but not yet
+designed/implemented</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Pre-flight sanity check
+before <code>RunInstances</code>: cross-reference the picked AMI’s
+<code>EnaSupport</code> against the picked instance type’s ENA
+requirement. Both known failure classes from this session are now
+implemented: instance-type/Availability-Zone (DECISIONS.md, “Pre-flight
+check: instance type vs. subnet Availability Zone”) and
+instance-type/AMI-ENA-support (DECISIONS.md, “Pre-flight check: instance
+type vs. AMI ENA support”). If a third incompatibility class turns up,
+that’s the point to reconsider a shared framework, not before (see
+either decision’s “Rejected alternatives”).</label></li>
+<li><label><input type="checkbox" />Retry-on-launch-failure (general
+case): instead of bouncing back to the main menu on any
+<code>RunInstances</code> error, keep the already-collected params and
+let the operator re-enter just the field that’s likely wrong instead of
+re-doing the whole launch flow. Granularity not yet decided (just
+Instance type, or any collected field). NOTE: the instance-type/AZ
+pre-flight check above already does a scoped version of this (change
+instance type / pick a different subnet / abort) for that one failure
+class, pre-flight rather than reactive – this item is about generalizing
+to <em>any</em> RunInstances failure, not just that one.</label></li>
+</ul>
+<h2 id="nice-to-have">Nice to have</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />More color usage will make the
+interface easier to read, we can show relationship between menu items
+using color to group</label></li>
+<li><label><input type="checkbox" />For actions that take more than a
+few minutes, a spinner that shows progress would be nice</label></li>
+</ul>
+<h2
+id="superseded-bash-version-retired-2026-07-08-see-decisions.md">Superseded
+(Bash version — retired 2026-07-08, see DECISIONS.md)</h2>
+<p>Real-world use surfaced three bugs (<code>eval</code> quoting crash
+in the interactive picker, a locale-dependent <code>grep</code> failure,
+and a malformed AWS CLI tag string that silently prevented AMI creation)
+that led to the decision to retarget to Go rather than keep patching.
+<code>ec2_ami_manager.bash</code>, <code>ami_copy.bash</code>,
+<code>ami_copy_basic_steps.md</code>, and the BATS suite have now been
+deleted from this repo (see DECISIONS.md, “Retire ec2_ami_manager.bash,
+ami_copy.bash, and the Bash test suite”) – the items below are
+historical record only, not actionable.</p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Phase 5b (PLAN.md, Bash
+version): port ami_copy.bash’s volume-size estimate, SSM fstrim step,
+unbounded creation polling, and Invenio-RDM running-instance guidance
+into ec2_ami_manager.bash’s Phase 5 workflow. Implemented and
+unit-tested (tests/test_create_ami.bats, 27 tests).</label></li>
+<li><label><input type="checkbox" /><del>Manually verify
+ec2_ami_manager.bash’s create-AMI workflow against a real EC2
+instance</del> — superseded; verification now targets the Go binary (see
+PLAN.md Phase 16)</label></li>
+<li><label><input type="checkbox" /><del>Write BATS tests for Phase 6
+(AMI removal) and Phase 7 (main menu)</del> — superseded; those
+workflows get Go tests instead</label></li>
 </ul>
 </section>
 <footer-global></footer-global>
