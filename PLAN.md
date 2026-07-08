@@ -1493,43 +1493,90 @@ public key file, dependent-instance detection
 
 ## Phase 20 — S3 Domain (Buckets & Static Websites)
 
-**Effort:** ~10 hours
+**Effort:** ~16 hours (raised from ~10h after adding Feature 21.1,
+2026-07-08 — see DECISIONS.md)
 **Priority:** Medium
 **Files:** `internal/awsclient/s3.go` (broadened),
 `internal/inventory/buckets.go`,
-`internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse}.go`
+`internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse,bucket_lifecycle,s3_menu}.go`
 
-Implements `DESIGN.md` Features 17-21 and the 2026-07-02 "CloudFront +
-OAC by default for static websites" decision.
+Implements `DESIGN.md` Features 17-21, 21.1, and the 2026-07-02
+"CloudFront + OAC by default for static websites" decision, with scope
+decisions made 2026-07-08 before implementation started (see
+DECISIONS.md): public-read bucket policy opt-out deferred, key-prefix
+filter added to Browse/Manage Objects, and Feature 21.1 (Manage Bucket
+Lifecycle Policies) added as new scope with a Purpose-tag-driven
+guided/generic split.
 
 ### Work Items
 
 - Broaden the `S3API` interface beyond Feature 11's `HeadObject`-only
-  scope: `ListBuckets`, `GetBucketLocation`, `GetBucketWebsite`,
-  `CreateBucket`, `PutPublicAccessBlock`, `PutBucketWebsite`,
-  `PutBucketPolicy`, `PutObject`, `ListObjectsV2`, `GetObject`,
-  `DeleteObject`
-- `ListBuckets(ctx)` with per-bucket region + static-website-hosting
-  status (`internal/inventory`) — treat `GetBucketWebsite`'s
-  `NoSuchWebsiteConfiguration` error as "not configured," not a failure
-- Create Bucket: prompt name + region, `s3:CreateBucket`, then
-  `s3:PutPublicAccessBlock` (all four settings on) by default
+  scope: `ListBuckets`, `GetBucketWebsite`, `CreateBucket`,
+  `PutPublicAccessBlock`, `PutBucketWebsite`, `PutObject`,
+  `ListObjectsV2`, `DeleteObject`, `PutBucketTagging`, `GetBucketTagging`,
+  `GetBucketLifecycleConfiguration`, `PutBucketLifecycleConfiguration`
+  (`GetBucketLocation` already exists; `PutBucketPolicy`/`GetObject` are
+  NOT added — the former is only needed by the deferred public-read
+  opt-out, the latter isn't needed since object content is never
+  downloaded, only `HeadObject` metadata)
+- `ListBuckets(ctx)` (`internal/inventory/buckets.go`) with per-bucket
+  region (`BucketRegion`), static-website-hosting status
+  (`GetBucketWebsite`), and `Purpose` tag (`GetBucketTagging`) — all
+  three enrichment calls on a region-scoped client via `newS3Client`,
+  never the global client, per the established `MovedPermanently`
+  lesson from Backup Archive & Trim — treat `NoSuchWebsiteConfiguration`
+  and a missing/absent `Purpose` key (or `NoSuchTagSet`) as "not
+  configured"/"untagged," not failures
+- Create Bucket: prompt name (validated locally against S3 naming rules)
+  + region + purpose (Website/Backup/Internal pick list), `s3:CreateBucket`,
+  `s3:PutPublicAccessBlock` (all four settings on), then
+  `s3:PutBucketTagging` with `Purpose: <choice>`
 - Configure Static Website Hosting: pick bucket, prompt index/error
-  documents, `s3:PutBucketWebsite`; a public-read bucket policy is an
-  explicit, separately-confirmed opt-out path, never the default
+  documents, `s3:PutBucketWebsite`. **Public-read bucket policy opt-out
+  deferred** (DECISIONS.md) — only the default private-bucket path ships
+  in this phase; where CloudFront hand-off would go, print that
+  CloudFront isn't implemented yet (Phase 21)
 - Sync Local Directory to Bucket: dry-run diff (by key + size) against
-  the local directory, confirm, upload new/changed
-  (`s3:PutObject`), then a **separate** confirm-and-delete step for
-  bucket-only objects (`s3:DeleteObject`) — never bundled into the
-  upload confirmation
-- Browse/Manage Objects: paginated object listing (reuse Phase 15's
-  PickList pagination for >50 items), metadata display, per-object
-  delete with a plain yes/no confirm
-- Wire into the domain picker from Phase 18
+  the local directory, confirm (plain y/n), upload new/changed
+  (`s3:PutObject`, per-file progress line matching Backup Archive &
+  Trim's established convention), then a **separate**, stronger
+  `ConfirmDestructive` (type the bucket name) gate for bucket-only
+  objects (`s3:DeleteObject`) — never bundled into the upload
+  confirmation
+- Browse/Manage Objects: **optional key-prefix filter added**
+  (DECISIONS.md) before listing; paginated object listing (reuse Phase
+  15's PickList pagination for >50 items, unchanged), metadata display,
+  per-object delete with a plain yes/no confirm
+- **New: Manage Bucket Lifecycle Policies** (`bucket_lifecycle.go`,
+  DESIGN.md Feature 21.1): pick a bucket, `s3:GetBucketLifecycleConfiguration`
+  (`NoSuchLifecycleConfiguration` = no rules yet, not an error), branch
+  on the bucket's `Purpose` tag —
+  - `backup`: guided flow, two yes/no-shaped prompts (expire-after-days,
+    transition-after-days + a curated storage-class pick list: Standard-IA,
+    Intelligent-Tiering, Glacier Flexible Retrieval, Glacier Deep Archive),
+    optional key-prefix scope
+  - `internal`/`website`/untagged: generic editor — named rules (unique
+    ID), optional prefix, zero-or-more transitions from the *full*
+    `types.TransitionStorageClass` enum, optional expiration; add/edit/
+    remove by ID
+  - both paths write the complete modified rule set via
+    `s3:PutBucketLifecycleConfiguration` in one call (the API has no
+    per-rule operations); rule edit/remove is a plain yes/no confirm,
+    with on-screen text noting this schedules *future* automated
+    deletion (AWS's own ~24-48h evaluation cadence), not an immediate one
+- Wire into the domain picker from Phase 18, following Phase 19's
+  `KeyMgmtActions`/`RunKeyMgmtMenu` shape (`S3Actions`/`RunS3Menu` — six
+  menu items: Show resource lists, Create Bucket, Configure Static
+  Website Hosting, Sync Local Directory to Bucket, Browse/Manage
+  Objects, Manage Bucket Lifecycle Policies, Back to domain picker)
 
 **Tests:** fakes for each new S3 call covering success/error paths
 (bucket-name-taken, website-not-configured treated as non-error, sync
-diff correctness, upload/delete confirmations never bundled)
+diff correctness, upload/delete confirmations never bundled, prefix
+filter narrows the object listing, lifecycle guided-vs-generic branch
+selection by `Purpose` tag, rule add/edit/remove round-trips through the
+fetch-modify-PutBack cycle correctly) — TDD: write each test first,
+confirm it fails, then implement.
 
 **Dependency:** Phase 18
 

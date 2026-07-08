@@ -1,156 +1,150 @@
-awstools — where we left off (2026-07-02, end of day, picking back up Monday)
+awstools — where we left off (2026-07-08, end of day)
 ==============================================================================
 
 STATUS: `go build ./...`, `go vet ./...`, `go test ./... -race`, and
-`gofmt -l` are all clean as of the last commit. PLAN.md now runs through
-Phase 15.26 plus Phase 18. Backup Archive & Trim (Feature 11) is now
-CONFIRMED WORKING end-to-end against real AWS -- full runs against both
-newauthors and data-new uploaded, verified, and deleted files with zero
-failures. This file supersedes the 2026-07-01 version of itself.
+`gofmt -l` are all clean as of the last commit (f08a059, "phase 19 +
+bug fix", pushed). PLAN.md Phases 0-19 are done and real-AWS verified.
+Phase 20 (S3 domain, including a new Feature 21.1 added mid-session) is
+FULLY DESIGNED in DESIGN.md/DECISIONS.md/PLAN.md and a reviewed
+implementation plan -- but ZERO Phase 20 code has been written. This
+file supersedes the 2026-07-02 version of itself.
 
-What happened this session (continuing from yesterday's Go
-implementation session)
+What happened this session
 ---------------------------------------------------------------------
 
-1. Restructured awsops into a domain picker (PLAN.md Phase 18): pick
-   Compute (EC2 & AMI)/Key Management/S3/CloudFront on startup. Compute
-   keeps every existing v1 primitive unchanged; the other three domains
-   are `workflow.NotYetImplemented` stubs for now.
+1. Implemented and shipped Phase 19 (Key Management domain): List,
+   Create, Import, Delete Key Pair. TDD throughout, mirroring existing
+   Compute-domain patterns (internal/inventory/keypairs.go mirrors
+   instances.go/images.go; keypair_delete.go mirrors remove_ami.go's
+   dry-run/dependency-check/type-to-confirm shape; keypair_create.go
+   reuses Phase 15.2's existing createNewKeyPairInteractive rather than
+   duplicating it). One real design decision: Key Management's own
+   refresh independently calls inventory.ListInstances (not just
+   ListKeyPairs) so Delete Key Pair's dependency-check warning is
+   correct even if Key Management is entered before Compute in a given
+   run -- see DECISIONS.md. User manually confirmed all four operations
+   working against real AWS.
 
-2. Added an optional `~/.awsops` YAML config file (internal/config,
-   `gopkg.in/yaml.v3` -- the project's first non-rsdoiel/caltechlibrary
-   dependency, explicitly approved) for awsops' own operational
-   settings, never AWS credentials:
-   - `regions`: default narrowed from four regions to two
-     (us-west-1/us-west-2) -- DLD doesn't run services in us-east.
-     `internal/awsclient/regions.go` deleted in favor of this.
-   - `backup_directories`: an ordered list of `{pattern, directory}`
-     rules (glob-matched against an instance's Name tag) that pre-fill
-     Backup Archive & Trim's "Backup directory" prompt -- still
-     editable, never a silent default.
-   - `-config <path>` flag overrides the default `~/.awsops` location.
+2. Found and fixed a real bug -- properly, not just worked around. The
+   user's real-AWS test of Import Key Pair produced garbled, repeated
+   prompt text with typed input invisible. Root cause: an ~180-char
+   prompt label (embedding a usage hint) broke termlib's
+   LineEditor.Prompt raw-mode redraw, which assumes the whole prompt
+   fits on one terminal row and repaints via a bare "\r" (can't move up
+   to a previous row). Per the user's explicit instruction ("if there's
+   a bug in termlib, fix that"), root-caused and fixed at
+   ~/Laboratory/termlib/lineeditor.go with a new splitSafePrompt helper
+   (8 new unit tests there). This also retroactively fixes two
+   PRE-EXISTING awstools prompts with the same latent risk
+   (create_key_pair.go, create_instance_profile.go) that had never been
+   reported broken. The user committed+pushed the termlib fix (commit
+   354195d) and repointed awstools' go.mod to a real pseudo-version pin
+   (v0.0.10-0.20260708184214-354195d36c57) instead of my temporary
+   local-path replace directive, which I then removed. The awstools-side
+   prompt itself was simplified back to a short label per further user
+   feedback, with the longer guidance moved into the validation error
+   message instead.
 
-3. Two small UX fixes from live use:
-   - `ui.PickList` now prints its prompt as a BOLD HEADER LINE before
-     the numbered list (when color is enabled), not just as the
-     trailing input query -- so picking the wrong main-menu digit is
-     visible immediately instead of after reading the whole list.
-   - The main EC2 instance listing gained PUBLIC IP/PRIVATE IP columns
-     (from data already fetched, zero new API calls) -- prompted by the
-     user installing the AWS CLI on the wrong instance mid-
-     troubleshooting with no easy way to tell instances apart by IP.
+3. Established practice, saved to memory: write a test that reproduces
+   a reported bug and CONFIRM IT FAILS against the current code, before
+   writing the fix -- not test-alongside-or-after. Where the bug lives
+   in raw-mode TTY behavior unreachable by the pipe-based test harness
+   (both awstools' and termlib's own test harnesses always hit the
+   non-raw fallback() path for non-TTY input), say so explicitly and
+   test the closest provable invariant instead, then ask for manual
+   interactive re-verification.
 
-4. THE BULK OF THE SESSION: drove Backup Archive & Trim to a fully
-   working real-AWS run against `newauthors` (i-0c4c81336aea33d27,
-   ~87GB in /opt/rdm_sql_backups) targeting a new bucket,
-   sql-backups.library.caltech.edu. Found and fixed THREE sequential
-   real bugs, each diagnosed from the -debug JSONL log first (never
-   guessed):
-
-   BUG 1 -- MovedPermanently. awsops' single global S3 client was
-   hardcoded to `cfg.Regions[0]` (us-west-1); the bucket lives
-   elsewhere, and HeadBucket/HeadObject 301 with no useful detail on a
-   region mismatch. FIX: `BucketRegion()` calls `s3:GetBucketLocation`
-   (works from a client scoped to ANY region) to discover the bucket's
-   real region, then a `newS3Client(region)` factory builds a client
-   actually scoped there for every subsequent S3 call. Also added a new
-   `CheckS3BucketAccess` preflight (`s3:HeadBucket`) right after the "S3
-   bucket" prompt, aborting fast if the bucket is unreachable at all.
-
-   BUG 2 -- AccessDenied. The instance's attached role,
-   `AWS-QuickSetup-SSM-DefaultEC2MgmtRole-us-west-2` (AWS's generic
-   auto-attached SSM management role), had zero S3 permissions. This
-   was an AWS-console fix, not code: walked the user through IAM ->
-   Roles -> that role -> inline policy granting `s3:PutObject`/
-   `s3:ListBucket` on the whole bucket. Deliberately bucket-wide (not
-   scoped to one instance's prefix), since the user explicitly wants
-   this to work for "any of our EC2 instances that run SQL" -- flagged
-   clearly that this means every instance sharing that role can write
-   anywhere in the bucket, accepted as a reasonable tradeoff for a
-   small trusted fleet.
-
-   BUG 3 -- silent false-negative on large files. With CLI + IAM both
-   fixed, small files worked but a ~972MB file still reported FAIL
-   despite a real, successful `aws s3 cp` in the debug log. Root cause:
-   `aws s3 cp`'s own \r-updated progress meter filled
-   `ssm:GetCommandInvocation`'s documented 24,000-character stdout cap,
-   pushing this project's own `printf 'OK\t...'` signal off the end
-   before it was ever captured -- a genuine success silently
-   misreported as failure. FIX: `--only-show-errors` added to the
-   remote `aws s3 cp` call (suppresses progress noise, keeps real error
-   text on stderr). This broke two test fakes that matched on the old
-   exact command text -- fixed (caught immediately by Go's 10-minute
-   test timeout, not a production hang).
-
-   Also, while on this thread: namespaced every upload by instance
-   (`s3://bucket/<instance-name>/<filename>`, falls back to instance ID
-   if untagged) since the bucket serves multiple systems and files
-   could otherwise collide -- and switched uploads to one
-   `ssm:SendCommand` per file (was one batched script) so a live
-   "N/M (bytes of total) - OK/FAIL key" progress line prints per file.
-
-5. Ran the fixed workflow against a SECOND instance, `data-new`, and hit
-   the exact same "AWS CLI not found" failure again (confirmed from the
-   debug log, not guessed). The user's own framing: "That should be an
-   explicit error we check for much like with shell scripts we check if
-   a command exists before trying to execute it." Added
-   `CheckAWSCLIAvailable` (`internal/workflow/backup_cli_check.go`):
-   runs `command -v aws` via SSM immediately after picking the
-   instance, before ANY other prompt, aborting fast with a clear,
-   actionable error naming the instance if it's missing -- instead of
-   every subsequent upload silently reporting FAIL. Confirmed IAM
-   policy from Bug 2 already covered `data-new` (same shared role) --
-   installing the CLI was the only missing piece there, and the full
-   run then succeeded.
-
-Documentation updated to match at every step (DESIGN.md, DECISIONS.md,
-PLAN.md Phases 15.14-15.26 + 18, TEST_PLAN_REAL_AWS.txt) -- same
-diagnose-test-fix-document discipline as yesterday, never skipped.
-agents/knowledge.db's awstools project description and 11 new
-observations updated too (query "awstools"/"awsops" via kb_fts).
+4. Designed Phase 20 (S3 domain) end to end, without writing any code,
+   per this project's design-then-implement discipline:
+   - Researched existing patterns first (an Explore agent + direct
+     reads of internal/awsclient/s3.go, the BucketRegion/newS3Client
+     region-resolution pattern from Backup Archive & Trim, PickList's
+     pagination).
+   - Asked and got answers to four scope questions up front: defer the
+     Feature 19 public-read bucket-policy opt-out (CloudFront doesn't
+     exist yet to hand off to); add an optional key-prefix filter to
+     Feature 21 (Browse/Manage Objects) since real buckets like
+     sql-backups.library.caltech.edu hold many objects across many
+     per-instance prefixes; a Purpose-tag-driven guided/generic UX
+     split; full multi-rule CRUD.
+   - Mid-planning, the user described a real gap: three bucket "types"
+     the tool should make easy -- website (already designed), backup
+     (needs expiration + transition-to-cheaper-storage policies,
+     matching what Backup Archive & Trim already produces), and
+     internal (unpredictable policy needs). This became new Feature
+     21.1, "Manage Bucket Lifecycle Policies" -- asked four more
+     clarifying questions (all confirmed): tag-and-remember bucket
+     purpose (not just a creation-time wizard); optional-prefix policy
+     scope; one Purpose-branching feature, not two menu entries;
+     multiple named rules with full CRUD, not a single policy.
+   - Wrote all of this into DESIGN.md (Feature 18 expanded with a
+     purpose wizard; Feature 17 reads the tag back; new Feature 21.1,
+     numbered as a decimal insertion specifically to avoid renumbering
+     CloudFront's Features 22-26 and ~15 existing cross-references,
+     mirroring PLAN.md's own Phase 15.1-15.26 convention; new Security
+     Consideration #13) and two new DECISIONS.md entries recording
+     every judgment call. PLAN.md's Phase 20 rewritten to match; effort
+     raised ~10h -> ~16h.
+   - User reviewed and confirmed the design/decisions/plan. Session
+     ended there -- next session starts directly on implementation.
 
 What's NOT done yet
 --------------------
 
-- TEST_PLAN_REAL_AWS.txt section 10's individual [ok] checkboxes
-  (AWS-CLI-missing preflight, bucket-region-mismatch,
-  per-instance-namespacing, large-file-doesn't-misreport) still need
-  YOUR own manual verification pass -- the bugs are fixed and two full
-  runs succeeded (newauthors, data-new), but each specific scenario
-  hasn't been individually walked through and checked off.
-- PLAN.md Phase 17 (retire ec2_ami_manager.bash/ami_copy.bash/
-  tests/*.bats) -- still not started. Do NOT touch those Bash files
-  until Phase 16 (TEST_PLAN_REAL_AWS.txt) is fully signed off.
-- Key Management/S3/CloudFront domains are NotYetImplemented stubs --
-  no design or implementation work has started on any of the three.
-- From yesterday, still open and still unscoped: a pre-flight ENA/
-  instance-type sanity check before RunInstances, and a retry-on-
-  launch-failure loop that re-prompts just the likely-wrong field
-  instead of restarting the whole flow. Ask scope questions before
-  starting either -- see yesterday's hand-off for the specific
-  questions to ask.
-- No per-instance IAM isolation for the shared SSM role's S3 grant --
-  a known, accepted tradeoff (see Bug 2 above), not an oversight. If
-  tighter isolation is ever wanted later, that means a dedicated IAM
-  role/instance profile per instance, replacing (not adding to) the
-  shared Quick-Setup role.
+- ALL of Phase 20 implementation. Nothing has been written:
+  internal/awsclient/s3.go's broadened S3API (ListBuckets,
+  GetBucketWebsite, CreateBucket, PutPublicAccessBlock,
+  PutBucketWebsite, PutObject, ListObjectsV2, DeleteObject,
+  PutBucketTagging, GetBucketTagging, GetBucketLifecycleConfiguration,
+  PutBucketLifecycleConfiguration) and its logging wrapper;
+  internal/inventory/buckets.go (Bucket{Name,Region,StaticWebsite,
+  Purpose}, ListBuckets); internal/workflow/bucket_create.go,
+  bucket_website.go, bucket_sync.go, bucket_browse.go,
+  bucket_lifecycle.go, s3_menu.go; internal/ui/display.go's
+  DisplayBuckets; cmd/awsops/main.go's S3 domain wiring.
+- The full implementation plan (file-by-file, function-by-function) is
+  at ~/.claude/plans/sorted-cooking-kettle.md -- READ THIS FIRST next
+  session, it has everything needed to start TDD immediately without
+  re-deriving the design.
+- S3 and CloudFront domains (Phases 20-22) remain "not yet started" in
+  TODO.md beyond the design work above.
+- Still unscoped/not started: a retry-on-launch-failure loop (TODO.md)
+  -- confirmed 2026-07-08 to actually implement, not just close out,
+  but granularity (which field(s) become re-enterable on a
+  RunInstances failure) not yet decided. Ask scope questions first.
 
-Suggested next session (Monday)
+Suggested next session
 ---------------------------------
 
-1. Check TEST_PLAN_REAL_AWS.txt's [ok] markers for anything verified
-   over the weekend before assuming section 10 is untouched.
-2. Walk section 10's three still-open checks if not already done.
-3. If a NEW bug gets reported from further real-AWS testing, check the
-   -debug JSONL log first, same as always.
-4. Once TEST_PLAN_REAL_AWS.txt is fully [ok], move to PLAN.md Phase 17.
-   Do not start it early.
-5. If asked to pick up Key Management/S3/CloudFront, or the ENA/retry-
-   on-error items, start with scope questions -- none are designed yet.
+1. Read ~/.claude/plans/sorted-cooking-kettle.md in full -- it is the
+   authoritative, already-approved implementation plan for Phase 20.
+2. Start TDD implementation in the order the plan lays out: broaden
+   S3API + its logging wrapper first, then internal/inventory/buckets.go
+   (with tests), then the five workflow files in the order listed
+   (bucket_create, bucket_website, bucket_sync, bucket_browse,
+   bucket_lifecycle), then s3_menu.go, then wire into main.go.
+3. Write each test FIRST, confirm it fails (or fails to compile, since
+   the function won't exist yet), then implement -- per the
+   test-before-fix practice this project is now explicitly following,
+   extended here to test-before-implementation too.
+4. After implementation: update PLAN.md (mark Phase 20 done, check off
+   work items), TODO.md ("Not yet started" drops S3), and
+   user_manual.md (new S3 domain section, including the bucket-purpose
+   wizard and lifecycle policy management) -- DESIGN.md/DECISIONS.md
+   are ALREADY updated, don't re-do that work.
+5. Manual smoke test against real AWS before considering Phase 20 done
+   -- see the plan file's Verification section for the specific
+   checklist (create one bucket of each purpose, website hosting,
+   sync with a dry-run diff and a deletion candidate, browse with and
+   without a prefix filter, guided lifecycle policy on the backup
+   bucket, generic rule add/edit/remove on the internal bucket).
+6. If asked to pick up CloudFront (Phases 21-22) or the
+   retry-on-launch-failure item instead, start with scope questions --
+   neither is designed yet.
 
 Git state: user commits and pushes their own work throughout (standing
 instruction -- never run git commit/push without being explicitly
-asked). See agents/knowledge.db (query: awstools or awsops) and
-agents/hand-off/2026-07-02T160000Z-awstools-backup-archive-real-aws-fixes.spmd
-for full detail; agents/hand-off/2026-07-01T235900Z-awstools-go-implementation.spmd
-for yesterday's context (ENA/retry-on-error open questions).
+asked). See agents/knowledge.db (query: awstools or termlib) and
+agents/hand-off/2026-07-08T220000Z-awstools-keymgmt-termlib-fix-s3-planning.spmd
+for full detail; agents/hand-off/2026-07-02T160000Z-awstools-backup-archive-real-aws-fixes.spmd
+for the prior session's context.

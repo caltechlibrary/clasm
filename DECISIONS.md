@@ -4,6 +4,158 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-08 — Add Feature 21.1, Manage Bucket Lifecycle Policies, with a Purpose-tag-driven guided/generic split
+
+**Context.** Before writing any Phase 20 code, the user identified three
+bucket use cases this tool should make easy: a website bucket (already
+Features 18-19), a shared backup bucket needing expiration and
+transition-to-cheaper-storage policies on its objects (the pattern
+Backup Archive & Trim already produces, per DECISIONS.md "Namespace
+backup uploads by instance"), and an internal-use bucket with no
+predictable policy shape. None of this existed in DESIGN.md — S3
+Lifecycle Configuration management wasn't designed at all.
+
+**Decisions (asked, user confirmed all four):**
+1. **Bucket "purpose" is tagged and remembered, not just a creation-time
+   wizard.** Create Bucket (Feature 18) now prompts for a purpose
+   (Website/Backup/Internal) and applies it as a `Purpose` tag
+   (`s3:PutBucketTagging`); Feature 17 (List Buckets) reads it back for
+   every bucket so later features don't need to re-ask.
+2. **Lifecycle policy scope is an optional prefix, blank = whole
+   bucket** — the same convention as Feature 21's browse-filter
+   addition, rather than forcing either a mandatory prefix or a
+   whole-bucket-only model.
+3. **Two different UIs, selected automatically by the `Purpose` tag**:
+   `backup` gets a guided flow (two yes/no-shaped prompts: expire after
+   N days, transition after N days); `internal` (and `website`, and any
+   untagged bucket) gets a generic rule editor (named rules, arbitrary
+   transitions, optional expiration) — one feature (21.1), one menu
+   entry, branching internally, not two separate menu items.
+4. **Multiple named rules with full CRUD**, not a single-policy-per-scope
+   model — fetch all existing rules, let the operator pick one to edit
+   or remove, or add a new one, then write the complete rule set back
+   (the only way AWS's `PutBucketLifecycleConfiguration` API supports
+   changes at all — it always replaces the whole rule set atomically).
+
+**Smaller decisions made without a separate question round:**
+- **Guided flow's storage-class choices are curated** (Standard-IA,
+  Intelligent-Tiering, Glacier Flexible Retrieval, Glacier Deep Archive)
+  rather than the full AWS enum — these four cover "make backups
+  cheaper over time" without exposing storage classes irrelevant to
+  that goal (One Zone-IA's reduced durability isn't appropriate for the
+  only copy of a backup; Reduced Redundancy Storage is legacy). The
+  generic editor (`internal`/`website`/untagged buckets) exposes the
+  *full* `types.TransitionStorageClass` enum instead, matching its
+  "unpredictable needs" framing.
+- **Numbered 21.1, not renumbered into the 22-26 sequence** — CloudFront
+  Features 22-26 already have ~15 cross-references across
+  DESIGN.md/DECISIONS.md/PLAN.md; renumbering them to make room risked
+  missing one silently. Mirrors PLAN.md's own existing convention of
+  decimal-numbered insertions (Phase 15.1 through 15.26) rather than
+  introducing a new pattern.
+- **Rule removal and edits stay a plain yes/no confirm**, not the
+  stronger dry-run + type-to-confirm tier, but the confirmation text
+  must say plainly that this schedules *future* automated deletion, not
+  an immediate one (see DESIGN.md, Security Considerations #13) — AWS
+  evaluates lifecycle rules on its own cadence (typically within 24-48
+  hours), not instantly on `PutBucketLifecycleConfiguration`.
+
+**Rationale.** All four user-facing decisions were asked and confirmed
+before any implementation started, per this project's design-then-code
+discipline. The Purpose-tag branch (one feature, one menu entry) was
+chosen over two separate menu entries because the user's own framing —
+"the internal bucket is similar" — describes one capability used two
+ways, not two capabilities.
+
+**Rejected alternatives.**
+- *Two separate menu entries* (e.g. "Manage Backup Policies" / "Manage
+  Object Lifecycle Policies") instead of one Purpose-branching feature —
+  rejected per the user's own framing above; also would require the
+  operator to already know a bucket's purpose before picking the right
+  menu item, defeating the point of tagging it.
+- *Single active policy per bucket/prefix* (no rule naming/listing) —
+  rejected; doesn't fit the internal bucket's explicitly "unpredictable"
+  needs, and the guided flow's simplicity doesn't actually require
+  giving up multi-rule support underneath (the guided prompts just
+  populate one more named rule in the same underlying store).
+
+**Consequences.** `S3API` grows further to include `PutBucketTagging`,
+`GetBucketTagging`, `GetBucketLifecycleConfiguration`, and
+`PutBucketLifecycleConfiguration` on top of Phase 20's already-broadened
+surface (see "Phase 20 (S3 domain) scope decisions," below). `internal/
+inventory.Bucket` gains a `Purpose` field, fetched during Feature 17's
+existing per-bucket enrichment fan-out (no new listing pass). Phase
+20's effort estimate in PLAN.md needs updating to reflect this
+meaningfully larger scope.
+
+---
+
+## 2026-07-08 — Phase 20 (S3 domain) scope decisions: defer public-read opt-out, add a key-prefix filter
+
+**Context.** Before starting Phase 20 (S3 domain: List/Create Bucket,
+Configure Static Website Hosting, Sync Local Directory to Bucket,
+Browse/Manage Objects), two places where DESIGN.md's existing Features
+19 and 21 needed a concrete scope call that the design text itself
+didn't fully pin down.
+
+**Decision 1 — defer the public-read bucket policy opt-out.** Feature 19
+(Configure Static Website Hosting) mentions an operator can explicitly
+opt into a public-read bucket policy instead of the CloudFront + Origin
+Access Control default -- but CloudFront (Phase 21, Feature 24) doesn't
+exist in this codebase yet, so there's nothing for the default path to
+actually hand off to. Phase 20 implements only the default path
+(configure website documents; bucket stays private via Feature 18's
+`PutPublicAccessBlock`); where DESIGN.md's text says "hand off to
+CloudFront," awsops instead prints that CloudFront support isn't
+implemented yet. The public-read opt-out (its own explicit warning,
+confirmation, and `s3:PutBucketPolicy` call) is deferred until there's
+an actual need for it.
+
+**Decision 2 — add an optional key-prefix filter to Browse/Manage
+Objects.** Not in DESIGN.md's original Feature 21 text, which lists
+every object in the bucket unconditionally. This team's actual S3 usage
+(e.g. `sql-backups.library.caltech.edu`, namespaced
+`<instance-name>/<filename>` per DECISIONS.md's "Namespace backup
+uploads by instance") means a single real bucket can hold many objects
+across many per-instance prefixes -- listing everything unconditionally
+would be substantially less usable on this team's actual buckets than on
+a small test bucket. Feature 21 now prompts `"Filter by key prefix
+(blank for all)"` before calling `s3:ListObjectsV2`; blank preserves the
+original "list everything" behavior exactly.
+
+**Rationale.**
+- Both decisions were surfaced as explicit questions before writing any
+  code, per this project's design-then-implement discipline, rather than
+  silently decided during implementation.
+- Deferring the public-read opt-out avoids building a whole secondary
+  confirmation-and-policy-construction path for something DESIGN.md
+  itself frames as a secondary escape hatch, before the primary
+  (CloudFront) path it's an alternative *to* even exists.
+- The prefix filter is a small, backward-compatible addition (default
+  behavior unchanged) directly motivated by how this team's own S3
+  buckets are actually structured, not a hypothetical future need.
+
+**Rejected alternatives.**
+- *Build the public-read opt-out now anyway* — rejected; it would mean
+  significant Feature 19 surface area (policy JSON construction, its own
+  confirmation tier) serving a path that's explicitly secondary in
+  DESIGN.md's own framing, before Phase 21 (CloudFront) even exists to
+  make the *primary* path complete.
+- *Implement Browse/Manage Objects exactly as spec'd, no filter* —
+  rejected; DESIGN.md's own Feature 1 precedent (PickList pagination for
+  >50 items) already acknowledges large lists are a real concern for
+  this tool, and a bucket with thousands of objects across many prefixes
+  is a materially worse experience without a filter than EC2/AMI/key
+  pair lists ever are.
+
+**Consequences.** PLAN.md's Phase 20 work items and DESIGN.md Features
+19 and 21 are updated to match. When Phase 21 (CloudFront) ships, Feature
+19's "hand off to CloudFront" message should be revisited -- either
+wired to an actual Create Distribution entry point, or left as
+informational if the operator is expected to navigate there manually.
+
+---
+
 ## 2026-07-08 — Fix termlib's LineEditor.Prompt for overlong prompt labels; keep awstools' own prompts short
 
 **Context.** A real bug, hit live: Import Key Pair's "Public key file

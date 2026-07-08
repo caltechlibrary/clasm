@@ -713,10 +713,15 @@ a public-read bucket policy — see Security Considerations below.
 ### 17. List Buckets
 
 Resource listing shown when the S3 domain is entered: `s3:ListBuckets`,
-then for each bucket a lightweight `s3:GetBucketLocation` (region) and
+then for each bucket a lightweight `s3:GetBucketLocation` (region),
 best-effort `s3:GetBucketWebsite` (a `NoSuchWebsiteConfiguration` error
 just means "not configured," not a failure) to show whether static
-website hosting is enabled, in one table (Name, Region, Static Website).
+website hosting is enabled, and best-effort `s3:GetBucketTagging` (a
+`NoSuchTagSet` error, or simply no `Purpose` key present, means
+"untagged" — not a failure) to read the bucket's `Purpose` tag (Feature
+18) for Feature 21.1's use — in one table (Name, Region, Static Website,
+Purpose; untagged shows blank, matching this tool's existing "blank
+means untagged" convention for Name).
 
 ### 18. Create Bucket
 
@@ -724,11 +729,29 @@ Interactive workflow:
 1. Prompt for a bucket name (globally unique; validate against S3's
    naming rules locally before calling AWS)
 2. Prompt for region
-3. Call `s3:CreateBucket`
-4. Block public access by default (`s3:PutPublicAccessBlock`, all four
+3. Prompt for bucket purpose — a numbered pick list: Website, Backup,
+   Internal — see "Bucket Purpose Tagging Convention" below
+4. Call `s3:CreateBucket`
+5. Block public access by default (`s3:PutPublicAccessBlock`, all four
    settings on) — an operator who genuinely wants a public bucket must
    say so explicitly in Feature 19, not get it by omission here
-5. Confirm creation
+6. Tag the bucket `Purpose: website|backup|internal`
+   (`s3:PutBucketTagging`) so Feature 21.1 (Manage Bucket Lifecycle
+   Policies) can recall this choice later without re-asking
+7. Confirm creation
+
+#### Bucket Purpose Tagging Convention
+
+Not an AWS-enforced concept — a `Purpose` tag this tool applies at
+creation (steps 3/6 above) and reads later (Feature 21.1) to decide
+which lifecycle-policy UX to offer: `backup` gets a simplified guided
+flow for the two policy shapes this team actually uses repeatedly
+(expire after N days; transition to cheaper storage after N days);
+`website` and `internal`, or a bucket with no `Purpose` tag at all
+(e.g. one created outside awsops), get a fuller generic lifecycle rule
+editor. Distinct from Feature 10's unrelated `Purpose=cloud-init-
+extraction` tag on temporary EC2 instances — same tag key name, entirely
+different resource type and meaning, no relationship between the two.
 
 ### 19. Configure Static Website Hosting
 
@@ -740,15 +763,19 @@ origin:
 3. Call `s3:PutBucketWebsite`
 4. **Access pattern**: default and recommended path is CloudFront +
    Origin Access Control — this step only configures the website
-   document settings on the bucket itself and hands off to Feature 24
-   (Create Distribution) to actually front it; the bucket's
+   document settings on the bucket itself; the bucket's
    public-access-block settings from Feature 18 are left untouched
-   (still blocking public access) unless the operator explicitly opts
-   into a public-read bucket policy instead, which requires its own
-   explicit confirmation warning that the bucket contents become
-   world-readable directly, independent of CloudFront
-5. Confirm; if the operator arrived here from Feature 24, offer to return
-   there to finish the CloudFront side
+   (still blocking public access). **Phase 20 implements only this
+   default path** — the explicit public-read-bucket-policy opt-out
+   mentioned below is deferred until there's an actual need for it (see
+   DECISIONS.md, "Defer the public-read bucket policy opt-out in
+   Configure Static Website Hosting"). A future opt-out path would
+   require its own explicit confirmation warning that the bucket
+   contents become world-readable directly, independent of CloudFront.
+5. Confirm. Feature 24 (Create Distribution, CloudFront domain) doesn't
+   exist yet as of Phase 20 — until it does, print that CloudFront
+   support isn't implemented yet instead of literally offering to hand
+   off to it.
 
 ### 20. Sync Local Directory to Bucket
 
@@ -773,14 +800,68 @@ Interactive workflow for publishing a built static site:
 
 Interactive workflow for ad-hoc bucket inspection outside the sync flow:
 1. Pick a bucket
-2. List objects (`s3:ListObjectsV2`, paginated the same way Feature 1's
-   PickList pagination already handles >50 items)
-3. Choose an object; offer to show metadata (size, last-modified,
+2. Prompt for an optional key prefix filter (blank lists everything) --
+   added beyond the original spec once this team's actual bucket usage
+   made it clear a single bucket (e.g. `sql-backups.library.caltech.edu`)
+   can hold many objects across many per-instance prefixes (see
+   DECISIONS.md, "Add an optional key-prefix filter to Browse/Manage
+   Objects")
+3. List objects (`s3:ListObjectsV2` scoped to that prefix, paginated the
+   same way Feature 1's PickList pagination already handles >50 items)
+4. Choose an object; offer to show metadata (size, last-modified,
    content-type) or delete it
-4. Deletion is a plain yes/no per-object confirm — Feature 20's bulk sync
+5. Deletion is a plain yes/no per-object confirm — Feature 20's bulk sync
    deletion gets the stronger "separate confirm" treatment because it can
    affect many files at once; a single ad-hoc delete here is
    lower blast-radius
+
+### 21.1. Manage Bucket Lifecycle Policies
+
+Interactive workflow for reviewing, setting, updating, and removing S3
+Lifecycle Configuration rules — covers both "transition to cheaper
+storage after N days" and "delete (expire) after N days" policies (see
+DECISIONS.md, "Add Manage Bucket Lifecycle Policies"). Numbered 21.1
+(inserted after Feature 21 without renumbering CloudFront's Features
+22-26 — the same decimal-insertion convention PLAN.md already uses for
+Phases, e.g. 15.1-15.26).
+
+The underlying AWS API (`s3:GetBucketLifecycleConfiguration` /
+`s3:PutBucketLifecycleConfiguration`) only supports replacing a bucket's
+entire rule set atomically — there is no per-rule add/edit/delete call.
+This feature presents CRUD over that atomic-replace API: fetch all
+existing rules, let the operator pick one to edit or remove, or add a
+new one, then write the complete modified rule set back in one call.
+
+1. Pick a bucket (from the already-fetched bucket listing, Feature 17)
+2. `s3:GetBucketLifecycleConfiguration` (a `NoSuchLifecycleConfiguration`
+   error means "no rules yet," not a failure) and display existing rules
+   (ID, prefix scope or "whole bucket", transition(s), expiration)
+3. Branch on the bucket's `Purpose` tag (Feature 17/18):
+
+   **`backup` — guided flow:**
+   - Add a new policy: prompt "Expire objects after how many days?
+     (blank to skip)" and "Transition to cheaper storage after how many
+     days? (blank to skip)", plus a storage class pick list when a
+     transition day count is given — a curated subset (Standard-IA,
+     Intelligent-Tiering, Glacier Flexible Retrieval, Glacier Deep
+     Archive; see DECISIONS.md for why this subset), not the full AWS
+     storage-class enum
+   - Prompt for an optional key prefix (blank = whole bucket), same
+     convention as Feature 21's browse filter
+   - Existing rules can be edited (re-prompt the same questions,
+     defaulted to current values) or removed (plain yes/no confirm)
+
+   **`internal`, `website`, or an untagged bucket — generic editor:**
+   - Add a new rule: prompt for a rule ID (must be unique among the
+     bucket's existing rules), an optional key prefix, zero or more
+     transitions (each: days + storage class from the *full* AWS
+     storage-class enum, repeat until the operator stops adding), and an
+     optional expiration (days)
+   - Edit an existing rule: pick by ID, re-prompt all fields defaulted to
+     current values
+   - Remove a rule: pick by ID, plain yes/no confirm
+4. Whichever path was used, write the complete modified rule set via
+   `s3:PutBucketLifecycleConfiguration` and confirm success
 
 ### CloudFront Domain
 
@@ -1155,6 +1236,14 @@ same pattern used for `~/Laboratory/harvey`'s own `--debug` JSONL log.
     since creating a distribution isn't itself destructive, but the
     on-screen confirmation should be explicit that this isn't a free,
     instantaneous operation
+13. Feature 21.1 (Manage Bucket Lifecycle Policies) doesn't delete
+    anything itself — it edits rules AWS evaluates later (typically
+    within 24-48 hours per AWS's own lifecycle evaluation cadence, not
+    instantly). Adding or editing an expiration rule is still a plain
+    yes/no confirm (not the stronger dry-run + type-to-confirm tier),
+    but the on-screen confirmation must say plainly that this schedules
+    future automated deletion, not an immediate one — an operator should
+    never be surprised days later by objects that quietly vanished
 
 ## Domain Knowledge Carried Forward from the Bash Version
 
