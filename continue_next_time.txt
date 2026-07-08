@@ -11,6 +11,22 @@ NOTHING has been committed yet. This file supersedes the earlier
 2026-07-08 version of itself (Phase 20 implemented but not yet
 real-AWS-verified).
 
+PAUSED HERE, ON PURPOSE: the user hasn't set up S3 lifecycle policies
+before and wants to do their own reading before testing/refining Manage
+Bucket Lifecycle Policies' rule-setup process any further -- do NOT
+assume the current guided/generic UX (bucket_lifecycle.go) is final.
+Expect a design conversation about better in-flow help text/validation/
+guidance for that feature specifically, once the user has done that
+reading. This is a real, useful signal, not just "not done yet" --
+verification already surfaced one related, concrete gap (no local
+validation that transition-days < expiration-days; AWS's own raw error
+is the only feedback right now -- see TODO.md and DECISIONS.md, "Clear
+a bucket's lifecycle configuration..."). See agents/knowledge.db
+observations id 69 (verification summary) and id 70 (this stopping
+point) -- query `sqlite3 -header -column agents/knowledge.db "SELECT
+source_type, substr(body,1,300) FROM kb_fts WHERE kb_fts MATCH
+'lifecycle'"` from ~/WorkLab to pull both back up.
+
 What happened this session
 ---------------------------------------------------------------------
 
@@ -88,18 +104,30 @@ What's NOT done yet
 - CloudFront (Phases 21-22): still fully undesigned.
 - The retry-on-launch-failure item (TODO.md, general RunInstances
   failure case): still unscoped.
+- The lifecycle-rule-setup UX itself: the user is doing their own
+  reading on S3 lifecycle policies before deciding what "more help"
+  should look like here. No specific ask yet -- don't pre-guess a
+  design (e.g. don't just add inline AWS-concept explainer text
+  unprompted); wait for the user to bring back what they want.
 
 Suggested next session
 ---------------------------------
 
-1. Ask the user whether they want to review/commit this session's work
-   first (implementation + the DeleteBucketLifecycle fix are all
-   uncommitted).
-2. Optionally fix the transition/expiration local-validation gap
-   (test-first, mirroring validateBucketName's locally-caught-before-AWS
-   pattern) -- small, contained, not urgent.
-3. Otherwise, CloudFront (Phases 21-22) is the next unimplemented
-   domain -- start with scope questions, it isn't designed yet.
+1. FIRST: ask the user what they learned / what they want the
+   lifecycle-rule-setup process to look like, before touching
+   bucket_lifecycle.go again. This was the explicit reason the session
+   paused here -- treat it as the priority thread, not a side item.
+2. Ask whether to review/commit this session's work (implementation +
+   the DeleteBucketLifecycle fix are all uncommitted) -- independent of
+   #1, can happen either before or after.
+3. While addressing #1, also fold in the already-known transition/
+   expiration local-validation gap (test-first, mirroring
+   validateBucketName's locally-caught-before-AWS pattern) -- it's
+   directly related (both are "the guided flow needs better guardrails/
+   guidance"), so worth doing in the same pass rather than separately.
+4. Only if the user has no lifecycle-UX changes in mind: CloudFront
+   (Phases 21-22) is the next unimplemented domain -- start with scope
+   questions, it isn't designed yet.
 
 Git state: user commits and pushes their own work throughout (standing
 instruction -- never run git commit/push without being explicitly
