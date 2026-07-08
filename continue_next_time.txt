@@ -2,149 +2,109 @@ awstools — where we left off (2026-07-08, end of day)
 ==============================================================================
 
 STATUS: `go build ./...`, `go vet ./...`, `go test ./... -race`, and
-`gofmt -l` are all clean as of the last commit (f08a059, "phase 19 +
-bug fix", pushed). PLAN.md Phases 0-19 are done and real-AWS verified.
-Phase 20 (S3 domain, including a new Feature 21.1 added mid-session) is
-FULLY DESIGNED in DESIGN.md/DECISIONS.md/PLAN.md and a reviewed
-implementation plan -- but ZERO Phase 20 code has been written. This
-file supersedes the 2026-07-02 version of itself.
+`gofmt -l` are all clean (gofmt only flags the pre-existing, unrelated
+auto-generated version.go). PLAN.md Phases 0-20 are done, implemented,
+unit-tested, AND real-AWS verified. Phase 20 (S3 domain) is fully
+implemented, verified against real AWS (account 074441911104), and one
+real bug found during that verification has been fixed and re-verified.
+NOTHING has been committed yet. This file supersedes the earlier
+2026-07-08 version of itself (Phase 20 implemented but not yet
+real-AWS-verified).
 
 What happened this session
 ---------------------------------------------------------------------
 
-1. Implemented and shipped Phase 19 (Key Management domain): List,
-   Create, Import, Delete Key Pair. TDD throughout, mirroring existing
-   Compute-domain patterns (internal/inventory/keypairs.go mirrors
-   instances.go/images.go; keypair_delete.go mirrors remove_ami.go's
-   dry-run/dependency-check/type-to-confirm shape; keypair_create.go
-   reuses Phase 15.2's existing createNewKeyPairInteractive rather than
-   duplicating it). One real design decision: Key Management's own
-   refresh independently calls inventory.ListInstances (not just
-   ListKeyPairs) so Delete Key Pair's dependency-check warning is
-   correct even if Key Management is entered before Compute in a given
-   run -- see DECISIONS.md. User manually confirmed all four operations
-   working against real AWS.
+1. Implemented all of Phase 20 (S3 domain) via TDD -- see this session's
+   first hand-off,
+   agents/hand-off/2026-07-08T235900Z-awstools-phase20-s3-implementation.spmd,
+   for full file-by-file detail. ~65 new tests, all passing.
 
-2. Found and fixed a real bug -- properly, not just worked around. The
-   user's real-AWS test of Import Key Pair produced garbled, repeated
-   prompt text with typed input invisible. Root cause: an ~180-char
-   prompt label (embedding a usage hint) broke termlib's
-   LineEditor.Prompt raw-mode redraw, which assumes the whole prompt
-   fits on one terminal row and repaints via a bare "\r" (can't move up
-   to a previous row). Per the user's explicit instruction ("if there's
-   a bug in termlib, fix that"), root-caused and fixed at
-   ~/Laboratory/termlib/lineeditor.go with a new splitSafePrompt helper
-   (8 new unit tests there). This also retroactively fixes two
-   PRE-EXISTING awstools prompts with the same latent risk
-   (create_key_pair.go, create_instance_profile.go) that had never been
-   reported broken. The user committed+pushed the termlib fix (commit
-   354195d) and repointed awstools' go.mod to a real pseudo-version pin
-   (v0.0.10-0.20260708184214-354195d36c57) instead of my temporary
-   local-path replace directive, which I then removed. The awstools-side
-   prompt itself was simplified back to a short label per further user
-   feedback, with the longer guidance moved into the validation error
-   message instead.
+2. Did the real-AWS manual verification pass, per the plan's
+   Verification checklist, against the real Caltech Library AWS account
+   (074441911104, us-west-2) -- confirmed with the user first given the
+   account holds real production infrastructure (theses, archives,
+   media, caltechdata, etc.), using a `rsdoiel-awsops-verify-*` naming
+   prefix for throwaway resources. Drove the actual compiled binary
+   interactively via `expect` (bucket order from `ListBuckets` is
+   nondeterministic goroutine-fan-out output, so each bucket-picking
+   step dynamically located its target bucket's PickList number via
+   regex rather than a fixed scripted index -- see the script transcripts
+   if this technique is needed again). Verified: Create Bucket (all
+   three purposes), Configure Static Website Hosting, Sync (two passes:
+   upload, then a locally-deleted-file pass exercising the separate
+   delete confirm), Browse/Manage Objects (with and without a prefix
+   filter, metadata, delete), a guided backup lifecycle policy
+   (round-tripped via GetBucketLifecycleConfiguration), and the generic
+   editor's add/edit/remove on the internal bucket. Everything checked
+   independently via `aws s3api`/`aws s3` CLI calls, not just the tool's
+   own success messages.
 
-3. Established practice, saved to memory: write a test that reproduces
-   a reported bug and CONFIRM IT FAILS against the current code, before
-   writing the fix -- not test-alongside-or-after. Where the bug lives
-   in raw-mode TTY behavior unreachable by the pipe-based test harness
-   (both awstools' and termlib's own test harnesses always hit the
-   non-raw fallback() path for non-TTY input), say so explicitly and
-   test the closest provable invariant instead, then ask for manual
-   interactive re-verification.
+3. Found and fixed one real bug via this verification (exactly what the
+   real-AWS pass is for): removing a bucket's *last* lifecycle rule
+   failed, because `PutBucketLifecycleConfiguration` requires a non-empty
+   `Rules` field (an AWS SDK client-side validation, before any network
+   call) and there was no code path to actually clear a lifecycle
+   configuration. Fixed per this project's test-before-fix practice: a
+   failing test reproduced it first, then added `DeleteBucketLifecycle`
+   to `S3API`/`logging_s3.go`, and `ManageBucketLifecyclePolicies` now
+   calls that instead of `PutBucketLifecycleConfiguration` when the
+   modified rule set is empty. Re-verified against real AWS after the
+   fix -- `GetBucketLifecycleConfiguration` correctly reports
+   `NoSuchLifecycleConfiguration` after removing the last rule.
+   Recorded in DECISIONS.md, "Clear a bucket's lifecycle configuration
+   via DeleteBucketLifecycle, not an empty PutBucketLifecycleConfiguration".
 
-4. Designed Phase 20 (S3 domain) end to end, without writing any code,
-   per this project's design-then-implement discipline:
-   - Researched existing patterns first (an Explore agent + direct
-     reads of internal/awsclient/s3.go, the BucketRegion/newS3Client
-     region-resolution pattern from Backup Archive & Trim, PickList's
-     pagination).
-   - Asked and got answers to four scope questions up front: defer the
-     Feature 19 public-read bucket-policy opt-out (CloudFront doesn't
-     exist yet to hand off to); add an optional key-prefix filter to
-     Feature 21 (Browse/Manage Objects) since real buckets like
-     sql-backups.library.caltech.edu hold many objects across many
-     per-instance prefixes; a Purpose-tag-driven guided/generic UX
-     split; full multi-rule CRUD.
-   - Mid-planning, the user described a real gap: three bucket "types"
-     the tool should make easy -- website (already designed), backup
-     (needs expiration + transition-to-cheaper-storage policies,
-     matching what Backup Archive & Trim already produces), and
-     internal (unpredictable policy needs). This became new Feature
-     21.1, "Manage Bucket Lifecycle Policies" -- asked four more
-     clarifying questions (all confirmed): tag-and-remember bucket
-     purpose (not just a creation-time wizard); optional-prefix policy
-     scope; one Purpose-branching feature, not two menu entries;
-     multiple named rules with full CRUD, not a single policy.
-   - Wrote all of this into DESIGN.md (Feature 18 expanded with a
-     purpose wizard; Feature 17 reads the tag back; new Feature 21.1,
-     numbered as a decimal insertion specifically to avoid renumbering
-     CloudFront's Features 22-26 and ~15 existing cross-references,
-     mirroring PLAN.md's own Phase 15.1-15.26 convention; new Security
-     Consideration #13) and two new DECISIONS.md entries recording
-     every judgment call. PLAN.md's Phase 20 rewritten to match; effort
-     raised ~10h -> ~16h.
-   - User reviewed and confirmed the design/decisions/plan. Session
-     ended there -- next session starts directly on implementation.
+4. Also found, but deliberately did NOT fix (worked around instead), a
+   second real constraint: AWS rejects a guided backup policy whose
+   expiration-days is less than its transition-days (an object must
+   transition to cheaper storage before it can expire). The guided flow
+   currently has no local validation for this -- it surfaces AWS's raw
+   error message. Left as an open, documented gap (TODO.md,
+   DECISIONS.md) rather than fixed in this pass, since it's a smaller,
+   narrower issue than the last-rule-removal bug and wasn't blocking
+   the rest of verification (worked around by choosing valid test
+   values: transition < expiration).
+
+5. All throwaway AWS resources (3 buckets, a handful of test objects)
+   were deleted and independently confirmed gone
+   (`aws s3api list-buckets` for the `rsdoiel-awsops-verify-*` prefix
+   returns empty). No production bucket was read-modified or touched.
+
+6. Docs updated: PLAN.md's Phase 20 section now has a "Real-AWS
+   verification" paragraph; DECISIONS.md has a new entry for the
+   DeleteBucketLifecycle fix; TODO.md's Phase 20 line now says
+   "real-AWS verified" and gained a new open item for the transition/
+   expiration validation gap. user_manual.md needed no changes (the fix
+   is invisible to normal usage).
 
 What's NOT done yet
 --------------------
 
-- ALL of Phase 20 implementation. Nothing has been written:
-  internal/awsclient/s3.go's broadened S3API (ListBuckets,
-  GetBucketWebsite, CreateBucket, PutPublicAccessBlock,
-  PutBucketWebsite, PutObject, ListObjectsV2, DeleteObject,
-  PutBucketTagging, GetBucketTagging, GetBucketLifecycleConfiguration,
-  PutBucketLifecycleConfiguration) and its logging wrapper;
-  internal/inventory/buckets.go (Bucket{Name,Region,StaticWebsite,
-  Purpose}, ListBuckets); internal/workflow/bucket_create.go,
-  bucket_website.go, bucket_sync.go, bucket_browse.go,
-  bucket_lifecycle.go, s3_menu.go; internal/ui/display.go's
-  DisplayBuckets; cmd/awsops/main.go's S3 domain wiring.
-- The full implementation plan (file-by-file, function-by-function) is
-  at ~/.claude/plans/sorted-cooking-kettle.md -- READ THIS FIRST next
-  session, it has everything needed to start TDD immediately without
-  re-deriving the design.
-- S3 and CloudFront domains (Phases 20-22) remain "not yet started" in
-  TODO.md beyond the design work above.
-- Still unscoped/not started: a retry-on-launch-failure loop (TODO.md)
-  -- confirmed 2026-07-08 to actually implement, not just close out,
-  but granularity (which field(s) become re-enterable on a
-  RunInstances failure) not yet decided. Ask scope questions first.
+- Nothing has been committed or pushed. Per standing instruction, the
+  user handles all git commit/push -- don't do this without being asked.
+- The transition-days < expiration-days local validation gap (item 4
+  above) is real but unfixed. Low urgency (AWS's own error is at least
+  clear), but worth doing before calling Phase 20 fully polished.
+- CloudFront (Phases 21-22): still fully undesigned.
+- The retry-on-launch-failure item (TODO.md, general RunInstances
+  failure case): still unscoped.
 
 Suggested next session
 ---------------------------------
 
-1. Read ~/.claude/plans/sorted-cooking-kettle.md in full -- it is the
-   authoritative, already-approved implementation plan for Phase 20.
-2. Start TDD implementation in the order the plan lays out: broaden
-   S3API + its logging wrapper first, then internal/inventory/buckets.go
-   (with tests), then the five workflow files in the order listed
-   (bucket_create, bucket_website, bucket_sync, bucket_browse,
-   bucket_lifecycle), then s3_menu.go, then wire into main.go.
-3. Write each test FIRST, confirm it fails (or fails to compile, since
-   the function won't exist yet), then implement -- per the
-   test-before-fix practice this project is now explicitly following,
-   extended here to test-before-implementation too.
-4. After implementation: update PLAN.md (mark Phase 20 done, check off
-   work items), TODO.md ("Not yet started" drops S3), and
-   user_manual.md (new S3 domain section, including the bucket-purpose
-   wizard and lifecycle policy management) -- DESIGN.md/DECISIONS.md
-   are ALREADY updated, don't re-do that work.
-5. Manual smoke test against real AWS before considering Phase 20 done
-   -- see the plan file's Verification section for the specific
-   checklist (create one bucket of each purpose, website hosting,
-   sync with a dry-run diff and a deletion candidate, browse with and
-   without a prefix filter, guided lifecycle policy on the backup
-   bucket, generic rule add/edit/remove on the internal bucket).
-6. If asked to pick up CloudFront (Phases 21-22) or the
-   retry-on-launch-failure item instead, start with scope questions --
-   neither is designed yet.
+1. Ask the user whether they want to review/commit this session's work
+   first (implementation + the DeleteBucketLifecycle fix are all
+   uncommitted).
+2. Optionally fix the transition/expiration local-validation gap
+   (test-first, mirroring validateBucketName's locally-caught-before-AWS
+   pattern) -- small, contained, not urgent.
+3. Otherwise, CloudFront (Phases 21-22) is the next unimplemented
+   domain -- start with scope questions, it isn't designed yet.
 
 Git state: user commits and pushes their own work throughout (standing
 instruction -- never run git commit/push without being explicitly
-asked). See agents/knowledge.db (query: awstools or termlib) and
-agents/hand-off/2026-07-08T220000Z-awstools-keymgmt-termlib-fix-s3-planning.spmd
-for full detail; agents/hand-off/2026-07-02T160000Z-awstools-backup-archive-real-aws-fixes.spmd
-for the prior session's context.
+asked). See agents/knowledge.db (query: awstools) and
+agents/hand-off/2026-07-08T235900Z-awstools-phase20-s3-implementation.spmd
+(implementation) and
+agents/hand-off/2026-07-09T003000Z-awstools-phase20-real-aws-verification.spmd
+(this verification session) for full detail.

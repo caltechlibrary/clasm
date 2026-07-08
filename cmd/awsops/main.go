@@ -180,6 +180,19 @@ func main() {
 		return nil
 	}
 
+	var s3State struct {
+		buckets []inventory.Bucket
+	}
+	refreshS3 := func(ctx context.Context) error {
+		buckets, err := inventory.ListBuckets(ctx, s3Client, newS3Client)
+		if err != nil {
+			return fmt.Errorf("listing buckets: %w", err)
+		}
+		s3State.buckets = buckets
+		ui.DisplayBuckets(term, s3State.buckets)
+		return nil
+	}
+
 	var keyMgmtState struct {
 		keyPairs []inventory.KeyPair
 	}
@@ -240,6 +253,25 @@ func main() {
 		Refresh: refresh,
 	}
 
+	s3Actions := workflow.S3Actions{
+		CreateBucket: func(ctx context.Context) error {
+			return workflow.CreateBucket(ctx, term, le, newS3Client, cfg.Regions)
+		},
+		ConfigureWebsite: func(ctx context.Context) error {
+			return workflow.ConfigureBucketWebsite(ctx, term, le, newS3Client, s3State.buckets)
+		},
+		SyncDirectory: func(ctx context.Context) error {
+			return workflow.SyncDirectoryToBucket(ctx, term, le, newS3Client, s3State.buckets)
+		},
+		BrowseObjects: func(ctx context.Context) error {
+			return workflow.BrowseBucketObjects(ctx, term, le, newS3Client, s3State.buckets)
+		},
+		ManageLifecyclePolicies: func(ctx context.Context) error {
+			return workflow.ManageBucketLifecyclePolicies(ctx, term, le, newS3Client, s3State.buckets)
+		},
+		Refresh: refreshS3,
+	}
+
 	keyMgmtActions := workflow.KeyMgmtActions{
 		CreateKeyPair: func(ctx context.Context) error {
 			return workflow.CreateKeyPairStandalone(ctx, term, le, ec2Clients)
@@ -271,7 +303,12 @@ func main() {
 			return workflow.RunKeyMgmtMenu(ctx, term, le, keyMgmtActions)
 		},
 		S3: func(ctx context.Context) error {
-			return workflow.NotYetImplemented(term, "S3")
+			// Fetch and display the S3 listing on every entry into this
+			// domain, same convention as Compute and Key Management.
+			if err := refreshS3(ctx); err != nil {
+				return err
+			}
+			return workflow.RunS3Menu(ctx, term, le, s3Actions)
 		},
 		CloudFront: func(ctx context.Context) error {
 			return workflow.NotYetImplemented(term, "CloudFront")

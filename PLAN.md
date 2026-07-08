@@ -1491,7 +1491,7 @@ public key file, dependent-instance detection
 
 ---
 
-## Phase 20 — S3 Domain (Buckets & Static Websites)
+## Phase 20 — S3 Domain (Buckets & Static Websites) (done)
 
 **Effort:** ~16 hours (raised from ~10h after adding Feature 21.1,
 2026-07-08 — see DECISIONS.md)
@@ -1510,47 +1510,47 @@ guided/generic split.
 
 ### Work Items
 
-- Broaden the `S3API` interface beyond Feature 11's `HeadObject`-only
-  scope: `ListBuckets`, `GetBucketWebsite`, `CreateBucket`,
-  `PutPublicAccessBlock`, `PutBucketWebsite`, `PutObject`,
-  `ListObjectsV2`, `DeleteObject`, `PutBucketTagging`, `GetBucketTagging`,
-  `GetBucketLifecycleConfiguration`, `PutBucketLifecycleConfiguration`
-  (`GetBucketLocation` already exists; `PutBucketPolicy`/`GetObject` are
-  NOT added — the former is only needed by the deferred public-read
-  opt-out, the latter isn't needed since object content is never
-  downloaded, only `HeadObject` metadata)
-- `ListBuckets(ctx)` (`internal/inventory/buckets.go`) with per-bucket
-  region (`BucketRegion`), static-website-hosting status
-  (`GetBucketWebsite`), and `Purpose` tag (`GetBucketTagging`) — all
-  three enrichment calls on a region-scoped client via `newS3Client`,
-  never the global client, per the established `MovedPermanently`
-  lesson from Backup Archive & Trim — treat `NoSuchWebsiteConfiguration`
-  and a missing/absent `Purpose` key (or `NoSuchTagSet`) as "not
-  configured"/"untagged," not failures
-- Create Bucket: prompt name (validated locally against S3 naming rules)
-  + region + purpose (Website/Backup/Internal pick list), `s3:CreateBucket`,
-  `s3:PutPublicAccessBlock` (all four settings on), then
-  `s3:PutBucketTagging` with `Purpose: <choice>`
-- Configure Static Website Hosting: pick bucket, prompt index/error
-  documents, `s3:PutBucketWebsite`. **Public-read bucket policy opt-out
-  deferred** (DECISIONS.md) — only the default private-bucket path ships
-  in this phase; where CloudFront hand-off would go, print that
-  CloudFront isn't implemented yet (Phase 21)
-- Sync Local Directory to Bucket: dry-run diff (by key + size) against
-  the local directory, confirm (plain y/n), upload new/changed
-  (`s3:PutObject`, per-file progress line matching Backup Archive &
-  Trim's established convention), then a **separate**, stronger
-  `ConfirmDestructive` (type the bucket name) gate for bucket-only
-  objects (`s3:DeleteObject`) — never bundled into the upload
-  confirmation
-- Browse/Manage Objects: **optional key-prefix filter added**
-  (DECISIONS.md) before listing; paginated object listing (reuse Phase
-  15's PickList pagination for >50 items, unchanged), metadata display,
-  per-object delete with a plain yes/no confirm
-- **New: Manage Bucket Lifecycle Policies** (`bucket_lifecycle.go`,
-  DESIGN.md Feature 21.1): pick a bucket, `s3:GetBucketLifecycleConfiguration`
-  (`NoSuchLifecycleConfiguration` = no rules yet, not an error), branch
-  on the bucket's `Purpose` tag —
+- [x] Broaden the `S3API` interface beyond Feature 11's `HeadObject`-only
+      scope: `ListBuckets`, `GetBucketWebsite`, `CreateBucket`,
+      `PutPublicAccessBlock`, `PutBucketWebsite`, `PutObject`,
+      `ListObjectsV2`, `DeleteObject`, `PutBucketTagging`, `GetBucketTagging`,
+      `GetBucketLifecycleConfiguration`, `PutBucketLifecycleConfiguration`
+      (`GetBucketLocation` already exists; `PutBucketPolicy`/`GetObject` are
+      NOT added — the former is only needed by the deferred public-read
+      opt-out, the latter isn't needed since object content is never
+      downloaded, only `HeadObject` metadata)
+- [x] `ListBuckets(ctx)` (`internal/inventory/buckets.go`) with per-bucket
+      region (`GetBucketLocation`), static-website-hosting status
+      (`GetBucketWebsite`), and `Purpose` tag (`GetBucketTagging`) — all
+      three enrichment calls on a region-scoped client via `newClient`,
+      never the global client, per the established `MovedPermanently`
+      lesson from Backup Archive & Trim — treat `NoSuchWebsiteConfiguration`
+      and a missing/absent `Purpose` key (or `NoSuchTagSet`) as "not
+      configured"/"untagged," not failures
+- [x] Create Bucket: prompt name (validated locally against S3 naming
+      rules) + region + purpose (Website/Backup/Internal pick list),
+      `s3:CreateBucket`, `s3:PutPublicAccessBlock` (all four settings on),
+      then `s3:PutBucketTagging` with `Purpose: <choice>`
+- [x] Configure Static Website Hosting: pick bucket, prompt index/error
+      documents, `s3:PutBucketWebsite`. **Public-read bucket policy opt-out
+      deferred** (DECISIONS.md) — only the default private-bucket path
+      ships in this phase; where CloudFront hand-off would go, print that
+      CloudFront isn't implemented yet (Phase 21)
+- [x] Sync Local Directory to Bucket: dry-run diff (by key + size) against
+      the local directory, confirm (plain y/n), upload new/changed
+      (`s3:PutObject`, per-file progress line matching Backup Archive &
+      Trim's established convention), then a **separate**, stronger
+      `ConfirmDestructive` (type the bucket name) gate for bucket-only
+      objects (`s3:DeleteObject`) — never bundled into the upload
+      confirmation
+- [x] Browse/Manage Objects: **optional key-prefix filter added**
+      (DECISIONS.md) before listing; paginated object listing (reuse
+      Phase 15's PickList pagination for >50 items, unchanged), metadata
+      display, per-object delete with a plain yes/no confirm
+- [x] **New: Manage Bucket Lifecycle Policies** (`bucket_lifecycle.go`,
+      DESIGN.md Feature 21.1): pick a bucket, `s3:GetBucketLifecycleConfiguration`
+      (`NoSuchLifecycleConfiguration` = no rules yet, not an error),
+      branch on the bucket's `Purpose` tag —
   - `backup`: guided flow, two yes/no-shaped prompts (expire-after-days,
     transition-after-days + a curated storage-class pick list: Standard-IA,
     Intelligent-Tiering, Glacier Flexible Retrieval, Glacier Deep Archive),
@@ -1564,19 +1564,34 @@ guided/generic split.
     per-rule operations); rule edit/remove is a plain yes/no confirm,
     with on-screen text noting this schedules *future* automated
     deletion (AWS's own ~24-48h evaluation cadence), not an immediate one
-- Wire into the domain picker from Phase 18, following Phase 19's
-  `KeyMgmtActions`/`RunKeyMgmtMenu` shape (`S3Actions`/`RunS3Menu` — six
-  menu items: Show resource lists, Create Bucket, Configure Static
-  Website Hosting, Sync Local Directory to Bucket, Browse/Manage
-  Objects, Manage Bucket Lifecycle Policies, Back to domain picker)
+- [x] Wire into the domain picker from Phase 18, following Phase 19's
+      `KeyMgmtActions`/`RunKeyMgmtMenu` shape (`S3Actions`/`RunS3Menu` — six
+      menu items: Show resource lists, Create Bucket, Configure Static
+      Website Hosting, Sync Local Directory to Bucket, Browse/Manage
+      Objects, Manage Bucket Lifecycle Policies, Back to domain picker)
 
-**Tests:** fakes for each new S3 call covering success/error paths
+**Tests:** `internal/inventory/buckets_test.go`,
+`internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse,bucket_lifecycle,s3_menu}_test.go`
+-- fakes for each new S3 call covering success/error paths
 (bucket-name-taken, website-not-configured treated as non-error, sync
 diff correctness, upload/delete confirmations never bundled, prefix
 filter narrows the object listing, lifecycle guided-vs-generic branch
 selection by `Purpose` tag, rule add/edit/remove round-trips through the
-fetch-modify-PutBack cycle correctly) — TDD: write each test first,
-confirm it fails, then implement.
+fetch-modify-PutBack cycle correctly) — TDD throughout. `go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l .` all clean.
+
+**Real-AWS verification (2026-07-08):** created one throwaway bucket per
+purpose, configured website hosting, ran Sync twice (upload pass, then a
+locally-deleted-file pass exercising the separate delete confirm),
+browsed with and without a prefix filter (view metadata, delete an
+object), set and round-tripped a guided backup lifecycle policy, and
+added/edited/removed a named rule via the generic editor -- all against
+account 074441911104. Found and fixed one real bug along the way (empty-
+`Rules` `PutBucketLifecycleConfiguration` on last-rule removal; see
+DECISIONS.md) and left one open, documented gap (no local validation
+that transition-days < expiration-days; see TODO.md). All throwaway
+buckets and objects cleaned up afterward -- no production bucket was
+touched.
 
 **Dependency:** Phase 18
 
@@ -1721,7 +1736,7 @@ Phase 16/22 pass, not lost:
 | Phase 17 | Medium | 2h | Phase 16 |
 | Phase 18 | High | 4h | Phase 14 (runs alongside 16/17) |
 | Phase 19 | Medium | 6h | Phase 18 |
-| Phase 20 | Medium | 10h | Phase 18 |
+| Phase 20 | Medium | 16h | Phase 18 |
 | Phase 21 | Medium | 8h | Phase 18, Phase 20 |
 | Phase 22 | High | 6h | Phase 19, 20, 21 |
 | Phase 23+ | Deferred | — | Phase 16, 22 (see above) |

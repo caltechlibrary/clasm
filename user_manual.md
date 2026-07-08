@@ -25,8 +25,9 @@ On startup you choose a domain to work in:
 
 - **Compute** (EC2 & AMI) -- fully implemented, see below
 - **Key Management** -- fully implemented, see below
-- **S3**, **CloudFront** -- planned, not yet implemented (see
-  [DESIGN.md](DESIGN.md), [PLAN.md](PLAN.md) Phases 20-21)
+- **S3** (Buckets & Static Websites) -- fully implemented, see below
+- **CloudFront** -- planned, not yet implemented (see
+  [DESIGN.md](DESIGN.md), [PLAN.md](PLAN.md) Phase 21)
 
 ## Compute Menu
 
@@ -80,6 +81,46 @@ about any instances that were launched with the key pair being deleted
 afterward) and requires typing the exact key pair name to confirm. See
 [DESIGN.md](DESIGN.md), "Key Management Domain" for the full prompt
 sequence.
+
+## S3 Menu
+
+Choosing S3 lists the account's current buckets (Name, Region, Static
+Website, Purpose), then presents:
+
+1. Show resource lists
+2. Create Bucket
+3. Configure Static Website Hosting
+4. Sync Local Directory to Bucket
+5. Browse/Manage Objects
+6. Manage Bucket Lifecycle Policies
+7. Back to domain picker
+
+**Create Bucket** prompts a name (validated locally against S3's naming
+rules before ever calling AWS), a region, and a purpose --
+**website**, **backup**, or **internal**. The new bucket always has all
+four Public Access Block settings turned on (never public by omission)
+and is tagged with its Purpose, which the other S3 items read back later.
+**Configure Static Website Hosting** picks a bucket and prompts index/
+error documents (defaulting to `index.html`/`error.html`); the bucket
+stays private -- fronting it publicly is CloudFront's job once that
+domain exists. **Sync Local Directory to Bucket** picks a bucket and a
+local directory, shows a dry-run diff (by key and size, not checksum) of
+files to upload and bucket-only objects that would be deleted, asks for
+confirmation to upload, and -- only if there are bucket-only objects --
+asks a **separate**, stronger confirmation (type the exact bucket name)
+before deleting them; declining the upload step aborts the whole run
+without ever reaching the delete prompt. **Browse/Manage Objects** picks
+a bucket, optionally filters by key prefix, then lets you view an
+object's metadata or delete it. **Manage Bucket Lifecycle Policies**
+picks a bucket and shows its current rules, then lets you add, edit, or
+remove one: buckets tagged `Purpose: backup` get a guided flow (expire-
+after-days, transition-after-days with a curated storage-class choice);
+everything else gets a generic editor (named rules, arbitrary
+transitions from the full storage-class list, optional expiration).
+Every add/edit/remove is confirmed with a reminder that AWS evaluates
+lifecycle rules on its own schedule (typically 24-48 hours), not
+immediately. See [DESIGN.md](DESIGN.md), "S3 Domain (Buckets & Static
+Websites)" for the full prompt sequence.
 
 ## Command-line Options
 

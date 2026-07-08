@@ -134,3 +134,34 @@ func TestDisplayKeyPairs_Populated(t *testing.T) {
 		}
 	}
 }
+
+func TestDisplayBuckets_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	term := termlib.New(&buf)
+
+	DisplayBuckets(term, nil)
+
+	if !strings.Contains(buf.String(), "No buckets found.") {
+		t.Errorf("output = %q, want it to mention no buckets found", buf.String())
+	}
+}
+
+func TestDisplayBuckets_Populated(t *testing.T) {
+	var buf bytes.Buffer
+	term := termlib.New(&buf)
+
+	buckets := []inventory.Bucket{
+		{Name: "sql-backups.library.caltech.edu", Region: "us-west-2", StaticWebsite: false, Purpose: "backup"},
+		{Name: "static-site", Region: "us-east-1", StaticWebsite: true, Purpose: "website"},
+		{Name: "untagged-bucket", Region: "us-east-1", StaticWebsite: false, Purpose: ""},
+	}
+
+	DisplayBuckets(term, buckets)
+	out := buf.String()
+
+	for _, want := range []string{"sql-backups.library.caltech.edu", "us-west-2", "backup", "static-site", "yes", "website", "untagged-bucket"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}

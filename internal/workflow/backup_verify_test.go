@@ -29,6 +29,52 @@ type fakeS3Client struct {
 
 	bucketLocation       types.BucketLocationConstraint // GetBucketLocation's canned response
 	getBucketLocationErr error
+
+	// Phase 20 (S3 domain) additions -- see bucket_fakes_test.go for the
+	// methods using these fields. Kept on this same fake rather than a
+	// second type, per this project's practice of extending/reusing one
+	// fake S3API per package instead of duplicating it.
+	createBucketErr   error
+	createBucketCalls []s3.CreateBucketInput
+
+	putPublicAccessBlockErr   error
+	putPublicAccessBlockCalls []s3.PutPublicAccessBlockInput
+
+	putBucketTaggingErr   error
+	putBucketTaggingCalls []s3.PutBucketTaggingInput
+
+	getBucketTaggingErr error
+	tagSet              []types.Tag // GetBucketTagging's canned response
+
+	getBucketWebsiteErr error
+	websiteIndexSuffix  string // "" simulates NoSuchWebsiteConfiguration
+	websiteErrorKey     string
+
+	putBucketWebsiteErr   error
+	putBucketWebsiteCalls []s3.PutBucketWebsiteInput
+
+	listBucketsErr error
+	buckets        []types.Bucket
+
+	putObjectErr   error
+	putObjectCalls []s3.PutObjectInput
+
+	deleteObjectErr   error
+	deleteObjectCalls []s3.DeleteObjectInput
+
+	listObjectsV2Err    error
+	allObjects          []types.Object // full object list; paginated by listObjectsPageSize
+	listObjectsPageSize int            // 0 = return everything in one page
+	listObjectsV2Calls  []s3.ListObjectsV2Input
+
+	getBucketLifecycleErr error
+	lifecycleRules        []types.LifecycleRule
+
+	putBucketLifecycleErr   error
+	putBucketLifecycleCalls []s3.PutBucketLifecycleConfigurationInput
+
+	deleteBucketLifecycleErr   error
+	deleteBucketLifecycleCalls []s3.DeleteBucketLifecycleInput
 }
 
 func (f *fakeS3Client) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {

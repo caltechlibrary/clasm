@@ -7,19 +7,45 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// S3API covers the three S3 methods awsops uses, all called with the
-// operator's own credentials -- distinct from the target instance's own
-// IAM instance profile, which does the actual upload (see DESIGN.md,
-// "Assumptions"): HeadObject for Backup Archive & Trim's independent
-// verification step, HeadBucket for its upfront bucket-access preflight
-// check, and GetBucketLocation to discover which region a bucket
-// actually lives in before either of those (see DECISIONS.md, "Resolve
-// a bucket's actual region before Backup Archive & Trim's access
-// check").
+// S3API covers the S3 methods awsops uses, all called with the operator's
+// own credentials -- distinct from the target instance's own IAM instance
+// profile, which does the actual upload (see DESIGN.md, "Assumptions"):
+// HeadObject for Backup Archive & Trim's independent verification step,
+// HeadBucket for its upfront bucket-access preflight check, and
+// GetBucketLocation to discover which region a bucket actually lives in
+// before either of those (see DECISIONS.md, "Resolve a bucket's actual
+// region before Backup Archive & Trim's access check"). The remaining
+// methods support Phase 20's S3 domain (DESIGN.md, Features 17-21, 21.1):
+// ListBuckets/GetBucketWebsite/GetBucketTagging for inventory; CreateBucket/
+// PutPublicAccessBlock/PutBucketTagging for Create Bucket; PutBucketWebsite
+// for Configure Static Website Hosting; PutObject/ListObjectsV2/DeleteObject
+// for Sync Local Directory to Bucket and Browse/Manage Objects;
+// GetBucketLifecycleConfiguration/PutBucketLifecycleConfiguration/
+// DeleteBucketLifecycle for Manage Bucket Lifecycle Policies --
+// DeleteBucketLifecycle added after real-AWS verification surfaced that
+// PutBucketLifecycleConfiguration rejects an empty Rules list client-side
+// (a required field), so clearing the last remaining rule must go through
+// this separate operation instead (see DECISIONS.md). Not adding
+// PutBucketPolicy/GetObject -- the former is only needed by the deferred
+// public-read opt-out, the latter isn't needed since object content
+// itself is never downloaded.
 type S3API interface {
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 	GetBucketLocation(ctx context.Context, params *s3.GetBucketLocationInput, optFns ...func(*s3.Options)) (*s3.GetBucketLocationOutput, error)
+	ListBuckets(ctx context.Context, params *s3.ListBucketsInput, optFns ...func(*s3.Options)) (*s3.ListBucketsOutput, error)
+	GetBucketWebsite(ctx context.Context, params *s3.GetBucketWebsiteInput, optFns ...func(*s3.Options)) (*s3.GetBucketWebsiteOutput, error)
+	CreateBucket(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error)
+	PutPublicAccessBlock(ctx context.Context, params *s3.PutPublicAccessBlockInput, optFns ...func(*s3.Options)) (*s3.PutPublicAccessBlockOutput, error)
+	PutBucketWebsite(ctx context.Context, params *s3.PutBucketWebsiteInput, optFns ...func(*s3.Options)) (*s3.PutBucketWebsiteOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	PutBucketTagging(ctx context.Context, params *s3.PutBucketTaggingInput, optFns ...func(*s3.Options)) (*s3.PutBucketTaggingOutput, error)
+	GetBucketTagging(ctx context.Context, params *s3.GetBucketTaggingInput, optFns ...func(*s3.Options)) (*s3.GetBucketTaggingOutput, error)
+	GetBucketLifecycleConfiguration(ctx context.Context, params *s3.GetBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.GetBucketLifecycleConfigurationOutput, error)
+	PutBucketLifecycleConfiguration(ctx context.Context, params *s3.PutBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.PutBucketLifecycleConfigurationOutput, error)
+	DeleteBucketLifecycle(ctx context.Context, params *s3.DeleteBucketLifecycleInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketLifecycleOutput, error)
 }
 
 // NewS3Client constructs an S3 client from the SDK's default credential

@@ -22,12 +22,19 @@ fully checked off, 112/112 items).
       ami_copy.bash, and the Bash test suite"
 - [x] Phase 19 (PLAN.md): Key Management domain (list/create/import/
       delete key pairs) -- done 2026-07-08, wired into the domain picker
+- [x] Phase 20 (PLAN.md): S3 domain (buckets, static website hosting,
+      directory sync, object browsing, lifecycle policies) -- done and
+      real-AWS verified 2026-07-08, wired into the domain picker. One
+      real bug found and fixed during verification (removing a bucket's
+      last lifecycle rule now correctly calls `DeleteBucketLifecycle`
+      instead of an invalid empty-`Rules` `PutBucketLifecycleConfiguration`
+      -- see DECISIONS.md, "Clear a bucket's lifecycle configuration via
+      DeleteBucketLifecycle, not an empty PutBucketLifecycleConfiguration").
 
 ## Not yet started
 
-- S3 and CloudFront domains (PLAN.md Phases 20-22): designed in
-  DESIGN.md/PLAN.md, no code written yet -- needs scope questions
-  answered before starting
+- CloudFront domain (PLAN.md Phases 21-22): designed in DESIGN.md/PLAN.md,
+  no code written yet -- needs scope questions answered before starting
 
 ## Discussed but not yet designed/implemented
 
@@ -40,6 +47,14 @@ fully checked off, 112/112 items).
       instance type vs. AMI ENA support"). If a third incompatibility
       class turns up, that's the point to reconsider a shared framework,
       not before (see either decision's "Rejected alternatives").
+- [ ] Manage Bucket Lifecycle Policies' guided flow doesn't locally
+      validate that transition-days is less than expiration-days before
+      calling AWS (a real constraint -- `PutBucketLifecycleConfiguration`
+      rejects the opposite ordering). Currently surfaces AWS's raw error
+      message instead of catching it locally first, the way
+      `validateBucketName` does for Create Bucket. Found during Phase
+      20's real-AWS verification 2026-07-08 (DECISIONS.md); not fixed
+      yet, workaround is choosing valid test values.
 - [ ] Retry-on-launch-failure (general case): instead of bouncing back to
       the main menu on any `RunInstances` error, keep the already-collected
       params and let the operator re-enter just the field that's likely

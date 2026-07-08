@@ -159,3 +159,39 @@ func DisplayKeyPairs(t *termlib.Terminal, keyPairs []inventory.KeyPair) {
 	t.Println()
 	t.Refresh()
 }
+
+// staticWebsiteLabel renders Bucket.StaticWebsite as a plain yes/no,
+// matching this table's other yes/no-shaped columns.
+func staticWebsiteLabel(configured bool) string {
+	if configured {
+		return "yes"
+	}
+	return "no"
+}
+
+// DisplayBuckets prints a formatted table of S3 buckets (DESIGN.md,
+// Feature 17: "List Buckets").
+func DisplayBuckets(t *termlib.Terminal, buckets []inventory.Bucket) {
+	if len(buckets) == 0 {
+		t.Println("No buckets found.")
+		t.Refresh()
+		return
+	}
+
+	t.Println("===== S3 BUCKETS =====")
+	t.Println()
+	t.Printf("%s %s %s %s\n",
+		termlib.PadRight("NAME", 40),
+		termlib.PadRight("REGION", 10),
+		termlib.PadRight("STATIC WEBSITE", 14),
+		"PURPOSE")
+	for _, b := range buckets {
+		t.Printf("%s %s %s %s\n",
+			termlib.PadRight(termlib.Truncate(b.Name, 40), 40),
+			termlib.PadRight(b.Region, 10),
+			termlib.PadRight(staticWebsiteLabel(b.StaticWebsite), 14),
+			b.Purpose)
+	}
+	t.Println()
+	t.Refresh()
+}
