@@ -1,9 +1,9 @@
 #!/bin/bash
-# generated with CMTools 0.0.0 0656ce7
+# generated with CMTools 0.0.1 bd3add7
 #
 
 #
-# Publish script for aws_tools for GitHub pages. It expect the gh-pages
+# Publish script for clasm for GitHub pages. It expect the gh-pages
 # branch to already exist.
 #
 
