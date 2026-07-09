@@ -4,7 +4,7 @@
 #
 # Makefile for running pandoc on all Markdown docs ending in .md
 #
-PROJECT = awstools
+PROJECT = clasm
 
 PANDOC = $(shell which pandoc)
 

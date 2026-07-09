@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // CloudInitExtractionInstanceType is the smallest generally-available

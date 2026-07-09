@@ -1,4 +1,4 @@
-package awstools
+package clasm
 
 import (
 	"strings"
@@ -12,7 +12,7 @@ const (
     ReleaseDate = "2026-07-09"
 
     // ReleaseHash, the Git hash when version.go was generated
-    ReleaseHash = "22a3d02"
+    ReleaseHash = "6ec7f23"
     LicenseText = `
 
 Copyright (c) 2026, Caltech

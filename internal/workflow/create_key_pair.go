@@ -14,8 +14,8 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // createKeyPair calls ec2:CreateKeyPair for name (ED25519, PEM format --

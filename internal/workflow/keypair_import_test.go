@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/smithy-go"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 func writePubKeyFile(t *testing.T, contents string) string {

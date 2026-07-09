@@ -3,7 +3,7 @@ package awsclient
 import (
 	"time"
 
-	"github.com/caltechlibrary/awstools/internal/debuglog"
+	"github.com/caltechlibrary/clasm/internal/debuglog"
 )
 
 // logAWSCall runs call, then logs one "aws_call" record to dl (method,

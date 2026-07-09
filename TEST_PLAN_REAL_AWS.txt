@@ -1,7 +1,7 @@
-Manual test plan: awsops against real AWS
+Manual test plan: clasm against real AWS
 =============================================
 
-Purpose: verify the Go awsops binary (see cmd/awsops, internal/workflow)
+Purpose: verify the Go clasm binary (see cmd/clasm, internal/workflow)
 against real AWS before retiring ec2_ami_manager.bash, ami_copy.bash, and
 tests/*.bats (see DECISIONS.md, "Retarget implementation from Bash to
 Go" and PLAN.md Phase 17's retire-after-verify plan). Everything so far
@@ -10,7 +10,7 @@ plan has touched real AWS yet.
 
 Prerequisites
 --------------
-- [x] `make build` (or `go build -o bin/awsops ./cmd/awsops`) produces a
+- [x] `make build` (or `go build -o bin/clasm ./cmd/clasm`) produces a
   binary that runs `-help`/`-version`/`-license` correctly.
 - [x] AWS credentials configured and resolvable by the SDK's default chain
   (env vars, ~/.aws/credentials, or SSO) with the IAM permissions listed
@@ -21,8 +21,8 @@ Prerequisites
   SSM side, HeadObject on the S3 side).
 - [x] At least one disposable/low-cost test instance (ideally in a test
   account or clearly-marked test resource, not production) in a region
-  awsops is configured for (internal/config's DefaultRegions, used when
-  no ~/.awsops file exists: us-west-1, us-west-2). A plain small
+  clasm is configured for (internal/config's DefaultRegions, used when
+  no ~/.clasm file exists: us-west-1, us-west-2). A plain small
   instance is fine for
   exercising the mechanics; a real Invenio RDM instance is the realistic
   target for Feature 7 (Create AMI) and Feature 10 (Backup Archive).
@@ -40,12 +40,12 @@ Prerequisites
 
 General checks (do these once, up front)
 ------------------------------------------
-- [x] Startup: awsops prints "awsops <version> -- authenticated as AWS
+- [x] Startup: clasm prints "clasm <version> -- authenticated as AWS
   account <account-id>" before the first listing. If credentials aren't
   resolvable, it should fail fast with a clear message (DESIGN.md,
   Error Handling Strategy #4) -- not a raw SDK stack trace.
-- [x] `-debug`: run `awsops -debug`, confirm it prints "Debug log:
-  ./awsops-debug-<timestamp>.jsonl" to stderr before the first listing,
+- [x] `-debug`: run `clasm -debug`, confirm it prints "Debug log:
+  ./clasm-debug-<timestamp>.jsonl" to stderr before the first listing,
   and that file exists and grows as you use the tool. `tail -f` it
   while performing a few operations (e.g. list refresh, start/stop an
   instance): confirm each line is valid JSON (`jq . <file>` on the
@@ -214,7 +214,7 @@ test)" -> confirm "Launch this instance?".
 - [x] If you can force the reactive path (e.g. by picking an instance
   type/AMI/subnet combination the filtering step can't see coming, or by
   temporarily revoking `ec2:DescribeInstanceTypeOfferings` to force the
-  AZ lookup to fail): confirm awsops prints the incompatibility plus (if
+  AZ lookup to fail): confirm clasm prints the incompatibility plus (if
   available) which AZs the type *is* offered in, then shows a pick list
   -- "Change instance type", "Pick a different subnet", "Abort this
   launch" -- instead of sending a doomed `RunInstances` call.
@@ -234,7 +234,7 @@ test)" -> confirm "Launch this instance?".
 - [x] Pick an instance type that requires ENA (e.g. `t3.small`) against
   an AMI that is NOT ENA-enabled (e.g. `ami-0da49db6a772dda02` or a
   legacy AMI like `etd-workflow-v0.0.1`, per this session's real
-  failures): confirm awsops prints the incompatibility, explicitly
+  failures): confirm clasm prints the incompatibility, explicitly
   names `t2.micro`/`t2.medium` as working alternatives plus a pointer to
   the out-of-scope permanent fix (enable ENA on the source instance,
   re-create the AMI), then shows a pick list -- "Change instance type",
@@ -290,7 +290,7 @@ test)" -> confirm "Launch this instance?".
   `newt-machine.yaml` for a file in the current directory) -- this is
   the fix for the real bug this session surfaced (typing the filename
   without "@" used to silently become the literal user-data string, not
-  the file's contents): confirm awsops prints `"<name>" looks like an
+  the file's contents): confirm clasm prints `"<name>" looks like an
   existing file -- loading its contents (prefix with "@" to make this
   explicit next time)` and proceeds using the file's actual contents.
 - [x] Type a bare string that happens not to match any real file (e.g.
@@ -298,7 +298,7 @@ test)" -> confirm "Launch this instance?".
   no auto-detection message.
 - [x] Decline the final confirmation once: confirm "Cancelled." and no
   instance is created.
-- [x] Accept: confirm the instance launches, awsops polls until running
+- [x] Accept: confirm the instance launches, clasm polls until running
   (bounded, ~5 minutes) and prints connection info (public/private IP,
   ssh command if a public IP exists). Confirm this succeeds reliably,
   not just sometimes -- this session hit a real failure here
@@ -308,7 +308,7 @@ test)" -> confirm "Launch this instance?".
   longer be reproducible; run this check a few times if the first
   attempt succeeds cleanly, since the original bug was a race, not a
   guaranteed repro.
-- [x] If you supplied user data: confirm awsops waits for SSM Online, runs
+- [x] If you supplied user data: confirm clasm waits for SSM Online, runs
   `cloud-init status --wait`, and reports "cloud-init completed
   successfully" or an error status -- not just that the instance reached
   running. If SSM never comes online, confirm it says so and skips
@@ -365,7 +365,7 @@ contents.
 - [x] With at least one stopped instance: pick list shows only stopped
   instances. Confirm "Start instance <id> (<name>)?", decline once
   (confirm nothing happens), then accept: confirm ec2:StartInstances is
-  called, awsops polls until running, and displays connection info plus
+  called, clasm polls until running, and displays connection info plus
   the note that the public IP may have changed since it uses an Elastic
   IP unless one is attached.
 
@@ -374,7 +374,7 @@ contents.
 - [x] With no running instances: confirm "No running instances found."
 - [x] With at least one running instance: pick list shows only running
   instances. Confirm "Stop instance <id> (<name>)?", decline once, then
-  accept: confirm ec2:StopInstances is called, awsops polls until
+  accept: confirm ec2:StopInstances is called, clasm polls until
   stopped, and prints "Instance <id> is now stopped." (no connection
   info, since a stopped instance has none).
 
@@ -459,7 +459,7 @@ itself (see the estimate table below).
 - [x] Project/Environment: confirm Project defaults to the source instance's
   Project tag if it has one.
 - [x] Accept the final confirmation: confirm AMI creation starts, and that
-  awsops prints a periodic "... waiting for AMI to become available
+  clasm prints a periodic "... waiting for AMI to become available
   (elapsed ...)" status line (Phase 15's loading indicator) rather than
   going silent for the whole duration.
 - [x] This is the single most important regression check for this whole
@@ -472,7 +472,7 @@ itself (see the estimate table below).
   Environment you entered.
 - [x] If feasible, deliberately trigger a failure (e.g. terminate the source
   instance mid-creation, or use insufficient permissions) and confirm
-  awsops reports "AMI <id> creation failed after <duration>." rather
+  clasm reports "AMI <id> creation failed after <duration>." rather
   than hanging or giving a generic timeout.
 
 8. Remove AMI (menu option 8) -- destructive, be careful
@@ -517,7 +517,7 @@ AMI path (costs real time and a temporary instance -- confirm carefully):
   an AMI launches a temporary billable instance. Proceed?") appears and
   requires an explicit accept -- decline once and confirm no instance is
   launched.
-- [x] Accept: confirm awsops launches a small (t3.micro) disposable
+- [x] Accept: confirm clasm launches a small (t3.micro) disposable
   instance tagged Purpose=cloud-init-extraction, shows the "...
   extracting cloud-init..." periodic status line, waits for running and
   SSM Online (bounded timeout -- this should fail cleanly within a few
@@ -569,11 +569,11 @@ threshold in days" -> "S3 bucket" -> [S3 bucket access preflight check]
   the bucket -- before any dry-run list runs on the instance (no SSM
   `find` command should be sent). Then enter the real, accessible
   bucket and confirm the workflow proceeds normally.
-- [x] Bucket in a different region than `~/.awsops`' configured regions
+- [x] Bucket in a different region than `~/.clasm`' configured regions
   (DECISIONS.md, "Resolve a bucket's actual region before Backup
   Archive & Trim's access check" -- the real bug hit against
   `sql-backups.library.caltech.edu`): enter a bucket whose home region
-  isn't in your `~/.awsops` `regions` list at all. Confirm the bucket
+  isn't in your `~/.clasm` `regions` list at all. Confirm the bucket
   access check and later verification succeed regardless -- no
   `MovedPermanently` error -- since the region is auto-discovered per
   bucket, not assumed from configured regions.
@@ -594,7 +594,7 @@ threshold in days" -> "S3 bucket" -> [S3 bucket access preflight check]
   instance -- not reported as "FAIL" despite a real, successful upload.
 - [x] Per-instance backup directory default (DECISIONS.md, "Configure
   per-instance backup directories by Name pattern"): add a
-  `backup_directories` rule to ~/.awsops matching the test instance's
+  `backup_directories` rule to ~/.clasm matching the test instance's
   Name tag (e.g. `pattern: "etd-*"`, `directory: /opt/rdm_sql_backups`).
   Confirm the "Backup directory" prompt shows that path in brackets as
   the default, and pressing Enter alone accepts it. Confirm typing a
@@ -640,31 +640,31 @@ threshold in days" -> "S3 bucket" -> [S3 bucket access preflight check]
   correct size, and on the instance that only the verified files were
   actually removed from disk.
 
-~/.awsops config file
+~/.clasm config file
 -----------------------
-See DESIGN.md, "Configuration", and DECISIONS.md, "Add a `~/.awsops`
-YAML config file for awsops' own operational settings".
+See DESIGN.md, "Configuration", and DECISIONS.md, "Add a `~/.clasm`
+YAML config file for clasm' own operational settings".
 
-- [x] With no ~/.awsops file present (rename it aside if you have one):
-  confirm awsops still starts normally and behaves exactly as before,
+- [x] With no ~/.clasm file present (rename it aside if you have one):
+  confirm clasm still starts normally and behaves exactly as before,
   using the default regions (us-west-1, us-west-2).
-- [x] Create ~/.awsops with:
+- [x] Create ~/.clasm with:
     regions:
       - us-west-1
-  Confirm awsops now only lists/operates against us-west-1 (the initial
+  Confirm clasm now only lists/operates against us-west-1 (the initial
   listing, and every region-scoped picker, e.g. subnet/instance-type
   pickers, only shows us-west-1 resources).
-- [x] Create ~/.awsops with invalid YAML (e.g. `regions: [oops`). Confirm
-  awsops fails fast at startup with a clear "parsing ~/.awsops: ..."
+- [x] Create ~/.clasm with invalid YAML (e.g. `regions: [oops`). Confirm
+  clasm fails fast at startup with a clear "parsing ~/.clasm: ..."
   message -- not a raw YAML library stack trace, and not a silent
   fallback to defaults.
-- [x] Create ~/.awsops with valid YAML but no `regions` key at all (e.g.
+- [x] Create ~/.clasm with valid YAML but no `regions` key at all (e.g.
   just a comment). Confirm the default regions apply, same as a missing
   file.
 - [x] `-config <path>`: point at a config file in a non-default location
-  (e.g. `awsops -config ./test-awsops.yaml`) and confirm it's used
-  instead of ~/.awsops.
-- [x] Restore your real ~/.awsops (or remove the test one) when done.
+  (e.g. `clasm -config ./test-clasm.yaml`) and confirm it's used
+  instead of ~/.clasm.
+- [x] Restore your real ~/.clasm (or remove the test one) when done.
 
 Pass/fail
 ----------

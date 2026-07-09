@@ -11,10 +11,10 @@ import (
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/config"
-	"github.com/caltechlibrary/awstools/internal/inventory"
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
+	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // Default timeouts for Backup Archive & Trim's remote SSM operations.

@@ -10,7 +10,7 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // loadUserData resolves the raw text a user-data prompt collected: an

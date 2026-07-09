@@ -7,8 +7,8 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 func subnetLabel(s SubnetInfo) string {

@@ -7,7 +7,7 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 func TestDisplayInstances_Empty(t *testing.T) {

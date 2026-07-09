@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/config"
-	"github.com/caltechlibrary/awstools/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
+	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 // sameS3Client returns a newS3Client factory that ignores the requested

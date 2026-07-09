@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // Bucket is an S3 bucket as displayed/managed by awsops (DESIGN.md,

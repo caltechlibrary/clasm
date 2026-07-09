@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 func TestCreateBucket_InvalidNameNeverCallsAWS(t *testing.T) {

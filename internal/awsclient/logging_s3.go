@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/caltechlibrary/awstools/internal/debuglog"
+	"github.com/caltechlibrary/clasm/internal/debuglog"
 )
 
 type loggingS3Client struct {

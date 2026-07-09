@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 
-	"github.com/caltechlibrary/awstools/internal/debuglog"
+	"github.com/caltechlibrary/clasm/internal/debuglog"
 )
 
 type loggingEC2Client struct {

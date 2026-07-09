@@ -8,9 +8,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/inventory"
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // DeleteObjectsByPrefix runs the S3 domain's bulk object-delete workflow,

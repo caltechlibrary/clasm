@@ -8,7 +8,7 @@ import (
 
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // buildDeleteCommand builds a shell script that removes exactly the

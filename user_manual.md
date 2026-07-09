@@ -1,21 +1,21 @@
 
 # User Manual
 
-`awsops` is an interactive command-line tool for administering AWS EC2
+`clasm` is an interactive command-line tool for administering AWS EC2
 instances, AMIs, and S3 backup archives for Caltech Library DLD's
-infrastructure, across the regions configured in `~/.awsops` (default:
+infrastructure, across the regions configured in `~/.clasm` (default:
 us-west-1, us-west-2).
 
-## Starting awsops
+## Starting clasm
 
 Run with no arguments:
 
 ~~~shell
-awsops
+clasm
 ~~~
 
-awsops authenticates using the AWS SDK's default credential chain and
-prints `awsops <version> -- authenticated as AWS account <account-id>`
+clasm authenticates using the AWS SDK's default credential chain and
+prints `clasm <version> -- authenticated as AWS account <account-id>`
 before showing the domain picker. If credentials aren't resolvable, it
 fails fast with a clear message rather than a raw SDK error.
 
@@ -48,7 +48,7 @@ columns and color-coded state), then presents:
 11. Archive stale backups to S3 and trim disk space
 12. Back to domain picker
 
-Every item is interactive: awsops prompts for each required value in
+Every item is interactive: clasm prompts for each required value in
 turn, validates input, and asks for explicit confirmation before any
 destructive or billable action (instance termination and AMI removal
 require typing the exact instance/AMI ID or Name tag to confirm). Every
@@ -74,7 +74,7 @@ uses for its inline "type `new`" key-pair shortcut. **Import Key Pair**
 registers an existing public key (a local `.pub` file -- not a private
 key/`.pem` file; if you only have a private key, derive its public half
 with `ssh-keygen -y -f <private-key> > file.pub`) with AWS instead of
-generating a new one; awsops validates the file looks like a well-formed
+generating a new one; clasm validates the file looks like a well-formed
 SSH public key before calling AWS. **Delete Key Pair** warns
 about any instances that were launched with the key pair being deleted
 (they keep running; the key pair just can't be used for new launches
@@ -125,22 +125,22 @@ Websites)" for the full prompt sequence.
 ## Command-line Options
 
 `-config <path>`
-: path to awsops' own YAML config file (regions, per-instance backup
-  directory defaults); defaults to `~/.awsops`. AWS credentials are
+: path to clasm' own YAML config file (regions, per-instance backup
+  directory defaults); defaults to `~/.clasm`. AWS credentials are
   never read from here -- they remain the AWS SDK's responsibility.
 
 `-debug`
 : write a JSONL debug log of every AWS SDK call to
-  `./awsops-debug-<timestamp>.jsonl` in the current directory. When
+  `./clasm-debug-<timestamp>.jsonl` in the current directory. When
   diagnosing an unexpected AWS error, check this log first -- every
   entry has the exact API call, region, and either its output or error.
 
 `-help`, `-license`, `-version`
 : standard informational flags.
 
-## Configuration (`~/.awsops`)
+## Configuration (`~/.clasm`)
 
-An optional YAML file for awsops' own operational settings -- never AWS
+An optional YAML file for clasm' own operational settings -- never AWS
 credentials or profile selection:
 
 ~~~yaml
@@ -163,4 +163,4 @@ editable, never a silent default). See [DESIGN.md](DESIGN.md),
 ## Getting Help
 
 File an issue at
-<https://github.com/caltechlibrary/awstools/issues>.
+<https://github.com/caltechlibrary/clasm/issues>.

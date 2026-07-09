@@ -6,7 +6,7 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // ErrBackToDomainPicker is returned by a domain's own menu loop (e.g.

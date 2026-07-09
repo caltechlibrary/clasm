@@ -5,7 +5,7 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // S3Actions bundles the S3 domain's menu entry points, mirroring

@@ -13,9 +13,9 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/inventory"
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // errNothingToDo signals that a rule's prompts collected no actual action

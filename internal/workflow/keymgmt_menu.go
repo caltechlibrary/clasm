@@ -5,7 +5,7 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // KeyMgmtActions bundles the Key Management domain's menu entry points,

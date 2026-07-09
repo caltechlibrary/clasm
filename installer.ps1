@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# generated with CMTools 0.0.1 22a3d02
+# generated with CMTools 0.0.1 6ec7f23
 
 #
 # Set the package name and version to install
@@ -14,7 +14,7 @@ if ($PKG_VERSION) {
 	Write-Output "Using '${PKG_VERSION}' for version value '${VERSION}'"
 }
 
-$PACKAGE = "awstools"
+$PACKAGE = "clasm"
 $GIT_GROUP = "caltechlibrary"
 $RELEASE = "https://github.com/${GIT_GROUP}/${PACKAGE}/releases/tag/v${VERSION}"
 $SYSTEM_TYPE = Get-ComputerInfo -Property CsSystemType

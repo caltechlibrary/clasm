@@ -1,13 +1,13 @@
 
-# awstools
+# clasm
 
-Interactive Go CLI (`awsops`) for administering AWS EC2 instances, AMIs,
+Interactive Go CLI (`clasm`) for administering AWS EC2 instances, AMIs,
 and S3 backup archives for Caltech Library DLD's infrastructure. Its
 primary use case today is managing instances behind this team's Invenio
 RDM deployments, but nothing in its mechanisms (tagging, backup
 archival, cloud-init inspection) is RDM-specific.
 
-Run `awsops` with no arguments to launch the interactive menu: pick a
+Run `clasm` with no arguments to launch the interactive menu: pick a
 domain (today: Compute -- EC2 & AMI; Key Management, S3, and CloudFront
 are planned, see [DESIGN.md](DESIGN.md)), and it lists current
 resources before presenting a numbered menu of operations.
@@ -49,4 +49,4 @@ list, including required IAM permissions.
 
 ## Related resources
 
-- [Getting Help, Reporting bugs](https://github.com/caltechlibrary/awstools/issues)
+- [Getting Help, Reporting bugs](https://github.com/caltechlibrary/clasm/issues)

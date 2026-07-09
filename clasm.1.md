@@ -1,20 +1,20 @@
-%awsops(1) user manual | version 0.0.1 22a3d02
+%clasm(1) user manual | version 0.0.1 6ec7f23
 % R. S. Doiel
 % 2026-07-09
 
 # NAME
 
-awsops
+clasm
 
 # SYNOPSIS
 
-awsops [OPTIONS]
+clasm [OPTIONS]
 
 # DESCRIPTION
 
-awsops is an interactive command line tool for administering AWS EC2
+clasm is an interactive command line tool for administering AWS EC2
 instances, AMIs, and S3 backup archives for Caltech Library DLD's
-infrastructure, across the regions configured in ~/.awsops (default:
+infrastructure, across the regions configured in ~/.clasm (default:
 us-west-1, us-west-2). Its primary use case today is managing instances
 behind this team's Invenio RDM deployments, but nothing in its
 mechanisms (tagging, backup archival, cloud-init inspection) is
@@ -29,14 +29,14 @@ the listings).
 # OPTIONS
 
 -config
-: path to awsops' own YAML config file (regions, etc.); defaults to
-~/.awsops. AWS credentials and profile selection are never read from
+: path to clasm' own YAML config file (regions, etc.); defaults to
+~/.clasm. AWS credentials and profile selection are never read from
 here -- they remain the AWS SDK's responsibility via its standard
 chain (~/.aws/credentials, ~/.aws/config, environment variables, SSO)
 
 -debug
 : write a JSONL debug log of every AWS SDK call to
-./awsops-debug-\<timestamp\>.jsonl in the current directory
+./clasm-debug-\<timestamp\>.jsonl in the current directory
 
 -help
 : display help
@@ -50,7 +50,7 @@ chain (~/.aws/credentials, ~/.aws/config, environment variables, SSO)
 # EXAMPLES
 
 ~~~
-   awsops
+   clasm
 ~~~
 
 

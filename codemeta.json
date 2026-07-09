@@ -1,7 +1,7 @@
 {
   "@context": "https://w3id.org/codemeta/3.0",
   "type": "SoftwareSourceCode",
-  "codeRepository": "https://github.com/caltechlibrary/awstools",
+  "codeRepository": "https://github.com/caltechlibrary/clasm",
   "author": [
     {
       "id": "https://orcid.org/0000-0003-0900-6903",
@@ -12,8 +12,8 @@
     }
   ],
   "dateCreated": "2026-06-30",
-  "description": "Interactive Go CLI (awsops) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.",
-  "name": "awstools",
+  "description": "Interactive Go CLI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.",
+  "name": "clasm",
   "operatingSystem": [
     "POSIX"
   ],
@@ -30,7 +30,7 @@
   ],
   "version": "0.0.1",
   "developmentStatus": "active",
-  "issueTracker": "https://github.com/caltechlibrary/awstools/issues",
+  "issueTracker": "https://github.com/caltechlibrary/clasm/issues",
   "releaseNotes": "First tagged release. Core functionality complete, real-AWS verified: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim across two AWS regions; Key Management (key pairs); S3 domain (buckets, static website hosting, directory sync, object browsing, bulk object/bucket delete, lifecycle policies with local ordering validation). CloudFront and a UI/UX pass (evaluating charmbracelet/huh as a termlib successor) are postponed to a later version.",
   "copyrightYear": 2026
 }

@@ -1,4 +1,4 @@
-// Command awsops is an interactive CLI for administering AWS EC2 instances,
+// Command clasm is an interactive CLI for administering AWS EC2 instances,
 // AMIs, and S3 backup archives for Caltech Library DLD's infrastructure.
 package main
 
@@ -13,13 +13,13 @@ import (
 
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools"
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/config"
-	"github.com/caltechlibrary/awstools/internal/debuglog"
-	"github.com/caltechlibrary/awstools/internal/inventory"
-	"github.com/caltechlibrary/awstools/internal/ui"
-	"github.com/caltechlibrary/awstools/internal/workflow"
+	"github.com/caltechlibrary/clasm"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
+	"github.com/caltechlibrary/clasm/internal/debuglog"
+	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/workflow"
 )
 
 var (
@@ -33,16 +33,16 @@ var (
 
 func main() {
 	appName := path.Base(os.Args[0])
-	helpText := awstools.AwsopsHelpText
-	version, releaseDate, releaseHash, licenseText := awstools.Version, awstools.ReleaseDate, awstools.ReleaseHash, awstools.LicenseText
-	fmtHelp := awstools.FmtHelp
+	helpText := clasm.ClasmHelpText
+	version, releaseDate, releaseHash, licenseText := clasm.Version, clasm.ReleaseDate, clasm.ReleaseHash, clasm.LicenseText
+	fmtHelp := clasm.FmtHelp
 
 	// Standard Options
 	flag.BoolVar(&showHelp, "help", false, "display help")
 	flag.BoolVar(&showLicense, "license", false, "display license")
 	flag.BoolVar(&showVersion, "version", false, "display version")
-	flag.BoolVar(&debugMode, "debug", false, "write a JSONL debug log of every AWS SDK call to ./awsops-debug-<timestamp>.jsonl")
-	flag.StringVar(&configPath, "config", config.DefaultPath(), "path to awsops' own YAML config file (regions, etc.); AWS credentials are never read from here")
+	flag.BoolVar(&debugMode, "debug", false, "write a JSONL debug log of every AWS SDK call to ./clasm-debug-<timestamp>.jsonl")
+	flag.StringVar(&configPath, "config", config.DefaultPath(), "path to clasm' own YAML config file (regions, etc.); AWS credentials are never read from here")
 
 	flag.Parse()
 
@@ -155,7 +155,7 @@ func main() {
 	term := termlib.New(out)
 	le := termlib.NewLineEditor(os.Stdin, out)
 
-	term.Printf("awsops %s -- authenticated as AWS account %s\n", version, account)
+	term.Printf("clasm %s -- authenticated as AWS account %s\n", version, account)
 	term.Refresh()
 
 	colorEnabled := ui.ColorEnabled()

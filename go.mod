@@ -1,4 +1,4 @@
-module github.com/caltechlibrary/awstools
+module github.com/caltechlibrary/clasm
 
 go 1.26.5
 

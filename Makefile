@@ -4,11 +4,11 @@
 #
 # Simple Makefile for Golang based Projects built under POSIX.
 #
-PROJECT = awstools
+PROJECT = clasm
 
 GIT_GROUP = caltechlibrary
 
-PROGRAMS = awsops
+PROGRAMS = clasm
 
 RELEASE_DATE = $(shell date +%Y-%m-%d)
 

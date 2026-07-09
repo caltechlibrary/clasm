@@ -131,12 +131,12 @@ func TestBackupDirectoryFor_EmptyNameReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestDefaultPath_ReturnsHomeDirAwsops(t *testing.T) {
+func TestDefaultPath_ReturnsHomeDirClasm(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	got := DefaultPath()
-	want := filepath.Join(home, ".awsops")
+	want := filepath.Join(home, ".clasm")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

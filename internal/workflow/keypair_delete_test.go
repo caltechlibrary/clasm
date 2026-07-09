@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
-	"github.com/caltechlibrary/awstools/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 func TestDeleteKeyPair_Success(t *testing.T) {

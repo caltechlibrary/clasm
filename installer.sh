@@ -1,10 +1,10 @@
 #!/bin/sh
-# generated with CMTools 0.0.1 22a3d02
+# generated with CMTools 0.0.1 6ec7f23
 
 #
 # Set the package name and version to install
 #
-PACKAGE="awstools"
+PACKAGE="clasm"
 VERSION="0.0.1"
 GIT_GROUP="caltechlibrary"
 RELEASE="https://github.com/$GIT_GROUP/$PACKAGE/releases/tag/v$VERSION"

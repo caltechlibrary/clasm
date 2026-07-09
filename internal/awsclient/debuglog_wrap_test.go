@@ -17,7 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
-	"github.com/caltechlibrary/awstools/internal/debuglog"
+	"github.com/caltechlibrary/clasm/internal/debuglog"
 )
 
 type stubEC2Client struct {

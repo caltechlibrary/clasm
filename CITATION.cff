@@ -2,9 +2,9 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
-title: awstools
+title: clasm
 abstract: |-
-  Interactive Go CLI (awsops) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
+  Interactive Go CLI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
 authors:
   - family-names: Doiel
     given-names: R. S.
@@ -12,7 +12,7 @@ authors:
     email: rsdoiel@caltech.edu
 
 
-repository-code: "https://github.com/caltechlibrary/awstools"
+repository-code: "https://github.com/caltechlibrary/clasm"
 version: 0.0.1
 
 

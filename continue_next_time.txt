@@ -1,138 +1,135 @@
-awstools — where we left off (2026-07-08, end of day)
+awstools — where we left off (2026-07-09, end of morning session)
 ==============================================================================
 
 STATUS: `go build ./...`, `go vet ./...`, `go test ./... -race`, and
 `gofmt -l` are all clean (gofmt only flags the pre-existing, unrelated
-auto-generated version.go). PLAN.md Phases 0-20 are done, implemented,
-unit-tested, AND real-AWS verified. Phase 20 (S3 domain) is fully
-implemented, verified against real AWS (account 074441911104), and one
-real bug found during that verification has been fixed and re-verified.
-NOTHING has been committed yet. This file supersedes the earlier
-2026-07-08 version of itself (Phase 20 implemented but not yet
-real-AWS-verified).
+auto-generated version.go). The project is bumped to version 0.0.1
+(codemeta.json, version.go, CITATION.cff, installer.sh/ps1, about.md,
+awsops.1.md/man page all regenerated and consistent). The user has
+committed AND pushed this session's work themselves (commits 22a3d02
+"prep for v0.0.1 release", 6ec7f23 "Quick Save" -- both on
+origin/main). This file supersedes the 2026-07-08 version of itself
+(which paused mid Manage Bucket Lifecycle Policies UX research).
 
-PAUSED HERE, ON PURPOSE: the user hasn't set up S3 lifecycle policies
-before and wants to do their own reading before testing/refining Manage
-Bucket Lifecycle Policies' rule-setup process any further -- do NOT
-assume the current guided/generic UX (bucket_lifecycle.go) is final.
-Expect a design conversation about better in-flow help text/validation/
-guidance for that feature specifically, once the user has done that
-reading. This is a real, useful signal, not just "not done yet" --
-verification already surfaced one related, concrete gap (no local
-validation that transition-days < expiration-days; AWS's own raw error
-is the only feedback right now -- see TODO.md and DECISIONS.md, "Clear
-a bucket's lifecycle configuration..."). See agents/knowledge.db
-observations id 69 (verification summary) and id 70 (this stopping
-point) -- query `sqlite3 -header -column agents/knowledge.db "SELECT
-source_type, substr(body,1,300) FROM kb_fts WHERE kb_fts MATCH
-'lifecycle'"` from ~/WorkLab to pull both back up.
+NOT DONE YET, ON PURPOSE: no `v0.0.1` git tag exists and no GitHub
+release has been cut. `release.bash` (tags `v$(jq -r .version
+codemeta.json)`, builds per-platform dist zips + checksums, and walks
+through `gh release create --draft` with its own y/N gate) is the one
+release step left, and it's the user's to run -- do NOT run `make
+save`/`make release`/`release.bash` without being explicitly asked;
+all three commit, push, and/or publish.
 
 What happened this session
 ---------------------------------------------------------------------
 
-1. Implemented all of Phase 20 (S3 domain) via TDD -- see this session's
-   first hand-off,
-   agents/hand-off/2026-07-08T235900Z-awstools-phase20-s3-implementation.spmd,
-   for full file-by-file detail. ~65 new tests, all passing.
+1. Manual testing of the S3 domain surfaced real UX friction and
+   feature gaps, each scoped via AskUserQuestion before writing code:
 
-2. Did the real-AWS manual verification pass, per the plan's
-   Verification checklist, against the real Caltech Library AWS account
-   (074441911104, us-west-2) -- confirmed with the user first given the
-   account holds real production infrastructure (theses, archives,
-   media, caltechdata, etc.), using a `rsdoiel-awsops-verify-*` naming
-   prefix for throwaway resources. Drove the actual compiled binary
-   interactively via `expect` (bucket order from `ListBuckets` is
-   nondeterministic goroutine-fan-out output, so each bucket-picking
-   step dynamically located its target bucket's PickList number via
-   regex rather than a fixed scripted index -- see the script transcripts
-   if this technique is needed again). Verified: Create Bucket (all
-   three purposes), Configure Static Website Hosting, Sync (two passes:
-   upload, then a locally-deleted-file pass exercising the separate
-   delete confirm), Browse/Manage Objects (with and without a prefix
-   filter, metadata, delete), a guided backup lifecycle policy
-   (round-tripped via GetBucketLifecycleConfiguration), and the generic
-   editor's add/edit/remove on the internal bucket. Everything checked
-   independently via `aws s3api`/`aws s3` CLI calls, not just the tool's
-   own success messages.
+   - `ui.PickList` gained type-ahead filtering as a *generic* feature
+     (used at ~30 call sites, not just buckets): non-numeric,
+     non-empty, non-'n'/'p' input narrows the current list by a
+     case-insensitive label substring match; blank clears the filter.
+   - `inventory.ListBuckets` now returns buckets sorted alphabetically
+     by name -- also fixed a latent bug where the enrichment
+     goroutine fan-out made bucket order nondeterministic run to run.
+   - Manage Bucket Lifecycle Policies gained local validation that a
+     transition's days must be strictly less than its rule's
+     expiration days (and vice versa) -- closes the gap opened by
+     2026-07-08's real-AWS verification (see DECISIONS.md, "0.0.1
+     scope" and the earlier "Clear a bucket's lifecycle configuration
+     via DeleteBucketLifecycle..." entries).
+   - Manage Bucket Lifecycle Policies gained a read-only "View rule
+     details" action (Add/Edit/Remove/View/Back) -- loops back to the
+     action menu after viewing, not back to the caller (a regression
+     caught and fixed mid-session).
+   - Two new destructive S3 workflows: Delete Bucket (refuses a
+     non-empty bucket, reports the object count, `ConfirmDestructive`
+     typed-bucket-name gate) and Delete Objects by Prefix (bulk delete
+     under a key prefix or the whole bucket, same confirmation
+     pattern). Both required adding `DeleteBucket` to
+     `awsclient.S3API` + its logging wrapper + the shared fake.
+   - CloudFront removed entirely from the domain picker
+     (`DomainActions.CloudFront`, the menu entry, its
+     `NotYetImplemented` wiring in `main.go`) at the user's explicit
+     request -- postponed to a much later version, not deleted from
+     DESIGN.md/PLAN.md's design.
 
-3. Found and fixed one real bug via this verification (exactly what the
-   real-AWS pass is for): removing a bucket's *last* lifecycle rule
-   failed, because `PutBucketLifecycleConfiguration` requires a non-empty
-   `Rules` field (an AWS SDK client-side validation, before any network
-   call) and there was no code path to actually clear a lifecycle
-   configuration. Fixed per this project's test-before-fix practice: a
-   failing test reproduced it first, then added `DeleteBucketLifecycle`
-   to `S3API`/`logging_s3.go`, and `ManageBucketLifecyclePolicies` now
-   calls that instead of `PutBucketLifecycleConfiguration` when the
-   modified rule set is empty. Re-verified against real AWS after the
-   fix -- `GetBucketLifecycleConfiguration` correctly reports
-   `NoSuchLifecycleConfiguration` after removing the last rule.
-   Recorded in DECISIONS.md, "Clear a bucket's lifecycle configuration
-   via DeleteBucketLifecycle, not an empty PutBucketLifecycleConfiguration".
+   Full file-by-file detail in this session's hand-off,
+   agents/hand-off/2026-07-09T180000Z-awstools-0.0.1-release-prep.spmd.
 
-4. Also found, but deliberately did NOT fix (worked around instead), a
-   second real constraint: AWS rejects a guided backup policy whose
-   expiration-days is less than its transition-days (an object must
-   transition to cheaper storage before it can expire). The guided flow
-   currently has no local validation for this -- it surfaces AWS's raw
-   error message. Left as an open, documented gap (TODO.md,
-   DECISIONS.md) rather than fixed in this pass, since it's a smaller,
-   narrower issue than the last-rule-removal bug and wasn't blocking
-   the rest of verification (worked around by choosing valid test
-   values: transition < expiration).
+2. Evaluated `charmbracelet/bubbletea`, `charmbracelet/huh`, and
+   `peak/s5cmd/v2` for a future UI/UX pass -- by `go get`-ing all three
+   into a scratch module and reading actual source, not just docs or a
+   marketing article the user linked. Conclusions (full detail in the
+   hand-off and DECISIONS.md's "0.0.1 scope" entry):
 
-5. All throwaway AWS resources (3 buckets, a handful of test objects)
-   were deleted and independently confirmed gone
-   (`aws s3api list-buckets` for the `rsdoiel-awsops-verify-*` prefix
-   returns empty). No production bucket was read-modified or touched.
+   - `bubbletea`: Elm-architecture, async message loop -- mismatched
+     with termlib's and every workflow function's blocking, linear
+     style. Would be a full rewrite of ~40 wizard functions plus their
+     tests, not a library swap.
+   - `huh` (built on bubbletea): closer fit. `huh.Run(field)` is
+     blocking/synchronous like `ui.Prompt`/`PickList`/`Confirm`; its
+     `Select` field has built-in incremental filtering; every field's
+     `RunAccessible(w, r)` is structurally identical to this project's
+     `newPipeEditor` test pattern. Real cost: pulls in
+     bubbletea+bubbles+lipgloss and ~18 transitive modules, vs.
+     termlib's ~2,800 dependency-free lines.
+   - `s5cmd/v2`: not a good import (CLI-framework coupling, aws-sdk-go
+     v1 vs. this project's v2) but its `storage.S3.MultiDelete` batch-
+     `DeleteObjects`-in-chunks-of-1000 pattern is worth reimplementing
+     natively later (aws-sdk-go-v2 already exposes `DeleteObjects`) --
+     logged to TODO.md's "Nice to have," not started.
 
-6. Docs updated: PLAN.md's Phase 20 section now has a "Real-AWS
-   verification" paragraph; DECISIONS.md has a new entry for the
-   DeleteBucketLifecycle fix; TODO.md's Phase 20 line now says
-   "real-AWS verified" and gained a new open item for the transition/
-   expiration validation gap. user_manual.md needed no changes (the fix
-   is invisible to normal usage).
+3. 0.0.1 release prep: verified the build/test gate, synced
+   TODO.md/PLAN.md/DECISIONS.md to current reality (Done items, a new
+   "Postponed to a later version" section for CloudFront + the
+   termlib-to-huh UX/UI pass), bumped codemeta.json's version + release
+   notes, regenerated every derived file via `cmt`/pandoc. Did NOT run
+   `make save`/`make release`/`release.bash` myself -- handed off the
+   exact remaining commands. User committed and pushed the prep
+   themselves shortly after.
+
+4. Recorded this session in agents/knowledge.db (project id 5,
+   awstools) as observations 71-74 (two findings, two decisions),
+   indexed into kb_fts the same way prior sessions' entries were.
 
 What's NOT done yet
 --------------------
 
-- Nothing has been committed or pushed. Per standing instruction, the
-  user handles all git commit/push -- don't do this without being asked.
-- The transition-days < expiration-days local validation gap (item 4
-  above) is real but unfixed. Low urgency (AWS's own error is at least
-  clear), but worth doing before calling Phase 20 fully polished.
-- CloudFront (Phases 21-22): still fully undesigned.
+- `release.bash` hasn't been run -- no `v0.0.1` tag, no GitHub release.
+  This is the very next concrete step whenever the user wants to cut
+  it; nothing else blocks it.
+- The next release's actual UX/UI work (huh prototype/migration) is
+  evaluated but not started. Don't start it unprompted -- the user
+  explicitly deferred it past 0.0.1 and said "the next release will
+  focus on improving UX and the UI," implying a deliberate, separate
+  pass, not something to fold into 0.0.1 stabilization work.
+- The s5cmd-inspired batched `DeleteObjects` optimization (TODO.md,
+  "Nice to have") -- small, contained, not started.
+- CloudFront (Phases 21-22): still fully undesigned, now explicitly
+  postponed rather than just "not yet started."
 - The retry-on-launch-failure item (TODO.md, general RunInstances
-  failure case): still unscoped.
-- The lifecycle-rule-setup UX itself: the user is doing their own
-  reading on S3 lifecycle policies before deciding what "more help"
-  should look like here. No specific ask yet -- don't pre-guess a
-  design (e.g. don't just add inline AWS-concept explainer text
-  unprompted); wait for the user to bring back what they want.
+  failure case): still unscoped, unrelated to this session's work.
 
 Suggested next session
 ---------------------------------
 
-1. FIRST: ask the user what they learned / what they want the
-   lifecycle-rule-setup process to look like, before touching
-   bucket_lifecycle.go again. This was the explicit reason the session
-   paused here -- treat it as the priority thread, not a side item.
-2. Ask whether to review/commit this session's work (implementation +
-   the DeleteBucketLifecycle fix are all uncommitted) -- independent of
-   #1, can happen either before or after.
-3. While addressing #1, also fold in the already-known transition/
-   expiration local-validation gap (test-first, mirroring
-   validateBucketName's locally-caught-before-AWS pattern) -- it's
-   directly related (both are "the guided flow needs better guardrails/
-   guidance"), so worth doing in the same pass rather than separately.
-4. Only if the user has no lifecycle-UX changes in mind: CloudFront
-   (Phases 21-22) is the next unimplemented domain -- start with scope
-   questions, it isn't designed yet.
+1. If the user wants to cut the actual 0.0.1 release: walk through
+   `release.bash` with them (it has its own y/N push gate) -- don't
+   run it unprompted, but it's ready to run as soon as asked.
+2. If the user wants to start the next release's UX/UI work: propose
+   prototyping `huh` against one real wizard (e.g. `CreateBucket`) to
+   validate the actual per-site porting cost and feel out a theme,
+   before committing to migrating the rest of `internal/workflow`.
+   Don't assume `huh` is the final answer -- it's the leading
+   candidate from this session's evaluation, not a decided choice.
+3. Otherwise: CloudFront design (Phases 21-22) or the s5cmd-style
+   batched-delete optimization are the next unclaimed, already-scoped
+   threads -- ask which, don't just pick one.
 
-Git state: user commits and pushes their own work throughout (standing
-instruction -- never run git commit/push without being explicitly
-asked). See agents/knowledge.db (query: awstools) and
-agents/hand-off/2026-07-08T235900Z-awstools-phase20-s3-implementation.spmd
-(implementation) and
-agents/hand-off/2026-07-09T003000Z-awstools-phase20-real-aws-verification.spmd
-(this verification session) for full detail.
+Git state: user commits and pushes their own work (standing
+instruction -- never run git commit/push/tag/release without being
+explicitly asked). See agents/knowledge.db (query: awstools, or MATCH
+'"0.0.1"' for this session specifically) and
+agents/hand-off/2026-07-09T180000Z-awstools-0.0.1-release-prep.spmd for
+full detail.

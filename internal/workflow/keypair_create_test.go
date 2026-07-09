@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/smithy-go"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 func TestCreateKeyPairStandalone_Success(t *testing.T) {

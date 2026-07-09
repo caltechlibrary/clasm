@@ -7,7 +7,7 @@ import (
 
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // CheckAWSCLIAvailable runs a quick `command -v aws` preflight check on

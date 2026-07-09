@@ -5,7 +5,7 @@ package ui
 import (
 	"github.com/rsdoiel/termlib"
 
-	"github.com/caltechlibrary/awstools/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 // unknown renders an untagged Project/Environment value -- see

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/caltechlibrary/awstools/internal/ui"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 func TestInstanceTypeOfferedInAZ_True(t *testing.T) {

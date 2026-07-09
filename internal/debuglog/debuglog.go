@@ -1,5 +1,5 @@
 // Package debuglog writes a line-delimited JSON (JSONL) record of every
-// AWS SDK call awsops makes, one JSON object per line, for the -debug
+// AWS SDK call clasm makes, one JSON object per line, for the -debug
 // flag (see DESIGN.md, "Debug Logging"). Every method is nil-receiver
 // safe so callers never need an "if debug" guard around a log call --
 // a nil *DebugLog is exactly what -debug=false produces, and every
@@ -32,9 +32,9 @@ func New(path string) (*DebugLog, error) {
 }
 
 // DefaultPath returns a timestamped JSONL path in the current working
-// directory, e.g. "awsops-debug-20260701-153012.jsonl".
+// directory, e.g. "clasm-debug-20260701-153012.jsonl".
 func DefaultPath() string {
-	return "awsops-debug-" + time.Now().Format("20060102-150405") + ".jsonl"
+	return "clasm-debug-" + time.Now().Format("20060102-150405") + ".jsonl"
 }
 
 // Log writes one JSON object containing fields plus "time" (RFC3339Nano,

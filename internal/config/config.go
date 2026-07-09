@@ -1,8 +1,8 @@
-// Package config loads awsops' own operational settings -- never AWS
+// Package config loads clasm' own operational settings -- never AWS
 // credentials or profile selection, which remain entirely the AWS SDK's
 // responsibility via its standard chain (~/.aws/credentials,
 // ~/.aws/config, environment variables, SSO) -- from an optional YAML
-// file at ~/.awsops. See DESIGN.md, "Configuration", and DECISIONS.md,
+// file at ~/.clasm. See DESIGN.md, "Configuration", and DECISIONS.md,
 // "Add a ~/.awsops YAML config file for awsops' own operational
 // settings".
 package config
@@ -22,7 +22,7 @@ import (
 // to us-west-1/us-west-2".
 var DefaultRegions = []string{"us-west-1", "us-west-2"}
 
-// Config is awsops' own settings, loaded from an optional YAML file.
+// Config is clasm' own settings, loaded from an optional YAML file.
 // One field per setting; a new setting is added here, given a default
 // below, and wired into whatever consumes it -- no versioning or
 // migration machinery, appropriate for a single-operator-maintained
@@ -62,16 +62,16 @@ func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string
 	return ""
 }
 
-// DefaultPath returns ~/.awsops, falling back to a cwd-relative
-// ".awsops" if the home directory can't be resolved, matching this
+// DefaultPath returns ~/.clasm, falling back to a cwd-relative
+// ".clasm" if the home directory can't be resolved, matching this
 // project's existing sshKeyDir() fallback pattern (internal/workflow/
 // create_key_pair.go) rather than failing the whole program over it.
 func DefaultPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".awsops"
+		return ".clasm"
 	}
-	return filepath.Join(home, ".awsops")
+	return filepath.Join(home, ".clasm")
 }
 
 // Load reads and parses the YAML config file at path. A missing file is

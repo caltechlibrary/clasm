@@ -79,8 +79,8 @@ func TestPath_ReturnsTheOpenedFilePath(t *testing.T) {
 
 func TestDefaultPath_HasExpectedPrefixAndSuffix(t *testing.T) {
 	got := DefaultPath()
-	if !strings.HasPrefix(got, "awsops-debug-") {
-		t.Errorf("DefaultPath() = %q, want prefix %q", got, "awsops-debug-")
+	if !strings.HasPrefix(got, "clasm-debug-") {
+		t.Errorf("DefaultPath() = %q, want prefix %q", got, "clasm-debug-")
 	}
 	if !strings.HasSuffix(got, ".jsonl") {
 		t.Errorf("DefaultPath() = %q, want suffix %q", got, ".jsonl")

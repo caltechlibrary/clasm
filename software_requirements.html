@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en-US">
 <head>
-    <title>awstools</title>
+    <title>clasm</title>
     <link rel="stylesheet" href="https://caltechlibrary.github.io/css/site.css">
     <link rel="stylesheet" href="https://media.library.caltech.edu/cl-webcomponents/css/code-blocks.css">
     <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/copyToClipboard.js"></script>
@@ -20,7 +20,7 @@
     <li><a href="INSTALL.html">INSTALL</a></li>
     <li><a href="user_manual.html">User Manual</a></li>
     <li><a href="about.html">About</a></li>
-    <li><a href="https://github.com/caltechlibrary/awstools">Code Repository</a></li>
+    <li><a href="https://github.com/caltechlibrary/clasm">Code Repository</a></li>
 </ul>
 </nav>
 <section id="main-content">
@@ -28,14 +28,14 @@
 Requirements</h1>
 <h2 id="overview">Overview</h2>
 <p>This document lists the software dependencies for building and
-running <code>awsops</code>, the interactive Go CLI in this
+running <code>clasm</code>, the interactive Go CLI in this
 repository.</p>
 <hr />
 <h2 id="to-build-from-source">To Build From Source</h2>
 <h3 id="go">1. Go</h3>
 <ul>
 <li><strong>Version:</strong> 1.26 or higher</li>
-<li><strong>Purpose:</strong> compiles the <code>awsops</code>
+<li><strong>Purpose:</strong> compiles the <code>clasm</code>
 binary</li>
 <li><strong>Check:</strong> <code>go version</code></li>
 <li><strong>Install:</strong> https://go.dev/dl/</li>
@@ -47,17 +47,17 @@ binary</li>
 <li><strong>Check:</strong> <code>git --version</code></li>
 </ul>
 <p>Build with:</p>
-<pre class="shell"><code>git clone https://github.com/caltechlibrary/awstools
-cd awstools
+<pre class="shell"><code>git clone https://github.com/caltechlibrary/clasm
+cd clasm
 make
 make test
 make install</code></pre>
 <hr />
-<h2 id="to-run-awsops">To Run <code>awsops</code></h2>
+<h2 id="to-run-clasm">To Run <code>clasm</code></h2>
 <p>No runtime dependencies beyond the compiled binary itself – it’s a
 single static Go binary that calls AWS directly via aws-sdk-go-v2 (the
 <code>aws</code> CLI is not required on the machine running
-<code>awsops</code>).</p>
+<code>clasm</code>).</p>
 <h3 id="aws-credentials">AWS Credentials</h3>
 <p>Resolved via the AWS SDK’s default credential chain – one of:</p>
 <ul>
@@ -95,14 +95,14 @@ complete list.</p>
 <h3 id="on-the-target-ec2-instance-optional-features">On the Target EC2
 Instance (optional features)</h3>
 <p>Two Compute features reach the target instance via SSM and need these
-installed there – not on the machine running <code>awsops</code>:</p>
+installed there – not on the machine running <code>clasm</code>:</p>
 <ul>
 <li><strong>SSM Agent</strong>, running and online – required for
 cloud-init-status checking and Backup Archive &amp; Trim. Both features
 degrade gracefully (skip cleanly, not an error) if SSM isn’t available
 on the instance.</li>
 <li><strong>AWS CLI v2</strong> on the instance – required only for
-Backup Archive &amp; Trim’s S3 upload step. awsops checks for this
+Backup Archive &amp; Trim’s S3 upload step. clasm checks for this
 immediately after picking the instance and aborts with a clear,
 actionable error naming the instance if it’s missing, rather than
 letting every subsequent upload silently fail (see <a

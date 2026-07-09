@@ -3,7 +3,7 @@ package workflow
 import (
 	"fmt"
 
-	"github.com/caltechlibrary/awstools/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // Phase 2 aggregates instances and AMIs across all four configured
