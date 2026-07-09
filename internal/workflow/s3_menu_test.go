@@ -15,10 +15,8 @@ func testS3Actions(refreshCalls *int) S3Actions {
 	return S3Actions{
 		CreateBucket:            noop,
 		ConfigureWebsite:        noop,
-		SyncDirectory:           noop,
-		BrowseObjects:           noop,
+		BrowseAndManageObjects:  noop,
 		ManageLifecyclePolicies: noop,
-		DeleteObjectsByPrefix:   noop,
 		DeleteBucket:            noop,
 		Refresh:                 countingAction(refreshCalls),
 	}
@@ -26,7 +24,7 @@ func testS3Actions(refreshCalls *int) S3Actions {
 
 func TestRunS3Menu_DispatchesToTheChosenAction(t *testing.T) {
 	var createCalls, refreshCalls int
-	term, le, _ := newPipeEditor(t, "2\n9\n") // Create Bucket, then Back to domain picker
+	term, le, _ := newPipeEditor(t, "2\n7\n") // Create Bucket, then Back to domain picker
 
 	actions := testS3Actions(&refreshCalls)
 	actions.CreateBucket = countingAction(&createCalls)
@@ -41,21 +39,19 @@ func TestRunS3Menu_DispatchesToTheChosenAction(t *testing.T) {
 }
 
 func TestRunS3Menu_DispatchesEachActionByPosition(t *testing.T) {
-	var configureCalls, syncCalls, browseCalls, lifecycleCalls, deleteObjectsCalls, deleteBucketCalls int
+	var configureCalls, browseCalls, lifecycleCalls, deleteBucketCalls int
 
 	actionsFor := func() S3Actions {
 		var refreshCalls int
 		a := testS3Actions(&refreshCalls)
 		a.ConfigureWebsite = countingAction(&configureCalls)
-		a.SyncDirectory = countingAction(&syncCalls)
-		a.BrowseObjects = countingAction(&browseCalls)
+		a.BrowseAndManageObjects = countingAction(&browseCalls)
 		a.ManageLifecyclePolicies = countingAction(&lifecycleCalls)
-		a.DeleteObjectsByPrefix = countingAction(&deleteObjectsCalls)
 		a.DeleteBucket = countingAction(&deleteBucketCalls)
 		return a
 	}
 
-	term, le, _ := newPipeEditor(t, "3\n9\n") // Configure Static Website Hosting
+	term, le, _ := newPipeEditor(t, "3\n7\n") // Configure Static Website Hosting
 	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
 		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
 	}
@@ -63,15 +59,7 @@ func TestRunS3Menu_DispatchesEachActionByPosition(t *testing.T) {
 		t.Errorf("configureCalls = %d, want 1", configureCalls)
 	}
 
-	term, le, _ = newPipeEditor(t, "4\n9\n") // Sync Local Directory to Bucket
-	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
-	}
-	if syncCalls != 1 {
-		t.Errorf("syncCalls = %d, want 1", syncCalls)
-	}
-
-	term, le, _ = newPipeEditor(t, "5\n9\n") // Browse/Manage Objects
+	term, le, _ = newPipeEditor(t, "4\n7\n") // Browse & Manage Objects
 	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
 		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
 	}
@@ -79,7 +67,7 @@ func TestRunS3Menu_DispatchesEachActionByPosition(t *testing.T) {
 		t.Errorf("browseCalls = %d, want 1", browseCalls)
 	}
 
-	term, le, _ = newPipeEditor(t, "6\n9\n") // Manage Bucket Lifecycle Policies
+	term, le, _ = newPipeEditor(t, "5\n7\n") // Manage Bucket Lifecycle Policies
 	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
 		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
 	}
@@ -87,15 +75,7 @@ func TestRunS3Menu_DispatchesEachActionByPosition(t *testing.T) {
 		t.Errorf("lifecycleCalls = %d, want 1", lifecycleCalls)
 	}
 
-	term, le, _ = newPipeEditor(t, "7\n9\n") // Delete Objects by Prefix
-	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
-	}
-	if deleteObjectsCalls != 1 {
-		t.Errorf("deleteObjectsCalls = %d, want 1", deleteObjectsCalls)
-	}
-
-	term, le, _ = newPipeEditor(t, "8\n9\n") // Delete Bucket
+	term, le, _ = newPipeEditor(t, "6\n7\n") // Delete Bucket
 	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
 		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
 	}
@@ -106,7 +86,7 @@ func TestRunS3Menu_DispatchesEachActionByPosition(t *testing.T) {
 
 func TestRunS3Menu_RefreshesAfterASuccessfulAction(t *testing.T) {
 	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "2\n9\n")
+	term, le, _ := newPipeEditor(t, "2\n7\n")
 
 	actions := testS3Actions(&refreshCalls)
 
@@ -121,7 +101,7 @@ func TestRunS3Menu_RefreshesAfterASuccessfulAction(t *testing.T) {
 
 func TestRunS3Menu_BackToDomainPickerDoesNotRefresh(t *testing.T) {
 	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "9\n")
+	term, le, _ := newPipeEditor(t, "7\n")
 
 	actions := testS3Actions(&refreshCalls)
 
@@ -136,7 +116,7 @@ func TestRunS3Menu_BackToDomainPickerDoesNotRefresh(t *testing.T) {
 
 func TestRunS3Menu_ActionErrorDoesNotCrashLoop(t *testing.T) {
 	var refreshCalls int
-	term, le, buf := newPipeEditor(t, "2\n9\n")
+	term, le, buf := newPipeEditor(t, "2\n7\n")
 
 	actions := testS3Actions(&refreshCalls)
 	actions.CreateBucket = failingAction(errors.New("boom"))

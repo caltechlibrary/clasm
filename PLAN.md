@@ -1597,17 +1597,152 @@ touched.
 
 ---
 
+## Phase 20.1 — S3 Object Management: Interactive File Manager (huh + bubbletea)
+
+**Status: implemented and unit-tested 2026-07-09 (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean); not yet verified
+against real AWS — see Phase 22.** This is the "next release focuses on
+improving UX and the UI" work flagged when 0.0.1 shipped (see
+DECISIONS.md, "0.0.1 scope: ship on termlib as-is; postpone CloudFront
+and the UI/UX overhaul"). Numbered 20.1 (inserted after Phase 20
+without renumbering CloudFront's Phases 21-22 — same decimal-insertion
+convention already used for Phase 15.1-15.26 and DESIGN.md's Feature
+21.1) because it revises Phase 20's S3 domain rather than adding a new
+one.
+
+**Effort:** ~24 hours estimated; actual scope grew somewhat during
+implementation (extracting `internal/s3diff` and adding a dedicated
+Sync action — see below and DECISIONS.md).
+**Priority:** High
+**Files (as actually built, package boundary resolved during
+implementation):**
+`internal/awsclient/s3.go`/`logging_s3.go` (added `GetObject` + wrapper),
+`internal/workflow/s3_menu.go` (revised menu),
+`internal/workflow/object_browser.go` (huh pre-flight, new),
+`internal/filemanager/*.go` (the `bubbletea` `Model` — its own package,
+not folded into `internal/workflow`, since `internal/workflow` now
+depends on it via `object_browser.go` and a same-package dependency the
+other way would cycle),
+`internal/s3diff/*.go` (new — `diffSync`/`walkLocalTree`/
+`listAllBucketObjects`/`contentTypeFor` extracted here, out of the now-
+deleted `bucket_sync.go`, so both `internal/workflow` and
+`internal/filemanager` can depend on the same diff logic without a
+`workflow`<->`filemanager` import cycle),
+`internal/workflow/bucket_browse.go` (stripped to just
+`listBucketObjectsWithPrefix`, still needed by Delete Bucket's
+empty-bucket check) and `internal/workflow/bucket_delete_objects.go`
+(deleted) and `internal/workflow/bucket_sync.go` (deleted, superseded
+by `internal/s3diff` + the file manager's Sync action).
+
+Implements `DESIGN.md` Features 21.2-21.8.
+
+### Work Items
+
+- [x] Add `s3:GetObject` to the `S3API` interface (`internal/awsclient/s3.go`)
+      — Read/Download has been out of scope since Phase 20 ("object
+      content is never downloaded"); this phase completes Create/
+      Update/Read/Delete parity (DECISIONS.md)
+- [x] Session pre-flight on huh: pick bucket + region (`huh.Select`,
+      reusing Feature 17's fetched listing), then confirm/prompt an
+      optional local directory to link (`huh.Confirm` + `huh.Input`,
+      reusing `internal/s3diff.ValidateLocalDirectory`)
+- [x] `bubbletea` `Model` for the screen itself: single-pane and
+      double-pane layouts, header, per-pane status line (item count,
+      tagged count, aggregate tagged size, active filter), command line,
+      hotkey legend bar, progress/confirm modal overlay (DESIGN.md 21.4)
+- [x] S3 per-directory-level listing via `ListObjectsV2` with
+      `Delimiter=/` (`CommonPrefixes` + `Contents`); local per-level
+      listing via `os.ReadDir`; independent navigation per pane
+      (DESIGN.md 21.5)
+- [x] Tagging (`Space`, `*`) and per-pane current-level substring filter
+      (`f` / `/`)
+- [x] Actions and their confirm gates: Upload (`u`, `s3:PutObject`,
+      requires a linked local directory), Download (`d`, `s3:GetObject`),
+      Delete (`x`, `s3:DeleteObject`, `ConfirmDestructive`), Show
+      metadata (`m`, `s3:HeadObject`) — plain `Confirm` for
+      Upload/Download, per-item OK/FAIL progress in the overlay
+      (DESIGN.md 21.6)
+- [x] Sync action (`S` / `:sync`, added during implementation — see
+      DECISIONS.md "Add a dedicated Sync action to the file manager"):
+      diffs the entire linked directory against the entire bucket
+      (`internal/s3diff.Compute`/`WalkLocalTree`/`ListAllBucketObjects`),
+      gated by the same never-bundled Confirm-then-ConfirmDestructive
+      two-stage flow the retired wizard used — fulfills Decision 2
+      ("Sync's directory-mirroring workflow is kept as a first-class,
+      directly reachable capability") more literally than manual
+      tag-and-act alone would have.
+- [x] Mid-session link/unlink (`l`): prompt a path, split single-pane
+      into double-pane or collapse back, without restarting the screen
+- [x] Find (`F` / `:find <pattern>`): recursive glob-on-basename search
+      from the focused pane's current position (Go stdlib
+      `path/filepath.Match`), reusing the same `filepath.WalkDir`
+      traversal locally (`listLocalRecursive`) and an on-demand full
+      `ListObjectsV2` (no `Delimiter`) on the S3 side
+      (`listS3Recursive`); cancellable, live "Searching… (N scanned, M
+      matched)" status; `Enter` to jump to a match's location, `Esc` to
+      discard results (DESIGN.md 21.7)
+- [x] Colon command line (`:upload`, `:download`, `:delete`, `:metadata`,
+      `:find <pattern>`, `:link <path>`, `:sync`, `:quit`) dispatching
+      to the same action handlers the hotkeys use — not a second,
+      parallel implementation of each action
+- [x] Revise `s3_menu.go`: removed "Sync Local Directory to Bucket,"
+      "Browse/Manage Objects," and the standalone bulk-delete-by-prefix
+      entry; added one "Browse & Manage Objects" entry point (DESIGN.md
+      21.2)
+- [x] Retired `bucket_browse.go`'s single-object wizard and
+      `bucket_delete_objects.go`'s prefix-delete wizard now that the new
+      screen covers their cases; `bucket_sync.go`'s wizard is also
+      retired (its diff/walk/list helpers moved to `internal/s3diff`,
+      reused by the new screen's Sync action rather than duplicated —
+      see DECISIONS.md for why a plan-time assumption that these helpers
+      would simply stay put in `internal/workflow` turned out not to fit
+      Go's import-cycle constraints once `object_browser.go` needed to
+      call into `internal/filemanager`)
+- [ ] Still open, not resolved by this phase: whether to batch deletes
+      via `s3:DeleteObjects` (up to 1000 keys/call) instead of the
+      current one-`DeleteObject`-per-key loop, now in
+      `internal/filemanager`'s Delete/Sync actions (see TODO.md, "nice
+      to have")
+
+**Tests:** resolved — `github.com/charmbracelet/x/exp/teatest` is real
+and usable (confirmed against actual source, per this project's
+evaluation discipline): `teatest.NewTestModel` runs the `Model` as a
+real `bubbletea.Program` against an in-memory terminal, `.Send` injects
+key messages, and `teatest.WaitFor` polls rendered output. One
+practical caveat learned while writing these tests: bubbletea's
+renderer only retransmits screen lines that changed since the last
+frame, so asserting on unchanged-but-still-visible text across two
+separate `WaitFor` calls can race (the earlier call already drained the
+frame that contained it) — check multiple substrings in one `WaitFor`
+condition, or assert on the status line's derived text instead of raw
+row content, when that matters. `go test -race` caught one genuine bug
+this surfaced: a running action's background goroutine (`runDelete`)
+was mutating pane state (`clearTags`) directly instead of only sending
+progress text over its channel, racing with the render loop's
+concurrent read — fixed by moving that mutation to the overlay-dismiss
+handler, which runs on Update's single goroutine. Diff/glob/listing
+helpers are tested as plain Go functions independent of the `Model`
+(`internal/s3diff`, `internal/filemanager/entry_test.go`,
+`listing_test.go`, `pane_test.go`).
+
+**Dependency:** Phase 20 (done)
+
+---
+
 ## Phase 21 — CloudFront Domain
 
-**Status: postponed to a later version (2026-07-09, see TODO.md and
-DECISIONS.md) -- not part of 0.0.1.** No code written; the `CloudFront`
-domain-picker entry was removed rather than left wired to
-`NotYetImplemented`, so the 0.0.1 UI doesn't expose a menu item that
-goes nowhere. The design below stays valid reference for whenever this
-is picked back up.
+**Status: someday/maybe -- not on the active roadmap, no committed
+timeline (revised 2026-07-09 from "postponed to a later version," see
+DECISIONS.md).** No code written; the `CloudFront` domain-picker entry
+was removed rather than left wired to `NotYetImplemented`, so the 0.0.1
+UI doesn't expose a menu item that goes nowhere. The design below stays
+valid reference for if this is ever picked back up, but it is not
+queued as "next" behind anything currently planned (Phase 20.1 is the
+active next-release work).
 
-**Effort:** ~8 hours
-**Priority:** Medium
+**Effort:** ~8 hours (implementation) + real-AWS verification, now
+folded into this phase's own scope rather than Phase 22's -- see below
+**Priority:** Deferred (someday/maybe)
 **Files:** `internal/awsclient/cloudfront.go`,
 `internal/inventory/distributions.go`,
 `internal/workflow/{distribution_create,distribution_invalidate}.go`
@@ -1635,6 +1770,11 @@ Implements `DESIGN.md` Features 22-25.
   (default `/*`), confirm, `cloudfront:CreateInvalidation`, poll until
   `Completed`
 - Wire into the domain picker from Phase 18
+- Real-AWS verification for this domain (create a distribution for a
+  real test bucket, verify it actually serves content, invalidate,
+  confirm the cache refreshes) -- moved here from Phase 22 (see below)
+  now that CloudFront is someday/maybe rather than queued as "next";
+  Phase 22 no longer needs to wait on this phase to close out
 
 **Tests:** fakes for each new CloudFront call; OAC-then-bucket-policy
 sequencing; poll-until-`Deployed`/`Completed` with bounded test timeouts
@@ -1644,30 +1784,32 @@ Create Bucket)
 
 ---
 
-## Phase 22 — Real-AWS Testing: Key Management, S3, CloudFront
+## Phase 22 — Real-AWS Testing: Key Management, S3
 
 **Effort:** ~6 hours
 **Priority:** High
 **Files:** `TEST_PLAN_REAL_AWS.txt` (extended with new sections)
 
-Mirrors Phase 16's manual-verification approach, extended to the three
-new domains. Independent of Phase 16/17 (Compute's own verification and
-Bash retirement) — see `DECISIONS.md`, 2026-07-02.
+Mirrors Phase 16's manual-verification approach, extended to Key
+Management and S3. Independent of Phase 16/17 (Compute's own
+verification and Bash retirement) — see `DECISIONS.md`, 2026-07-02. No
+longer covers CloudFront (see `DECISIONS.md`, "Demote CloudFront to
+someday/maybe...") — that verification now lives in Phase 21 itself,
+whenever it's picked up, so this phase isn't blocked on a someday/maybe
+item.
 
 ### Work Items
 
 - Extend `TEST_PLAN_REAL_AWS.txt` with sections for Key Management
-  (create/import/delete against real AWS, all four regions), S3 (create
-  bucket, configure website hosting, sync a small test site, browse/
-  delete objects), and CloudFront (create a distribution for a real test
-  bucket, verify it actually serves content, invalidate, confirm the
-  cache refreshes)
+  (create/import/delete against real AWS, all four regions) and S3
+  (create bucket, configure website hosting, sync a small test site,
+  browse/delete objects)
 - Run manually against the real AWS account, same `[ok]`-marker
   convention as Phase 16
 - Update `TEST_PLAN_REAL_AWS.txt` if the Go CLI's exact prompts/flow
   differ from what's documented
 
-**Dependency:** Phase 19, 20, 21
+**Dependency:** Phase 19, 20
 
 ---
 
@@ -1744,6 +1886,7 @@ Phase 16/22 pass, not lost:
 | Phase 18 | High | 4h | Phase 14 (runs alongside 16/17) |
 | Phase 19 | Medium | 6h | Phase 18 |
 | Phase 20 | Medium | 16h | Phase 18 |
-| Phase 21 | Medium | 8h | Phase 18, Phase 20 |
-| Phase 22 | High | 6h | Phase 19, 20, 21 |
+| Phase 20.1 | High | 24h | Phase 20 |
+| Phase 21 | Deferred (someday/maybe) | 8h | Phase 18, Phase 20 |
+| Phase 22 | High | 6h | Phase 19, 20 |
 | Phase 23+ | Deferred | — | Phase 16, 22 (see above) |

@@ -15,9 +15,10 @@ import (
 
 // DeleteBucket runs the S3 domain's "Delete Bucket" workflow: pick a
 // bucket, refuse if it isn't empty (deleting a bucket's objects is a
-// separate, even more destructive action -- see DeleteObjectsByPrefix --
-// that shouldn't be bundled silently into a bucket-delete confirmation),
-// then gate the irreversible s3:DeleteBucket call with ConfirmDestructive
+// separate, even more destructive action -- see BrowseAndManageObjects's
+// Delete action -- that shouldn't be bundled silently into a
+// bucket-delete confirmation), then gate the irreversible
+// s3:DeleteBucket call with ConfirmDestructive
 // (type the bucket name back), the same heavier confirmation tier used
 // for Terminate/Remove AMI/Backup Delete.
 func DeleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
@@ -42,7 +43,7 @@ func DeleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdit
 		return fmt.Errorf("checking whether bucket %s is empty: %w", bucket.Name, err)
 	}
 	if len(objects) > 0 {
-		t.Printf("Bucket %s is not empty (%d object(s)) -- empty it first via Delete Objects by Prefix.\n", bucket.Name, len(objects))
+		t.Printf("Bucket %s is not empty (%d object(s)) -- empty it first via Browse & Manage Objects.\n", bucket.Name, len(objects))
 		t.Refresh()
 		return nil
 	}

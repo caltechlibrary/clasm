@@ -4,6 +4,818 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-09 — Fix stale Find results after a refresh; name single targets in confirm prompts; add an explicit manual refresh
+
+**Context.** Real-bucket testing (`test-clasm`) surfaced three more gaps
+in the same session: after tagging and deleting some `.jsonl` objects
+located via Find, the listing didn't reflect the deletion until some
+later, unclear point; the delete confirm for a single object only said
+"1 object(s)," not which one; and there was no direct answer to "how do
+I get the window to update."
+
+**Root cause 1 (stale Find results).** `pane.visible()` returns
+`pane.find.results` -- a point-in-time flat snapshot -- whenever a Find
+is active, completely bypassing `pane.entries` regardless of how
+recently `entries` was refetched. The post-delete refresh
+(`refreshAfterAction`) correctly reloaded `p.entries`, but the screen
+kept showing the old Find snapshot until the operator manually pressed
+Esc to exit Find. Fixed in the `listLoadedMsg` handler
+(`model.go`): a successfully-applied (non-stale) listing for a pane now
+always clears that pane's `find` too, since a fresh full-level listing
+supersedes any earlier Find snapshot. Safe to do unconditionally: the
+only loads that ever reach a pane while its `find` is still set are
+post-action refreshes (ordinary navigation already clears `find` via
+`pane.enter`), so there's no legitimate case where a landing reload
+should leave a stale Find view in place.
+
+**Root cause 2 (single-target confirms didn't name the target).**
+Download/Upload/Delete/Sync's confirm prompts all read "N object(s)"/
+"N file(s)," even for exactly one item -- a regression relative to
+Feature 21's original single-object delete wizard, which did name the
+object (`"Delete %s from %s?"`). Added `describeTargets`/`describeKeys`
+(actions.go/sync.go): a single item's key/path is named directly;
+multiple items still get a count. Applied to all four confirm prompts
+(Download, Upload, Delete, Sync's two stages) for consistency, not just
+the one the operator specifically flagged.
+
+**Decision -- explicit manual refresh.** Even with root cause 1 fixed,
+added `r` / `:refresh` (reloads the focused pane's current level,
+clearing any active Find first) as a direct, always-available answer to
+"how do I get the window to update" -- covers any future staleness
+class this fix didn't anticipate, and covers the legitimate case of
+something changing the bucket from outside this session entirely (the
+AWS console, another terminal).
+
+**Also clarified in this exchange, no code change needed:** switching
+between one-pane and two-pane views is `l` -- prompts to link a
+directory (opens double-pane) when unlinked, or goes straight to the
+unlink confirm (collapses to single-pane) when already linked. The
+hotkey legend now says "l Link (2-pane)" / "l Unlink (1-pane)" instead
+of just "l Link"/"l Unlink" to make the pane-count effect explicit.
+
+**Rejected alternatives.**
+- *Prune only the deleted keys out of `find.results` instead of
+  clearing `find` entirely* -- considered (would preserve the rest of
+  the Find context); rejected for now as more moving parts than the
+  bug warranted -- reopening the same search (`F`/`:find`) after a
+  refresh is one keystroke, and the general "any landing reload clears
+  find" rule is simpler to reason about and correct for every action,
+  not just Delete.
+
+**Consequences.** `model.go`'s `listLoadedMsg` handler, `actions.go`
+(`describeTargets`, Download/Upload/Delete confirm titles, `r` hotkey,
+`refreshFocused`), `commandline.go` (`:refresh`), `sync.go`
+(`describeKeys`, both confirm titles), and `view.go` (legend wording)
+all changed. New tests:
+`TestModel_Delete_FromFindResultsRefreshesDisplay`,
+`TestModel_Refresh_HotkeyReloadsFocusedPane`,
+`TestModel_Refresh_ColonCommand`. Existing Download/Upload/Sync confirm-
+title assertions updated to match the new single-item phrasing. All
+tests pass; `go test -race ./...` clean.
+
+---
+
+## 2026-07-09 — Add per-call AWS timeouts to the file manager; add a direct unlink-to-single-pane action
+
+**Context.** The file manager "appeared hung" after uploading a batch
+of files to a real bucket. Investigated live: attached Delve
+(non-destructively -- inspected goroutine stacks, then fully detached,
+leaving the process running and untouched) to the running process
+rather than guessing. Found, at that moment, a genuinely in-flight
+`s3:PutObject` HTTP request -- not a deadlock in this project's own
+code. By a second snapshot ~10 seconds later that request had completed
+normally and the whole program was sitting in bubbletea's ordinary idle
+event loop. The operator confirmed pressing a key brought the screen
+back -- it had finished the batch and was showing the progress
+overlay's "(press any key to continue)" state (DESIGN.md 21.4's
+never-auto-dismiss rule), not actually stuck.
+
+**Decision 1 -- add per-call timeouts anyway.** Even though this
+specific instance wasn't a true hang, the investigation surfaced a real
+gap: every direct AWS call in `internal/filemanager`/`internal/s3diff`
+used the caller's own long-lived context with no per-call deadline,
+unlike `internal/workflow`'s established `withCallTimeout` (30s)
+convention (`call_timeout.go`) used throughout the EC2/AMI/Key
+Management domains. A *genuinely* stalled connection (not just a slow-
+but-progressing one) would hang the calling goroutine forever, with no
+recovery short of killing the whole program. Added
+`s3diff.WithCallTimeout` (30s, for lightweight metadata/listing/delete
+calls) and `s3diff.WithTransferTimeout` (5 min, for Upload/Download's
+actual data-transfer calls, since transfer time scales with object size
+and connection speed, not just request/response latency) -- duplicated
+from `internal/workflow`'s pattern rather than imported, for the same
+import-cycle reason `internal/s3diff` itself exists (see the earlier
+"Extract internal/s3diff..." entry). Applied at every direct
+`ListObjectsV2`/`HeadObject`/`GetObject`/`PutObject`/`DeleteObject` call
+site in both packages. `downloadOne`'s timeout has to span the whole
+download (GetObject call + the later `io.Copy` of its response body),
+not just the initial call, since the response body read is governed by
+the same request context. While here, replaced `actions.go`'s
+`uploadOne` (a near-duplicate of `s3diff.UploadFile` that was missing
+Content-Type inference) with a direct call to `s3diff.UploadFile` --
+one less duplicate implementation, and the Upload action now gets
+correct Content-Type headers Sync's Upload already had.
+
+**Decision 2 -- direct unlink action.** Separately reported: "I need a
+way to go from two panels back to displaying only the S3 bucket." The
+`l` hotkey's existing unlink path (open `:link <path>` pre-filled,
+clear it, submit empty) was reachable but not discoverable as *the* way
+back. `l` while linked (or `:unlink`) now goes straight to a Confirm
+("Unlink `<path>` and return to single-pane view?"); accepting applies
+instantly (`applyLink("")`) since unlinking is a state change, not a
+background operation -- it never touches `beginAction`/
+`overlayProgress`. `:link` (with an explicit empty argument) still
+unlinks too, unchanged, so nothing that depended on the old path breaks.
+
+**Rejected alternatives.**
+- *Use the same 30s timeout for Upload/Download as everything else* --
+  rejected; a large file's legitimate transfer time can easily exceed
+  30s on a slow connection, and the goal is recovering from a stalled
+  connection, not penalizing a slow-but-working one.
+- *Make DefaultCallTimeout/TransferCallTimeout const, matching
+  workflow's own const* -- rejected; kept as `var` specifically so
+  tests can shrink them and prove the recovery behavior without an
+  actual 30-second (or 5-minute) wait.
+
+**Consequences.** `internal/s3diff.go` gained `WithCallTimeout`/
+`WithTransferTimeout` (+ tests proving a stalled fake connection
+recovers via timeout rather than hanging).
+`internal/filemanager/{listing,actions,sync}.go` apply them at every
+AWS call site; `uploadOne` is gone, replaced by `s3diff.UploadFile`.
+`internal/filemanager/{commandline,actions}.go` gained
+`startUnlinkConfirm`/`actionUnlink` and the `:unlink` command; the
+hotkey legend now reads "l Unlink" once linked. New tests:
+`TestModel_Unlink_LHotkeyGoesStraightToConfirm`,
+`TestModel_Unlink_DeclineStaysLinked`,
+`TestModel_Unlink_ColonCommand`. All pre-existing tests pass unchanged;
+`go test -race ./...` clean.
+
+---
+
+## 2026-07-09 — Give Filter the same "/"-anchored pattern convention as Find
+
+**Context.** Typing `/index.html` into the current-level Filter (`f`)
+had no visible effect: Filter is (correctly) a plain substring match,
+so the literal text `/index.html` -- including the slash -- was
+compared against basenames like `index.html`, which never contains a
+`/` and so never matched. The operator's expectation, reasonably, was
+that the `/`-anchor convention just added to Find (the previous
+2026-07-09 entry) would mean the same thing here too, since both
+features are typed the same way (a pattern following a `/`) and are
+listed next to each other in the hotkey legend.
+
+**Decision.** A filter starting with `/` is now matched via
+`globMatch`'s anchored form -- reusing the exact function Find already
+uses, not a second implementation -- instead of plain substring
+`Contains`. Since Filter only ever operates on one already-fetched
+level (not a recursive path), this collapses to an exact/glob match of
+the current level's basenames: `/index.html` matches only a file named
+exactly that, not `myindex.html5` (which a plain substring filter for
+`index.html` would have matched too). Filter without a leading `/`
+keeps its original substring behavior unchanged.
+
+**On the spinner:** confirmed with the operator that Filter correctly
+shows no spinner -- it's a synchronous, instant operation over already-
+loaded rows, unlike Find's recursive scan, so there's nothing to
+animate. Not a bug; Find's spinner (previous entry) already covers the
+one operation here that can genuinely take a while.
+
+**Consequences.** `pane.visible()` branches on a leading `/` before
+falling back to substring matching. New test:
+`TestPane_Visible_AnchoredFilterMatchesExactBasenameOnly`
+(`pane_test.go`). All pre-existing tests, including
+`TestModel_Filter_NarrowsCurrentLevel` (the original substring case),
+pass unchanged.
+
+---
+
+## 2026-07-09 — Add a loading spinner and an anchored Find pattern; fix a spinner/synchronous-test-drain interaction
+
+**Context.** Two more requests after trying the file manager against a
+real bucket: Find and directory listings can take a real, noticeable
+amount of time with no feedback that anything is happening (looks
+frozen); and there was no way to search for a root-level file (e.g.
+`index.html`) without also matching every same-named file in
+subdirectories.
+
+**Decision 1 -- loading spinner.** Added `github.com/charmbracelet/
+bubbles/spinner` (already a transitive dependency via huh; now direct).
+A pane's header shows an animated glyph + "Loading..." while its
+listing is being (re)fetched (`Model.loadingRemote`/`loadingLocal`);
+Find's status row shows the same glyph while a search hasn't finished
+(`pane.find.done`). The spinner only ticks while `Model.isBusy()` is
+true: `loadRemoteCmd`/`loadLocalCmd`/`runFind` each batch in a fresh
+`spinner.Tick` to (re)start the animation, and the `spinner.TickMsg`
+handler drops its own re-tick `Cmd` once nothing is busy, rather than
+ticking forever. This was a real functional requirement, not just
+efficiency: a bubbletea `Model` driven synchronously (no real
+`tea.Program`, no real timers -- see this project's own test pattern,
+`drainCmd`) would never terminate against a perpetually-ticking
+spinner.
+
+**Decision 1's follow-on bug and fix.** Even with the isBusy() gate,
+`drainCmd`-based tests hung. Root cause: `Init()`'s returned
+`tea.Batch` nests one sub-batch per pane
+(`loadRemoteCmd`/`loadLocalCmd`, each itself now `tea.Batch(fetch,
+tick)`), and `drainCmd` drains one batch branch all the way through
+before moving to the next -- so while draining the remote pane's
+branch, `loadingLocal` (already set the moment `Init()` *constructed*
+the local branch's Cmd, before either branch actually ran) hadn't been
+cleared yet, since that happens in the *other*, not-yet-visited branch.
+`isBusy()` therefore saw stale state for the entire depth of the first
+branch, and kept chasing tick -> tick -> tick forever. A real
+`tea.Program` doesn't have this problem: it runs every in-flight `Cmd`
+concurrently, so by the time a real spinner tick fires (tens of
+milliseconds later), the sibling pane's load has typically already
+resolved. Fixed at the test-helper level, not in production code (the
+production isBusy()-gating is correct for real concurrent execution):
+`drainCmd` now processes a `spinner.TickMsg` once (so `Update`'s
+bookkeeping runs) but never chases the `Cmd` it returns -- ticks are
+purely cosmetic and don't affect anything a test asserts on.
+
+**Decision 2 -- anchored Find pattern.** A pattern starting with `/` is
+now matched against an entry's *full* path (relative to the search's
+starting point) instead of just its basename -- `/index.html` matches
+only a root-level `index.html`, `/sub/index.html` matches only that
+exact nested one, `/*.html` matches only root-level `.html` files
+(`filepath.Match`'s `*` still doesn't cross `/`). Implemented as one
+branch in `globMatch`, since both the local and S3 recursive listings
+(`listLocalRecursive`/`listS3Recursive`) already carry each entry's
+full relative path in `entry.name` -- no new traversal or data needed,
+just a different match target.
+
+**Rejected alternatives.**
+- *Always tick the spinner, never stop* -- the original 2026-07-09 UX
+  pass's approach; rejected once it surfaced the synchronous-test-drain
+  hang above, and it wastes idle redraws in real usage too for no
+  benefit.
+- *Fix the hang by having Update clear loadingLocal/loadingRemote
+  eagerly at Init() time instead of when their fetch actually starts* --
+  rejected; the flags exist specifically to reflect whether a fetch is
+  genuinely in flight, and weakening that to work around a test-only
+  ordering artifact would make the flags lie in the one case (a
+  slow-loading pane) they're supposed to represent correctly.
+- *Require the anchor to be a full path with no wildcards (exact
+  match only)* -- rejected; reusing plain `filepath.Match` on the full
+  path costs nothing extra and lets `/*.html`-style single-level globs
+  work too, consistent with the unanchored form already supporting
+  globs.
+
+**Consequences.** `internal/filemanager/model.go` gained `spin
+spinner.Model`, `loadingRemote`/`loadingLocal`, `setLoading`/
+`isLoading`/`isBusy`; `view.go`'s `paneRows` takes `loading bool, spin
+string`; `listing.go`'s `globMatch` gained the anchored branch.
+`go.mod` moved `github.com/charmbracelet/bubbles` from indirect to
+direct. New tests: `box_test.go` (loading/spinner indicator presence),
+`entry_test.go`/`model_test.go` (anchored pattern, unit and end-to-end).
+`testhelpers_test.go`'s `drainCmd` no longer chases `spinner.TickMsg`
+chains. All pre-existing tests pass unchanged; `go test -race ./...`
+clean.
+
+---
+
+## 2026-07-09 — Fix two real-bucket navigation bugs and add a scrolling window to the file manager's pane listings
+
+**Context.** Trying the file manager against a real bucket
+(`s3://thesis.caltech.edu`) surfaced two more real bugs beyond the
+previous UX pass: the object listing had no way to scroll down to reach
+an entry past the first screenful (specifically, `opensearch.xml`), and
+navigating back up out of a drilled-into subdirectory didn't reliably
+reach the root.
+
+**Root cause 1 (no pagination/scrolling).** `View()` never bounded pane
+listings to the terminal height at all -- every visible entry became a
+box row, unconditionally. A bucket-root listing longer than one
+screenful pushed the status line, command line, and hotkey legend off
+the bottom of the terminal, with nothing to bring them back into view;
+worse, an entry past the first screenful (`opensearch.xml`, sorting
+after many `file-*`-style keys) was simply never rendered at all, with
+no scroll key or indicator suggesting more existed. Fixed by adding
+`paneItemWindowHeight` (derives a row budget from `m.height` minus a
+fixed chrome-row count) and `scrollWindow` (keeps the cursor inside a
+windowHeight-tall viewport, centering when there's room) -- the listing
+now scrolls with the existing Up/Down keys, with a "[a-b of n]"
+indicator on the pane header once it doesn't all fit. Overlay progress
+logs (Upload/Download/Delete/Sync against many objects) get the same
+treatment, tail-windowed rather than cursor-centered, since a log's
+natural reading position is its most recent lines.
+
+**Root cause 2 (broken "back to root" navigation) -- two distinct bugs,
+both in prefix/path handling:**
+- `parentOf` (now `parentOfS3Prefix` for the remote side) stripped the
+  trailing slash from a nested S3 prefix's parent (`"logs/sub/"` ->
+  `"logs"` instead of `"logs/"`). The next `s3:ListObjectsV2` call then
+  used a bare string-prefix match instead of a directory-boundary one,
+  silently hiding every bucket-root object that didn't happen to start
+  with the literal string `"logs"` -- so "go up a level" landed on a
+  corrupted, mostly-empty intermediate view instead of the actual
+  parent directory.
+- The local pane conflated two different path representations:
+  `pane.prefix` is documented (and used by `loadLocalCmd` via
+  `joinKey(root, prefix)`) as **root-relative**, but entering a local
+  subdirectory assigned the entry's **absolute** filesystem path
+  directly to `prefix`. One level deep this went unnoticed; a second
+  level built a doubled, malformed path
+  (`root + "/" + absolute-path-that-already-contains-root`), breaking
+  navigation (including back to the linked root) beyond the first
+  subdirectory.
+
+  Fixed with `pane.toPrefix`/`pane.parentPrefixOf`, which convert an
+  entry's identity (`entry.key` -- already bucket-relative for the
+  remote side, an absolute path for the local side, per `entry`'s own
+  doc comment) into the *pane's* prefix representation before it's
+  assigned to `pane.prefix`, instead of assuming the two were always
+  the same shape.
+
+**Rejected alternatives.**
+- *Persist a per-pane scroll offset in the Model, updated on every
+  cursor move* -- considered; rejected in favor of computing the
+  window as a pure function of `(cursor, total, windowHeight)` on every
+  `View()` call. Simpler (no extra mutable state to keep in sync with
+  cursor movement, filtering, or directory changes) and just as
+  correct, since the window only ever depends on where the cursor
+  currently is.
+- *Give the local pane its own absolute-path-based prefix format
+  instead of converting to root-relative* -- rejected; `pane.label()`
+  and every action that reconstructs a full path via
+  `joinKey(root, prefix)` depend on `prefix` being root-relative, and
+  changing that contract everywhere would be a much larger change than
+  fixing the one place (`navigateEnterOrJump`) that violated it.
+
+**Consequences.** `internal/filemanager/entry.go`'s `parentOf` is split
+into `parentOfLocal` (unchanged logic, correct for the local side's
+no-trailing-slash convention) and `parentOfS3Prefix` (new, trailing-
+slash-preserving). `pane.go` gained `toPrefix`/`parentPrefixOf`; `up()`
+is now side-aware. `view.go` gained the scroll-window machinery.
+New tests: `scroll_test.go` (scroll-window bounds, a 500-item listing
+staying bounded to the terminal height, an entry past the first
+screenful becoming reachable), `navigation_test.go` (both navigation
+bugs, reproduced against the pre-fix code by hand-tracing the exact
+failure before writing the fix). All pre-existing tests pass unchanged.
+
+---
+
+## 2026-07-09 — Fix three post-implementation UX gaps in the file manager and its huh pre-flight
+
+**Context.** The user tried the file manager after Phase 20.1 shipped and
+reported three real gaps against DESIGN.md: (1) the bucket-picker
+pre-flight (huh) gave no indication of what keys/actions were available;
+(2) the file manager's pane rows gave no clear visual indication of
+which row the cursor was on or which rows were tagged; (3) the screen's
+chrome didn't match DESIGN.md 21.4's bordered-box mockup -- it used
+plain dashed-line separators instead.
+
+**Root cause 1 (huh help footer missing).** `huh.Field.Run()` (called by
+`object_browser.go` for the bucket `Select`, the link `Confirm`, and the
+directory `Input`) is a shortcut for `huh.Run(field)`, which is itself
+`NewForm(NewGroup(field)).WithShowHelp(false).Run()` -- it explicitly
+disables the help footer. Fixed by adding `runFieldWithHelp(field)` (a
+one-line `NewForm(NewGroup(field)).Run()`, leaving `Group`'s default
+`showHelp: true` in effect) and calling it in place of `field.Run()` at
+all three call sites.
+
+**Root cause 2 (no selection indicator).** The pane rows only had a
+single leading `>`/`*` character with no color or emphasis -- easy to
+miss, especially in a wide terminal. Added reverse-video on the cursor
+row and bold on tagged rows (`view.go`'s `styleRow`), gated by the same
+NO_COLOR/non-TTY convention `internal/ui.ColorEnabled` already
+establishes elsewhere in this codebase (`Model.colorEnabled`, computed
+once at `New()`) -- falls back to the plain `>`/`*` markers alone when
+color is disabled or stdout isn't a terminal.
+
+**Root cause 3 (chrome didn't match the mockup).** The screen was never
+actually built to render DESIGN.md 21.4's bordered-box mockup -- it used
+`strings.Repeat("-", 78)` separator lines instead of the mockup's
+`┌─┬┐├┼┤└┴┘│` box-drawing chrome. Rewrote `view.go` to render one
+continuous bordered box: a title bar (`┌ clasm — S3 File Manager — ... ┐`),
+a `┬`/`┴` divider splitting the pane area in double-pane mode, and
+`├─┤` rules between the status line/command line/hotkey legend, sized
+to the real terminal width (`tea.WindowSizeMsg`, falling back to a
+fixed default before the first one arrives). Content within each box
+row is padded/truncated to a rune-accurate visible width, correctly
+accounting for the invisible ANSI escapes the reverse-video/bold
+styling (root cause 2) adds -- verified with a dedicated test asserting
+every rendered line between the outer borders has equal visible width.
+
+**Also fixed while verifying this visually:** `joinKey(root, "")`
+(used by `pane.label()`) was appending a spurious trailing slash at a
+linked directory's root ("LOCAL: /path/on/disk/" instead of "LOCAL:
+/path/on/disk") -- an empty `name` now returns `parent` unchanged.
+Caught by rendering the Model directly (bypassing a running
+`tea.Program`) via a small `drainCmd` test helper that synchronously
+executes a `tea.Cmd` chain -- worth keeping as a pattern for visually
+inspecting the `Model` without needing a real terminal.
+
+**Rejected alternatives.**
+- *Use `lipgloss.Border` per section instead of hand-rolled box-drawing*
+  -- considered; rejected for this pass because lipgloss draws a
+  complete border around each styled box independently, which produces
+  doubled seams where sections touch (the mockup shows one continuous
+  outer border with internal `├─┤`/`┬`/`┴` junctions) unless composed
+  much more carefully than the plain string-building approach used
+  here.
+- *Leave selection color-gating unconditional (always emit ANSI)* --
+  considered, since reverse/bold are text decorations rather than
+  colors and the NO_COLOR spec is about colors specifically; rejected
+  for consistency with this codebase's own existing (stricter)
+  interpretation in `internal/ui.Highlight`, which already gates its
+  own bold usage the same way.
+
+**Consequences.** `internal/workflow/object_browser.go` gained
+`runFieldWithHelp`. `internal/filemanager/view.go` was substantially
+rewritten (box-drawing helpers, ANSI-aware width math); `entry.go`'s
+`joinKey` got a one-line fix. New tests: `box_test.go` (padding/
+truncation/alignment invariants under ANSI styling, the `joinKey`/
+`label()` fix, a whole-view row-width consistency check) and a
+`styleRow` NO_COLOR-gating test. All pre-existing `internal/filemanager`
+tests pass unchanged.
+
+---
+
+## 2026-07-09 — Extract `internal/s3diff`; add a dedicated Sync action to the file manager; use `x/exp/teatest` for `Model` tests
+
+**Context.** Implementing PLAN.md Phase 20.1 (this file's earlier
+2026-07-09 entries designed it) surfaced three implementation-time
+decisions the design pass didn't fully settle.
+
+**Decision 1 — `internal/s3diff` package.** The plan's file list said
+`bucket_sync.go`'s diff/walk/list helpers (`diffSync`, `walkLocalTree`,
+`listAllBucketObjects`, `contentTypeFor`) would stay in
+`internal/workflow`, "reused, not rewritten," by the new screen. That
+doesn't fit Go's import rules once `internal/workflow/object_browser.go`
+needs to call into `internal/filemanager` to launch the screen:
+`filemanager` can't import back into `workflow` without a cycle. Moved
+these helpers into a new, lower-level `internal/s3diff` package that
+both `internal/workflow` (implicitly, via retirement -- see Decision 3)
+and `internal/filemanager` depend on, preserving genuine code reuse
+(same functions, not duplicated) without a cycle.
+
+**Decision 2 — a dedicated Sync action, not just manual tag-and-act.**
+The file manager as first built (single-pane, then double-pane with
+manual per-directory tag-and-Upload/Download) covered Feature 21's old
+single-object case and the old bulk-delete-by-prefix case, but not
+Feature 20's automatic whole-tree diff (compute upload/delete candidates
+by comparing an entire local directory against the entire bucket, dry
+run, two-stage confirm). Flagged to the user as a real gap against this
+file's own 2026-07-09 "Design the S3 object management UI/UX pass"
+entry (Decision 2 there: "Sync's directory-mirroring workflow is kept
+as a first-class, directly reachable capability"). The user chose to
+build it properly rather than ship with manual tag-and-act as the only
+path. Added a `S`/`:sync` action (DESIGN.md 21.6) reusing
+`internal/s3diff.Compute`/`WalkLocalTree`/`ListAllBucketObjects` against
+the *entire* linked directory and *entire* bucket (not scoped to either
+pane's current navigated position) — matching the retired wizard's own
+semantics exactly, gated by the same never-bundled upload-then-delete
+two-stage confirm (Security Consideration #11).
+
+**Decision 3 — retire `bucket_sync.go`'s wizard, not just
+`bucket_browse.go`/`bucket_delete_objects.go`.** PLAN.md's work items
+only named the latter two for retirement. Once Sync became a directly
+reachable file-manager action (Decision 2) with real parity, keeping
+`SyncDirectoryToBucket` around as dead, unreachable code (no menu entry
+dispatches to it any more) would violate this project's own practice of
+deleting confirmed-unused code rather than leaving stale copies
+(`CLAUDE.md`). Deleted `bucket_sync.go` and `bucket_sync_test.go`
+outright; their diff logic lives on in `internal/s3diff` (Decision 1),
+tested there instead.
+
+**Decision 4 — `x/exp/teatest` resolves PLAN.md's open testing
+question.** Confirmed real and usable by pulling it into the module
+(`go get github.com/charmbracelet/x/exp/teatest`) and driving the
+`Model` through it, per this project's standing evaluation discipline.
+`teatest.NewTestModel` runs the `Model` as an actual `bubbletea.Program`
+against an in-memory terminal; `.Send` injects `tea.Msg`s (key
+presses); `teatest.WaitFor` polls the rendered output for a substring.
+One caveat worth recording: bubbletea's renderer only retransmits
+screen lines that changed since the previous frame, so two sequential
+`WaitFor` calls checking *different* substrings can race if both
+substrings were already present in one earlier, since-drained frame —
+check multiple substrings in a single `WaitFor` condition (or assert on
+a status line's derived text) rather than assuming later calls see
+everything still on screen. `go test -race` also caught one genuine
+concurrency bug this pattern makes visible that a non-race-checked
+manual test would have missed: `runDelete`'s background goroutine
+called `pane.clearTags()` directly (a Model mutation) instead of only
+sending text over its progress channel, racing with the render loop's
+concurrent read of the same map. Fixed by moving that mutation into the
+overlay-dismiss key handler, which runs on `Update`'s single goroutine
+— the general rule going forward for this `Model`: background
+goroutines started by an action may only ever send `progressLine`
+values over a channel, never touch `Model`/`pane` fields directly.
+
+**Rejected alternatives.**
+- *Duplicate the diff helpers in `internal/filemanager` instead of
+  extracting a shared package* — considered, given the plan's literal
+  wording implied `bucket_sync.go` would stay put; rejected once it
+  became clear that would mean two copies of the same key+size diff
+  logic drifting apart over time, against this project's stated
+  preference for simplicity over duplication.
+- *Ship without a dedicated Sync action, relying on manual
+  tag-everything-then-Upload* — genuinely workable and was the default
+  path until the user was asked; rejected because it silently drops the
+  auto-diff (only-changed-files) behavior the original wizard had, and
+  doesn't literally satisfy the earlier Decision 2 commitment.
+- *Write `Model` tests by manually driving `Update`/executing returned
+  `tea.Cmd`s synchronously, skipping `teatest` entirely* — considered
+  when `teatest`'s output-diffing first produced two flaky-looking
+  failures; rejected once the actual cause (draining + unchanged-line
+  suppression, not a fundamentally unreliable tool) was root-caused --
+  `teatest` works well once that behavior is understood and tests
+  assert accordingly.
+
+**Consequences.** `internal/s3diff` is new, with its own tests
+(`s3diff_test.go`). `internal/workflow/bucket_sync.go`/
+`bucket_sync_test.go` are deleted. `internal/filemanager` gained
+`sync.go`/`sync_test.go` and a `S`/`:sync` hotkey/command. PLAN.md Phase
+20.1's file list and work-item checkboxes, and DESIGN.md's 21.6 section,
+are updated to match what was actually built.
+
+---
+
+## 2026-07-09 — Demote CloudFront to someday/maybe; decouple Phase 22's real-AWS testing from it
+
+**Context.** The 2026-07-09 "0.0.1 scope" decision (below) postponed
+CloudFront (PLAN.md Phase 21, DESIGN.md Features 22-25) "to a later
+version" -- phrasing that still implied it was queued up as a
+reasonably near-term next step, just after 0.0.1. With the S3 object
+management UI/UX pass now actively designed and planned (this file,
+above; PLAN.md Phase 20.1), it's clear CloudFront isn't close to being
+picked up next -- the user doesn't expect to get to it soon.
+
+**Decision.** Recharacterize CloudFront as someday/maybe: not on the
+active roadmap, no committed timeline, weaker than "postponed to a
+later version" implied. The design (DESIGN.md Features 22-25, PLAN.md
+Phase 21) stays intact as valid reference -- nothing is deleted, only
+the status framing changes. Phase 22 ("Real-AWS Testing") is split so
+it no longer depends on Phase 21: it now covers only Key Management and
+S3, and CloudFront's own real-AWS verification moves into Phase 21's
+own scope, to happen whenever that phase is eventually picked up rather
+than gating Phase 22's completion on a someday/maybe item.
+
+**Rejected alternatives.**
+- *Leave Phase 22 depending on Phase 21* -- rejected; it would mean
+  Key Management and S3 (both actively shipped in 0.0.1) can never be
+  marked verified-complete until an indefinitely-postponed domain is
+  built, which misrepresents how settled those two domains actually
+  are.
+- *Delete the CloudFront design entirely rather than demote it* --
+  rejected; the design and plan are still valid reference and cost
+  nothing to keep, per this project's existing practice for postponed
+  work (see the original CloudFront postponement decision below).
+
+**Consequences.** PLAN.md Phase 21's status line, its Priority Order
+table row, and Phase 22's title/scope/dependency are updated. DESIGN.md's
+CloudFront Domain section gets the same someday/maybe note Features 20
+and 21 (S3) already carry for their own supersession. TODO.md's
+"Postponed to a later version" section is split into a new "Someday/
+maybe" section (CloudFront) and the existing postponed section (the
+UI/UX overhaul, which is no longer purely "not started" now that Phase
+20.1 exists).
+
+---
+
+## 2026-07-09 — Design the S3 object management UI/UX pass: one interactive file manager, not three separate wizards
+
+**Context.** The "0.0.1 scope" decision below deferred the UI/UX pass
+entirely, flagging `huh` as the leading candidate but starting no work.
+This entry begins that work: the S3 domain had grown three independent,
+object-touching workflows shipped in Phase 20 -- Sync Local Directory to
+Bucket (Feature 20), Browse/Manage Objects (Feature 21, single-object
+only), and an ad-hoc bulk delete-by-prefix case -- each with its own
+selection model (auto-diff, single-pick, whole-prefix-only) and none
+supporting multi-select. Read (download) was never implemented at all
+(Phase 20: "object content is never downloaded, only `HeadObject`
+metadata").
+
+**Decision 1.** Replace all three with one interactive file manager
+screen (DESIGN.md Features 21.2-21.8), single-pane (bucket only) or
+double-pane (bucket + linked local directory) depending on whether a
+local directory is linked. Tagging one item and acting on it covers
+Feature 21's old single-object case; tagging many covers the old
+bulk-delete-by-prefix case; both live in the same screen instead of
+three parallel implementations of "filter, pick, act."
+
+**Decision 2.** Sync's directory-mirroring workflow is kept as a
+first-class, directly reachable capability -- the double-pane/linked
+mode -- rather than dissolved into a generic action-first "pick an
+action, then pick candidates" flow. Upload candidates only make sense
+as a diff against a local directory (there's no way to compute "what
+should I upload" from the bucket side alone), so Sync's shape is
+inherently different from Download/Delete's "browse and pick" shape,
+and it's common enough usage that it deserves a direct path, not a
+detour through an action menu.
+
+**Decision 3.** Add Read (Download) to the CRUD scope now:
+`s3:GetObject` is added to `S3API`, completing Create/Update (Upload) /
+Read (Download) / Delete parity. Previously deferred in Phase 20
+("`GetObject` isn't needed since object content is never downloaded").
+
+**Rejected alternatives.**
+- *Keep the three existing wizards, add multi-select to each
+  independently* -- rejected; perpetuates three separate
+  selection/filter/confirm implementations that would need to be kept
+  in sync by hand as the UI evolves further.
+- *Fold Sync into the generic batch flow as an "Upload" action
+  alongside Download/Delete* -- rejected (see Decision 2); there's no
+  bucket-side way to build an upload candidate set, and burying a
+  common, direct workflow behind an action-first menu makes it harder
+  to reach, not easier.
+- *Defer Download again, scope this pass to Upload/Delete UX only* --
+  rejected; CRUD parity was worth completing given the interactive
+  screen already has to support tagging and acting on bucket objects
+  generically, and the added cost (one interface method, one action
+  handler) is small next to the rest of this phase.
+
+**Consequences.** DESIGN.md Features 20 and 21 are marked superseded
+(design-only, not yet implemented) by new Features 21.2-21.8; their
+existing text is otherwise untouched and still describes what 0.0.1
+actually ships. See `PLAN.md` Phase 20.1.
+
+---
+
+## 2026-07-09 — Use a scoped bubbletea screen for the file manager's double-pane mode; every other S3 wizard stays on huh
+
+**Context.** The "0.0.1 scope" decision below evaluated `bubbletea`
+against `huh` and chose `huh` as the leading candidate specifically
+because its fields are blocking/synchronous, a close match to
+`termlib`'s `Prompt`/`PickList`/`Confirm` shape, while `bubbletea`'s
+Elm-architecture message loop would mean rewriting every one of
+`internal/workflow`'s ~40 wizards into explicit state machines.
+Designing the file manager's double-pane mode (local directory + bucket,
+live tag-and-move between them) surfaced a case that evaluation didn't
+anticipate: two simultaneously-visible, independently-navigable
+listings with cross-pane actions is a genuinely stateful,
+continuously-redrawing UI -- not a sequence of blocking prompts, no
+matter how the prompts are composed.
+
+**Decision.** Build the file manager's screen (both single- and
+double-pane modes, since they share one `Model`) directly on
+`bubbletea` as one scoped, bounded component. Everything else in the S3
+domain -- Create Bucket, Configure Static Website Hosting, Manage
+Bucket Lifecycle Policies, Delete Bucket, and this same screen's own
+bucket-selection pre-flight -- stays on `huh`'s blocking fields, per the
+original evaluation.
+
+**Rejected alternatives.**
+- *Approximate the linked mode as a `huh`-only reviewed batch* (three
+  sequential filtered-multiselect phases: upload pass, download pass,
+  delete pass, each pre-checked from a diff) -- genuinely buildable
+  within the existing huh-only architecture and seriously considered;
+  rejected once a live, navigable dual-pane experience was preferred
+  over a review-then-execute approximation of one.
+- *Adopt `bubbletea` project-wide now, since `huh` already pulls it in*
+  -- rejected again; the rewrite cost the original evaluation identified
+  (~40 wizards' control flow) doesn't shrink just because one new screen
+  needs `bubbletea` directly -- it only means this one screen's
+  incremental dependency cost is zero, not that a wider migration is
+  now free.
+
+**Consequences.** No new dependency weight versus adopting `huh` at
+all -- `huh` already pulls in `bubbletea`, `bubbles`, and `lipgloss`
+transitively. This is the only place in the S3 domain design that needs
+a custom `bubbletea` `Model`; DESIGN.md 21.8 has the detail. Test
+strategy for this `Model` is an open question (`PLAN.md` Phase 20.1) --
+the project's existing pipe-based test pattern doesn't directly apply
+to an `Update`/`View` loop.
+
+---
+
+## 2026-07-09 — File manager panes navigate independently, not synced to a shared relative path
+
+**Context.** Double-pane mode could either lock both panes to the same
+relative subfolder (so every listing is inherently a live diff,
+reinforcing "these two trees should match") or let each side browse
+anywhere independently, like a traditional dual-pane file manager
+(Midnight Commander, WinSCP).
+
+**Decision.** Independent navigation. Tagging happens in whichever pane
+has focus; an action's destination is the other pane's current
+position, not a shared path both panes must already agree on.
+
+**Rejected alternatives.** *Synced navigation* (both panes always
+mirror the same subfolder, every row annotated with an
+upload/download/in-sync/conflict badge) -- rejected; it's a better fit
+for "reconcile these two trees" specifically, but forecloses the more
+general dual-pane use case (e.g. uploading from one local folder into
+an unrelated bucket prefix that doesn't mirror it), and conflicts with
+the tag-in-focused-pane/act-on-other-pane convention already decided,
+which assumes the destination is wherever that pane happens to be
+pointed.
+
+**Consequences.** Diff-style badges (upload/download/in-sync) are not a
+core mechanic of ordinary browsing -- they only apply within Sync's own
+directory-mirroring workflow (DESIGN.md Feature 20, reachable through
+this same screen), not to double-pane browsing in general.
+
+---
+
+## 2026-07-09 — File manager command area: single-letter hotkeys plus a colon command line, both always active; no function keys
+
+**Context.** Traditional dual-pane managers (Midnight Commander) drive
+their command area with function keys (F5 copy, F6 move, F8 delete).
+Function-key mappings are unreliable across terminal emulators,
+multiplexers, and SSH sessions in practice -- a real operational
+concern for a tool meant for wider library/archive use, not just this
+team's own terminal setup.
+
+**Decision.** Use single-letter mnemonic hotkeys (`u` Upload, `d`
+Download, `x` Delete, `f` Filter, `F` Find, `l` Link, `Tab` switch pane,
+`Space` tag, `q` quit) instead of function keys, and add a
+`:`-prefixed command line as a fully independent second path to every
+action (`:upload`, `:delete`, `:find <pattern>`). Both drive the same
+underlying action dispatch -- neither is a fallback for the other.
+
+**Rejected alternatives.** *Function-key legend bar only* (the
+mc/WinSCP convention, originally the leading option) -- rejected once
+the terminal-remapping risk was raised; letter keys plus a
+typed-command path removes the dependency on F-key passthrough working
+correctly at all. *Hotkeys only, no command line* -- rejected; a typed
+path is strictly more robust across terminal configurations and costs
+little extra to support given both dispatch to the same handlers.
+
+**Consequences.** Every action needs a name (verb) as well as a key
+binding, since the command line and hotkey bar must both resolve to the
+same dispatch table -- a small but real constraint on how actions get
+implemented (`PLAN.md` Phase 20.1).
+
+---
+
+## 2026-07-09 — Supersede Phase 20's whole-bucket key-prefix filter with per-directory-level (Delimiter-based) listing and a substring filter
+
+**Context.** The 2026-07-08 "Phase 20 (S3 domain) scope decisions"
+entry (below) added a key-prefix filter to Browse/Manage Objects
+specifically because a single real bucket (e.g.
+`sql-backups.library.caltech.edu`) can hold many objects across many
+per-instance prefixes, and listing everything unconditionally doesn't
+scale to this team's actual usage. That filter works against one flat,
+whole-prefix listing (`ListObjectsV2` scoped to whatever prefix the
+operator typed once, upfront). The file manager instead browses
+hierarchically, one directory level at a time (DESIGN.md 21.5) -- a
+different listing shape that changes what "filtering" should mean and
+what it costs.
+
+**Decision.** List one directory level per call via `ListObjectsV2`
+with `Delimiter=/` (`CommonPrefixes` for folders, `Contents` for
+files). Filtering (`f` / `/`) narrows the current level's already-
+fetched rows by substring match -- cheap, since "current level" is
+never the whole bucket regardless of how the tree is shaped below it.
+
+**Rejected alternatives.** *Keep Feature 21's original flat,
+whole-prefix listing plus its upfront prefix prompt* -- rejected; it
+doesn't support hierarchical drill-down/breadcrumb navigation at all,
+which the file manager's browsing model depends on. *Add a client-side
+substring/glob filter on top of a flat whole-bucket listing* --
+considered and rejected earlier in this same design pass, before
+per-level Delimiter-based listing was decided, specifically because it
+would mean fetching a potentially large flat listing before any
+filtering could narrow it; per-level listing removes that cost by
+construction, which is why the filter approach could be revisited and
+approved here.
+
+**Consequences.** Feature 21's original "Filter by key prefix (blank for
+all)" prompt is retired along with the rest of Feature 21's standalone
+wizard (see "Design the S3 object management UI/UX pass," above) once
+Phase 20.1 ships.
+
+---
+
+## 2026-07-09 — File manager Find: recursive glob-on-basename search, not full-path glob or regex
+
+**Context.** The file manager needed a way to search recursively across
+a directory/bucket subtree by name pattern (e.g. `*.go`, or `\.git` to
+find git repository directories) -- a different operation from the
+per-level substring filter (`f`), which only ever looks at what's
+already listed at the current level.
+
+**Decision.** Match a shell glob pattern (Go stdlib
+`path/filepath.Match` semantics, including backslash-escaping) against
+each entry's basename, evaluated recursively at every depth below the
+focused pane's current position -- the same behavior as `find <dir>
+-name '<pattern>'`. Both motivating examples (`*.go`, `\.git`) already
+work under this exact semantics with no further feature needed.
+
+**Rejected alternatives.** *Regex pattern support* -- no concrete case
+surfaced that a shell glob can't already express; not built, revisit if
+one comes up. *Full-path glob matching (e.g. `**`-style patterns
+spanning directory separators)* -- unnecessary given per-basename
+matching during a recursive walk already satisfies both stated examples
+and matches `find -name`'s well-understood behavior; adding
+path-spanning glob syntax would be new complexity solving a problem
+that hasn't come up. *Search from the tree root always* -- rejected in
+favor of starting from the focused pane's current position, matching
+`find`'s own convention and avoiding an unbounded scan when the operator
+only meant to search what they're currently looking at.
+
+**Consequences.** S3-side Find pays the cost of a full recursive
+`ListObjectsV2` (no `Delimiter`) under the current prefix when invoked
+-- the same cost Feature 20 (Sync) and the old delete-by-prefix case
+already paid, just now on-demand and user-triggered rather than
+automatic every time the workflow runs. Needs a cancellable, live
+progress indicator for large subtrees (DESIGN.md 21.7, `PLAN.md` Phase
+20.1).
+
+---
+
 ## 2026-07-09 — 0.0.1 scope: ship on termlib as-is; postpone CloudFront and the UI/UX overhaul
 
 **Context.** With Phase 20 (S3 domain) real-AWS verified and this

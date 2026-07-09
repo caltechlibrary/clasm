@@ -1,135 +1,90 @@
-awstools — where we left off (2026-07-09, end of morning session)
+clasm — where we left off (2026-07-09, end of file-manager implementation session)
 ==============================================================================
 
-STATUS: `go build ./...`, `go vet ./...`, `go test ./... -race`, and
-`gofmt -l` are all clean (gofmt only flags the pre-existing, unrelated
-auto-generated version.go). The project is bumped to version 0.0.1
-(codemeta.json, version.go, CITATION.cff, installer.sh/ps1, about.md,
-awsops.1.md/man page all regenerated and consistent). The user has
-committed AND pushed this session's work themselves (commits 22a3d02
-"prep for v0.0.1 release", 6ec7f23 "Quick Save" -- both on
-origin/main). This file supersedes the 2026-07-08 version of itself
-(which paused mid Manage Bucket Lifecycle Policies UX research).
+STATUS: PLAN.md Phase 20.1 (the S3 domain's interactive file manager,
+DESIGN.md Features 21.2-21.8) is implemented and unit-tested.
+`go build ./...`, `go vet ./...`, and `go test ./... -race` are all
+clean. Nothing is staged or committed -- that's the user's to do. This
+file supersedes the 2026-07-09T220000Z version of itself (the rename +
+design pass, which left this phase "designed, not started").
 
-NOT DONE YET, ON PURPOSE: no `v0.0.1` git tag exists and no GitHub
-release has been cut. `release.bash` (tags `v$(jq -r .version
-codemeta.json)`, builds per-platform dist zips + checksums, and walks
-through `gh release create --draft` with its own y/N gate) is the one
-release step left, and it's the user's to run -- do NOT run `make
-save`/`make release`/`release.bash` without being explicitly asked;
-all three commit, push, and/or publish.
+What shipped this session
+--------------------------------------------------------------------
 
-What happened this session
----------------------------------------------------------------------
+- `internal/filemanager`, a new package holding a scoped `bubbletea`
+  `Model` -- single-pane (bucket only) or double-pane (bucket + a
+  linked local directory), sharing one Model/Update/View. Covers:
+  navigation (arrow keys, Enter/Backspace), tagging (`Space`/`*`),
+  per-level substring filter (`f`/`/`), Upload/Download/Delete/Show
+  metadata actions with a Confirm/ConfirmDestructive/progress modal
+  overlay, mid-session link/unlink (`l`), a dedicated Sync action
+  (`S`/`:sync` -- whole-tree diff against the bucket, added mid-session
+  after the user confirmed it was worth building rather than relying on
+  manual tag-and-act), Find (`F`/`:find <pattern>`, recursive
+  glob-on-basename), and a `:`-prefixed command line mirroring every
+  hotkey.
+- `internal/s3diff`, a new package holding the key+size diff logic
+  (`Compute`/`WalkLocalTree`/`ListAllBucketObjects`/`UploadFile`/
+  `ValidateLocalDirectory`) extracted from the now-deleted
+  `bucket_sync.go` -- both `internal/workflow` (Delete Bucket doesn't
+  need it, but the pattern of "extract instead of duplicate" applied
+  here too) and `internal/filemanager` depend on it, avoiding a
+  workflow<->filemanager import cycle while keeping the logic in one
+  place.
+- `s3:GetObject` added to `S3API` (+ logging wrapper + fake) --
+  completes Create/Update/Read/Delete parity for S3.
+- `github.com/charmbracelet/huh` added as a dependency for the file
+  manager's own bucket-selection pre-flight
+  (`internal/workflow/object_browser.go`); every other S3 wizard is
+  unaffected, still on termlib.
+- Retired: `bucket_browse.go`'s single-object wizard,
+  `bucket_delete_objects.go`'s prefix-delete wizard, and
+  `bucket_sync.go`'s directory-sync wizard -- all three are now
+  reachable from one "Browse & Manage Objects" menu entry
+  (`s3_menu.go`, `main.go` updated). `bucket_browse.go` keeps only
+  `listBucketObjectsWithPrefix` (Delete Bucket's empty-check still
+  needs it).
+- Tests use `github.com/charmbracelet/x/exp/teatest` -- resolves
+  PLAN.md's open "how do you test a bubbletea Model" question. Caught
+  one real data race via `go test -race` (a background action
+  goroutine mutating pane state directly instead of only sending over
+  its progress channel) -- fixed; see DECISIONS.md for the general rule
+  this sets for any future action added to this Model.
 
-1. Manual testing of the S3 domain surfaced real UX friction and
-   feature gaps, each scoped via AskUserQuestion before writing code:
+Full detail: DECISIONS.md's newest entry ("Extract internal/s3diff; add
+a dedicated Sync action to the file manager; use x/exp/teatest for
+Model tests"), PLAN.md Phase 20.1 (updated work-item checkboxes and
+file list), DESIGN.md's "S3 Object Management — Interactive File
+Manager" addendum and 21.6.
 
-   - `ui.PickList` gained type-ahead filtering as a *generic* feature
-     (used at ~30 call sites, not just buckets): non-numeric,
-     non-empty, non-'n'/'p' input narrows the current list by a
-     case-insensitive label substring match; blank clears the filter.
-   - `inventory.ListBuckets` now returns buckets sorted alphabetically
-     by name -- also fixed a latent bug where the enrichment
-     goroutine fan-out made bucket order nondeterministic run to run.
-   - Manage Bucket Lifecycle Policies gained local validation that a
-     transition's days must be strictly less than its rule's
-     expiration days (and vice versa) -- closes the gap opened by
-     2026-07-08's real-AWS verification (see DECISIONS.md, "0.0.1
-     scope" and the earlier "Clear a bucket's lifecycle configuration
-     via DeleteBucketLifecycle..." entries).
-   - Manage Bucket Lifecycle Policies gained a read-only "View rule
-     details" action (Add/Edit/Remove/View/Back) -- loops back to the
-     action menu after viewing, not back to the caller (a regression
-     caught and fixed mid-session).
-   - Two new destructive S3 workflows: Delete Bucket (refuses a
-     non-empty bucket, reports the object count, `ConfirmDestructive`
-     typed-bucket-name gate) and Delete Objects by Prefix (bulk delete
-     under a key prefix or the whole bucket, same confirmation
-     pattern). Both required adding `DeleteBucket` to
-     `awsclient.S3API` + its logging wrapper + the shared fake.
-   - CloudFront removed entirely from the domain picker
-     (`DomainActions.CloudFront`, the menu entry, its
-     `NotYetImplemented` wiring in `main.go`) at the user's explicit
-     request -- postponed to a much later version, not deleted from
-     DESIGN.md/PLAN.md's design.
+NOT DONE YET, ON PURPOSE
+--------------------------------------------------------------------
 
-   Full file-by-file detail in this session's hand-off,
-   agents/hand-off/2026-07-09T180000Z-awstools-0.0.1-release-prep.spmd.
+- Not verified against real AWS yet -- PLAN.md Phase 22 still covers
+  this (already scoped to S3 generally; the file manager routes
+  through the same `S3API` calls Phase 22 already planned to exercise).
+  Suggested next step when picking this back up: walk the file
+  manager's Upload/Download/Delete/Sync/Find flows against a real
+  throwaway bucket, same `[ok]`-marker convention as
+  `TEST_PLAN_REAL_AWS.txt`'s existing sections.
+- Batch delete via `s3:DeleteObjects` (up to 1000 keys/call) instead of
+  the current one-`DeleteObject`-per-key loop in the file manager's
+  Delete/Sync actions: still an open "nice to have" (TODO.md), not
+  started.
+- No `v0.0.1` git tag or GitHub release yet, and the GitHub-side repo
+  rename (caltechlibrary/awstools -> caltechlibrary/clasm) is still the
+  user's to do -- both predate this session and are unrelated to it.
+- The S3 lifecycle policy ID string "awsops-backup-policy"
+  (`internal/workflow/bucket_lifecycle.go`) is still deliberately
+  un-renamed -- ask before touching it (see the rename hand-off).
+- huh/bubbletea adoption elsewhere in `internal/workflow` (Compute, Key
+  Management, ~35 other wizard call sites): still deliberately
+  deferred. Nothing about finishing the S3 domain's file manager
+  commits to migrating the rest.
 
-2. Evaluated `charmbracelet/bubbletea`, `charmbracelet/huh`, and
-   `peak/s5cmd/v2` for a future UI/UX pass -- by `go get`-ing all three
-   into a scratch module and reading actual source, not just docs or a
-   marketing article the user linked. Conclusions (full detail in the
-   hand-off and DECISIONS.md's "0.0.1 scope" entry):
-
-   - `bubbletea`: Elm-architecture, async message loop -- mismatched
-     with termlib's and every workflow function's blocking, linear
-     style. Would be a full rewrite of ~40 wizard functions plus their
-     tests, not a library swap.
-   - `huh` (built on bubbletea): closer fit. `huh.Run(field)` is
-     blocking/synchronous like `ui.Prompt`/`PickList`/`Confirm`; its
-     `Select` field has built-in incremental filtering; every field's
-     `RunAccessible(w, r)` is structurally identical to this project's
-     `newPipeEditor` test pattern. Real cost: pulls in
-     bubbletea+bubbles+lipgloss and ~18 transitive modules, vs.
-     termlib's ~2,800 dependency-free lines.
-   - `s5cmd/v2`: not a good import (CLI-framework coupling, aws-sdk-go
-     v1 vs. this project's v2) but its `storage.S3.MultiDelete` batch-
-     `DeleteObjects`-in-chunks-of-1000 pattern is worth reimplementing
-     natively later (aws-sdk-go-v2 already exposes `DeleteObjects`) --
-     logged to TODO.md's "Nice to have," not started.
-
-3. 0.0.1 release prep: verified the build/test gate, synced
-   TODO.md/PLAN.md/DECISIONS.md to current reality (Done items, a new
-   "Postponed to a later version" section for CloudFront + the
-   termlib-to-huh UX/UI pass), bumped codemeta.json's version + release
-   notes, regenerated every derived file via `cmt`/pandoc. Did NOT run
-   `make save`/`make release`/`release.bash` myself -- handed off the
-   exact remaining commands. User committed and pushed the prep
-   themselves shortly after.
-
-4. Recorded this session in agents/knowledge.db (project id 5,
-   awstools) as observations 71-74 (two findings, two decisions),
-   indexed into kb_fts the same way prior sessions' entries were.
-
-What's NOT done yet
---------------------
-
-- `release.bash` hasn't been run -- no `v0.0.1` tag, no GitHub release.
-  This is the very next concrete step whenever the user wants to cut
-  it; nothing else blocks it.
-- The next release's actual UX/UI work (huh prototype/migration) is
-  evaluated but not started. Don't start it unprompted -- the user
-  explicitly deferred it past 0.0.1 and said "the next release will
-  focus on improving UX and the UI," implying a deliberate, separate
-  pass, not something to fold into 0.0.1 stabilization work.
-- The s5cmd-inspired batched `DeleteObjects` optimization (TODO.md,
-  "Nice to have") -- small, contained, not started.
-- CloudFront (Phases 21-22): still fully undesigned, now explicitly
-  postponed rather than just "not yet started."
-- The retry-on-launch-failure item (TODO.md, general RunInstances
-  failure case): still unscoped, unrelated to this session's work.
-
-Suggested next session
----------------------------------
-
-1. If the user wants to cut the actual 0.0.1 release: walk through
-   `release.bash` with them (it has its own y/N push gate) -- don't
-   run it unprompted, but it's ready to run as soon as asked.
-2. If the user wants to start the next release's UX/UI work: propose
-   prototyping `huh` against one real wizard (e.g. `CreateBucket`) to
-   validate the actual per-site porting cost and feel out a theme,
-   before committing to migrating the rest of `internal/workflow`.
-   Don't assume `huh` is the final answer -- it's the leading
-   candidate from this session's evaluation, not a decided choice.
-3. Otherwise: CloudFront design (Phases 21-22) or the s5cmd-style
-   batched-delete optimization are the next unclaimed, already-scoped
-   threads -- ask which, don't just pick one.
-
-Git state: user commits and pushes their own work (standing
-instruction -- never run git commit/push/tag/release without being
-explicitly asked). See agents/knowledge.db (query: awstools, or MATCH
-'"0.0.1"' for this session specifically) and
-agents/hand-off/2026-07-09T180000Z-awstools-0.0.1-release-prep.spmd for
-full detail.
+Git state: the user commits, pushes, tags, and handles the GitHub repo
+rename themselves -- never run git commit/push/tag/release without
+being explicitly asked. See agents/knowledge.db (query: clasm, or
+MATCH '"file manager"' / '"s3diff"' for this session specifically) and
+agents/hand-off/2026-07-09T220000Z-clasm-rename.spmd for the prior
+rename session's detail.

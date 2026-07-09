@@ -9,14 +9,16 @@ import (
 )
 
 // S3Actions bundles the S3 domain's menu entry points, mirroring
-// KeyMgmtActions' shape.
+// KeyMgmtActions' shape. "Sync Local Directory to Bucket," "Browse/
+// Manage Objects," and the standalone bulk-delete-by-prefix entry are
+// gone as of DESIGN.md 21.2/PLAN.md Phase 20.1 -- all three are now
+// reachable from BrowseAndManageObjects, the interactive file manager
+// (internal/filemanager).
 type S3Actions struct {
 	CreateBucket            func(ctx context.Context) error
 	ConfigureWebsite        func(ctx context.Context) error
-	SyncDirectory           func(ctx context.Context) error
-	BrowseObjects           func(ctx context.Context) error
+	BrowseAndManageObjects  func(ctx context.Context) error
 	ManageLifecyclePolicies func(ctx context.Context) error
-	DeleteObjectsByPrefix   func(ctx context.Context) error
 	DeleteBucket            func(ctx context.Context) error
 	// Refresh re-fetches and re-displays the bucket listing. Called once
 	// after every successful dispatched action (DECISIONS.md, "Refresh
@@ -32,16 +34,15 @@ type s3Item struct {
 	action func(S3Actions, context.Context) error
 }
 
-// s3MenuItems is DESIGN.md's S3 domain menu, in order. "Show resource
-// lists" leads the menu, same convention as Compute and Key Management.
+// s3MenuItems is DESIGN.md 21.2's S3 domain menu, in order. "Show
+// resource lists" leads the menu, same convention as Compute and Key
+// Management.
 var s3MenuItems = []s3Item{
 	{"Show resource lists", func(a S3Actions, ctx context.Context) error { return a.Refresh(ctx) }},
 	{"Create Bucket", func(a S3Actions, ctx context.Context) error { return a.CreateBucket(ctx) }},
 	{"Configure Static Website Hosting", func(a S3Actions, ctx context.Context) error { return a.ConfigureWebsite(ctx) }},
-	{"Sync Local Directory to Bucket", func(a S3Actions, ctx context.Context) error { return a.SyncDirectory(ctx) }},
-	{"Browse/Manage Objects", func(a S3Actions, ctx context.Context) error { return a.BrowseObjects(ctx) }},
+	{"Browse & Manage Objects", func(a S3Actions, ctx context.Context) error { return a.BrowseAndManageObjects(ctx) }},
 	{"Manage Bucket Lifecycle Policies", func(a S3Actions, ctx context.Context) error { return a.ManageLifecyclePolicies(ctx) }},
-	{"Delete Objects by Prefix", func(a S3Actions, ctx context.Context) error { return a.DeleteObjectsByPrefix(ctx) }},
 	{"Delete Bucket", func(a S3Actions, ctx context.Context) error { return a.DeleteBucket(ctx) }},
 	{"Back to domain picker", nil},
 }

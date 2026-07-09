@@ -27,12 +27,14 @@ import (
 // (a required field), so clearing the last remaining rule must go through
 // this separate operation instead (see DECISIONS.md). DeleteBucket
 // supports Delete Bucket; Delete Bucket also reuses ListObjectsV2 to
-// confirm a bucket is empty before calling it. Not adding
-// PutBucketPolicy/GetObject -- the former is only needed by the deferred
-// public-read opt-out, the latter isn't needed since object content
-// itself is never downloaded.
+// confirm a bucket is empty before calling it. GetObject supports the
+// file manager's Download action (DESIGN.md 21.6, Phase 20.1) --
+// completes Create/Update/Read/Delete parity, previously deferred in
+// Phase 20. Not adding PutBucketPolicy -- only needed by the deferred
+// public-read opt-out.
 type S3API interface {
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 	GetBucketLocation(ctx context.Context, params *s3.GetBucketLocationInput, optFns ...func(*s3.Options)) (*s3.GetBucketLocationOutput, error)
 	ListBuckets(ctx context.Context, params *s3.ListBucketsInput, optFns ...func(*s3.Options)) (*s3.ListBucketsOutput, error)

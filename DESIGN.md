@@ -796,6 +796,15 @@ Interactive workflow for publishing a built static site:
    also mean "yes" to deleting something
 7. Report a summary: files uploaded, files deleted, bytes transferred
 
+**Superseded, implemented 2026-07-09 by Feature 21.2's interactive file
+manager** (PLAN.md Phase 20.1) — see "S3 Object Management — Interactive
+File Manager" below. This directory-to-bucket workflow remains a
+first-class, directly reachable capability (not folded away as a
+generic case of something else): it's now the file manager's dedicated
+Sync action (`S` / `:sync`, 21.6), not the standalone wizard described
+above — that wizard (`bucket_sync.go`) is retired; its diff/walk/list
+logic moved to `internal/s3diff`, reused rather than reimplemented.
+
 ### 21. Browse/Manage Objects
 
 Interactive workflow for ad-hoc bucket inspection outside the sync flow:
@@ -814,6 +823,15 @@ Interactive workflow for ad-hoc bucket inspection outside the sync flow:
    deletion gets the stronger "separate confirm" treatment because it can
    affect many files at once; a single ad-hoc delete here is
    lower blast-radius
+
+**Superseded, implemented 2026-07-09 by Feature 21.2's interactive file
+manager** (PLAN.md Phase 20.1) — see "S3 Object Management — Interactive
+File Manager" below. Single-object browsing, filtering, metadata, and
+delete are folded into the new screen's single-pane mode rather than
+kept as a second, parallel implementation of "filter, pick, act." The
+standalone wizard (`bucket_browse.go`'s `BrowseBucketObjects`) is
+retired; only its `listBucketObjectsWithPrefix` helper remains, still
+used by Delete Bucket's empty-bucket check.
 
 ### 21.1. Manage Bucket Lifecycle Policies
 
@@ -863,7 +881,276 @@ new one, then write the complete modified rule set back in one call.
 4. Whichever path was used, write the complete modified rule set via
    `s3:PutBucketLifecycleConfiguration` and confirm success
 
+### S3 Object Management — Interactive File Manager (Design Addendum, 2026-07-09)
+
+**Status: implemented 2026-07-09 (`internal/filemanager`; PLAN.md Phase
+20.1) — unit-tested, not yet real-AWS verified (PLAN.md Phase 22).**
+This addendum was design-only when first written; the section below is
+otherwise left as originally drafted (it's the accurate design record),
+except where marked. It supersedes Feature 20 (Sync Local Directory to
+Bucket) and Feature 21 (Browse/Manage Objects) as S3 menu entry points —
+both wizards are now retired. One addition beyond this addendum's
+original scope: a dedicated Sync action (21.6) was added during
+implementation so Decision 2 below ("Sync's directory-mirroring
+workflow is kept as a first-class, directly reachable capability") is
+met literally, not just approximated by manual tag-and-act; see
+DECISIONS.md, "Add a dedicated Sync action to the file manager."
+
+Builds on the huh-vs-bubbletea technology evaluation already recorded
+(`continue_next_time.txt`; `agents/hand-off/
+2026-07-09T220000Z-clasm-rename.spmd`): huh was the leading candidate
+for replacing termlib's blocking-prompt style generally, evaluated by
+pulling real source into a scratch module rather than trusting docs.
+This addendum goes one step further for S3 object management
+specifically — huh's blocking forms are sufficient for single-pane
+browsing and batch selection, but the linked local+bucket workflow
+below (21.3, 21.5, 21.6) needs a live, simultaneously-visible two-pane
+view that huh's sequential fields structurally can't provide. That one
+piece is designed as a scoped `bubbletea` component instead — see 21.8
+for why that doesn't reopen the original "don't rewrite everything"
+objection to bubbletea.
+
+#### 21.2. Revised S3 Domain Menu
+
+- Show resource lists
+- Create Bucket (Feature 18, unchanged)
+- Configure Static Website Hosting (Feature 19, unchanged)
+- **Browse & Manage Objects** — opens the interactive file manager
+  (21.3-21.8) described below, single-pane by default
+- Manage Bucket Lifecycle Policies (Feature 21.1, unchanged)
+- Delete Bucket (unchanged)
+- Back to domain picker
+
+"Sync Local Directory to Bucket" and the bulk delete-by-prefix case are
+removed as separate menu entries — both become reachable from inside
+the interactive file manager (directory-mirroring via double-pane mode,
+21.3; bulk delete via tagging filtered matches in either mode, 21.6).
+Feature 21's original single-object browse/metadata/delete is folded in
+the same way rather than kept as a second, parallel implementation:
+tagging exactly one item and choosing an action in single-pane mode
+covers that case without a separate wizard.
+
+#### 21.3. Session Start & Linking
+
+Entering "Browse & Manage Objects":
+1. Pick a bucket and region (`huh.Select`, reusing Feature 17's already-
+   fetched listing) — this pre-flight step stays on huh; there's no
+   reason to rebuild bucket selection inside the interactive screen.
+2. Prompt (`huh.Confirm`): link a local directory now? If yes, prompt a
+   path (`huh.Input`, reusing `bucket_sync.go`'s existing
+   `validateLocalDirectory`) and open in double-pane mode; if no, open
+   single-pane (bucket only).
+3. Mid-session, the `l` hotkey links or unlinks a local directory
+   without restarting. When nothing is linked, it prompts for a path via
+   the command line and splits single-pane into double-pane. When a
+   directory **is** linked, `l` (or `:unlink`) goes straight to a direct
+   Confirm ("Unlink `<path>` and return to single-pane view?") instead
+   of the command line — added 2026-07-09 after an operator asked for
+   "a way to go from two panels back to displaying only the S3 bucket";
+   the original design (clear the pre-filled `:link <path>` field and
+   submit it empty) was technically reachable but not discoverable as
+   *the* way back. This directly serves "moving between local and
+   bucket as one set of activities" without requiring the operator to
+   plan ahead at launch.
+
+#### 21.4. Screen Layout & Chrome
+
+```
+┌ clasm — S3 File Manager — sql-backups.library.caltech.edu (us-west-2) ─────────────────┐
+├───────────────────────────────┬─────────────────────────────────────────────────────────┤
+│  LOCAL: /path/on/disk          │  S3: bucket-name/prefix/                                │
+│  ...listing...                 │  ...listing...                                          │
+├───────────────────────────────┴─────────────────────────────────────────────────────────┤
+│ 12 items, 3 tagged (4.3 MB)              filter: db0*                                    │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ : ____________________________________________________________________________________  │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ u Upload  d Download  x Delete  f Filter  F Find  S Sync  l Link  Tab Switch  Space Tag  q Quit │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Top to bottom:
+- **Header** — mode indicator, bucket name + region, local root once
+  linked.
+- **Pane area** — one pane (single-pane mode) or two side by side
+  (double-pane): local on the left, S3 on the right, matching the
+  WinSCP/SFTP-client convention this team is more likely to already
+  know than Midnight Commander's layout. A pane's own header row shows
+  an animated spinner + "Loading..." while its listing is being
+  (re)fetched, and Find's status row shows the same spinner while a
+  search is still running (added 2026-07-09 -- both can take a real,
+  noticeable amount of time against a large bucket, and with no
+  feedback the screen just looked frozen/broken).
+- **Status line** — per pane: item count, tagged count, aggregate
+  tagged size (needed to see the blast radius of a bulk action before
+  confirming, not just a count), active filter string.
+- **Command line** — inert until `:` or `/` takes focus; typed verbs
+  (`:upload`, `:delete`, `:find <pattern>`) or filter patterns.
+- **Hotkey legend** — single-letter mnemonics, not function keys — F-key
+  mappings are unreliable across terminal emulators and multiplexers, a
+  real enough problem to design around rather than default to. The
+  legend is contextual (e.g. `x Delete` only shown once something is
+  tagged). The hotkey bar and the colon command line both drive the
+  same underlying action dispatch; neither is a fallback for the
+  other — two paths to the same commands, not a primary and a backup.
+- **Progress/confirm overlay** — modal, centered over the pane area.
+  Confirms reuse the existing `Confirm`/`ConfirmDestructive` split
+  unchanged (plain yes/no for Upload/Download, type-the-name-back for
+  Delete — Security Consideration #11 still applies without exception).
+  Execution reuses the existing per-item OK/FAIL progress convention as
+  scrolling lines inside the overlay; completion requires an explicit
+  "press any key to continue" rather than an auto-dismiss timer, so a
+  FAIL line can never be hidden by a timeout.
+
+#### 21.5. Pane Navigation & Listing
+
+- Panes navigate **independently** — each side browses to any
+  folder/prefix on its own; there is no requirement that both point at
+  corresponding paths. This matches the tag-in-focused-pane,
+  act-on-other-pane convention directly (21.6) and stays more flexible
+  (e.g. uploading from one local folder into an unrelated bucket
+  prefix) than an always-synced, always-diffing view would allow.
+- Rows sort folders-then-files, alphabetical within each group.
+- **S3 listing uses `s3:ListObjectsV2` with `Delimiter=/`, one directory
+  level per call** (`CommonPrefixes` for folders, `Contents` for files)
+  rather than a full-prefix listing grouped client-side. Per-level
+  browsing stays cheap regardless of how deep or large the tree is
+  below the current level.
+- `f` (or `/` on the command line) filters the focused pane's
+  **current level** by substring match against already-fetched rows —
+  cheap, since delimiter-based listing means "current level" is never
+  the whole bucket, and instant/synchronous (no spinner needed the way
+  Find's recursive scan needs one, 21.4). A filter starting with `/` is
+  matched via the same anchored form Find uses (21.7) instead: an
+  exact/glob match of the current level's basenames rather than a
+  substring, e.g. `/index.html` matches only a file named exactly that,
+  not `myindex.html5` too -- added (2026-07-09) so the `/`-prefix
+  convention means the same thing whether typed as a filter or a Find
+  pattern.
+- The local pane lists one directory level at a time (`os.ReadDir`), not
+  the full recursive walk `bucket_sync.go` uses for diffing — that
+  recursive traversal is reused specifically by Find (21.7) and by the
+  double-pane linked workflow's own diff step, not by ordinary browsing.
+
+#### 21.6. Tagging & Actions
+
+- `Space` tags/untags the row under the cursor; `*` tags every row
+  currently visible (post-filter) in the focused pane. Pattern-based
+  tag/untag (mc's `+`/`-`) is deliberately left out of this design —
+  `*` after filtering already covers "tag everything matching X."
+- Action keys operate on the focused pane's tagged set (or the row
+  under the cursor if nothing is tagged):
+  - `u` **Upload** (Create/Update) — only available when a local
+    directory is linked; tagged local files are `s3:PutObject`'d into
+    the bucket pane's *current* folder (mc/WinSCP convention: source is
+    the focused/tagged pane, destination is the other pane's current
+    position).
+  - `d` **Download** (Read) — tagged bucket objects (`s3:GetObject`)
+    land in the local pane's current directory.
+  - `x` **Delete** — tagged bucket objects removed (`s3:DeleteObject`).
+    This is how both Feature 21's old single-object delete and the old
+    bulk delete-by-prefix case are covered by one path now.
+  - `m` **Show metadata** — carried forward from Feature 21's original
+    per-object metadata display (`s3:HeadObject`); applies to the row
+    under the cursor.
+  - `S` **Sync** (added during implementation, not in this addendum's
+    original scope — see DECISIONS.md, "Add a dedicated Sync action to
+    the file manager") — only available when a local directory is
+    linked. Diffs the *entire* linked directory against the *entire*
+    bucket by key+size (`internal/s3diff.Compute`, the same logic
+    Feature 20's retired wizard used, not reimplemented) — not scoped to
+    either pane's current navigated position, matching the original
+    wizard's whole-tree semantics. Upload candidates confirm first
+    (plain `Confirm`); only once that stage is accepted or skipped (no
+    upload candidates) does the delete stage appear
+    (`ConfirmDestructive`) — the two are never bundled into one prompt
+    (Security Consideration #11), and declining the upload stage aborts
+    before the delete stage is ever shown.
+- Confirmation: plain `Confirm` before Upload/Download,
+  `ConfirmDestructive` (type the bucket name, or the active prefix)
+  before Delete — unchanged from Feature 20/21's existing security
+  posture, just reachable from one screen instead of three separate
+  workflows.
+- Open implementation-time question, not resolved by this design pass:
+  whether to batch deletes via `s3:DeleteObjects` (up to 1000 keys per
+  call) instead of porting the current one-`DeleteObject`-call-per-key
+  loop — logged previously as a "nice to have" (`continue_next_time.txt`)
+  and worth folding in since the delete path is being rebuilt anyway.
+
+#### 21.7. Find (recursive pattern search)
+
+- Hotkey `F` or command-line `:find <pattern>` — distinct from `f`'s
+  current-level-only filter.
+- Pattern is a **shell glob matched against each entry's basename**,
+  evaluated recursively at every depth below the focused pane's current
+  position (Go stdlib `path/filepath.Match` semantics, including
+  backslash-escaping) — the same behavior as `find <dir> -name
+  '<pattern>'`. `*.go` and `\.git` both work as plain globs; neither
+  needs a regex engine. Recursion starts at the focused pane's current
+  directory, not always the tree root, matching Unix `find`'s own
+  convention and avoiding an unbounded scan when the operator only meant
+  to search what they're currently looking at.
+- A pattern starting with `/` is **anchored** to the search's starting
+  point instead of matched against the basename alone: the leading `/`
+  is stripped and the remainder is matched (still via `filepath.Match`,
+  so `*` still won't cross a `/`) against each entry's full path
+  relative to that starting point. `/index.html` therefore matches only
+  a root-level `index.html`, not `sub/index.html` — added (2026-07-09)
+  because basename-only matching couldn't express "just the one at the
+  root" when the same filename legitimately exists at other depths too
+  (a common case: every static site under a bucket has its own
+  `index.html`).
+- Matches both files and directories/pseudo-folders.
+- Results **replace the focused pane's listing** with a flat list, each
+  row showing the path relative to the search's starting point (not
+  just the basename, since matches can span multiple subdirectories).
+  Normal tagging (`Space`, `*`) works directly on results, so matches
+  can be acted on immediately without a detour back through normal
+  browsing.
+- `Enter` on a result jumps back to normal hierarchical browsing at that
+  match's parent directory, cursor on it; `Esc` discards the find view
+  and returns to normal browsing at the prior location.
+- On the S3 side this means an on-demand, full recursive
+  `ListObjectsV2` (no `Delimiter`) under the current prefix — the same
+  listing cost Feature 20 (Sync) and the old delete-by-prefix case
+  already paid when invoked, just user-triggered from inside the
+  browser now rather than automatic. Shows a live "Searching… (N
+  scanned, M matched)" status; cancellable (`Esc`/`Ctrl-C`) since a deep
+  prefix on a large bucket could take a while.
+- The local side reuses `bucket_sync.go`'s existing
+  `filepath.WalkDir`-based `walkLocalTree` traversal, with the glob
+  match layered on top — no new local-filesystem traversal code needed.
+
+#### 21.8. Technology & Architecture Notes
+
+- **`bubbletea`, scoped to this one screen** — not the full-application
+  rewrite the original evaluation ruled out. That evaluation's
+  objection was the cost of rewriting all ~40 `internal/workflow`
+  wizards' blocking, linear control flow into Elm-architecture state
+  machines; it doesn't apply to building one bounded, genuinely
+  interactive component while every other wizard (Create Bucket,
+  Configure Website, Lifecycle Policies, Delete Bucket, and this
+  screen's own bucket-selection pre-flight, 21.3) stays on huh's
+  blocking synchronous fields.
+- No new dependency weight beyond adopting huh at all: huh already
+  pulls in `bubbletea`, `bubbles`, and `lipgloss` transitively, so a
+  scoped `bubbletea.Program` for this screen doesn't add anything huh
+  wasn't already going to bring in.
+- This is the one place in the S3 domain design where a live, stateful,
+  two-pane view is unavoidable — every other S3 feature (17-19, 21.1)
+  stays exactly as designed, huh fields only.
+- Prototype this screen's single-pane mode first (the simpler of the
+  two) before committing to double-pane/link/Find — same "prototype
+  cheaply before porting everything" guidance already recorded from the
+  original huh evaluation, now applied one level deeper.
+
 ### CloudFront Domain
+
+**Someday/maybe — not on the active roadmap, no committed timeline**
+(revised 2026-07-09 from "postponed to a later version"; see
+`DECISIONS.md`, "Demote CloudFront to someday/maybe..."). No code
+written. The design below stays valid reference for if this is ever
+picked back up.
 
 CloudFront's control plane is a single global API (`us-east-1`,
 regardless of where origins live) — this domain's listing is not

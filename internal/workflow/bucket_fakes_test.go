@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -87,6 +89,24 @@ func (f *fakeS3Client) PutObject(ctx context.Context, params *s3.PutObjectInput,
 		return nil, f.putObjectErr
 	}
 	return &s3.PutObjectOutput{}, nil
+}
+
+// GetObject returns the canned body for params.Key from getObjectContent,
+// or a NoSuchKey-style error if the key isn't present -- mirrors
+// HeadObject's not-found simulation above.
+func (f *fakeS3Client) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	f.getObjectCalls = append(f.getObjectCalls, *params)
+	if f.getObjectErr != nil {
+		return nil, f.getObjectErr
+	}
+	body, ok := f.getObjectContent[aws.ToString(params.Key)]
+	if !ok {
+		return nil, errors.New("NoSuchKey: key does not exist")
+	}
+	return &s3.GetObjectOutput{
+		Body:          io.NopCloser(strings.NewReader(string(body))),
+		ContentLength: aws.Int64(int64(len(body))),
+	}, nil
 }
 
 func (f *fakeS3Client) DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {

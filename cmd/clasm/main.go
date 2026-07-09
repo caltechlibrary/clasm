@@ -260,17 +260,11 @@ func main() {
 		ConfigureWebsite: func(ctx context.Context) error {
 			return workflow.ConfigureBucketWebsite(ctx, term, le, newS3Client, s3State.buckets)
 		},
-		SyncDirectory: func(ctx context.Context) error {
-			return workflow.SyncDirectoryToBucket(ctx, term, le, newS3Client, s3State.buckets)
-		},
-		BrowseObjects: func(ctx context.Context) error {
-			return workflow.BrowseBucketObjects(ctx, term, le, newS3Client, s3State.buckets)
+		BrowseAndManageObjects: func(ctx context.Context) error {
+			return workflow.BrowseAndManageObjects(ctx, newS3Client, s3State.buckets)
 		},
 		ManageLifecyclePolicies: func(ctx context.Context) error {
 			return workflow.ManageBucketLifecyclePolicies(ctx, term, le, newS3Client, s3State.buckets)
-		},
-		DeleteObjectsByPrefix: func(ctx context.Context) error {
-			return workflow.DeleteObjectsByPrefix(ctx, term, le, newS3Client, s3State.buckets)
 		},
 		DeleteBucket: func(ctx context.Context) error {
 			return workflow.DeleteBucket(ctx, term, le, newS3Client, s3State.buckets)

@@ -4,7 +4,7 @@ message: "If you use this software, please cite it as below."
 type: software
 title: clasm
 abstract: |-
-  Interactive Go CLI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
+  Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
 authors:
   - family-names: Doiel
     given-names: R. S.
@@ -14,6 +14,6 @@ authors:
 
 repository-code: "https://github.com/caltechlibrary/clasm"
 version: 0.0.1
-
+date-released: 2026-07-09
 
 

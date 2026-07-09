@@ -78,6 +78,11 @@ type fakeS3Client struct {
 
 	deleteBucketErr   error
 	deleteBucketCalls []s3.DeleteBucketInput
+
+	// Phase 20.1 (file manager) additions -- see bucket_fakes_test.go.
+	getObjectErr     error
+	getObjectContent map[string][]byte // key -> body GetObject returns
+	getObjectCalls   []s3.GetObjectInput
 }
 
 func (f *fakeS3Client) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {

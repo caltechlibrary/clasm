@@ -3,6 +3,9 @@
 
 - [x] UI bug, we should check to make sure aws cli is on remote system before invoking it, that way we can explicitly say it is missing and how to install it -- implemented as `CheckAWSCLIAvailable` (`internal/workflow/backup_cli_check.go`), see DECISIONS.md, "Preflight check: AWS CLI availability before Backup Archive & Trim" (2026-07-02).
 
+## UX improvements
+
+- [ ] We have "exit", "cancel" (which sometimes is the same", "back to ..." for navigating the heirachy of menus (workflows). This should be more consistant. "cancel" should mean aborting an action not closing a particular menu select an action or workflow. Since the application is mostly a list of things then either a sub list of things or an action I think we should standardize that heirarchy so when you close a nested menu list it just backs you up to the menu you previously were on. We should standardize either on "quit" or "exit" to close a menu when done. I'm OK with standardizing on "quit" but right now we have two many words meaning almost the same thing. When you quit all the menu's you've finally exit the TUI.
 
 
 ## Done (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
@@ -52,25 +55,51 @@ fully checked off, 112/112 items).
       picker's list by a case-insensitive label substring match (bucket
       lists, instance lists, etc.), and the bucket list itself is now
       returned sorted alphabetically by `inventory.ListBuckets`.
+- [x] PLAN.md Phase 20.1 (DESIGN.md Features 21.2-21.8): the S3 domain's
+      UI/UX pass -- one interactive "Browse & Manage Objects" file
+      manager (`internal/filemanager`, a scoped `bubbletea` `Model`)
+      replacing Sync Local Directory to Bucket, Browse/Manage Objects,
+      and Delete Objects by Prefix. Single-pane (bucket only) or
+      double-pane (bucket + linked local directory); tagging, per-level
+      substring filter, Upload/Download/Delete/Show-metadata actions
+      with a Confirm/ConfirmDestructive/progress overlay, a dedicated
+      Sync action (whole-tree diff against the bucket, reusing the new
+      `internal/s3diff` package's `Compute`/`WalkLocalTree`/
+      `ListAllBucketObjects`/`UploadFile` -- extracted from the retired
+      wizard rather than reimplemented), Find (recursive glob-on-
+      basename search), and a `:`-prefixed command line mirroring every
+      hotkey. `s3:GetObject` added to `S3API` for Download, completing
+      Create/Update/Read/Delete parity. huh added as a dependency for
+      the screen's own bucket-selection pre-flight
+      (`internal/workflow/object_browser.go`) -- every other S3 wizard
+      stays on termlib. Tests use `github.com/charmbracelet/x/exp/
+      teatest` (resolves PLAN.md's open testing question); `go test
+      -race` caught one real bug during development (a background
+      action goroutine mutating pane state directly instead of only
+      sending over its progress channel -- fixed). Not yet verified
+      against real AWS -- see PLAN.md Phase 22.
+
+## Someday/maybe (not on the active roadmap)
+
+- CloudFront domain (PLAN.md Phase 21): designed in DESIGN.md/PLAN.md,
+  no code written yet. Postponed by the user (2026-07-09), then further
+  demoted the same day from "postponed to a later version" to
+  someday/maybe -- no committed timeline (see DECISIONS.md, "Demote
+  CloudFront to someday/maybe..."). Removed from `DomainActions`/the
+  domain picker rather than left as a "not yet implemented" placeholder
+  entry, so 0.0.1 doesn't expose a menu item that goes nowhere. The
+  design in DESIGN.md/PLAN.md stays valid reference for if this is ever
+  picked back up. Phase 22 (real-AWS testing for Key Management/S3) no
+  longer depends on it.
 
 ## Postponed to a later version
 
-- CloudFront domain (PLAN.md Phases 21-22): designed in DESIGN.md/PLAN.md,
-  no code written yet. Explicitly postponed by the user (2026-07-09) --
-  removed from `DomainActions`/the domain picker rather than left as a
-  "not yet implemented" placeholder entry, so 0.0.1 doesn't expose a menu
-  item that goes nowhere. The design in DESIGN.md/PLAN.md stays valid
-  reference for whenever this is picked back up.
-- UI/UX overhaul: 0.0.1 ships on `termlib` (the current numbered-menu,
-  blocking-prompt style) as-is. `charmbracelet/huh` (built on
-  `bubbletea`) was evaluated as a likely direction for the *next*
-  release -- closer fit than raw `bubbletea` since its fields are
-  synchronous/blocking like termlib's, has a built-in accessible/
-  scriptable mode (`RunAccessible(w, r)`) that maps onto this project's
-  existing pipe-based test pattern, and its `Select` field's built-in
-  incremental filtering is a nicer target than the numbered-list-plus-
-  filter approach `ui.PickList` just grew. Not started; would touch most
-  of `internal/workflow`'s ~40 prompt call sites plus their tests.
+- UI/UX overhaul, remaining scope: the S3 domain's file manager (see
+  "Done" above) is the only part of `internal/workflow` migrated off
+  termlib so far. `huh`/`bubbletea` adoption elsewhere -- Compute, Key
+  Management, the other ~35 wizard call sites -- is still deliberately
+  deferred; nothing about finishing the S3 domain commits to migrating
+  the rest.
 
 ## Discussed but not yet designed/implemented
 
@@ -97,7 +126,7 @@ fully checked off, 112/112 items).
 
 - [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
 - [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
-- [ ] Bulk object delete (Sync's delete step, Delete Objects by Prefix) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, not started.
+- [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
 
 ## Superseded (Bash version — retired 2026-07-08, see DECISIONS.md)
 
