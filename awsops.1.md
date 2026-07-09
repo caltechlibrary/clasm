@@ -1,4 +1,4 @@
-%awsops(1) user manual | version 0.0.1 7472458
+%awsops(1) user manual | version 0.0.1 22a3d02
 % R. S. Doiel
 % 2026-07-09
 

@@ -31,6 +31,278 @@ interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
 <hr />
 <h2
+id="scope-ship-on-termlib-as-is-postpone-cloudfront-and-the-uiux-overhaul">2026-07-09
+— 0.0.1 scope: ship on termlib as-is; postpone CloudFront and the UI/UX
+overhaul</h2>
+<p><strong>Context.</strong> With Phase 20 (S3 domain) real-AWS verified
+and this session’s follow-on work landed – local validation for
+lifecycle rule ordering, a read-only “View rule details” action, Delete
+Bucket, Delete Objects by Prefix, and filter-as-you-type/alphabetical
+sort in <code>ui.PickList</code> – the user judged core functionality
+complete enough for colleagues to start using the tool, but not the UI
+itself: the current numbered-menu, blocking-prompt style built on
+<code>termlib</code> (the user’s own library) needs a UX/UI pass before
+wider use.</p>
+<p>As part of scoping what “ready for 0.0.1” means, two third-party
+libraries were evaluated (by pulling their actual source into a scratch
+module, not just reading marketing pages):</p>
+<ul>
+<li><code>github.com/charmbracelet/bubbletea</code>: an Elm-architecture
+(Model/ Update/View, async message loop) TUI framework. Replacing
+<code>termlib</code> with it would mean rewriting the control flow of
+every one of <code>internal/workflow</code>’s ~40 prompt-driven wizards
+into explicit state machines, plus their tests – not a drop-in
+swap.</li>
+<li><code>github.com/charmbracelet/huh</code>: forms/prompts built on
+<code>bubbletea</code>, but each field is run synchronously/blocking
+(<code>huh.Run(field)</code>), much closer to <code>termlib</code>’s
+<code>Prompt</code>/<code>PickList</code>/<code>Confirm</code> shape.
+Its <code>Select</code> field’s built-in incremental filtering is a
+nicer target than the numbered-list approach, and every field’s
+<code>RunAccessible(w io.Writer, r io.Reader) error</code> is
+structurally the same shape as this project’s existing pipe-based test
+harness (<code>newPipeEditor</code>), so the existing test style would
+largely carry over. Cost: <code>huh</code> pulls in
+<code>bubbletea</code>+<code>bubbles</code>+<code>lipgloss</code> and
+~18 transitive modules, versus <code>termlib</code>’s ~2,800
+dependency-free lines.</li>
+<li><code>github.com/peak/s5cmd/v2</code>: not a good dependency
+candidate either way (its <code>command/</code> package is coupled to
+<code>urfave/cli/v2.Context</code>; its cleaner <code>storage/</code>
+package is built on <code>aws-sdk-go</code> v1, while this project is on
+<code>aws-sdk-go-v2</code>). Its <code>storage.S3.MultiDelete</code>
+pattern – batch <code>s3:DeleteObjects</code> in chunks of up to 1000
+keys instead of one <code>DeleteObject</code> call per key – is worth
+reimplementing natively later (see TODO.md, “Nice to have”), since
+<code>aws-sdk-go-v2</code> already exposes
+<code>DeleteObjects</code>.</li>
+</ul>
+<p><strong>Decision.</strong> 0.0.1 ships on <code>termlib</code>
+unchanged. <code>huh</code> is the leading candidate for the next
+release’s UI/UX pass (evaluated, not started). CloudFront (PLAN.md Phase
+21-22) is postponed to a later version – its domain-picker entry was
+removed entirely (<code>DomainActions.CloudFront</code>, the
+<code>"CloudFront"</code> menu item, and its
+<code>NotYetImplemented</code> wiring in
+<code>cmd/awsops/main.go</code>) rather than left as a placeholder, so
+the released UI doesn’t expose a menu item that goes nowhere. Its design
+in DESIGN.md/PLAN.md is untouched and stays valid for when it’s picked
+back up.</p>
+<p><strong>Rejected alternatives.</strong> Migrating to raw
+<code>bubbletea</code> now, to avoid a second migration later – rejected
+because the architectural mismatch with <code>termlib</code>’s ~40
+blocking call sites makes it a full rewrite either way; better to ship
+0.0.1 first and spend that rewrite effort once, against <code>huh</code>
+(or whatever’s chosen), informed by real colleague usage rather than
+guessing at UX needs up front.</p>
+<p><strong>Consequences.</strong> No <code>internal/ui</code> or
+<code>internal/workflow</code> prompt code changed as a result of this
+decision – it’s scope/sequencing only. <code>TODO.md</code>’s “Postponed
+to a later version” section and <code>PLAN.md</code>’s Phase 21 heading
+both note the CloudFront postponement.</p>
+<hr />
+<h2
+id="clear-a-buckets-lifecycle-configuration-via-deletebucketlifecycle-not-an-empty-putbucketlifecycleconfiguration">2026-07-08
+— Clear a bucket’s lifecycle configuration via DeleteBucketLifecycle,
+not an empty PutBucketLifecycleConfiguration</h2>
+<p><strong>Context.</strong> Real-AWS manual verification of Phase 20’s
+Manage Bucket Lifecycle Policies feature (immediately after
+implementation) surfaced two real bugs the unit tests’ fakes couldn’t
+catch, since fakes don’t enforce AWS’s own validation rules:</p>
+<ol type="1">
+<li>Setting a guided backup policy with expiration (30 days) shorter
+than its transition (90 days) fails with a real AWS error:
+<code>'Days' in the Expiration action ... must be greater than 'Days' in the Transition action</code>.
+This is a genuine AWS API constraint (an object must transition to
+cheaper storage before it can expire, not after) that neither the guided
+flow’s two independent prompts nor this decision log’s earlier design
+round anticipated.</li>
+<li>Removing a bucket’s <em>last</em> remaining lifecycle rule failed
+outright: <code>PutBucketLifecycleConfiguration</code> requires a
+non-empty <code>Rules</code> field (enforced client-side by the AWS SDK
+before any network call), so <code>bucket_lifecycle.go</code>’s
+fetch-modify-PutBack pattern (see the 21.1 entry below) breaks down
+exactly when the “modify” step empties the rule set.</li>
+</ol>
+<p><strong>Decision.</strong> Fixed #2 (the one blocking Remove
+entirely, not just a specific input combination): added
+<code>DeleteBucketLifecycle</code> to <code>S3API</code> and its logging
+wrapper, and <code>ManageBucketLifecyclePolicies</code> now branches on
+the modified rule set’s length – empty calls
+<code>DeleteBucketLifecycle</code> instead of
+<code>PutBucketLifecycleConfiguration</code>. Per this project’s
+test-before-fix practice, a failing test
+(<code>TestManageBucketLifecyclePolicies_RemovingLastRuleCallsDeleteNotPutWithEmptyRules</code>)
+reproduced the bug against the pre-fix code before the fix was written,
+then re-verified against real AWS (create a rule, remove it, confirm
+<code>GetBucketLifecycleConfiguration</code> reports
+<code>NoSuchLifecycleConfiguration</code> afterward).</p>
+<p>#1 (the expiration/transition ordering constraint) was
+<strong>not</strong> given local validation in this pass – worked around
+during verification by choosing valid test values (transition &lt;
+expiration), and left as a known gap: the guided flow currently surfaces
+AWS’s own error message verbatim rather than catching the mismatch
+before calling AWS. A future pass should add a local check (transition
+days, when both are set, must be less than expiration days) mirroring
+<code>validateBucketName</code>’s locally-caught-before-AWS pattern from
+Create Bucket.</p>
+<p><strong>Consequences.</strong> <code>S3API</code> gains a thirteenth
+method, <code>DeleteBucketLifecycle</code>, alongside the twelve added
+for Phase 20. <code>internal/workflow/bucket_fakes_test.go</code>’s
+shared fake gained matching fields/methods. The Add/Edit guided-flow’s
+real-world expiration-vs- transition ordering constraint remains an
+open, documented gap (see TODO.md).</p>
+<hr />
+<h2
+id="add-feature-21.1-manage-bucket-lifecycle-policies-with-a-purpose-tag-driven-guidedgeneric-split">2026-07-08
+— Add Feature 21.1, Manage Bucket Lifecycle Policies, with a
+Purpose-tag-driven guided/generic split</h2>
+<p><strong>Context.</strong> Before writing any Phase 20 code, the user
+identified three bucket use cases this tool should make easy: a website
+bucket (already Features 18-19), a shared backup bucket needing
+expiration and transition-to-cheaper-storage policies on its objects
+(the pattern Backup Archive &amp; Trim already produces, per
+DECISIONS.md “Namespace backup uploads by instance”), and an
+internal-use bucket with no predictable policy shape. None of this
+existed in DESIGN.md — S3 Lifecycle Configuration management wasn’t
+designed at all.</p>
+<p><strong>Decisions (asked, user confirmed all four):</strong> 1.
+<strong>Bucket “purpose” is tagged and remembered, not just a
+creation-time wizard.</strong> Create Bucket (Feature 18) now prompts
+for a purpose (Website/Backup/Internal) and applies it as a
+<code>Purpose</code> tag (<code>s3:PutBucketTagging</code>); Feature 17
+(List Buckets) reads it back for every bucket so later features don’t
+need to re-ask. 2. <strong>Lifecycle policy scope is an optional prefix,
+blank = whole bucket</strong> — the same convention as Feature 21’s
+browse-filter addition, rather than forcing either a mandatory prefix or
+a whole-bucket-only model. 3. <strong>Two different UIs, selected
+automatically by the <code>Purpose</code> tag</strong>:
+<code>backup</code> gets a guided flow (two yes/no-shaped prompts:
+expire after N days, transition after N days); <code>internal</code>
+(and <code>website</code>, and any untagged bucket) gets a generic rule
+editor (named rules, arbitrary transitions, optional expiration) — one
+feature (21.1), one menu entry, branching internally, not two separate
+menu items. 4. <strong>Multiple named rules with full CRUD</strong>, not
+a single-policy-per-scope model — fetch all existing rules, let the
+operator pick one to edit or remove, or add a new one, then write the
+complete rule set back (the only way AWS’s
+<code>PutBucketLifecycleConfiguration</code> API supports changes at all
+— it always replaces the whole rule set atomically).</p>
+<p><strong>Smaller decisions made without a separate question
+round:</strong> - <strong>Guided flow’s storage-class choices are
+curated</strong> (Standard-IA, Intelligent-Tiering, Glacier Flexible
+Retrieval, Glacier Deep Archive) rather than the full AWS enum — these
+four cover “make backups cheaper over time” without exposing storage
+classes irrelevant to that goal (One Zone-IA’s reduced durability isn’t
+appropriate for the only copy of a backup; Reduced Redundancy Storage is
+legacy). The generic editor
+(<code>internal</code>/<code>website</code>/untagged buckets) exposes
+the <em>full</em> <code>types.TransitionStorageClass</code> enum
+instead, matching its “unpredictable needs” framing. - <strong>Numbered
+21.1, not renumbered into the 22-26 sequence</strong> — CloudFront
+Features 22-26 already have ~15 cross-references across
+DESIGN.md/DECISIONS.md/PLAN.md; renumbering them to make room risked
+missing one silently. Mirrors PLAN.md’s own existing convention of
+decimal-numbered insertions (Phase 15.1 through 15.26) rather than
+introducing a new pattern. - <strong>Rule removal and edits stay a plain
+yes/no confirm</strong>, not the stronger dry-run + type-to-confirm
+tier, but the confirmation text must say plainly that this schedules
+<em>future</em> automated deletion, not an immediate one (see DESIGN.md,
+Security Considerations #13) — AWS evaluates lifecycle rules on its own
+cadence (typically within 24-48 hours), not instantly on
+<code>PutBucketLifecycleConfiguration</code>.</p>
+<p><strong>Rationale.</strong> All four user-facing decisions were asked
+and confirmed before any implementation started, per this project’s
+design-then-code discipline. The Purpose-tag branch (one feature, one
+menu entry) was chosen over two separate menu entries because the user’s
+own framing — “the internal bucket is similar” — describes one
+capability used two ways, not two capabilities.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Two separate menu
+entries</em> (e.g. “Manage Backup Policies” / “Manage Object Lifecycle
+Policies”) instead of one Purpose-branching feature — rejected per the
+user’s own framing above; also would require the operator to already
+know a bucket’s purpose before picking the right menu item, defeating
+the point of tagging it. - <em>Single active policy per
+bucket/prefix</em> (no rule naming/listing) — rejected; doesn’t fit the
+internal bucket’s explicitly “unpredictable” needs, and the guided
+flow’s simplicity doesn’t actually require giving up multi-rule support
+underneath (the guided prompts just populate one more named rule in the
+same underlying store).</p>
+<p><strong>Consequences.</strong> <code>S3API</code> grows further to
+include <code>PutBucketTagging</code>, <code>GetBucketTagging</code>,
+<code>GetBucketLifecycleConfiguration</code>, and
+<code>PutBucketLifecycleConfiguration</code> on top of Phase 20’s
+already-broadened surface (see “Phase 20 (S3 domain) scope decisions,”
+below). <code>internal/ inventory.Bucket</code> gains a
+<code>Purpose</code> field, fetched during Feature 17’s existing
+per-bucket enrichment fan-out (no new listing pass). Phase 20’s effort
+estimate in PLAN.md needs updating to reflect this meaningfully larger
+scope.</p>
+<hr />
+<h2
+id="phase-20-s3-domain-scope-decisions-defer-public-read-opt-out-add-a-key-prefix-filter">2026-07-08
+— Phase 20 (S3 domain) scope decisions: defer public-read opt-out, add a
+key-prefix filter</h2>
+<p><strong>Context.</strong> Before starting Phase 20 (S3 domain:
+List/Create Bucket, Configure Static Website Hosting, Sync Local
+Directory to Bucket, Browse/Manage Objects), two places where
+DESIGN.md’s existing Features 19 and 21 needed a concrete scope call
+that the design text itself didn’t fully pin down.</p>
+<p><strong>Decision 1 — defer the public-read bucket policy
+opt-out.</strong> Feature 19 (Configure Static Website Hosting) mentions
+an operator can explicitly opt into a public-read bucket policy instead
+of the CloudFront + Origin Access Control default – but CloudFront
+(Phase 21, Feature 24) doesn’t exist in this codebase yet, so there’s
+nothing for the default path to actually hand off to. Phase 20
+implements only the default path (configure website documents; bucket
+stays private via Feature 18’s <code>PutPublicAccessBlock</code>); where
+DESIGN.md’s text says “hand off to CloudFront,” awsops instead prints
+that CloudFront support isn’t implemented yet. The public-read opt-out
+(its own explicit warning, confirmation, and
+<code>s3:PutBucketPolicy</code> call) is deferred until there’s an
+actual need for it.</p>
+<p><strong>Decision 2 — add an optional key-prefix filter to
+Browse/Manage Objects.</strong> Not in DESIGN.md’s original Feature 21
+text, which lists every object in the bucket unconditionally. This
+team’s actual S3 usage
+(e.g. <code>sql-backups.library.caltech.edu</code>, namespaced
+<code>&lt;instance-name&gt;/&lt;filename&gt;</code> per DECISIONS.md’s
+“Namespace backup uploads by instance”) means a single real bucket can
+hold many objects across many per-instance prefixes – listing everything
+unconditionally would be substantially less usable on this team’s actual
+buckets than on a small test bucket. Feature 21 now prompts
+<code>"Filter by key prefix (blank for all)"</code> before calling
+<code>s3:ListObjectsV2</code>; blank preserves the original “list
+everything” behavior exactly.</p>
+<p><strong>Rationale.</strong> - Both decisions were surfaced as
+explicit questions before writing any code, per this project’s
+design-then-implement discipline, rather than silently decided during
+implementation. - Deferring the public-read opt-out avoids building a
+whole secondary confirmation-and-policy-construction path for something
+DESIGN.md itself frames as a secondary escape hatch, before the primary
+(CloudFront) path it’s an alternative <em>to</em> even exists. - The
+prefix filter is a small, backward-compatible addition (default behavior
+unchanged) directly motivated by how this team’s own S3 buckets are
+actually structured, not a hypothetical future need.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Build the public-read
+opt-out now anyway</em> — rejected; it would mean significant Feature 19
+surface area (policy JSON construction, its own confirmation tier)
+serving a path that’s explicitly secondary in DESIGN.md’s own framing,
+before Phase 21 (CloudFront) even exists to make the <em>primary</em>
+path complete. - <em>Implement Browse/Manage Objects exactly as spec’d,
+no filter</em> — rejected; DESIGN.md’s own Feature 1 precedent (PickList
+pagination for &gt;50 items) already acknowledges large lists are a real
+concern for this tool, and a bucket with thousands of objects across
+many prefixes is a materially worse experience without a filter than
+EC2/AMI/key pair lists ever are.</p>
+<p><strong>Consequences.</strong> PLAN.md’s Phase 20 work items and
+DESIGN.md Features 19 and 21 are updated to match. When Phase 21
+(CloudFront) ships, Feature 19’s “hand off to CloudFront” message should
+be revisited – either wired to an actual Create Distribution entry
+point, or left as informational if the operator is expected to navigate
+there manually.</p>
+<hr />
+<h2
 id="fix-termlibs-lineeditor.prompt-for-overlong-prompt-labels-keep-awstools-own-prompts-short">2026-07-08
 — Fix termlib’s LineEditor.Prompt for overlong prompt labels; keep
 awstools’ own prompts short</h2>

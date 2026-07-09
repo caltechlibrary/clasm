@@ -1624,52 +1624,137 @@ malformed public key file, dependent-instance detection</p>
 <p><strong>Dependency:</strong> Phase 18; reuses Phase 15.2’s
 <code>CreateKeyPair</code> wrapper</p>
 <hr />
-<h2 id="phase-20-s3-domain-buckets-static-websites">Phase 20 — S3 Domain
-(Buckets &amp; Static Websites)</h2>
-<p><strong>Effort:</strong> ~10 hours <strong>Priority:</strong> Medium
-<strong>Files:</strong> <code>internal/awsclient/s3.go</code>
+<h2 id="phase-20-s3-domain-buckets-static-websites-done">Phase 20 — S3
+Domain (Buckets &amp; Static Websites) (done)</h2>
+<p><strong>Effort:</strong> ~16 hours (raised from ~10h after adding
+Feature 21.1, 2026-07-08 — see DECISIONS.md) <strong>Priority:</strong>
+Medium <strong>Files:</strong> <code>internal/awsclient/s3.go</code>
 (broadened), <code>internal/inventory/buckets.go</code>,
-<code>internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse}.go</code></p>
-<p>Implements <code>DESIGN.md</code> Features 17-21 and the 2026-07-02
-“CloudFront + OAC by default for static websites” decision.</p>
+<code>internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse,bucket_lifecycle,s3_menu}.go</code></p>
+<p>Implements <code>DESIGN.md</code> Features 17-21, 21.1, and the
+2026-07-02 “CloudFront + OAC by default for static websites” decision,
+with scope decisions made 2026-07-08 before implementation started (see
+DECISIONS.md): public-read bucket policy opt-out deferred, key-prefix
+filter added to Browse/Manage Objects, and Feature 21.1 (Manage Bucket
+Lifecycle Policies) added as new scope with a Purpose-tag-driven
+guided/generic split.</p>
 <h3 id="work-items-45">Work Items</h3>
-<ul>
-<li>Broaden the <code>S3API</code> interface beyond Feature 11’s
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Broaden the
+<code>S3API</code> interface beyond Feature 11’s
 <code>HeadObject</code>-only scope: <code>ListBuckets</code>,
-<code>GetBucketLocation</code>, <code>GetBucketWebsite</code>,
-<code>CreateBucket</code>, <code>PutPublicAccessBlock</code>,
-<code>PutBucketWebsite</code>, <code>PutBucketPolicy</code>,
+<code>GetBucketWebsite</code>, <code>CreateBucket</code>,
+<code>PutPublicAccessBlock</code>, <code>PutBucketWebsite</code>,
 <code>PutObject</code>, <code>ListObjectsV2</code>,
-<code>GetObject</code>, <code>DeleteObject</code></li>
-<li><code>ListBuckets(ctx)</code> with per-bucket region +
-static-website-hosting status (<code>internal/inventory</code>) — treat
-<code>GetBucketWebsite</code>’s <code>NoSuchWebsiteConfiguration</code>
-error as “not configured,” not a failure</li>
-<li>Create Bucket: prompt name + region, <code>s3:CreateBucket</code>,
-then <code>s3:PutPublicAccessBlock</code> (all four settings on) by
-default</li>
-<li>Configure Static Website Hosting: pick bucket, prompt index/error
-documents, <code>s3:PutBucketWebsite</code>; a public-read bucket policy
-is an explicit, separately-confirmed opt-out path, never the
-default</li>
-<li>Sync Local Directory to Bucket: dry-run diff (by key + size) against
-the local directory, confirm, upload new/changed
-(<code>s3:PutObject</code>), then a <strong>separate</strong>
-confirm-and-delete step for bucket-only objects
-(<code>s3:DeleteObject</code>) — never bundled into the upload
-confirmation</li>
-<li>Browse/Manage Objects: paginated object listing (reuse Phase 15’s
-PickList pagination for &gt;50 items), metadata display, per-object
-delete with a plain yes/no confirm</li>
-<li>Wire into the domain picker from Phase 18</li>
+<code>DeleteObject</code>, <code>PutBucketTagging</code>,
+<code>GetBucketTagging</code>,
+<code>GetBucketLifecycleConfiguration</code>,
+<code>PutBucketLifecycleConfiguration</code>
+(<code>GetBucketLocation</code> already exists;
+<code>PutBucketPolicy</code>/<code>GetObject</code> are NOT added — the
+former is only needed by the deferred public-read opt-out, the latter
+isn’t needed since object content is never downloaded, only
+<code>HeadObject</code> metadata)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>ListBuckets(ctx)</code>
+(<code>internal/inventory/buckets.go</code>) with per-bucket region
+(<code>GetBucketLocation</code>), static-website-hosting status
+(<code>GetBucketWebsite</code>), and <code>Purpose</code> tag
+(<code>GetBucketTagging</code>) — all three enrichment calls on a
+region-scoped client via <code>newClient</code>, never the global
+client, per the established <code>MovedPermanently</code> lesson from
+Backup Archive &amp; Trim — treat
+<code>NoSuchWebsiteConfiguration</code> and a missing/absent
+<code>Purpose</code> key (or <code>NoSuchTagSet</code>) as “not
+configured”/“untagged,” not failures</label></li>
+<li><label><input type="checkbox" checked="" />Create Bucket: prompt
+name (validated locally against S3 naming rules) + region + purpose
+(Website/Backup/Internal pick list), <code>s3:CreateBucket</code>,
+<code>s3:PutPublicAccessBlock</code> (all four settings on), then
+<code>s3:PutBucketTagging</code> with
+<code>Purpose: &lt;choice&gt;</code></label></li>
+<li><label><input type="checkbox" checked="" />Configure Static Website
+Hosting: pick bucket, prompt index/error documents,
+<code>s3:PutBucketWebsite</code>. <strong>Public-read bucket policy
+opt-out deferred</strong> (DECISIONS.md) — only the default
+private-bucket path ships in this phase; where CloudFront hand-off would
+go, print that CloudFront isn’t implemented yet (Phase 21)</label></li>
+<li><label><input type="checkbox" checked="" />Sync Local Directory to
+Bucket: dry-run diff (by key + size) against the local directory,
+confirm (plain y/n), upload new/changed (<code>s3:PutObject</code>,
+per-file progress line matching Backup Archive &amp; Trim’s established
+convention), then a <strong>separate</strong>, stronger
+<code>ConfirmDestructive</code> (type the bucket name) gate for
+bucket-only objects (<code>s3:DeleteObject</code>) — never bundled into
+the upload confirmation</label></li>
+<li><label><input type="checkbox" checked="" />Browse/Manage Objects:
+<strong>optional key-prefix filter added</strong> (DECISIONS.md) before
+listing; paginated object listing (reuse Phase 15’s PickList pagination
+for &gt;50 items, unchanged), metadata display, per-object delete with a
+plain yes/no confirm</label></li>
+<li><label><input type="checkbox" checked="" /><strong>New: Manage
+Bucket Lifecycle Policies</strong> (<code>bucket_lifecycle.go</code>,
+DESIGN.md Feature 21.1): pick a bucket,
+<code>s3:GetBucketLifecycleConfiguration</code>
+(<code>NoSuchLifecycleConfiguration</code> = no rules yet, not an
+error), branch on the bucket’s <code>Purpose</code> tag —</label>
+<ul>
+<li><code>backup</code>: guided flow, two yes/no-shaped prompts
+(expire-after-days, transition-after-days + a curated storage-class pick
+list: Standard-IA, Intelligent-Tiering, Glacier Flexible Retrieval,
+Glacier Deep Archive), optional key-prefix scope</li>
+<li><code>internal</code>/<code>website</code>/untagged: generic editor
+— named rules (unique ID), optional prefix, zero-or-more transitions
+from the <em>full</em> <code>types.TransitionStorageClass</code> enum,
+optional expiration; add/edit/ remove by ID</li>
+<li>both paths write the complete modified rule set via
+<code>s3:PutBucketLifecycleConfiguration</code> in one call (the API has
+no per-rule operations); rule edit/remove is a plain yes/no confirm,
+with on-screen text noting this schedules <em>future</em> automated
+deletion (AWS’s own ~24-48h evaluation cadence), not an immediate
+one</li>
+</ul></li>
+<li><label><input type="checkbox" checked="" />Wire into the domain
+picker from Phase 18, following Phase 19’s
+<code>KeyMgmtActions</code>/<code>RunKeyMgmtMenu</code> shape
+(<code>S3Actions</code>/<code>RunS3Menu</code> — six menu items: Show
+resource lists, Create Bucket, Configure Static Website Hosting, Sync
+Local Directory to Bucket, Browse/Manage Objects, Manage Bucket
+Lifecycle Policies, Back to domain picker)</label></li>
 </ul>
-<p><strong>Tests:</strong> fakes for each new S3 call covering
-success/error paths (bucket-name-taken, website-not-configured treated
-as non-error, sync diff correctness, upload/delete confirmations never
-bundled)</p>
+<p><strong>Tests:</strong>
+<code>internal/inventory/buckets_test.go</code>,
+<code>internal/workflow/{bucket_create,bucket_website,bucket_sync,bucket_browse,bucket_lifecycle,s3_menu}_test.go</code>
+– fakes for each new S3 call covering success/error paths
+(bucket-name-taken, website-not-configured treated as non-error, sync
+diff correctness, upload/delete confirmations never bundled, prefix
+filter narrows the object listing, lifecycle guided-vs-generic branch
+selection by <code>Purpose</code> tag, rule add/edit/remove round-trips
+through the fetch-modify-PutBack cycle correctly) — TDD throughout.
+<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l .</code> all clean.</p>
+<p><strong>Real-AWS verification (2026-07-08):</strong> created one
+throwaway bucket per purpose, configured website hosting, ran Sync twice
+(upload pass, then a locally-deleted-file pass exercising the separate
+delete confirm), browsed with and without a prefix filter (view
+metadata, delete an object), set and round-tripped a guided backup
+lifecycle policy, and added/edited/removed a named rule via the generic
+editor – all against account 074441911104. Found and fixed one real bug
+along the way (empty- <code>Rules</code>
+<code>PutBucketLifecycleConfiguration</code> on last-rule removal; see
+DECISIONS.md) and left one open, documented gap (no local validation
+that transition-days &lt; expiration-days; see TODO.md). All throwaway
+buckets and objects cleaned up afterward – no production bucket was
+touched.</p>
 <p><strong>Dependency:</strong> Phase 18</p>
 <hr />
 <h2 id="phase-21-cloudfront-domain">Phase 21 — CloudFront Domain</h2>
+<p><strong>Status: postponed to a later version (2026-07-09, see TODO.md
+and DECISIONS.md) – not part of 0.0.1.</strong> No code written; the
+<code>CloudFront</code> domain-picker entry was removed rather than left
+wired to <code>NotYetImplemented</code>, so the 0.0.1 UI doesn’t expose
+a menu item that goes nowhere. The design below stays valid reference
+for whenever this is picked back up.</p>
 <p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> Medium
 <strong>Files:</strong> <code>internal/awsclient/cloudfront.go</code>,
 <code>internal/inventory/distributions.go</code>,
@@ -1922,7 +2007,7 @@ Implementation</h2>
 <tr>
 <td>Phase 20</td>
 <td>Medium</td>
-<td>10h</td>
+<td>16h</td>
 <td>Phase 18</td>
 </tr>
 <tr>

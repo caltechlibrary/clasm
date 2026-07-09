@@ -43,9 +43,11 @@ fails fast with a clear message rather than a raw SDK error.</p>
 <li><strong>Compute</strong> (EC2 &amp; AMI) – fully implemented, see
 below</li>
 <li><strong>Key Management</strong> – fully implemented, see below</li>
-<li><strong>S3</strong>, <strong>CloudFront</strong> – planned, not yet
-implemented (see <a href="DESIGN.html">DESIGN.md</a>, <a
-href="PLAN.html">PLAN.md</a> Phases 20-21)</li>
+<li><strong>S3</strong> (Buckets &amp; Static Websites) – fully
+implemented, see below</li>
+<li><strong>CloudFront</strong> – planned, not yet implemented (see <a
+href="DESIGN.html">DESIGN.md</a>, <a href="PLAN.html">PLAN.md</a> Phase
+21)</li>
 </ul>
 <h2 id="compute-menu">Compute Menu</h2>
 <p>Choosing Compute lists the account’s current EC2 instances and owned
@@ -98,6 +100,47 @@ pair being deleted (they keep running; the key pair just can’t be used
 for new launches afterward) and requires typing the exact key pair name
 to confirm. See <a href="DESIGN.html">DESIGN.md</a>, “Key Management
 Domain” for the full prompt sequence.</p>
+<h2 id="s3-menu">S3 Menu</h2>
+<p>Choosing S3 lists the account’s current buckets (Name, Region, Static
+Website, Purpose), then presents:</p>
+<ol type="1">
+<li>Show resource lists</li>
+<li>Create Bucket</li>
+<li>Configure Static Website Hosting</li>
+<li>Sync Local Directory to Bucket</li>
+<li>Browse/Manage Objects</li>
+<li>Manage Bucket Lifecycle Policies</li>
+<li>Back to domain picker</li>
+</ol>
+<p><strong>Create Bucket</strong> prompts a name (validated locally
+against S3’s naming rules before ever calling AWS), a region, and a
+purpose – <strong>website</strong>, <strong>backup</strong>, or
+<strong>internal</strong>. The new bucket always has all four Public
+Access Block settings turned on (never public by omission) and is tagged
+with its Purpose, which the other S3 items read back later.
+<strong>Configure Static Website Hosting</strong> picks a bucket and
+prompts index/ error documents (defaulting to
+<code>index.html</code>/<code>error.html</code>); the bucket stays
+private – fronting it publicly is CloudFront’s job once that domain
+exists. <strong>Sync Local Directory to Bucket</strong> picks a bucket
+and a local directory, shows a dry-run diff (by key and size, not
+checksum) of files to upload and bucket-only objects that would be
+deleted, asks for confirmation to upload, and – only if there are
+bucket-only objects – asks a <strong>separate</strong>, stronger
+confirmation (type the exact bucket name) before deleting them;
+declining the upload step aborts the whole run without ever reaching the
+delete prompt. <strong>Browse/Manage Objects</strong> picks a bucket,
+optionally filters by key prefix, then lets you view an object’s
+metadata or delete it. <strong>Manage Bucket Lifecycle Policies</strong>
+picks a bucket and shows its current rules, then lets you add, edit, or
+remove one: buckets tagged <code>Purpose: backup</code> get a guided
+flow (expire- after-days, transition-after-days with a curated
+storage-class choice); everything else gets a generic editor (named
+rules, arbitrary transitions from the full storage-class list, optional
+expiration). Every add/edit/remove is confirmed with a reminder that AWS
+evaluates lifecycle rules on its own schedule (typically 24-48 hours),
+not immediately. See <a href="DESIGN.html">DESIGN.md</a>, “S3 Domain
+(Buckets &amp; Static Websites)” for the full prompt sequence.</p>
 <h2 id="command-line-options">Command-line Options</h2>
 <dl>
 <dt><code>-config &lt;path&gt;</code></dt>
