@@ -30,11 +30,47 @@ fully checked off, 112/112 items).
       instead of an invalid empty-`Rules` `PutBucketLifecycleConfiguration`
       -- see DECISIONS.md, "Clear a bucket's lifecycle configuration via
       DeleteBucketLifecycle, not an empty PutBucketLifecycleConfiguration").
+- [x] Manage Bucket Lifecycle Policies' guided flow now validates locally
+      that a transition's days is strictly less than the rule's
+      expiration days (and vice versa in the generic editor), instead of
+      surfacing AWS's raw rejection -- see `validateLessThan`/
+      `validateGreaterThan` in `internal/workflow/bucket_lifecycle.go`.
+      Closes the gap noted below under "Discussed but not yet designed/
+      implemented" as of 2026-07-08.
+- [x] Manage Bucket Lifecycle Policies' "View rule details" action: pick
+      a rule and see its full expiration/transition/filter configuration
+      without entering the Add/Edit flow; loops back to the action menu
+      instead of exiting the workflow.
+- [x] Delete Bucket: refuses a non-empty bucket (reports the object
+      count) and gates the irreversible `s3:DeleteBucket` call with
+      `ConfirmDestructive` (type the bucket name back).
+- [x] Delete Objects by Prefix: bulk-deletes every object under a key
+      prefix (blank prefix = whole bucket) without needing a local
+      directory to diff against the way Sync does; gated the same way,
+      typing the prefix (or bucket name) back to confirm.
+- [x] `ui.PickList` filter-as-you-type: non-numeric input narrows any
+      picker's list by a case-insensitive label substring match (bucket
+      lists, instance lists, etc.), and the bucket list itself is now
+      returned sorted alphabetically by `inventory.ListBuckets`.
 
-## Not yet started
+## Postponed to a later version
 
 - CloudFront domain (PLAN.md Phases 21-22): designed in DESIGN.md/PLAN.md,
-  no code written yet -- needs scope questions answered before starting
+  no code written yet. Explicitly postponed by the user (2026-07-09) --
+  removed from `DomainActions`/the domain picker rather than left as a
+  "not yet implemented" placeholder entry, so 0.0.1 doesn't expose a menu
+  item that goes nowhere. The design in DESIGN.md/PLAN.md stays valid
+  reference for whenever this is picked back up.
+- UI/UX overhaul: 0.0.1 ships on `termlib` (the current numbered-menu,
+  blocking-prompt style) as-is. `charmbracelet/huh` (built on
+  `bubbletea`) was evaluated as a likely direction for the *next*
+  release -- closer fit than raw `bubbletea` since its fields are
+  synchronous/blocking like termlib's, has a built-in accessible/
+  scriptable mode (`RunAccessible(w, r)`) that maps onto this project's
+  existing pipe-based test pattern, and its `Select` field's built-in
+  incremental filtering is a nicer target than the numbered-list-plus-
+  filter approach `ui.PickList` just grew. Not started; would touch most
+  of `internal/workflow`'s ~40 prompt call sites plus their tests.
 
 ## Discussed but not yet designed/implemented
 
@@ -47,14 +83,6 @@ fully checked off, 112/112 items).
       instance type vs. AMI ENA support"). If a third incompatibility
       class turns up, that's the point to reconsider a shared framework,
       not before (see either decision's "Rejected alternatives").
-- [ ] Manage Bucket Lifecycle Policies' guided flow doesn't locally
-      validate that transition-days is less than expiration-days before
-      calling AWS (a real constraint -- `PutBucketLifecycleConfiguration`
-      rejects the opposite ordering). Currently surfaces AWS's raw error
-      message instead of catching it locally first, the way
-      `validateBucketName` does for Create Bucket. Found during Phase
-      20's real-AWS verification 2026-07-08 (DECISIONS.md); not fixed
-      yet, workaround is choosing valid test values.
 - [ ] Retry-on-launch-failure (general case): instead of bouncing back to
       the main menu on any `RunInstances` error, keep the already-collected
       params and let the operator re-enter just the field that's likely
@@ -69,6 +97,7 @@ fully checked off, 112/112 items).
 
 - [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
 - [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
+- [ ] Bulk object delete (Sync's delete step, Delete Objects by Prefix) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, not started.
 
 ## Superseded (Bash version — retired 2026-07-08, see DECISIONS.md)
 

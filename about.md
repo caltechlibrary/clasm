@@ -10,7 +10,7 @@ authors:
 
 
 repository_code: https://github.com/caltechlibrary/awstools
-version: 0.0.0
+version: 0.0.1
 
 operating_system:
   - POSIX
@@ -25,9 +25,9 @@ programming_language:
 About this software
 ===================
 
-## awstools 0.0.0
+## awstools 0.0.1
 
-Real-AWS verified 2026-07-08: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim, across two AWS regions.
+First tagged release. Core functionality complete, real-AWS verified: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim across two AWS regions; Key Management (key pairs); S3 domain (buckets, static website hosting, directory sync, object browsing, bulk object/bucket delete, lifecycle policies with local ordering validation). CloudFront and a UI/UX pass (evaluating charmbracelet/huh as a termlib successor) are postponed to a later version.
 
 ## Authors
 

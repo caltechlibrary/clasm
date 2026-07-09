@@ -1599,6 +1599,13 @@ touched.
 
 ## Phase 21 — CloudFront Domain
 
+**Status: postponed to a later version (2026-07-09, see TODO.md and
+DECISIONS.md) -- not part of 0.0.1.** No code written; the `CloudFront`
+domain-picker entry was removed rather than left wired to
+`NotYetImplemented`, so the 0.0.1 UI doesn't expose a menu item that
+goes nowhere. The design below stays valid reference for whenever this
+is picked back up.
+
 **Effort:** ~8 hours
 **Priority:** Medium
 **Files:** `internal/awsclient/cloudfront.go`,
