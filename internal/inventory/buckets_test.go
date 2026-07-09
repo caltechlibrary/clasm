@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
@@ -182,6 +183,38 @@ func TestListBuckets_MissingPurposeTagIsNotAnError(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Purpose != "" {
 		t.Fatalf("got %+v, want one bucket with Purpose: \"\"", got)
+	}
+}
+
+func TestListBuckets_ReturnsBucketsSortedByName(t *testing.T) {
+	controlPlane := &fakeBucketsS3Client{
+		buckets: []types.Bucket{
+			{Name: aws.String("zebra-bucket")},
+			{Name: aws.String("apple-bucket")},
+			{Name: aws.String("mango-bucket")},
+		},
+		locationByBucket: map[string]types.BucketLocationConstraint{
+			"zebra-bucket": "",
+			"apple-bucket": "",
+			"mango-bucket": "",
+		},
+	}
+	usEast1 := &fakeBucketsS3Client{}
+
+	got, err := ListBuckets(context.Background(), controlPlane, newBucketsClient(map[string]*fakeBucketsS3Client{
+		"us-east-1": usEast1,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var names []string
+	for _, b := range got {
+		names = append(names, b.Name)
+	}
+	want := []string{"apple-bucket", "mango-bucket", "zebra-bucket"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("got %v, want %v (alphabetical order)", names, want)
 	}
 }
 

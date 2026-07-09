@@ -20,14 +20,13 @@ func backToPickerAction(calls *int) func(context.Context) error {
 }
 
 func TestRunDomainPicker_DispatchesToTheChosenDomain(t *testing.T) {
-	var compute, keyMgmt, s3, cf int
-	term, le, _ := newPipeEditor(t, "2\n5\n") // Key Management, then Exit
+	var compute, keyMgmt, s3 int
+	term, le, _ := newPipeEditor(t, "2\n4\n") // Key Management, then Exit
 
 	actions := DomainActions{
 		Compute:       backToPickerAction(&compute),
 		KeyManagement: backToPickerAction(&keyMgmt),
 		S3:            backToPickerAction(&s3),
-		CloudFront:    backToPickerAction(&cf),
 	}
 
 	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
@@ -36,20 +35,19 @@ func TestRunDomainPicker_DispatchesToTheChosenDomain(t *testing.T) {
 	if keyMgmt != 1 {
 		t.Errorf("keyMgmt calls = %d, want 1", keyMgmt)
 	}
-	if compute != 0 || s3 != 0 || cf != 0 {
-		t.Errorf("expected only Key Management to be dispatched, got compute=%d s3=%d cloudfront=%d", compute, s3, cf)
+	if compute != 0 || s3 != 0 {
+		t.Errorf("expected only Key Management to be dispatched, got compute=%d s3=%d", compute, s3)
 	}
 }
 
 func TestRunDomainPicker_BackToDomainPickerReturnsToThePicker(t *testing.T) {
 	var compute int
-	term, le, _ := newPipeEditor(t, "1\n5\n") // Compute (backs out), then Exit
+	term, le, _ := newPipeEditor(t, "1\n4\n") // Compute (backs out), then Exit
 
 	actions := DomainActions{
 		Compute:       backToPickerAction(&compute),
 		KeyManagement: backToPickerAction(new(int)),
 		S3:            backToPickerAction(new(int)),
-		CloudFront:    backToPickerAction(new(int)),
 	}
 
 	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
@@ -61,13 +59,12 @@ func TestRunDomainPicker_BackToDomainPickerReturnsToThePicker(t *testing.T) {
 }
 
 func TestRunDomainPicker_ExitEndsTheProgram(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "5\n")
+	term, le, _ := newPipeEditor(t, "4\n")
 
 	actions := DomainActions{
 		Compute:       backToPickerAction(new(int)),
 		KeyManagement: backToPickerAction(new(int)),
 		S3:            backToPickerAction(new(int)),
-		CloudFront:    backToPickerAction(new(int)),
 	}
 
 	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
@@ -82,7 +79,6 @@ func TestRunDomainPicker_CleanExitOnCancelledPickList(t *testing.T) {
 		Compute:       backToPickerAction(new(int)),
 		KeyManagement: backToPickerAction(new(int)),
 		S3:            backToPickerAction(new(int)),
-		CloudFront:    backToPickerAction(new(int)),
 	}
 
 	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
@@ -97,7 +93,6 @@ func TestRunDomainPicker_CleanExitOnAlreadyCancelledContext(t *testing.T) {
 		Compute:       backToPickerAction(new(int)),
 		KeyManagement: backToPickerAction(new(int)),
 		S3:            backToPickerAction(new(int)),
-		CloudFront:    backToPickerAction(new(int)),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -126,7 +121,6 @@ func TestRunDomainPicker_DomainExitSignalEndsTheWholeProgramWithoutReturningToPi
 			s3Runs++
 			return nil
 		},
-		CloudFront: backToPickerAction(new(int)),
 	}
 
 	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
@@ -138,14 +132,13 @@ func TestRunDomainPicker_DomainExitSignalEndsTheWholeProgramWithoutReturningToPi
 }
 
 func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "4\n") // CloudFront
+	term, le, _ := newPipeEditor(t, "3\n") // S3
 	boom := errors.New("boom")
 
 	actions := DomainActions{
 		Compute:       backToPickerAction(new(int)),
 		KeyManagement: backToPickerAction(new(int)),
-		S3:            backToPickerAction(new(int)),
-		CloudFront:    failingAction(boom),
+		S3:            failingAction(boom),
 	}
 
 	err := RunDomainPicker(context.Background(), term, le, actions)

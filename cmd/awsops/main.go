@@ -269,6 +269,12 @@ func main() {
 		ManageLifecyclePolicies: func(ctx context.Context) error {
 			return workflow.ManageBucketLifecyclePolicies(ctx, term, le, newS3Client, s3State.buckets)
 		},
+		DeleteObjectsByPrefix: func(ctx context.Context) error {
+			return workflow.DeleteObjectsByPrefix(ctx, term, le, newS3Client, s3State.buckets)
+		},
+		DeleteBucket: func(ctx context.Context) error {
+			return workflow.DeleteBucket(ctx, term, le, newS3Client, s3State.buckets)
+		},
 		Refresh: refreshS3,
 	}
 
@@ -309,9 +315,6 @@ func main() {
 				return err
 			}
 			return workflow.RunS3Menu(ctx, term, le, s3Actions)
-		},
-		CloudFront: func(ctx context.Context) error {
-			return workflow.NotYetImplemented(term, "CloudFront")
 		},
 	}
 

@@ -16,6 +16,8 @@ type S3Actions struct {
 	SyncDirectory           func(ctx context.Context) error
 	BrowseObjects           func(ctx context.Context) error
 	ManageLifecyclePolicies func(ctx context.Context) error
+	DeleteObjectsByPrefix   func(ctx context.Context) error
+	DeleteBucket            func(ctx context.Context) error
 	// Refresh re-fetches and re-displays the bucket listing. Called once
 	// after every successful dispatched action (DECISIONS.md, "Refresh
 	// data after each operation"), and directly for the "Show resource
@@ -39,6 +41,8 @@ var s3MenuItems = []s3Item{
 	{"Sync Local Directory to Bucket", func(a S3Actions, ctx context.Context) error { return a.SyncDirectory(ctx) }},
 	{"Browse/Manage Objects", func(a S3Actions, ctx context.Context) error { return a.BrowseObjects(ctx) }},
 	{"Manage Bucket Lifecycle Policies", func(a S3Actions, ctx context.Context) error { return a.ManageLifecyclePolicies(ctx) }},
+	{"Delete Objects by Prefix", func(a S3Actions, ctx context.Context) error { return a.DeleteObjectsByPrefix(ctx) }},
+	{"Delete Bucket", func(a S3Actions, ctx context.Context) error { return a.DeleteBucket(ctx) }},
 	{"Back to domain picker", nil},
 }
 

@@ -48,7 +48,7 @@ func storageClassLabel(sc types.TransitionStorageClass) string {
 	}
 }
 
-var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "Back"}
+var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View rule details", "Back"}
 
 func lifecycleActionLabel(s string) string { return s }
 
@@ -92,6 +92,50 @@ func displayLifecycleRules(t *termlib.Terminal, rules []types.LifecycleRule) {
 	t.Refresh()
 }
 
+// viewLifecycleRuleDetail lets the operator pick one existing rule and
+// print its full configuration -- status, filter, expiration, and every
+// transition -- without entering the Add/Edit prompts. Added after manual
+// testing found the terse ID+prefix line displayLifecycleRules already
+// prints isn't enough to check a rule's actual expiration/transition
+// schedule at a glance.
+func viewLifecycleRuleDetail(t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule) error {
+	if len(rules) == 0 {
+		t.Println("No rules to view.")
+		t.Refresh()
+		return nil
+	}
+	rule, err := ui.PickList(t, le, rules, lifecycleRuleLabel, "Select a rule to view")
+	if err != nil {
+		return err
+	}
+	printLifecycleRuleDetail(t, rule)
+	return nil
+}
+
+func printLifecycleRuleDetail(t *termlib.Terminal, r types.LifecycleRule) {
+	prefix := "(whole bucket)"
+	if r.Filter != nil && aws.ToString(r.Filter.Prefix) != "" {
+		prefix = aws.ToString(r.Filter.Prefix)
+	}
+	t.Printf("Rule %s\n", aws.ToString(r.ID))
+	t.Printf("  Status: %s\n", r.Status)
+	t.Printf("  Applies to: %s\n", prefix)
+	if r.Expiration != nil && r.Expiration.Days != nil {
+		t.Printf("  Expires after %d day(s)\n", aws.ToInt32(r.Expiration.Days))
+	} else {
+		t.Println("  No expiration set")
+	}
+	if len(r.Transitions) == 0 {
+		t.Println("  No transitions set")
+	} else {
+		t.Println("  Transitions:")
+		for _, tr := range r.Transitions {
+			t.Printf("    %d day(s) -> %s\n", aws.ToInt32(tr.Days), storageClassLabel(tr.StorageClass))
+		}
+	}
+	t.Refresh()
+}
+
 // confirmLifecycleChange gates every add/edit/remove with a reminder that
 // AWS evaluates lifecycle rules on its own ~24-48h cadence -- this
 // schedules future automated deletion/transition, not an immediate one
@@ -102,8 +146,14 @@ func confirmLifecycleChange(t *termlib.Terminal, le *termlib.LineEditor, action 
 
 // promptOptionalDays prompts for a blank-to-skip, optionally-defaulted
 // day count, used for "Expire after N days?"/"Transition after N days?"
-// style questions where blank means "don't set this action".
-func promptOptionalDays(t *termlib.Terminal, le *termlib.LineEditor, label, def string) (int32, bool, error) {
+// style questions where blank means "don't set this action". Any checks
+// run after the built-in positive-integer check, so a rule's transition
+// and expiration days can be cross-validated against each other locally
+// (see validateOrderedDays) before ever calling AWS -- PutBucketLifecycle
+// Configuration rejects a transition scheduled on or after its rule's
+// expiration, and previously that rejection only surfaced as AWS's raw
+// error message (TODO.md, found during Phase 20's real-AWS verification).
+func promptOptionalDays(t *termlib.Terminal, le *termlib.LineEditor, label, def string, checks ...func(int32) error) (int32, bool, error) {
 	var days int32
 	var set bool
 	opts := []ui.PromptOption{ui.WithValidator(func(s string) error {
@@ -116,6 +166,11 @@ func promptOptionalDays(t *termlib.Terminal, le *termlib.LineEditor, label, def 
 		if err != nil || n <= 0 {
 			return errors.New("must be blank or a positive integer")
 		}
+		for _, check := range checks {
+			if err := check(int32(n)); err != nil {
+				return err
+			}
+		}
 		days = int32(n)
 		set = true
 		return nil
@@ -127,6 +182,30 @@ func promptOptionalDays(t *termlib.Terminal, le *termlib.LineEditor, label, def 
 		return 0, false, err
 	}
 	return days, set, nil
+}
+
+// validateLessThan and validateGreaterThan return a promptOptionalDays
+// check enforcing AWS's ordering constraint on a rule's transition vs.
+// expiration days (a transition must fire strictly before the
+// expiration) -- whichever of the two is prompted for second gets
+// checked against the one already collected. limitSet is false when the
+// other action was left blank, in which case there's nothing to check.
+func validateLessThan(limit int32, limitSet bool, limitLabel string) func(int32) error {
+	return func(n int32) error {
+		if limitSet && n >= limit {
+			return fmt.Errorf("must be less than %s (%d days)", limitLabel, limit)
+		}
+		return nil
+	}
+}
+
+func validateGreaterThan(limit int32, limitSet bool, limitLabel string) func(int32) error {
+	return func(n int32) error {
+		if limitSet && n <= limit {
+			return fmt.Errorf("must be greater than %s (%d days)", limitLabel, limit)
+		}
+		return nil
+	}
 }
 
 // promptPositiveDays requires a positive integer -- used once the
@@ -171,7 +250,8 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 	if len(current.Transitions) > 0 && current.Transitions[0].Days != nil {
 		transitionDefault = strconv.Itoa(int(*current.Transitions[0].Days))
 	}
-	transitionDays, transitionSet, err := promptOptionalDays(t, le, "Transition to cheaper storage after how many days? (blank to skip)", transitionDefault)
+	transitionDays, transitionSet, err := promptOptionalDays(t, le, "Transition to cheaper storage after how many days? (blank to skip)", transitionDefault,
+		validateLessThan(expireDays, expireSet, "the expiration"))
 	if err != nil {
 		return types.LifecycleRule{}, err
 	}
@@ -288,11 +368,19 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 		transitions = append(transitions, types.Transition{Days: aws.Int32(days), StorageClass: class})
 	}
 
+	var latestTransitionDays int32
+	for _, tr := range transitions {
+		if d := aws.ToInt32(tr.Days); d > latestTransitionDays {
+			latestTransitionDays = d
+		}
+	}
+
 	expireDefault := ""
 	if current.Expiration != nil && current.Expiration.Days != nil {
 		expireDefault = strconv.Itoa(int(*current.Expiration.Days))
 	}
-	expireDays, expireSet, err := promptOptionalDays(t, le, "Expire objects after how many days? (blank to skip)", expireDefault)
+	expireDays, expireSet, err := promptOptionalDays(t, le, "Expire objects after how many days? (blank to skip)", expireDefault,
+		validateGreaterThan(latestTransitionDays, len(transitions) > 0, "the latest transition"))
 	if err != nil {
 		return types.LifecycleRule{}, err
 	}
@@ -449,53 +537,62 @@ func ManageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 		return err
 	}
 
-	rules, err := getLifecycleRules(ctx, client, bucket.Name)
-	if err != nil {
-		return fmt.Errorf("getting lifecycle configuration for bucket %s: %w", bucket.Name, err)
-	}
-	displayLifecycleRules(t, rules)
-
-	action, err := ui.PickList(t, le, lifecycleActions, lifecycleActionLabel, "Choose an action")
-	if err != nil {
-		return cancelledIsNil(t, err)
-	}
-
-	var newRules []types.LifecycleRule
-	var proceed bool
-	switch action {
-	case "Add rule":
-		newRules, proceed, err = addLifecycleRule(t, le, bucket.Purpose, rules)
-	case "Edit rule":
-		newRules, proceed, err = editLifecycleRule(t, le, bucket.Purpose, rules)
-	case "Remove rule":
-		newRules, proceed, err = removeLifecycleRule(t, le, rules)
-	default: // "Back"
-		return nil
-	}
-	if err != nil {
-		return cancelledIsNil(t, err)
-	}
-	if !proceed {
-		return nil
-	}
-
-	// PutBucketLifecycleConfiguration rejects an empty Rules list client-side
-	// (a required field) -- confirmed via real-AWS verification when
-	// removing a bucket's last remaining rule. Clearing the configuration
-	// entirely goes through the separate DeleteBucketLifecycle operation
-	// instead (see DECISIONS.md).
-	if len(newRules) == 0 {
-		if _, err := client.DeleteBucketLifecycle(ctx, &s3.DeleteBucketLifecycleInput{Bucket: aws.String(bucket.Name)}); err != nil {
-			return fmt.Errorf("clearing lifecycle configuration for bucket %s: %w", bucket.Name, err)
+	for {
+		rules, err := getLifecycleRules(ctx, client, bucket.Name)
+		if err != nil {
+			return fmt.Errorf("getting lifecycle configuration for bucket %s: %w", bucket.Name, err)
 		}
-	} else if _, err := client.PutBucketLifecycleConfiguration(ctx, &s3.PutBucketLifecycleConfigurationInput{
-		Bucket:                 aws.String(bucket.Name),
-		LifecycleConfiguration: &types.BucketLifecycleConfiguration{Rules: newRules},
-	}); err != nil {
-		return fmt.Errorf("updating lifecycle configuration for bucket %s: %w", bucket.Name, err)
-	}
+		displayLifecycleRules(t, rules)
 
-	t.Printf("Updated lifecycle configuration for bucket %s (%d rule(s)).\n", bucket.Name, len(newRules))
-	t.Refresh()
-	return nil
+		action, err := ui.PickList(t, le, lifecycleActions, lifecycleActionLabel, "Choose an action")
+		if err != nil {
+			return cancelledIsNil(t, err)
+		}
+
+		if action == "View rule details" {
+			if err := viewLifecycleRuleDetail(t, le, rules); err != nil {
+				return cancelledIsNil(t, err)
+			}
+			continue // read-only -- back to the action menu, not out of the workflow
+		}
+
+		var newRules []types.LifecycleRule
+		var proceed bool
+		switch action {
+		case "Add rule":
+			newRules, proceed, err = addLifecycleRule(t, le, bucket.Purpose, rules)
+		case "Edit rule":
+			newRules, proceed, err = editLifecycleRule(t, le, bucket.Purpose, rules)
+		case "Remove rule":
+			newRules, proceed, err = removeLifecycleRule(t, le, rules)
+		default: // "Back"
+			return nil
+		}
+		if err != nil {
+			return cancelledIsNil(t, err)
+		}
+		if !proceed {
+			return nil
+		}
+
+		// PutBucketLifecycleConfiguration rejects an empty Rules list client-side
+		// (a required field) -- confirmed via real-AWS verification when
+		// removing a bucket's last remaining rule. Clearing the configuration
+		// entirely goes through the separate DeleteBucketLifecycle operation
+		// instead (see DECISIONS.md).
+		if len(newRules) == 0 {
+			if _, err := client.DeleteBucketLifecycle(ctx, &s3.DeleteBucketLifecycleInput{Bucket: aws.String(bucket.Name)}); err != nil {
+				return fmt.Errorf("clearing lifecycle configuration for bucket %s: %w", bucket.Name, err)
+			}
+		} else if _, err := client.PutBucketLifecycleConfiguration(ctx, &s3.PutBucketLifecycleConfigurationInput{
+			Bucket:                 aws.String(bucket.Name),
+			LifecycleConfiguration: &types.BucketLifecycleConfiguration{Rules: newRules},
+		}); err != nil {
+			return fmt.Errorf("updating lifecycle configuration for bucket %s: %w", bucket.Name, err)
+		}
+
+		t.Printf("Updated lifecycle configuration for bucket %s (%d rule(s)).\n", bucket.Name, len(newRules))
+		t.Refresh()
+		return nil
+	}
 }

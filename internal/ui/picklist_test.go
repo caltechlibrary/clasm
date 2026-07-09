@@ -181,3 +181,72 @@ func TestPickList_SelectionAcrossPagesUsesGlobalNumbering(t *testing.T) {
 		t.Errorf("got %q, want %q", got, items[0])
 	}
 }
+
+func TestPickList_FilterNarrowsListByLabelSubstring(t *testing.T) {
+	term, le, buf := newPipeEditor(t, "ta\n1\n")
+	items := []string{"alpha", "beta", "gamma"}
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// "ta" only matches "beta"; "1" then picks it -- not "alpha", which
+	// would be item 1 of the original, unfiltered list.
+	if got != "beta" {
+		t.Errorf("got %q, want %q", got, "beta")
+	}
+	// The re-rendered list after the filter is applied should show only
+	// the match, not the other two original items.
+	out := buf.String()
+	afterFilter := out[strings.LastIndex(out, "Filter"):]
+	if contains(afterFilter, "alpha") || contains(afterFilter, "gamma") {
+		t.Errorf("expected non-matching items to be hidden once filtered, got:\n%s", afterFilter)
+	}
+}
+
+func TestPickList_FilterIsCaseInsensitive(t *testing.T) {
+	term, le, _ := newPipeEditor(t, "GAM\n1\n")
+	items := []string{"alpha", "beta", "gamma"}
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "gamma" {
+		t.Errorf("got %q, want %q", got, "gamma")
+	}
+}
+
+func TestPickList_FilterWithNoMatchesKeepsPriorList(t *testing.T) {
+	term, le, buf := newPipeEditor(t, "zzz\n1\n")
+	items := []string{"alpha", "beta", "gamma"}
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "alpha" {
+		t.Errorf("got %q, want %q", got, "alpha")
+	}
+	if !contains(buf.String(), "no matches") {
+		t.Errorf("expected a no-matches message, got:\n%s", buf.String())
+	}
+}
+
+func TestPickList_EmptyInputClearsFilter(t *testing.T) {
+	term, le, buf := newPipeEditor(t, "ta\n\n1\n")
+	items := []string{"alpha", "beta", "gamma"}
+
+	got, err := PickList(term, le, items, func(s string) string { return s }, "Select an item")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// After clearing the filter with a blank line, "1" picks the first
+	// item of the full, unfiltered list again.
+	if got != "alpha" {
+		t.Errorf("got %q, want %q", got, "alpha")
+	}
+	if !contains(buf.String(), "alpha") {
+		t.Errorf("expected the full list to be shown again after clearing the filter, got:\n%s", buf.String())
+	}
+}

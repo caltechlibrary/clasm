@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -67,6 +68,11 @@ func ListBuckets(ctx context.Context, client awsclient.S3API, newClient func(ctx
 		}
 		all = append(all, r.bucket)
 	}
+	// The fan-out above completes in whatever order each goroutine's AWS
+	// calls happen to finish, so without this the list's order would be
+	// nondeterministic run to run. Sorting by name also lets an operator
+	// find a known bucket by eye instead of scanning an unordered list.
+	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
 	return all, nil
 }
 

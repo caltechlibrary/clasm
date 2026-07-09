@@ -75,6 +75,9 @@ type fakeS3Client struct {
 
 	deleteBucketLifecycleErr   error
 	deleteBucketLifecycleCalls []s3.DeleteBucketLifecycleInput
+
+	deleteBucketErr   error
+	deleteBucketCalls []s3.DeleteBucketInput
 }
 
 func (f *fakeS3Client) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {

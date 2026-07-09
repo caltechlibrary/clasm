@@ -25,7 +25,9 @@ import (
 // DeleteBucketLifecycle added after real-AWS verification surfaced that
 // PutBucketLifecycleConfiguration rejects an empty Rules list client-side
 // (a required field), so clearing the last remaining rule must go through
-// this separate operation instead (see DECISIONS.md). Not adding
+// this separate operation instead (see DECISIONS.md). DeleteBucket
+// supports Delete Bucket; Delete Bucket also reuses ListObjectsV2 to
+// confirm a bucket is empty before calling it. Not adding
 // PutBucketPolicy/GetObject -- the former is only needed by the deferred
 // public-read opt-out, the latter isn't needed since object content
 // itself is never downloaded.
@@ -46,6 +48,7 @@ type S3API interface {
 	GetBucketLifecycleConfiguration(ctx context.Context, params *s3.GetBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.GetBucketLifecycleConfigurationOutput, error)
 	PutBucketLifecycleConfiguration(ctx context.Context, params *s3.PutBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.PutBucketLifecycleConfigurationOutput, error)
 	DeleteBucketLifecycle(ctx context.Context, params *s3.DeleteBucketLifecycleInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketLifecycleOutput, error)
+	DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error)
 }
 
 // NewS3Client constructs an S3 client from the SDK's default credential

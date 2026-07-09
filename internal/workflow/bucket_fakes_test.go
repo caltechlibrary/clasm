@@ -156,6 +156,14 @@ func (f *fakeS3Client) DeleteBucketLifecycle(ctx context.Context, params *s3.Del
 	return &s3.DeleteBucketLifecycleOutput{}, nil
 }
 
+func (f *fakeS3Client) DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error) {
+	f.deleteBucketCalls = append(f.deleteBucketCalls, *params)
+	if f.deleteBucketErr != nil {
+		return nil, f.deleteBucketErr
+	}
+	return &s3.DeleteBucketOutput{}, nil
+}
+
 // sameS3Client (backup_archive_test.go) already covers "one fake, any
 // region"; newRegionS3Client additionally records which region each call
 // was requested for, when a bucket_*_test.go needs to assert a workflow

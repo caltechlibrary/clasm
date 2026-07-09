@@ -1,6 +1,6 @@
-%awsops(1) user manual | version 0.0.0 b9436ac
+%awsops(1) user manual | version 0.0.0 178b11c
 % R. S. Doiel
-% 2026-07-08
+% 2026-07-09
 
 # NAME
 

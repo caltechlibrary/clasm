@@ -15,15 +15,14 @@ import (
 // cancelled ctx), which is still reported as nil -- see RunDomainPicker.
 var ErrBackToDomainPicker = errors.New("back to domain picker")
 
-// DomainActions bundles the four domain-loop entry points RunDomainPicker
-// dispatches to (DESIGN.md, "Navigation: Domain Picker"). CloudFront is
-// not yet implemented (PLAN.md Phase 21); main.go wires it to
-// NotYetImplemented until then.
+// DomainActions bundles the domain-loop entry points RunDomainPicker
+// dispatches to (DESIGN.md, "Navigation: Domain Picker"). CloudFront
+// (PLAN.md Phase 21) is postponed to a much later version and
+// deliberately not wired into the picker.
 type DomainActions struct {
 	Compute       func(ctx context.Context) error
 	KeyManagement func(ctx context.Context) error
 	S3            func(ctx context.Context) error
-	CloudFront    func(ctx context.Context) error
 }
 
 // domainItem pairs a domain-picker label with the DomainActions field it
@@ -38,7 +37,6 @@ var domainItems = []domainItem{
 	{"Compute (EC2 & AMI)", func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
 	{"Key Management", func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
 	{"S3 (Buckets & Static Websites)", func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
-	{"CloudFront", func(a DomainActions, ctx context.Context) error { return a.CloudFront(ctx) }},
 	{"Exit", nil},
 }
 

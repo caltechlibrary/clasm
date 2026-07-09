@@ -27,7 +27,7 @@ func TestManageBucketLifecyclePolicies_NoBucketsFound(t *testing.T) {
 func TestManageBucketLifecyclePolicies_NoSuchLifecycleConfigurationIsNotAnError(t *testing.T) {
 	fake := &fakeS3Client{getBucketLifecycleErr: awsAPIError("NoSuchLifecycleConfiguration")}
 	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}}
-	input := "1\n" + "4\n" // pick bucket, Back
+	input := "1\n" + "5\n" // pick bucket, Back
 
 	term, le, buf := newPipeEditor(t, input)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
@@ -45,8 +45,8 @@ func TestManageBucketLifecyclePolicies_BackupPurposeAddGuidedFlow(t *testing.T) 
 	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "backup"}}
 	input := "1\n" + // pick bucket
 		"1\n" + // Add rule
-		"30\n" + // expire after 30 days
-		"90\n" + // transition after 90 days
+		"90\n" + // expire after 90 days
+		"30\n" + // transition after 30 days (before the expiration)
 		"1\n" + // storage class: Standard-IA (first of the curated 4)
 		"\n" + // prefix blank
 		"y\n" // confirm
@@ -66,11 +66,46 @@ func TestManageBucketLifecyclePolicies_BackupPurposeAddGuidedFlow(t *testing.T) 
 		t.Fatalf("rules = %+v, want 1", rules)
 	}
 	r := rules[0]
+	if aws.ToInt32(r.Expiration.Days) != 90 {
+		t.Errorf("expiration days = %d, want 90", aws.ToInt32(r.Expiration.Days))
+	}
+	if len(r.Transitions) != 1 || aws.ToInt32(r.Transitions[0].Days) != 30 || r.Transitions[0].StorageClass != types.TransitionStorageClassStandardIa {
+		t.Errorf("transitions = %+v, want one 30-day transition to Standard-IA", r.Transitions)
+	}
+}
+
+func TestManageBucketLifecyclePolicies_BackupGuidedRejectsTransitionNotBeforeExpiration(t *testing.T) {
+	fake := &fakeS3Client{}
+	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "backup"}}
+	input := "1\n" + // pick bucket
+		"1\n" + // Add rule
+		"30\n" + // expire after 30 days
+		"30\n" + // transition after 30 days -- rejected, not before expiration
+		"90\n" + // rejected too -- still not before expiration
+		"10\n" + // transition after 10 days -- accepted
+		"1\n" + // storage class: Standard-IA
+		"\n" + // prefix blank
+		"y\n" // confirm
+
+	term, le, buf := newPipeEditor(t, input)
+	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
+
+	if err := ManageBucketLifecyclePolicies(context.Background(), term, le, newClient, buckets); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "must be less than the expiration") {
+		t.Errorf("expected a local rejection message, got:\n%s", buf.String())
+	}
+
+	if len(fake.putBucketLifecycleCalls) != 1 {
+		t.Fatalf("putBucketLifecycleCalls = %d, want 1", len(fake.putBucketLifecycleCalls))
+	}
+	r := fake.putBucketLifecycleCalls[0].LifecycleConfiguration.Rules[0]
 	if aws.ToInt32(r.Expiration.Days) != 30 {
 		t.Errorf("expiration days = %d, want 30", aws.ToInt32(r.Expiration.Days))
 	}
-	if len(r.Transitions) != 1 || aws.ToInt32(r.Transitions[0].Days) != 90 || r.Transitions[0].StorageClass != types.TransitionStorageClassStandardIa {
-		t.Errorf("transitions = %+v, want one 90-day transition to Standard-IA", r.Transitions)
+	if len(r.Transitions) != 1 || aws.ToInt32(r.Transitions[0].Days) != 10 {
+		t.Errorf("transitions = %+v, want one 10-day transition", r.Transitions)
 	}
 }
 
@@ -127,6 +162,48 @@ func TestManageBucketLifecyclePolicies_GenericPurposeAddNamedRule(t *testing.T) 
 	}
 	if rules[0].Expiration != nil {
 		t.Errorf("expiration = %+v, want nil (left blank)", rules[0].Expiration)
+	}
+}
+
+func TestManageBucketLifecyclePolicies_GenericAddRejectsExpirationNotAfterLatestTransition(t *testing.T) {
+	fake := &fakeS3Client{}
+	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}}
+	firstStorageClass := types.TransitionStorageClass("").Values()[0]
+	input := "1\n" + // pick bucket
+		"1\n" + // Add rule
+		"my-rule\n" + // rule ID
+		"\n" + // prefix blank
+		"y\n" + // add a transition
+		"60\n" + // transition days
+		"1\n" + // storage class (first of the full enum)
+		"n\n" + // no more transitions
+		"60\n" + // expire after 60 days -- rejected, not after the transition
+		"30\n" + // rejected too -- before the transition
+		"90\n" + // expire after 90 days -- accepted
+		"y\n" // confirm
+
+	term, le, buf := newPipeEditor(t, input)
+	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
+
+	if err := ManageBucketLifecyclePolicies(context.Background(), term, le, newClient, buckets); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "must be greater than the latest transition") {
+		t.Errorf("expected a local rejection message, got:\n%s", buf.String())
+	}
+
+	if len(fake.putBucketLifecycleCalls) != 1 {
+		t.Fatalf("putBucketLifecycleCalls = %d, want 1", len(fake.putBucketLifecycleCalls))
+	}
+	rules := fake.putBucketLifecycleCalls[0].LifecycleConfiguration.Rules
+	if len(rules) != 1 || aws.ToString(rules[0].ID) != "my-rule" {
+		t.Fatalf("rules = %+v, want one rule named my-rule", rules)
+	}
+	if len(rules[0].Transitions) != 1 || aws.ToInt32(rules[0].Transitions[0].Days) != 60 || rules[0].Transitions[0].StorageClass != firstStorageClass {
+		t.Errorf("transitions = %+v, want one 60-day transition to %s", rules[0].Transitions, firstStorageClass)
+	}
+	if aws.ToInt32(rules[0].Expiration.Days) != 90 {
+		t.Errorf("expiration days = %d, want 90", aws.ToInt32(rules[0].Expiration.Days))
 	}
 }
 
@@ -269,7 +346,7 @@ func TestManageBucketLifecyclePolicies_EditWithNoRulesReportsAndSkipsPut(t *test
 func TestManageBucketLifecyclePolicies_BackActionSkipsPut(t *testing.T) {
 	fake := &fakeS3Client{lifecycleRules: []types.LifecycleRule{{ID: aws.String("r1"), Status: types.ExpirationStatusEnabled}}}
 	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}}
-	input := "1\n" + "4\n"
+	input := "1\n" + "5\n"
 
 	term, le, _ := newPipeEditor(t, input)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
@@ -279,6 +356,58 @@ func TestManageBucketLifecyclePolicies_BackActionSkipsPut(t *testing.T) {
 	}
 	if len(fake.putBucketLifecycleCalls) != 0 {
 		t.Errorf("putBucketLifecycleCalls = %d, want 0", len(fake.putBucketLifecycleCalls))
+	}
+}
+
+func TestManageBucketLifecyclePolicies_ViewRuleDetailShowsFullConfigWithoutEditing(t *testing.T) {
+	fake := &fakeS3Client{lifecycleRules: []types.LifecycleRule{
+		{
+			ID:          aws.String("r1"),
+			Status:      types.ExpirationStatusEnabled,
+			Filter:      &types.LifecycleRuleFilter{Prefix: aws.String("logs/")},
+			Expiration:  &types.LifecycleExpiration{Days: aws.Int32(30)},
+			Transitions: []types.Transition{{Days: aws.Int32(10), StorageClass: types.TransitionStorageClassGlacier}},
+		},
+	}}
+	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}}
+	// pick bucket, View rule details, pick r1 (viewing loops back to the
+	// action menu instead of exiting), View again, pick r1 again, Back.
+	input := "1\n" + "4\n" + "1\n" + "4\n" + "1\n" + "5\n"
+
+	term, le, buf := newPipeEditor(t, input)
+	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
+
+	if err := ManageBucketLifecyclePolicies(context.Background(), term, le, newClient, buckets); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"Rule r1", "logs/", "Expires after 30 day(s)", "10 day(s) -> Glacier Flexible Retrieval"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected output to contain %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "Rule r1") < 2 {
+		t.Errorf("expected the rule detail to be shown twice (once per View), got:\n%s", out)
+	}
+	if len(fake.putBucketLifecycleCalls) != 0 {
+		t.Errorf("putBucketLifecycleCalls = %d, want 0 -- viewing must not write anything", len(fake.putBucketLifecycleCalls))
+	}
+}
+
+func TestManageBucketLifecyclePolicies_ViewRuleDetailWithNoRules(t *testing.T) {
+	fake := &fakeS3Client{}
+	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}}
+	input := "1\n" + "4\n" + "5\n" // pick bucket, View rule details (none exist), Back
+
+	term, le, buf := newPipeEditor(t, input)
+	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
+
+	if err := ManageBucketLifecyclePolicies(context.Background(), term, le, newClient, buckets); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No rules to view") {
+		t.Errorf("expected a no-rules-to-view message, got:\n%s", buf.String())
 	}
 }
 
