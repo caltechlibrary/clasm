@@ -12,7 +12,9 @@
     }
   ],
   "dateCreated": "2026-06-30",
-  "description": "Interactive Go CLI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.",
+  "dateModified": "2026-07-09",
+  "datePublished": "2026-07-09",
+  "description": "Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.",
   "name": "clasm",
   "operatingSystem": [
     "POSIX"

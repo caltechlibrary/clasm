@@ -1,52 +1,42 @@
 
+
 # clasm
 
-Interactive Go CLI (`clasm`) for administering AWS EC2 instances, AMIs,
-and S3 backup archives for Caltech Library DLD's infrastructure. Its
-primary use case today is managing instances behind this team's Invenio
-RDM deployments, but nothing in its mechanisms (tagging, backup
-archival, cloud-init inspection) is RDM-specific.
-
-Run `clasm` with no arguments to launch the interactive menu: pick a
-domain (today: Compute -- EC2 & AMI; Key Management, S3, and CloudFront
-are planned, see [DESIGN.md](DESIGN.md)), and it lists current
-resources before presenting a numbered menu of operations.
+Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
 
 ## Release Notes
 
-- version: 0.0.0
+- version: 0.0.1
 - status: active
+- released: 2026-07-09
 
-Real-AWS verified as of 2026-07-08 (`TEST_PLAN_REAL_AWS.txt`, 112/112
-checks): EC2 instance and AMI lifecycle management, tag management,
-cloud-init inspection, and S3 backup archive & trim, across two AWS
-regions (us-west-1, us-west-2).
+First tagged release. Core functionality complete, real-AWS verified: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim across two AWS regions; Key Management (key pairs); S3 domain (buckets, static website hosting, directory sync, object browsing, bulk object/bucket delete, lifecycle policies with local ordering validation). CloudFront and a UI/UX pass (evaluating charmbracelet/huh as a termlib successor) are postponed to a later version.
+
 
 ### Authors
 
 - Doiel, R. S.
 
+
+
 ## Software Requirements
 
-- Go >= 1.26 (to build from source; a pre-built release binary needs
-  nothing else)
-- AWS credentials resolvable by the AWS SDK's default chain
-  (`~/.aws/credentials`, `~/.aws/config`, environment variables, or SSO)
-- SSM Agent (and, for backup archival specifically, the AWS CLI) on
-  target EC2 instances -- only required for the cloud-init-status and
-  Backup Archive & Trim features
+- Go >= 1.26
+- CMTools >= 0.0.46
 
-See [software_requirements.md](software_requirements.md) for the full
-list, including required IAM permissions.
+### Software Suggestions
 
-## Documentation
+- GNU Make >= 3.8
+- Pandoc >= 3.9
 
-- [User Manual](user_manual.md)
-- [Installation](INSTALL.md)
-- [Design](DESIGN.md)
-- [Decisions](DECISIONS.md)
-- [About](about.md)
+
 
 ## Related resources
 
+
+
 - [Getting Help, Reporting bugs](https://github.com/caltechlibrary/clasm/issues)
+
+- [Installation](INSTALL.md)
+- [About](about.md)
+
