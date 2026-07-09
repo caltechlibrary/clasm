@@ -1,72 +1,106 @@
-clasm — where we left off (2026-07-09, end of file-manager implementation session)
+clasm — where we left off (2026-07-09, end of file-manager real-bucket-testing session)
 ==============================================================================
 
 STATUS: PLAN.md Phase 20.1 (the S3 domain's interactive file manager,
-DESIGN.md Features 21.2-21.8) is implemented and unit-tested.
-`go build ./...`, `go vet ./...`, and `go test ./... -race` are all
-clean. Nothing is staged or committed -- that's the user's to do. This
-file supersedes the 2026-07-09T220000Z version of itself (the rename +
-design pass, which left this phase "designed, not started").
+DESIGN.md Features 21.2-21.8) shipped earlier today and went through
+several real-bucket (test-clasm) bug-fix rounds the same day. The user
+tested it live, reported problems one at a time, and each was
+diagnosed and fixed same-session. End of day: "I am happy with the
+current state of the object browser." `go build ./...`, `go vet
+./...`, and `go test ./... -race` are all clean. Nothing is staged or
+committed -- that's the user's to do. This file supersedes the
+2026-07-09T220000Z version of itself (the rename + design pass, which
+left this phase "designed, not started"; the day's actual
+implementation and every bug-fix round is described in full in this
+session's hand-off, agents/hand-off/
+2026-07-09T235500Z-clasm-phase20.1-implementation-and-fixes.spmd --
+this file intentionally does not repeat that log, it focuses on what's
+next).
 
-What shipped this session
+NEXT UP: migrate the S3 domain's menu and bucket-selection to huh
 --------------------------------------------------------------------
 
-- `internal/filemanager`, a new package holding a scoped `bubbletea`
-  `Model` -- single-pane (bucket only) or double-pane (bucket + a
-  linked local directory), sharing one Model/Update/View. Covers:
-  navigation (arrow keys, Enter/Backspace), tagging (`Space`/`*`),
-  per-level substring filter (`f`/`/`), Upload/Download/Delete/Show
-  metadata actions with a Confirm/ConfirmDestructive/progress modal
-  overlay, mid-session link/unlink (`l`), a dedicated Sync action
-  (`S`/`:sync` -- whole-tree diff against the bucket, added mid-session
-  after the user confirmed it was worth building rather than relying on
-  manual tag-and-act), Find (`F`/`:find <pattern>`, recursive
-  glob-on-basename), and a `:`-prefixed command line mirroring every
-  hotkey.
-- `internal/s3diff`, a new package holding the key+size diff logic
-  (`Compute`/`WalkLocalTree`/`ListAllBucketObjects`/`UploadFile`/
-  `ValidateLocalDirectory`) extracted from the now-deleted
-  `bucket_sync.go` -- both `internal/workflow` (Delete Bucket doesn't
-  need it, but the pattern of "extract instead of duplicate" applied
-  here too) and `internal/filemanager` depend on it, avoiding a
-  workflow<->filemanager import cycle while keeping the logic in one
-  place.
-- `s3:GetObject` added to `S3API` (+ logging wrapper + fake) --
-  completes Create/Update/Read/Delete parity for S3.
-- `github.com/charmbracelet/huh` added as a dependency for the file
-  manager's own bucket-selection pre-flight
-  (`internal/workflow/object_browser.go`); every other S3 wizard is
-  unaffected, still on termlib.
-- Retired: `bucket_browse.go`'s single-object wizard,
-  `bucket_delete_objects.go`'s prefix-delete wizard, and
-  `bucket_sync.go`'s directory-sync wizard -- all three are now
-  reachable from one "Browse & Manage Objects" menu entry
-  (`s3_menu.go`, `main.go` updated). `bucket_browse.go` keeps only
-  `listBucketObjectsWithPrefix` (Delete Bucket's empty-check still
-  needs it).
-- Tests use `github.com/charmbracelet/x/exp/teatest` -- resolves
-  PLAN.md's open "how do you test a bubbletea Model" question. Caught
-  one real data race via `go test -race` (a background action
-  goroutine mutating pane state directly instead of only sending over
-  its progress channel) -- fixed; see DECISIONS.md for the general rule
-  this sets for any future action added to this Model.
+The user's own next request, not yet started: "Let's replace the S3
+management menu and display of buckets with the huh module."
 
-Full detail: DECISIONS.md's newest entry ("Extract internal/s3diff; add
-a dedicated Sync action to the file manager; use x/exp/teatest for
-Model tests"), PLAN.md Phase 20.1 (updated work-item checkboxes and
-file list), DESIGN.md's "S3 Object Management — Interactive File
-Manager" addendum and 21.6.
+Scope (confirmed via research this session, see DECISIONS.md/hand-off
+for detail):
 
-NOT DONE YET, ON PURPOSE
+1. `RunS3Menu` (`internal/workflow/s3_menu.go`, the 7-item action
+   picker: Show resource lists / Create Bucket / Configure Static
+   Website Hosting / Browse & Manage Objects / Manage Bucket Lifecycle
+   Policies / Delete Bucket / Back to domain picker) -> `huh.Select`.
+2. The bucket-selection step inside `ConfigureBucketWebsite`
+   (bucket_website.go), `ManageBucketLifecyclePolicies`
+   (bucket_lifecycle.go), and `DeleteBucket` (bucket_delete.go) --
+   currently `ui.PickList(t, le, buckets, bucketLabel, "Select a
+   bucket")` -- -> `huh.Select`, reusing the exact
+   `runFieldWithHelp`/`huhCancelledIsNil` pattern already established in
+   `internal/workflow/object_browser.go`.
+3. `CreateBucket` is explicitly OUT of scope (it creates a new bucket,
+   doesn't select an existing one). The rest of each of those three
+   workflows -- website field prompts, lifecycle rule editing, the
+   destructive delete confirm -- stays on termlib for now, same
+   incremental one-piece-at-a-time approach already used for the file
+   manager. Don't let this expand into a full per-workflow migration
+   unless asked.
+
+Also folds in a wording/navigation fix the user asked for directly
+(TODO.md, "UX improvements" section, added 2026-07-09): "exit",
+"cancel", and "back to ..." are used inconsistently across this app's
+menus. The user is OK standardizing on "quit" to close a menu (which
+should just back you up one level in the hierarchy), with "cancel"
+reserved for aborting an in-progress action, not for closing a menu.
+Concretely for this piece of work: right now, aborting (Ctrl-C/Esc)
+*anywhere* inside the S3 menu exits the whole program (`isExitSignal`
+treats it as a real quit) -- change this so aborting the newly-huh-
+converted top-level S3 menu returns `ErrBackToDomainPicker` (back one
+level, to the domain picker) instead. Scope this behavior change to
+just the S3 menu for now; leave a note that Compute/Key Management's
+still-termlib menus should get the same fix when they're migrated
+later -- don't silently change their behavior as a side effect of this
+work.
+
+Open question to resolve FIRST, before writing more untested huh code:
+`internal/workflow/object_browser.go` (the only existing huh usage in
+this codebase) currently has zero test coverage. huh's real
+interactive `Field.Run()`/`Form.Run()` isn't pipe-testable the way
+termlib's `newPipeEditor` pattern is (see confirm_test.go). Investigated
+this session but not resolved: huh's accessible-mode text format is
+confirmed from source --
+- `Select.RunAccessible`: writes the title, then `"%d. %s\n"` per
+  option (1-indexed), then `"Enter a number between 1 and N: "`; reads
+  one line.
+- `Confirm.RunAccessible`: writes title + `" [y/N]"`/`" [Y/n]"`; reads
+  one line, parses y/yes/n/no/blank.
+- Both go through `bufio.Scanner` reading one newline-delimited line
+  per field, and (unlike termlib) never propagate an error on EOF --
+  a pipe test harness must supply complete valid lines, not rely on an
+  error signal.
+- `Form.runAccessible` iterates every group/field in sequence, ignoring
+  each field's own error return, writing a blank line after each.
+
+Not yet tried: whether `huh.NewForm(...).WithAccessible(true).
+WithInput(pipeReader).WithOutput(&buf).Run()` (forcing accessible mode
+explicitly, rather than relying on the `TERM=dumb` auto-detection)
+gives a clean, reliable pipe-testable path for `RunS3Menu` and the
+three bucket-selection call sites above. Resolve this first -- if it
+works, use it for all four huh call sites in this piece of work AND
+retroactively for `object_browser.go`; if it turns out genuinely not
+pipe-testable, say so explicitly (matching how PLAN.md documented the
+bubbletea-Model testing question before teatest resolved it) rather
+than silently shipping more untested huh code.
+
+Other unclaimed threads (lower priority, ask before picking one)
 --------------------------------------------------------------------
 
-- Not verified against real AWS yet -- PLAN.md Phase 22 still covers
-  this (already scoped to S3 generally; the file manager routes
-  through the same `S3API` calls Phase 22 already planned to exercise).
-  Suggested next step when picking this back up: walk the file
-  manager's Upload/Download/Delete/Sync/Find flows against a real
-  throwaway bucket, same `[ok]`-marker convention as
-  `TEST_PLAN_REAL_AWS.txt`'s existing sections.
+- Not verified against real AWS yet via the *formal* test plan --
+  PLAN.md Phase 22 still covers this (already scoped to S3 generally;
+  the file manager routes through the same `S3API` calls Phase 22
+  already planned to exercise), even though today's ad hoc real-bucket
+  testing exercised most of it informally already. Suggested next
+  step: walk `TEST_PLAN_REAL_AWS.txt`'s S3 section formally, checking
+  off items as today's testing already covered them.
 - Batch delete via `s3:DeleteObjects` (up to 1000 keys/call) instead of
   the current one-`DeleteObject`-per-key loop in the file manager's
   Delete/Sync actions: still an open "nice to have" (TODO.md), not
@@ -77,14 +111,16 @@ NOT DONE YET, ON PURPOSE
 - The S3 lifecycle policy ID string "awsops-backup-policy"
   (`internal/workflow/bucket_lifecycle.go`) is still deliberately
   un-renamed -- ask before touching it (see the rename hand-off).
-- huh/bubbletea adoption elsewhere in `internal/workflow` (Compute, Key
+- huh/bubbletea adoption beyond the S3 domain (Compute, Key
   Management, ~35 other wizard call sites): still deliberately
-  deferred. Nothing about finishing the S3 domain's file manager
-  commits to migrating the rest.
+  deferred. The S3-menu/bucket-selection work above is the next
+  *piece*, not a signal to expand scope further without being asked.
 
 Git state: the user commits, pushes, tags, and handles the GitHub repo
 rename themselves -- never run git commit/push/tag/release without
-being explicitly asked. See agents/knowledge.db (query: clasm, or
-MATCH '"file manager"' / '"s3diff"' for this session specifically) and
-agents/hand-off/2026-07-09T220000Z-clasm-rename.spmd for the prior
-rename session's detail.
+being explicitly asked. See agents/knowledge.db (project "clasm", or
+`MATCH '"huh"'` / `MATCH '"file manager"'` for this session
+specifically) and agents/hand-off/
+2026-07-09T235500Z-clasm-phase20.1-implementation-and-fixes.spmd for
+this session's full detail; agents/hand-off/
+2026-07-09T220000Z-clasm-rename.spmd for the prior rename session's.
