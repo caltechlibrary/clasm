@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -48,9 +50,22 @@ func storageClassLabel(sc types.TransitionStorageClass) string {
 	}
 }
 
-var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View rule details", "Back"}
+// lifecycleActions is DESIGN.md's lifecycle action menu. No "Back" entry
+// -- DECISIONS.md, "TUI keybinding conventions": 'q' is the universal
+// back key everywhere, so a redundant menu item would just be a second
+// way to do the same thing (matching s3MenuItems' own drop of "Back to
+// domain picker" in Phase 20.7).
+var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View rule details"}
 
-func lifecycleActionLabel(s string) string { return s }
+// pickLifecycleAction runs the lifecycle action menu as a huh.Select
+// (PLAN.md Phase 20.9), reusing the same q-quit-key/accessible-mode-
+// testability pattern established for RunS3Menu (Phase 20.2/20.7) via
+// pickString. input/output are nil in production (the field runs
+// interactively on the real terminal) or supplied by tests to drive it
+// through its accessible-mode pipe path instead.
+func pickLifecycleAction(t *termlib.Terminal, input io.Reader, output io.Writer) (string, error) {
+	return pickString(t, "Choose an action", "(q to go back)", lifecycleActions, input, output)
+}
 
 func lifecycleRuleLabel(r types.LifecycleRule) string {
 	prefix := "(whole bucket)"
@@ -58,6 +73,26 @@ func lifecycleRuleLabel(r types.LifecycleRule) string {
 		prefix = aws.ToString(r.Filter.Prefix)
 	}
 	return fmt.Sprintf("%s [%s]", aws.ToString(r.ID), prefix)
+}
+
+// pickLifecycleRule runs a Picker-tier tui.RunPicker (DESIGN.md's full
+// conversion punch list) over rules and returns the chosen one. Like
+// pickInstance/pickImage/pickSubnet, this drives a real bubbletea
+// Program that can't be pipe-tested.
+func pickLifecycleRule(ctx context.Context, title string, rules []types.LifecycleRule) (types.LifecycleRule, error) {
+	rows := make([]string, len(rules))
+	for i, r := range rules {
+		rows[i] = lifecycleRuleLabel(r)
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return types.LifecycleRule{}, err
+	}
+	return rules[idx], nil
 }
 
 func isS3ErrorCode(err error, code string) bool {
@@ -98,13 +133,13 @@ func displayLifecycleRules(t *termlib.Terminal, rules []types.LifecycleRule) {
 // testing found the terse ID+prefix line displayLifecycleRules already
 // prints isn't enough to check a rule's actual expiration/transition
 // schedule at a glance.
-func viewLifecycleRuleDetail(t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule) error {
+func viewLifecycleRuleDetail(ctx context.Context, t *termlib.Terminal, rules []types.LifecycleRule) error {
 	if len(rules) == 0 {
 		t.Println("No rules to view.")
 		t.Refresh()
 		return nil
 	}
-	rule, err := ui.PickList(t, le, rules, lifecycleRuleLabel, "Select a rule to view")
+	rule, err := pickLifecycleRule(ctx, "Select a rule to view", rules)
 	if err != nil {
 		return err
 	}
@@ -236,7 +271,7 @@ func backupRuleID(prefix string) string {
 // transition is set, and an optional key-prefix scope. current is the
 // zero value for Add, or the rule being edited (its values become each
 // prompt's default) for Edit.
-func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current types.LifecycleRule) (types.LifecycleRule, error) {
+func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) (types.LifecycleRule, error) {
 	expireDefault := ""
 	if current.Expiration != nil && current.Expiration.Days != nil {
 		expireDefault = strconv.Itoa(int(*current.Expiration.Days))
@@ -258,7 +293,7 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 
 	var storageClass types.TransitionStorageClass
 	if transitionSet {
-		storageClass, err = ui.PickList(t, le, backupStorageClasses, storageClassLabel, "Select a storage class to transition to")
+		storageClass, err = pickComparable(t, "Select a storage class to transition to", "(q to cancel)", backupStorageClasses, storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -307,7 +342,7 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 // an optional prefix, a loop collecting zero-or-more transitions from the
 // full storage-class enum, and an optional expiration. current is the
 // zero value for Add, or the rule being edited for Edit.
-func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current types.LifecycleRule, existingRules []types.LifecycleRule) (types.LifecycleRule, error) {
+func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current types.LifecycleRule, existingRules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) (types.LifecycleRule, error) {
 	id := aws.ToString(current.ID)
 	if id == "" {
 		var err error
@@ -361,7 +396,7 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
-		class, err := ui.PickList(t, le, types.TransitionStorageClass("").Values(), storageClassLabel, "Select a storage class")
+		class, err := pickComparable(t, "Select a storage class", "(q to cancel)", types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -410,13 +445,13 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 // Configuration, error). proceed is false without an error when the
 // operator declined a confirmation or the prompts collected nothing to
 // do -- both already reported, neither a reason to call AWS.
-func addLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
+func addLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
 	var rule types.LifecycleRule
 	var err error
 	if purpose == "backup" {
-		rule, err = promptGuidedBackupRule(t, le, types.LifecycleRule{})
+		rule, err = promptGuidedBackupRule(t, le, types.LifecycleRule{}, menuInput, menuOutput)
 	} else {
-		rule, err = promptGenericRule(t, le, types.LifecycleRule{}, rules)
+		rule, err = promptGenericRule(t, le, types.LifecycleRule{}, rules, menuInput, menuOutput)
 	}
 	if errors.Is(err, errNothingToDo) {
 		return nil, false, nil
@@ -438,22 +473,31 @@ func addLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose strin
 	return append(append([]types.LifecycleRule{}, rules...), rule), true, nil
 }
 
-func editLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
+func editLifecycleRule(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
 	if len(rules) == 0 {
 		t.Println("No rules to edit.")
 		t.Refresh()
 		return nil, false, nil
 	}
-	existing, err := ui.PickList(t, le, rules, lifecycleRuleLabel, "Select a rule to edit")
+	existing, err := pickLifecycleRule(ctx, "Select a rule to edit", rules)
 	if err != nil {
 		return nil, false, err
 	}
+	return editLifecycleRuleForRule(t, le, purpose, rules, existing, menuInput, menuOutput)
+}
 
+// editLifecycleRuleForRule is editLifecycleRule's testable core, once
+// the rule to edit is resolved -- rule selection runs a real bubbletea
+// Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
+// can't be driven by a test's pipe input, same limitation as every
+// other Picker-tier conversion this session.
+func editLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule, existing types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
 	var updated types.LifecycleRule
+	var err error
 	if purpose == "backup" {
-		updated, err = promptGuidedBackupRule(t, le, existing)
+		updated, err = promptGuidedBackupRule(t, le, existing, menuInput, menuOutput)
 	} else {
-		updated, err = promptGenericRule(t, le, existing, rules)
+		updated, err = promptGenericRule(t, le, existing, rules, menuInput, menuOutput)
 	}
 	if errors.Is(err, errNothingToDo) {
 		return nil, false, nil
@@ -482,17 +526,23 @@ func editLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose stri
 	return newRules, true, nil
 }
 
-func removeLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
+func removeLifecycleRule(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
 	if len(rules) == 0 {
 		t.Println("No rules to remove.")
 		t.Refresh()
 		return nil, false, nil
 	}
-	existing, err := ui.PickList(t, le, rules, lifecycleRuleLabel, "Select a rule to remove")
+	existing, err := pickLifecycleRule(ctx, "Select a rule to remove", rules)
 	if err != nil {
 		return nil, false, err
 	}
+	return removeLifecycleRuleForRule(t, le, rules, existing)
+}
 
+// removeLifecycleRuleForRule is removeLifecycleRule's testable core,
+// once the rule to remove is resolved -- same limitation as
+// editLifecycleRuleForRule above.
+func removeLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule, existing types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
 	ok, err := Confirm(t, le, fmt.Sprintf("Remove lifecycle rule %s? AWS applies this on its own evaluation cycle (typically 24-48 hours), not immediately.", aws.ToString(existing.ID)))
 	if err != nil {
 		return nil, false, err
@@ -527,30 +577,49 @@ func ManageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 		return nil
 	}
 
-	bucket, err := ui.PickList(t, le, buckets, bucketLabel, "Select a bucket")
+	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
 
+	return manageBucketLifecyclePolicies(ctx, t, le, newS3Client, bucket, nil, nil)
+}
+
+// manageBucketLifecyclePolicies is ManageBucketLifecyclePolicies's
+// testable core, once a bucket is resolved -- bucket selection runs a
+// real bubbletea Program (tui.RunPicker, PLAN.md Phase 20.4) that can't
+// be driven by a test's pipe input. actionMenuInput/actionMenuOutput are
+// nil in production (the action menu's huh.Select runs interactively on
+// the real terminal) and are supplied by tests to drive it through its
+// accessible-mode pipe path instead (DECISIONS.md, "huh fields are
+// pipe-testable...") -- separate from le, which still feeds every other
+// prompt in this function (rule/storage-class PickLists, confirms,
+// day-count/ID input), unaffected by this phase.
+func manageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket, actionMenuInput io.Reader, actionMenuOutput io.Writer) error {
 	client, err := newS3Client(ctx, bucket.Region)
 	if err != nil {
 		return err
 	}
 
 	for {
+		if ctx.Err() != nil {
+			printExiting(t)
+			return nil
+		}
+
 		rules, err := getLifecycleRules(ctx, client, bucket.Name)
 		if err != nil {
 			return fmt.Errorf("getting lifecycle configuration for bucket %s: %w", bucket.Name, err)
 		}
 		displayLifecycleRules(t, rules)
 
-		action, err := ui.PickList(t, le, lifecycleActions, lifecycleActionLabel, "Choose an action")
+		action, err := pickLifecycleAction(t, actionMenuInput, actionMenuOutput)
 		if err != nil {
-			return cancelledIsNil(t, err)
+			return huhCancelledIsNil(err)
 		}
 
 		if action == "View rule details" {
-			if err := viewLifecycleRuleDetail(t, le, rules); err != nil {
+			if err := viewLifecycleRuleDetail(ctx, t, rules); err != nil {
 				return cancelledIsNil(t, err)
 			}
 			continue // read-only -- back to the action menu, not out of the workflow
@@ -560,13 +629,11 @@ func ManageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 		var proceed bool
 		switch action {
 		case "Add rule":
-			newRules, proceed, err = addLifecycleRule(t, le, bucket.Purpose, rules)
+			newRules, proceed, err = addLifecycleRule(t, le, bucket.Purpose, rules, actionMenuInput, actionMenuOutput)
 		case "Edit rule":
-			newRules, proceed, err = editLifecycleRule(t, le, bucket.Purpose, rules)
+			newRules, proceed, err = editLifecycleRule(ctx, t, le, bucket.Purpose, rules, actionMenuInput, actionMenuOutput)
 		case "Remove rule":
-			newRules, proceed, err = removeLifecycleRule(t, le, rules)
-		default: // "Back"
-			return nil
+			newRules, proceed, err = removeLifecycleRule(ctx, t, le, rules)
 		}
 		if err != nil {
 			return cancelledIsNil(t, err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -26,6 +27,29 @@ func bucketLabel(b inventory.Bucket) string {
 	return fmt.Sprintf("%s (%s, website: %s, purpose: %s)", b.Name, b.Region, website, purpose)
 }
 
+// pickBucket runs a Picker-tier screen (DESIGN.md, "Terminal UI
+// Architecture...," "Picker tier"; PLAN.md Phase 20.4) over buckets,
+// reusing the shared bucketLabel format, and returns the chosen bucket.
+// Callers map tui.ErrCancelled through cancelledIsNil at their own
+// return point, the same convention every other pick-list-shaped call
+// site already uses.
+func pickBucket(ctx context.Context, title string, buckets []inventory.Bucket) (inventory.Bucket, error) {
+	rows := make([]string, len(buckets))
+	for i, b := range buckets {
+		rows[i] = bucketLabel(b)
+	}
+
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return inventory.Bucket{}, err
+	}
+	return buckets[idx], nil
+}
+
 // ConfigureBucketWebsite runs the S3 domain's "Configure Static Website
 // Hosting" workflow (DESIGN.md, Feature 19), default path only -- the
 // public-read bucket policy opt-out is deferred until CloudFront exists to
@@ -33,6 +57,11 @@ func bucketLabel(b inventory.Bucket) string {
 // and error documents (defaulted to index.html/error.html), s3:
 // PutBucketWebsite, then print a note that CloudFront isn't implemented
 // yet instead of DESIGN.md's literal "offer to return to Feature 24".
+//
+// Bucket selection runs a real bubbletea Program (tui.RunPicker) that
+// can't be driven by a test's pipe input, so the rest of the workflow --
+// everything once a bucket is resolved -- lives in the unexported,
+// directly-testable configureBucketWebsite.
 func ConfigureBucketWebsite(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
 	if len(buckets) == 0 {
 		t.Println("No buckets found.")
@@ -40,11 +69,15 @@ func ConfigureBucketWebsite(ctx context.Context, t *termlib.Terminal, le *termli
 		return nil
 	}
 
-	bucket, err := ui.PickList(t, le, buckets, bucketLabel, "Select a bucket")
+	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
 
+	return configureBucketWebsite(ctx, t, le, newS3Client, bucket)
+}
+
+func configureBucketWebsite(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket) error {
 	client, err := newS3Client(ctx, bucket.Region)
 	if err != nil {
 		return err

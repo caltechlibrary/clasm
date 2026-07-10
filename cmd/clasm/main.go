@@ -165,6 +165,11 @@ func main() {
 		instances []inventory.Instance
 		images    []inventory.Image
 	}
+	// refresh only re-fetches instance/AMI data -- it no longer displays
+	// it (DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
+	// Managers"). Displaying is showComputeResourceLists, reachable only
+	// via the Compute menu's explicit "Show resource lists" choice (same
+	// split as refreshS3/showS3ResourceLists below).
 	refresh := func(ctx context.Context) error {
 		instances, err := inventory.ListInstances(ctx, ec2Clients)
 		if err != nil {
@@ -175,27 +180,41 @@ func main() {
 			return fmt.Errorf("listing AMIs: %w", err)
 		}
 		state.instances, state.images = instances, images
-		ui.DisplayInstances(term, state.instances, colorEnabled)
-		ui.DisplayImages(term, state.images)
 		return nil
+	}
+	showComputeResourceLists := func(ctx context.Context) error {
+		if err := ui.DisplayInstances(ctx, state.instances); err != nil {
+			return err
+		}
+		return ui.DisplayImages(ctx, state.images)
 	}
 
 	var s3State struct {
 		buckets []inventory.Bucket
 	}
+	// refreshS3 only re-fetches bucket data -- it no longer displays it
+	// (DESIGN.md, "S3 Resource List Display -- Paged, Accessible-
+	// Compatible"). Displaying is showS3ResourceLists, reachable only
+	// via the S3 menu's explicit "Show resource lists" choice.
 	refreshS3 := func(ctx context.Context) error {
 		buckets, err := inventory.ListBuckets(ctx, s3Client, newS3Client)
 		if err != nil {
 			return fmt.Errorf("listing buckets: %w", err)
 		}
 		s3State.buckets = buckets
-		ui.DisplayBuckets(term, s3State.buckets)
 		return nil
+	}
+	showS3ResourceLists := func(ctx context.Context) error {
+		return ui.DisplayBuckets(ctx, s3State.buckets)
 	}
 
 	var keyMgmtState struct {
 		keyPairs []inventory.KeyPair
 	}
+	// refreshKeyMgmt only re-fetches key pair (and instance) data -- it no
+	// longer displays it. Displaying is showKeyMgmtResourceLists, reachable
+	// only via the Key Management menu's explicit "Show resource lists"
+	// choice (same split as refresh/showComputeResourceLists above).
 	refreshKeyMgmt := func(ctx context.Context) error {
 		keyPairs, err := inventory.ListKeyPairs(ctx, ec2Clients)
 		if err != nil {
@@ -215,8 +234,10 @@ func main() {
 		}
 		state.instances = instances
 		keyMgmtState.keyPairs = keyPairs
-		ui.DisplayKeyPairs(term, keyMgmtState.keyPairs)
 		return nil
+	}
+	showKeyMgmtResourceLists := func(ctx context.Context) error {
+		return ui.DisplayKeyPairs(ctx, keyMgmtState.keyPairs)
 	}
 
 	actions := workflow.MenuActions{
@@ -250,7 +271,8 @@ func main() {
 		BackupArchiveAndTrim: func(ctx context.Context) error {
 			return workflow.BackupArchiveAndTrim(ctx, term, le, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories)
 		},
-		Refresh: refresh,
+		Refresh:           refresh,
+		ShowResourceLists: showComputeResourceLists,
 	}
 
 	s3Actions := workflow.S3Actions{
@@ -269,7 +291,8 @@ func main() {
 		DeleteBucket: func(ctx context.Context) error {
 			return workflow.DeleteBucket(ctx, term, le, newS3Client, s3State.buckets)
 		},
-		Refresh: refreshS3,
+		Refresh:           refreshS3,
+		ShowResourceLists: showS3ResourceLists,
 	}
 
 	keyMgmtActions := workflow.KeyMgmtActions{
@@ -282,7 +305,8 @@ func main() {
 		DeleteKeyPair: func(ctx context.Context) error {
 			return workflow.DeleteKeyPair(ctx, term, le, ec2Clients, keyMgmtState.keyPairs, state.instances)
 		},
-		Refresh: refreshKeyMgmt,
+		Refresh:           refreshKeyMgmt,
+		ShowResourceLists: showKeyMgmtResourceLists,
 	}
 
 	domains := workflow.DomainActions{
@@ -303,8 +327,12 @@ func main() {
 			return workflow.RunKeyMgmtMenu(ctx, term, le, keyMgmtActions)
 		},
 		S3: func(ctx context.Context) error {
-			// Fetch and display the S3 listing on every entry into this
-			// domain, same convention as Compute and Key Management.
+			// Fetch (not display -- see refreshS3's own comment) the S3
+			// listing on every entry into this domain, so it's current by
+			// the time the operator might choose "Show resource lists."
+			// Unlike Compute/Key Management, the S3 menu itself no longer
+			// shows a resource list on entry (DESIGN.md, "S3 Resource List
+			// Display -- Paged, Accessible-Compatible").
 			if err := refreshS3(ctx); err != nil {
 				return err
 			}

@@ -12,6 +12,15 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
+// Bucket selection (PLAN.md Phase 20.4) now runs a real bubbletea
+// Program (tui.RunPicker), which can't be driven by a test's pipe
+// input -- see internal/tui/picker_test.go for that component's own
+// thorough test suite. Tests below exercise everything once a bucket
+// is already resolved via the unexported deleteBucket;
+// DeleteBucket's own picker-selection step is covered only by
+// manual/interactive verification, the same accepted limitation
+// object_browser.go's huh-based bucket pre-flight already has.
+
 func TestDeleteBucket_NoBucketsFound(t *testing.T) {
 	term, le, buf := newPipeEditor(t, "")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return nil, nil }
@@ -26,11 +35,11 @@ func TestDeleteBucket_NoBucketsFound(t *testing.T) {
 
 func TestDeleteBucket_RefusesNonEmptyBucket(t *testing.T) {
 	fake := &fakeS3Client{allObjects: []types.Object{{Key: aws.String("a")}, {Key: aws.String("b")}}}
-	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2"}}
-	term, le, buf := newPipeEditor(t, "1\n")
+	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2"}
+	term, le, buf := newPipeEditor(t, "")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := DeleteBucket(context.Background(), term, le, newClient, buckets); err != nil {
+	if err := deleteBucket(context.Background(), term, le, newClient, bucket); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "not empty (2 object(s))") {
@@ -43,12 +52,11 @@ func TestDeleteBucket_RefusesNonEmptyBucket(t *testing.T) {
 
 func TestDeleteBucket_ConfirmedDeletesEmptyBucket(t *testing.T) {
 	fake := &fakeS3Client{}
-	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2"}}
-	input := "1\n" + "my-bucket\n" // pick bucket, type its name to confirm
-	term, le, _ := newPipeEditor(t, input)
+	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2"}
+	term, le, _ := newPipeEditor(t, "my-bucket\n") // type its name to confirm
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := DeleteBucket(context.Background(), term, le, newClient, buckets); err != nil {
+	if err := deleteBucket(context.Background(), term, le, newClient, bucket); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fake.deleteBucketCalls) != 1 || aws.ToString(fake.deleteBucketCalls[0].Bucket) != "my-bucket" {
@@ -58,12 +66,11 @@ func TestDeleteBucket_ConfirmedDeletesEmptyBucket(t *testing.T) {
 
 func TestDeleteBucket_WrongConfirmationCancels(t *testing.T) {
 	fake := &fakeS3Client{}
-	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2"}}
-	input := "1\n" + "not-the-bucket-name\n"
-	term, le, buf := newPipeEditor(t, input)
+	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2"}
+	term, le, buf := newPipeEditor(t, "not-the-bucket-name\n")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := DeleteBucket(context.Background(), term, le, newClient, buckets); err != nil {
+	if err := deleteBucket(context.Background(), term, le, newClient, bucket); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "Cancelled") {
@@ -71,16 +78,5 @@ func TestDeleteBucket_WrongConfirmationCancels(t *testing.T) {
 	}
 	if len(fake.deleteBucketCalls) != 0 {
 		t.Errorf("deleteBucketCalls = %d, want 0", len(fake.deleteBucketCalls))
-	}
-}
-
-func TestDeleteBucket_CancellationAtBucketPick(t *testing.T) {
-	fake := &fakeS3Client{}
-	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2"}}
-	term, le, _ := newPipeEditor(t, "0\n")
-	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
-
-	if err := DeleteBucket(context.Background(), term, le, newClient, buckets); err != nil {
-		t.Fatalf("expected a clean cancellation (nil error), got: %v", err)
 	}
 }

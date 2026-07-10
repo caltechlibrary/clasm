@@ -9,6 +9,35 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// TestModel_InitClearsScreen covers a real gap: Init clears the screen
+// and homes the cursor before the first render (DECISIONS.md, "Clear
+// the screen on entry for every inline bubbletea screen") -- without
+// it, a box sized to nearly the full terminal height can scroll content
+// out of view if rendering starts wherever the cursor already sits.
+func TestModel_InitClearsScreen(t *testing.T) {
+	fake := newFakeS3("readme.txt")
+	m := New(context.Background(), fake, "bucket", "us-west-2", "")
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init() = nil, want a command that includes clearing the screen")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init()() = %T, want tea.BatchMsg", cmd())
+	}
+	found := false
+	for _, c := range batch {
+		if c() == tea.ClearScreen() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected tea.ClearScreen among Init's batched commands")
+	}
+}
+
 // TestModel_Remote_UpFromNestedPrefixReachesRootWithSiblingsVisible is a
 // regression test for parentOfS3Prefix: navigating up from a nested
 // prefix used to strip the trailing slash ("logs/sub/" -> "logs"

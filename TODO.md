@@ -7,6 +7,26 @@
 
 - [ ] We have "exit", "cancel" (which sometimes is the same", "back to ..." for navigating the heirachy of menus (workflows). This should be more consistant. "cancel" should mean aborting an action not closing a particular menu select an action or workflow. Since the application is mostly a list of things then either a sub list of things or an action I think we should standardize that heirarchy so when you close a nested menu list it just backs you up to the menu you previously were on. We should standardize either on "quit" or "exit" to close a menu when done. I'm OK with standardizing on "quit" but right now we have two many words meaning almost the same thing. When you quit all the menu's you've finally exit the TUI.
 
+  Decided 2026-07-10 (DECISIONS.md, "TUI keybinding conventions"): `q`
+  is the universal back/quit key everywhere; `Esc` is reserved for
+  cancelling an in-progress action, never for closing a menu. Tracked
+  per-screen in PLAN.md as each one converts (Phase 20.7 for the S3
+  menu first; Compute/Key Management follow as they're migrated off
+  termlib -- see below).
+
+## Termlib Removal (before 0.0.2)
+
+- [ ] `termlib` is being removed entirely before 0.0.2 in favor of `huh`
+      (guide menus, action wizards) and `bubbletea` (lists, managers)
+      exclusively -- see DESIGN.md, "Terminal UI Architecture: Menus,
+      Actions, Lists, and Managers," and DECISIONS.md, "Deprecate
+      termlib; standardize on huh/bubbletea before 0.0.2." The pace and
+      order of converting the remaining ~40 `termlib`-based call sites
+      (Compute, Key Management, most S3 action wizards) is deliberately
+      NOT scheduled phase-by-phase yet -- "may evolve as we work through
+      the transition." Each conversion gets its own PLAN.md phase when
+      it's actually picked up, not planned exhaustively in advance.
+      S3's menu/list pieces are first (PLAN.md Phases 20.4-20.7).
 
 ## Done (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
 

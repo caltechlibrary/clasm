@@ -91,10 +91,19 @@ func CreateAMIFromInstance(ctx context.Context, t *termlib.Terminal, le *termlib
 		return nil
 	}
 
-	inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance to create an AMI from")
+	inst, err := pickInstance(ctx, "Select an instance to create an AMI from", instances)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
+	return createAMIFromInstance(ctx, t, le, ec2Clients, ssmClients, inst)
+}
+
+// createAMIFromInstance is CreateAMIFromInstance's testable core, once
+// an instance is resolved -- instance selection runs a real bubbletea
+// Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
+// can't be driven by a test's pipe input, same limitation as
+// backupArchiveAndTrim (backup_archive.go).
+func createAMIFromInstance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, inst inventory.Instance) error {
 	client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, inst.Region)
 	if err != nil {
 		return err

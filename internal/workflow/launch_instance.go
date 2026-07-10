@@ -3,12 +3,14 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -52,11 +54,25 @@ type LaunchInstanceParams struct {
 // and returns the resolved clients alongside params, instead of just
 // the AMI's picked Region.
 func CollectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
-	image, err := ui.PickList(t, le, imagesWithOfficialUbuntu(ctx, ec2Clients, images), imageLabel, "Select an AMI")
+	image, err := pickImage(ctx, "Select an AMI", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
+	return collectLaunchInstanceParams(ctx, t, le, ec2Clients, ssmClients, iamClient, image, nil, nil)
+}
 
+// collectLaunchInstanceParams is CollectLaunchInstanceParams's testable
+// core, once an AMI is resolved -- AMI selection runs a real bubbletea
+// Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
+// can't be driven by a test's pipe input, same limitation as every other
+// Picker-tier conversion this session. menuInput/menuOutput are nil in
+// production (the instance-type huh.Select and its ENA/AZ
+// incompatibility-remediation huh.Selects run interactively on the real
+// terminal) and are supplied by tests to drive them through their
+// accessible-mode pipe path instead, separate from le, which still feeds
+// every other prompt in this function. All three share one reader/
+// writer pair, read in sequence one line at a time.
+func collectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, image inventory.Image, menuInput io.Reader, menuOutput io.Writer) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
 	ec2Client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, image.Region)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
@@ -67,12 +83,12 @@ func CollectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *t
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := promptInstanceType(t, le)
+	instanceType, err := promptInstanceType(t, le, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err = ensureInstanceTypeENACompatible(ctx, t, le, ec2Client, instanceType, image.EnaSupport)
+	instanceType, err = ensureInstanceTypeENACompatible(ctx, t, le, ec2Client, instanceType, image.EnaSupport, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -92,7 +108,7 @@ func CollectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *t
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, t, le, ec2Client, instanceType, subnet)
+	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, t, le, ec2Client, instanceType, subnet, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -143,6 +159,29 @@ func CollectLaunchInstanceParams(ctx context.Context, t *termlib.Terminal, le *t
 
 func imageLabel(img inventory.Image) string {
 	return fmt.Sprintf("%s - %s (%s) - %s", img.ImageID, img.Name, img.Region, img.CreationDate)
+}
+
+// pickImage runs a Picker-tier tui.RunPicker (DESIGN.md's full
+// conversion punch list) over images and returns the chosen one. Like
+// pickInstance (power_state.go) and pickBucket (Phase 20.4), this drives
+// a real bubbletea Program that can't be pipe-tested -- every caller
+// splits into a thin entry point (calls pickImage) and a testable core
+// taking the already-resolved image directly.
+func pickImage(ctx context.Context, title string, images []inventory.Image) (inventory.Image, error) {
+	rows := make([]string, len(images))
+	for i, img := range images {
+		rows[i] = imageLabel(img)
+	}
+
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return inventory.Image{}, err
+	}
+	return images[idx], nil
 }
 
 func splitCSV(s string) []string {

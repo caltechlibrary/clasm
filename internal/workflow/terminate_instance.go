@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
-	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // TerminateInstanceParams is the resolved parameter set for terminating
@@ -47,15 +45,19 @@ func TerminateEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.
 		return nil
 	}
 
-	inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance to terminate")
+	inst, err := pickInstance(ctx, "Select an instance to terminate", instances)
 	if err != nil {
-		if errors.Is(err, ui.ErrCancelled) {
-			t.Println("Cancelled.")
-			t.Refresh()
-			return nil
-		}
-		return err
+		return cancelledIsNil(t, err)
 	}
+	return terminateEC2Instance(ctx, t, le, clients, inst)
+}
+
+// terminateEC2Instance is TerminateEC2Instance's testable core, once an
+// instance is resolved -- instance selection runs a real bubbletea
+// Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
+// can't be driven by a test's pipe input, same limitation as
+// startEC2Instance/stopEC2Instance (power_state.go).
+func terminateEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, inst inventory.Instance) error {
 	client, err := resolveEC2(clients, inst.Region)
 	if err != nil {
 		return err

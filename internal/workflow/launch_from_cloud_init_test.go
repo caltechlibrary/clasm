@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,30 +23,38 @@ func writeCloudInitFixture(t *testing.T, contents string) string {
 	return path
 }
 
-func TestCollectLaunchInstanceParamsFromCloudInit_PromptsCloudInitBeforeAMI(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
-	images := []inventory.Image{
-		{ImageID: "ami-1", Name: "base-ubuntu", Region: "us-east-1"},
-		{ImageID: "ami-2", Name: "invenio-rdm", Region: "us-east-1", Project: "caltechauthors"},
-	}
+// The curated-instance-type picker converted to huh.Select (DESIGN.md's
+// full conversion punch list): its selection is fed via a separate
+// newHuhAccessibleInput reader (menuInput), not le, which still feeds
+// every other prompt in this function. The cloud-init-YAML-file prompt
+// and the AMI picker (also converted to tui.RunPicker, Picker tier --
+// a real bubbletea Program that can't be pipe-tested) both now run in
+// the exported CollectLaunchInstanceParamsFromCloudInit, before this
+// testable core -- see userdata_test.go's promptCloudInitYAMLFile
+// tests for that prompt's own coverage (blank rejection, retry-on-
+// unreadable-file, "@" prefix tolerance), migrated there from this file.
+// CollectLaunchInstanceParamsFromCloudInit's own prompt-ordering and
+// AMI-selection behavior is covered only by manual/interactive
+// verification, the same accepted limitation this session's other
+// Picker-tier conversions already have.
 
-	input := path + "\n" + // cloud-init YAML file path, first
-		"2\n" + // pick ami-2, second
-		"newauthors\n" + // Name tag
-		"4\n" + // instance type: t3.large
-		"1\n" + // key pair: Create new key pair (zero existing keys)
+func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
+	image := inventory.Image{ImageID: "ami-2", Name: "invenio-rdm", Region: "us-east-1", Project: "caltechauthors"}
+
+	input := "newauthors\n" + // Name tag
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1\n" + // security groups
 		"subnet-abc\n" + // subnet
-		"1\n" + // IAM profile: select (none)
+		"\n" + // IAM profile (blank -- free-text fallback via fakeIAMClientNoProfiles)
 		"\n" + // Project tag (blank -> default from ami-2)
 		"development\n" // Environment tag
 
 	term, le, buf := newPipeEditor(t, input)
-	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
+	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput("4\n"), buf) // instance type: t3.large
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,157 +74,33 @@ func TestCollectLaunchInstanceParamsFromCloudInit_PromptsCloudInitBeforeAMI(t *t
 	if got.Tags["Environment"] != "development" {
 		t.Errorf("Tags[Environment] = %q, want %q", got.Tags["Environment"], "development")
 	}
-
-	out := buf.String()
-	cloudInitIdx := strings.Index(out, "Cloud-init")
-	amiIdx := strings.Index(out, "Select a base AMI")
-	if cloudInitIdx < 0 || amiIdx < 0 || cloudInitIdx > amiIdx {
-		t.Errorf("expected the cloud-init prompt to precede the AMI pick list in output:\n%s", out)
-	}
-}
-
-func TestCollectLaunchInstanceParamsFromCloudInit_RequiresNonEmptyCloudInit(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
-	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := "\n" + // blank -- rejected
-		path + "\n" + // retry, accepted
-		"1\n" + // pick ami-1
-		"web\n" +
-		"1\n" + // instance type: t3.micro
-		"1\n" + // key pair: Create new key pair (zero existing keys)
-		"my-key\n" + // New key pair name
-		"sg-1\n" +
-		"subnet-1\n" +
-		"1\n" + // IAM profile: select (none)
-		"caltechdata\n" +
-		"test\n"
-
-	term, le, buf := newPipeEditor(t, input)
-	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
-	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
-
-	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.UserData != "#cloud-config" {
-		t.Errorf("UserData = %q, want %q", got.UserData, "#cloud-config")
-	}
-	if !strings.Contains(buf.String(), "invalid input") {
-		t.Errorf("expected a validation error message for the blank cloud-init input, got:\n%s", buf.String())
-	}
-}
-
-func TestCollectLaunchInstanceParamsFromCloudInit_ReadsFromFile(t *testing.T) {
-	want := "#cloud-config\npackages: [docker]\n"
-	path := writeCloudInitFixture(t, want)
-
-	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := path + "\n" +
-		"1\n" +
-		"web\n" +
-		"1\n" + // instance type: t3.micro
-		"1\n" + // key pair: Create new key pair (zero existing keys)
-		"my-key\n" + // New key pair name
-		"sg-1\n" +
-		"subnet-1\n" +
-		"1\n" + // IAM profile: select (none)
-		"caltechdata\n" +
-		"test\n"
-
-	term, le, _ := newPipeEditor(t, input)
-	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
-	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
-
-	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.UserData != want {
-		t.Errorf("UserData = %q, want %q", got.UserData, want)
-	}
-}
-
-func TestCollectLaunchInstanceParamsFromCloudInit_ToleratesLeadingAtSign(t *testing.T) {
-	// Backward-compat: an operator used to Feature 2's "@file path"
-	// convention shouldn't be broken by typing "@" out of habit here,
-	// even though this prompt no longer requires (or supports inline
-	// text as an alternative to) it.
-	want := "#cloud-config\n"
-	path := writeCloudInitFixture(t, want)
-
-	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := "@" + path + "\n" +
-		"1\n" +
-		"web\n" +
-		"1\n" +
-		"1\n" + // key pair: Create new key pair (zero existing keys)
-		"my-key\n" + // New key pair name
-		"sg-1\n" +
-		"subnet-1\n" +
-		"1\n" +
-		"caltechdata\n" +
-		"test\n"
-
-	term, le, _ := newPipeEditor(t, input)
-	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
-	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
-
-	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.UserData != want {
-		t.Errorf("UserData = %q, want %q", got.UserData, want)
-	}
-}
-
-func TestCollectLaunchInstanceParamsFromCloudInit_RetriesOnUnreadableFile(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
-	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := "/no/such/file-really-does-not-exist.yaml\n" + // rejected -- cannot read
-		path + "\n" + // retry, accepted
-		"1\n" +
-		"web\n" +
-		"1\n" +
-		"1\n" + // key pair: Create new key pair (zero existing keys)
-		"my-key\n" + // New key pair name
-		"sg-1\n" +
-		"subnet-1\n" +
-		"1\n" +
-		"caltechdata\n" +
-		"test\n"
-
-	term, le, buf := newPipeEditor(t, input)
-	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{}}
-	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
-
-	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.UserData != "#cloud-config" {
-		t.Errorf("UserData = %q, want %q", got.UserData, "#cloud-config")
-	}
-	if !strings.Contains(buf.String(), "invalid input") {
-		t.Errorf("expected a validation error message for the unreadable file, got:\n%s", buf.String())
-	}
 }
 
 func TestCollectLaunchInstanceParamsFromCloudInit_OfficialUbuntuAMIIsSelectableFromThePickList(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
+	// AMI selection (including imagesWithOfficialUbuntu's appended
+	// official Ubuntu entries) now happens in the exported
+	// CollectLaunchInstanceParamsFromCloudInit, via a real bubbletea
+	// Program (tui.RunPicker) that can't be pipe-tested -- see
+	// TestImagesWithOfficialUbuntu_AppendsToOwnedImages (official_ubuntu_
+	// amis_test.go) for that expansion's own coverage. This test resolves
+	// the same expanded list directly and picks the appended entry,
+	// verifying collectLaunchInstanceParamsFromCloudInit's core correctly
+	// carries an official Ubuntu AMI's fields through once resolved.
 	images := []inventory.Image{{ImageID: "ami-owned", Region: "us-east-1"}}
-	fake := &fakeEC2Client{officialUbuntuImages: map[string][]types.Image{
-		nobleNamePattern: {{ImageId: aws.String("ami-noble"), CreationDate: aws.String("2026-06-01T00:00:00.000Z"), EnaSupport: aws.Bool(true)}},
-	}}
+	fake := &fakeEC2Client{
+		officialUbuntuImages: map[string][]types.Image{
+			nobleNamePattern: {{ImageId: aws.String("ami-noble"), CreationDate: aws.String("2026-06-01T00:00:00.000Z"), EnaSupport: aws.Bool(true)}},
+		},
+		describeKeyPairsErr: errNoKeyPairsConfigured,
+	}
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	input := path + "\n" +
-		"2\n" + // owned AMI (1), then the appended official Ubuntu AMI (2)
-		"web\n" +
-		"1\n" + // instance type: t3.micro
-		"1\n" + // key pair: Create new key pair (zero existing keys)
+	expanded := imagesWithOfficialUbuntu(context.Background(), ec2Clients, images)
+	image := expanded[len(expanded)-1] // the appended official Ubuntu AMI
+
+	input := "web\n" +
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
 		"subnet-1\n" +
@@ -226,14 +109,11 @@ func TestCollectLaunchInstanceParamsFromCloudInit_OfficialUbuntuAMIIsSelectableF
 		"test\n"
 
 	term, le, buf := newPipeEditor(t, input)
-	got, _, _, err := CollectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, &fakeIAMClient{}, images)
+	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.ImageID != "ami-noble" {
 		t.Errorf("ImageID = %q, want %q", got.ImageID, "ami-noble")
-	}
-	if !strings.Contains(buf.String(), "Ubuntu 24.04 LTS") {
-		t.Errorf("expected the official Ubuntu AMI to appear in the pick list, got:\n%s", buf.String())
 	}
 }

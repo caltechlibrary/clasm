@@ -11,6 +11,15 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
+// Bucket selection (PLAN.md Phase 20.4) now runs a real bubbletea
+// Program (tui.RunPicker), which can't be driven by a test's pipe
+// input -- see internal/tui/picker_test.go for that component's own
+// thorough test suite. Tests below exercise everything once a bucket
+// is already resolved via the unexported configureBucketWebsite;
+// ConfigureBucketWebsite's own picker-selection step is covered only by
+// manual/interactive verification, the same accepted limitation
+// object_browser.go's huh-based bucket pre-flight already has.
+
 func TestConfigureBucketWebsite_NoBucketsFound(t *testing.T) {
 	term, le, buf := newPipeEditor(t, "")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return nil, nil }
@@ -24,16 +33,15 @@ func TestConfigureBucketWebsite_NoBucketsFound(t *testing.T) {
 }
 
 func TestConfigureBucketWebsite_DefaultsAppliedViaEnter(t *testing.T) {
-	buckets := []inventory.Bucket{{Name: "my-site", Region: "us-west-2"}}
+	bucket := inventory.Bucket{Name: "my-site", Region: "us-west-2"}
 	fake := &fakeS3Client{}
-	input := "1\n" + // pick the bucket
-		"\n" + // accept default index document
+	input := "\n" + // accept default index document
 		"\n" // accept default error document
 
 	term, le, _ := newPipeEditor(t, input)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := ConfigureBucketWebsite(context.Background(), term, le, newClient, buckets); err != nil {
+	if err := configureBucketWebsite(context.Background(), term, le, newClient, bucket); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -50,16 +58,15 @@ func TestConfigureBucketWebsite_DefaultsAppliedViaEnter(t *testing.T) {
 }
 
 func TestConfigureBucketWebsite_SuccessPathWithCustomDocuments(t *testing.T) {
-	buckets := []inventory.Bucket{{Name: "my-site", Region: "us-west-2"}}
+	bucket := inventory.Bucket{Name: "my-site", Region: "us-west-2"}
 	fake := &fakeS3Client{}
-	input := "1\n" +
-		"home.html\n" +
+	input := "home.html\n" +
 		"oops.html\n"
 
 	term, le, buf := newPipeEditor(t, input)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := ConfigureBucketWebsite(context.Background(), term, le, newClient, buckets); err != nil {
+	if err := configureBucketWebsite(context.Background(), term, le, newClient, bucket); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -72,20 +79,5 @@ func TestConfigureBucketWebsite_SuccessPathWithCustomDocuments(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "CloudFront") {
 		t.Errorf("expected the CloudFront-not-implemented note, got:\n%s", buf.String())
-	}
-}
-
-func TestConfigureBucketWebsite_CancellationAbortsCleanly(t *testing.T) {
-	buckets := []inventory.Bucket{{Name: "my-site", Region: "us-west-2"}}
-	fake := &fakeS3Client{}
-	term, le, _ := newPipeEditor(t, "0\n")
-	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
-
-	err := ConfigureBucketWebsite(context.Background(), term, le, newClient, buckets)
-	if err != nil {
-		t.Fatalf("expected a clean cancellation (nil error), got: %v", err)
-	}
-	if len(fake.putBucketWebsiteCalls) != 0 {
-		t.Errorf("putBucketWebsiteCalls = %d, want 0 after cancelling", len(fake.putBucketWebsiteCalls))
 	}
 }

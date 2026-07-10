@@ -15,6 +15,7 @@ import (
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -61,7 +62,25 @@ type keyPairChoice struct {
 	createNew bool
 }
 
-func keyPairChoiceLabel(c keyPairChoice) string { return c.label }
+// pickKeyPairChoice runs a Picker-tier tui.RunPicker (DESIGN.md's full
+// conversion punch list) over choices and returns the chosen one. Like
+// pickInstanceProfileChoice/pickRole, this drives a real bubbletea
+// Program that can't be pipe-tested.
+func pickKeyPairChoice(ctx context.Context, title string, choices []keyPairChoice) (keyPairChoice, error) {
+	rows := make([]string, len(choices))
+	for i, c := range choices {
+		rows[i] = c.label
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return keyPairChoice{}, err
+	}
+	return choices[idx], nil
+}
 
 // promptKeyPairNameOrCreate lists key pairs in client's region and lets
 // the operator pick one, plus "Create new key pair" (see DECISIONS.md,
@@ -91,7 +110,7 @@ func promptKeyPairNameOrCreate(ctx context.Context, t *termlib.Terminal, le *ter
 	}
 	choices = append(choices, keyPairChoice{label: "Create new key pair", createNew: true})
 
-	picked, err := ui.PickList(t, le, choices, keyPairChoiceLabel, "Select a key pair")
+	picked, err := pickKeyPairChoice(ctx, "Select a key pair", choices)
 	if err != nil {
 		return "", err
 	}

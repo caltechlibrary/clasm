@@ -251,6 +251,261 @@ on a non-TTY, `ui.ColorEnabled()`), two things are colorized:
   DECISIONS.md, "Highlight PickList's prompt header when color is
   enabled".
 
+## Terminal UI Architecture: Menus, Actions, Lists, and Managers (Design Addendum, 2026-07-10)
+
+**Status: designed 2026-07-10, implementation starting with the S3
+domain.** Supersedes "S3 Resource List Display — Paged, Accessible-
+Compatible" above (`internal/ui.PagedTable`/`DisplayBuckets` are
+retired, not extended) and the 0.0.1-era framing of huh as merely "the
+leading candidate for the next release" (DECISIONS.md, "0.0.1 scope:
+ship on termlib as-is..."). Full rationale and rejected alternatives:
+DECISIONS.md, "Deprecate termlib; standardize on huh/bubbletea before
+0.0.2."
+
+**Motivation.** clasm exists to replace ad hoc AWS Console clicking and
+one-off Bash scripts with something a whole team can use fluidly,
+without each person memorizing a different command sequence per screen
+-- otherwise it offers no real advantage over writing Bash against the
+AWS CLI directly. That only works if every screen, however different
+its purpose, looks and behaves like part of the same tool. `termlib`
+(a stepping-stone library used to figure out the menu/action shape this
+tool needed, not the destination) is being removed entirely before
+0.0.2 in favor of standardizing on `huh` and `bubbletea` exclusively.
+
+**Taxonomy.** Every navigation path in clasm passes through one or more
+*connectors* (never a destination themselves) to reach one of three
+*destinations*:
+
+Connectors:
+- **Guide menu** — a `huh.Select` today (works well, simple to teach),
+  or a small `bubbletea` screen later if a menu ever needs more than a
+  flat pick-one, over a small, fixed set of options (e.g. the S3
+  domain's 6 actions). Routes the operator toward a destination below.
+- **Picker** — chooses *one instance* of a fetched, variable-length
+  resource collection (a specific S3 bucket, EC2 instance, AMI, key
+  pair, ...) to feed into an action wizard or manager. Distinct from a
+  guide menu because the option list is dynamic and can be long enough
+  to need scrolling/filtering, not a small fixed menu. See "Picker
+  tier" below.
+
+Destinations:
+- **Action wizard** — a short prompt sequence (huh fields, or termlib
+  prompts as they're migrated off) that gathers parameters and executes
+  one thing (Create Bucket, Delete Bucket, ...).
+- **List** — a read-only, scrollable display of a resource collection
+  (S3 buckets, EC2 instances, AMIs, key pairs). Was
+  `internal/ui.PagedTable` (plain sequential prints); becomes a
+  `bubbletea` component (below) so it shares real chrome with the
+  manager tier instead of approximating it with static text.
+- **Manager** — a persistent, stateful `bubbletea` screen for ongoing
+  interactive work against a resource. The S3 object manager
+  (`internal/filemanager`) is the only one today.
+
+**Shared chrome: `internal/tui`.** The file manager's box-drawing/
+legend/scrolling code (`internal/filemanager/view.go`) is already
+implemented as pure functions with no dependency on `filemanager.Model`
+— `topBorder`, `bottomBorder`, `divider`, `splitDivider`,
+`mergeDivider`, `boxLine`, `boxRow2`, `padOrTruncate`, `runeLen`,
+`stripANSI`, `truncateVisible`, `scrollWindow`, `styleRow`. These move,
+unchanged, into a new `internal/tui` package, and `internal/filemanager`
+imports them instead of keeping its own copy — one implementation, not
+two that can drift apart. `internal/ui` (`PickList`,
+`DisplayInstances`/`Images`/`KeyPairs`, `Confirm`, color helpers) stays
+in place for as long as termlib-based call sites remain; it shrinks
+over the course of the termlib removal rather than being replaced in
+one step.
+
+**List tier: a new `internal/tui` component.** Replaces
+`internal/ui.PagedTable`/`DisplayBuckets`. A single bordered box (no
+split panes), a frozen header row, a scrollable body reusing the same
+cursor-centered `scrollWindow` logic the file manager's panes use,
+sized to the real terminal via `tea.WindowSizeMsg` (not a fixed or
+computed-from-`termlib` page size — `tea.WindowSizeMsg` is sent to
+`Update` once when the program starts and again on every resize, except
+on Windows, which has no `SIGWINCH`; an initial size still arrives
+there, just no live updates), a legend bar at the bottom, rendered
+inline (no `tea.WithAltScreen`, matching every other screen in this
+app). Quitting (`q`) returns to the menu it was opened from — for "List
+S3 Buckets" that's the S3 menu, not `ErrBackToDomainPicker` (which backs
+out of the whole S3 domain, one level further up).
+
+**Picker tier: a new `internal/tui` component.** The user's own framing:
+"this UI should feel the same whether I select a bucket, an AMI or an
+EC2 instance" -- resource *selection* is exactly the kind of screen
+`huh.Select` would otherwise handle, but `huh.Select`'s own rendering is
+visually distinct from the bordered-box/legend-bar chrome the List and
+Manager tiers use, which would make the S3 domain alone show two
+different visual languages depending on whether a screen shows a
+resource or picks one. `internal/tui.PickerModel` reuses the exact same
+chrome as `ListViewModel` (`TopBorder`/`BoxLine`/`Divider`/`ScrollWindow`/
+`StyleRow`/`BottomBorder`) -- same box, same scroll behavior -- but adds
+selection: `Enter` chooses the row under the cursor and returns it,
+`q`/`ctrl+c` cancels. A dedicated `PickerModel` rather than a
+`Selectable bool` flag on `ListViewModel`, matching this project's
+existing preference for small, purpose-built components over one
+component doing everything (the same reasoning already used to keep the
+List tier itself separate from `filemanager.Model`).
+
+Like `ListViewModel`, `PickerModel` works on pre-rendered rows and
+returns an *index*, not a typed value, so `internal/tui` doesn't need
+Go generics -- each caller maps the chosen index back into its own
+typed slice (`buckets[idx]`, `instances[idx]`, ...), the same pattern
+`pickS3MenuItem` already uses for `s3MenuItems`.
+
+**Filtering, included from the start** (the user's own request: "this
+allows someone to go directly to the thing they want if they know the
+name or part of the name"): `/` enters filter-typing mode (matching the
+keybinding table below, and `huh.Select`'s own default `/` binding --
+not an always-on type-ahead, since `j`/`k` must stay unambiguous
+navigation keys), narrows visible rows by case-insensitive substring
+match against each row's rendered text, `Enter` commits and keeps
+navigating the narrowed list, `Esc` clears it -- the same shape as
+`internal/filemanager`'s pane filter and `ui.PickList`'s own existing
+substring-filter convention (`filterByLabel`), just applied to a real
+chrome-consistent box instead of a plain numbered list or huh's default
+field styling.
+
+**The map: every current resource-selection call site.** `internal/ui.PickList`
+is used in ~40 places today; most are guide-menu-shaped (a small, fixed
+set of actions -- "Choose an option," "Add/Update/Remove," Instance-vs-
+AMI kind pickers) and are NOT Picker candidates, they stay as menu-tier
+`PickList`/`huh.Select`. The ones below select *one instance of a
+fetched resource collection* and are the Picker tier's actual scope,
+listed here as the "clear map of specific instances using the common
+model" the user asked for -- S3 buckets are the pilot (Phase 20.4);
+everything else is deliberately not scheduled yet (see "Not decided
+yet" below), listed so the eventual conversions have a concrete
+checklist to work from rather than needing to be rediscovered later:
+
+This was the original, preliminary map, written when Phase 20.4 was the
+only conversion underway. It's superseded by the "Full conversion punch
+list" immediately below, which is the one kept current -- statuses here
+are left as a historical snapshot except for the terminal state (every
+row below is now done); see the fuller table for the actual phase each
+one landed in and, where it differs, which tier it was actually
+reclassified into (e.g. "Storage class (transition)" and "Instance type
+(curated list)" turned out to be small fixed option sets and became
+Menu tier, not Picker tier).
+
+| Resource | Domain | Current call site(s) | Status |
+|---|---|---|---|
+| S3 bucket | S3 | `bucket_website.go:43`, `bucket_lifecycle.go:530`, `bucket_delete.go:31` | **done, Phase 20.4** |
+| S3 lifecycle rule | S3 | `bucket_lifecycle.go:107,447,491` | **done, Phase 20.12 (Picker tier)** |
+| Storage class (transition) | S3 | `bucket_lifecycle.go:261,364` | **done, Phase 20.11 (reclassified: Menu tier)** |
+| EC2 instance | Compute | `backup_archive.go:77`, `create_ami_from_instance.go:94`, `show_cloud_init.go:35`, `power_state.go:42,113`, `terminate_instance.go:50`, `manage_tags.go:135` | **done, Phase 20.12** |
+| AMI | Compute | `launch_from_cloud_init.go:31`, `launch_instance.go:55`, `show_cloud_init.go:60`, `manage_tags.go:154`, `remove_ami.go:61` | **done, Phase 20.12** |
+| Subnet | Compute | `launch_prompts.go:43` | **done, Phase 20.12** |
+| Instance type (curated list) | Compute | `launch_prompts.go:169` | **done, Phase 20.11 (reclassified: Menu tier)** |
+| IAM instance profile / role | Compute | `create_instance_profile.go:71,106` | **done, Phase 20.12** |
+| Region | S3, Key Management | `bucket_create.go:26`, `keymgmt_common.go:25` | **done, Phase 20.11 (reclassified: Menu tier)** |
+| Key pair | Key Management | `create_key_pair.go:94`, `keypair_delete.go:47` | **done, Phase 20.12** |
+
+**Full conversion punch list (2026-07-10).** The map above covers only
+Picker candidates. Per the user's request for "a clear map of specific
+instances using the common model" spanning all three targets, here is
+every current `ui.PickList`/`ui.Display*` call site in the codebase,
+classified by which tier it converts to. Nothing here is scheduled
+beyond what's already marked done — this is a checklist to work from,
+not a committed roadmap (see "Not decided yet" below).
+
+*Menu tier (→ `huh.Select`, small fixed option sets — not fetched, not
+long enough to need scrolling/filtering):*
+
+| Menu | Call site(s) | Status |
+|---|---|---|
+| S3 domain menu | `s3_menu.go` (`pickS3MenuItem`) | **done, Phase 20.2/20.7** |
+| Lifecycle rule action (Add/Edit/Remove/View) | `bucket_lifecycle.go` (`pickLifecycleAction`) | **done, Phase 20.9** |
+| Domain picker | `domain_menu.go:60` | **done, Phase 20.10** |
+| Compute main menu | `menu.go:85` | **done, Phase 20.10** |
+| Key Management menu | `keymgmt_menu.go:59` | **done, Phase 20.10** |
+| Instance-vs-AMI kind (show/export cloud-init) | `show_cloud_init.go:22` | **done, Phase 20.11** |
+| Instance-vs-AMI kind (manage tags) | `manage_tags.go:119` | **done, Phase 20.11** |
+| Tag Add/Update/Remove action | `manage_tags.go:171` | **done, Phase 20.11** |
+| Select a tag to update/remove (small, in-memory, per-resource) | `manage_tags.go:196,212` | **done, Phase 20.11** |
+| Bucket-purpose enum (Website/Backup/Internal) | `bucket_create.go:71` | **done, Phase 20.11** |
+| Region (configured list, S3) | `bucket_create.go:26` | **done, Phase 20.11** |
+| Region (configured list, Key Management) | `keymgmt_common.go:25` | **done, Phase 20.11** |
+| Instance type (curated static list + "Other") | `launch_prompts.go:169` | **done, Phase 20.11** |
+| Storage class, guided backup flow (curated 4) | `bucket_lifecycle.go:296` | **done, Phase 20.11** |
+| Storage class, generic editor (full enum) | `bucket_lifecycle.go:399` | **done, Phase 20.11** |
+| AZ-incompatibility remediation choice | `instance_type_az_check.go:144` | **done, Phase 20.11** |
+| ENA-incompatibility remediation choice | `instance_type_ena_check.go:66` | **done, Phase 20.11** |
+
+*Picker tier (→ `tui.Picker`, fetched/variable-length resource
+collections):*
+
+| Resource | Call site(s) | Status |
+|---|---|---|
+| S3 bucket | `bucket_website.go`/`bucket_lifecycle.go`/`bucket_delete.go` (`pickBucket`) | **done, Phase 20.4** |
+| EC2 instance | `backup_archive.go:77`, `create_ami_from_instance.go:94`, `show_cloud_init.go:35`, `power_state.go:42,113`, `terminate_instance.go:50`, `manage_tags.go:135` | **done, Phase 20.12** |
+| AMI | `launch_from_cloud_init.go:31`, `launch_instance.go:55`, `show_cloud_init.go:60`, `manage_tags.go:154`, `remove_ami.go:61` | **done, Phase 20.12** |
+| Subnet | `launch_prompts.go:43` | **done, Phase 20.12** |
+| IAM instance profile (fetched, + none/create-new) | `create_instance_profile.go:71` | **done, Phase 20.12** |
+| IAM role (fetched, to attach) | `create_instance_profile.go:106` | **done, Phase 20.12** |
+| Key pair (fetched, + create-new) | `create_key_pair.go:94` | **done, Phase 20.12** |
+| Key pair (fetched, to delete) | `keypair_delete.go:47` | **done, Phase 20.12** |
+| S3 lifecycle rule (view/edit/remove) | `bucket_lifecycle.go:142,482,526` | **done, Phase 20.12** |
+
+*List tier (→ `tui.ListView`, read-only resource displays — the
+`ui.Display*` family):*
+
+| Listing | Function | Status |
+|---|---|---|
+| S3 buckets | `ui.DisplayBuckets` | **done, Phase 20.6** |
+| EC2 instances | `ui.DisplayInstances` | **done, Phase 20.13** |
+| AMIs | `ui.DisplayImages` | **done, Phase 20.13** |
+| Key pairs | `ui.DisplayKeyPairs` | **done, Phase 20.13** |
+
+`ListViewModel` gained the same `/`-filter behavior as `PickerModel`
+(Phase 20.14) -- see "Filtering, included from the start" above, which
+was written for Picker but always intended for both per the keybinding
+table below; the two models now share a `filterState` helper
+(`internal/tui/filter.go`) rather than each keeping its own copy.
+
+**Keybinding conventions** (DECISIONS.md, "TUI keybinding
+conventions"):
+
+| Key | Action | Where |
+|---|---|---|
+| `q` | Back to the parent screen | Everywhere |
+| `↑`/`↓`, `k`/`j` | Navigate / scroll | Menus, pickers, lists, managers |
+| `Enter` | Select / confirm / submit | Menus, pickers, lists, wizards |
+| `Esc` | Cancel the *in-progress* action only — never closes a screen | Wizards, in-progress input |
+| `/` | Filter | Menus, pickers, lists, managers |
+| Legend bar | Always visible at the bottom of every screen, showing that screen's actual keys | Every screen |
+
+Menus (still `huh.Select` for now) can't show a custom footer entry:
+huh's help line is built solely from the focused field's own
+`KeyBinds()`, and `SelectKeyMap` has no quit/back entry to add one to
+without forking huh. `q` is bound at the `Form` level instead
+(`Form.WithKeyMap`, adding `"q"` alongside the default `"ctrl+c"` on
+`KeyMap.Quit`), which already resolves to the same `huh.ErrUserAborted`
+path `RunS3Menu`'s `mapS3MenuPickerErr` maps to `ErrBackToDomainPicker`
+— no new dispatch logic needed. Since that won't appear in huh's own
+footer, a short static hint line is printed above the menu instead
+(e.g. "(q to go back)"), fully within this project's own control.
+Picker, list, and manager tiers, which fully own their rendering, show
+`q` in a real legend bar instead.
+
+**Accessibility.** Screen-reader/non-TTY accessible rendering is not a
+requirement for clasm going forward — it's an internal tool for Library
+staff managing AWS resources, not public-facing (distinct from the
+Frontend Guidelines' A11y requirement for browser-side Web Components
+elsewhere in this workspace, which this doesn't affect). The prior
+session's huh-accessible-mode pipe-testability investigation (DECISIONS.md,
+2026-07-10, "huh fields are pipe-testable...") remains factually
+accurate but is no longer load-bearing for design decisions; testing
+shifts to `teatest` (already proven against `internal/filemanager`'s
+`Model`) for anything built as a real `bubbletea` component.
+
+**Not decided yet.** The pace and order of converting the remaining
+~40 `termlib`-based wizard call sites (Compute, Key Management, most S3
+action wizards) is intentionally not scheduled phase-by-phase now — "may
+evolve as we work through the transition" (the user's own framing).
+Tracked as a standing goal (TODO.md) rather than a committed roadmap;
+each conversion gets its own PLAN.md phase when it's actually picked up,
+the same incremental discipline this project has used throughout.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)
@@ -723,6 +978,12 @@ website hosting is enabled, and best-effort `s3:GetBucketTagging` (a
 Purpose; untagged shows blank, matching this tool's existing "blank
 means untagged" convention for Name).
 
+**Revised by "S3 Resource List Display — Paged, Accessible-Compatible"
+below (designed 2026-07-10, not yet implemented):** the data fetch
+described above is unchanged, but the table is no longer printed
+automatically on every S3 menu redisplay — only when "Show resource
+lists" is explicitly chosen — and printing itself becomes paged.
+
 ### 18. Create Bucket
 
 Interactive workflow:
@@ -880,6 +1141,126 @@ new one, then write the complete modified rule set back in one call.
    - Remove a rule: pick by ID, plain yes/no confirm
 4. Whichever path was used, write the complete modified rule set via
    `s3:PutBucketLifecycleConfiguration` and confirm success
+
+### S3 Resource List Display — Paged, Accessible-Compatible (Design Addendum, 2026-07-10)
+
+**Superseded 2026-07-10, same day, by "Terminal UI Architecture: Menus,
+Actions, Lists, and Managers" below.** `internal/ui.PagedTable`/
+`DisplayBuckets` (implemented per this addendum, then used for less than
+a day) are retired, not extended: screen-reader/accessible-mode
+compatibility -- this addendum's central design constraint -- turned out
+not to be an actual requirement for this tool once discussed directly
+(DECISIONS.md, "Deprecate termlib; standardize on huh/bubbletea before
+0.0.2"), which removes the reason this had to be plain sequential
+termlib printing instead of a real bordered, chrome-consistent
+`bubbletea` component like the rest of the app. Left in place below as
+the accurate record of what was designed, decided, and briefly shipped,
+and why it changed -- not deleted.
+
+**Status (as originally written): designed, not yet implemented.**
+Revises Feature 17 (List Buckets) and the "Show resource lists" menu
+item's behavior within the S3 domain menu (21.2). Scoped to S3 for now —
+Compute and Key Management's own "Show resource lists" listings
+(Features 1, 13; `ui.DisplayInstances`/`DisplayImages`/
+`DisplayKeyPairs`) keep their current one-shot, unpaginated printing;
+ask before extending this to them. The pager itself, however, is
+deliberately built as a **generic, reusable `internal/ui` component**,
+not a bucket-specific one — S3 buckets are its first consumer, so
+Compute/Key Management can adopt the same mechanism later, when/if
+their own menus migrate, without a redesign (see "Reusability" below).
+
+**Problem.** Today, `RunS3Menu` calls `actions.Refresh(ctx)` after every
+successful action (Create Bucket, Configure Website, etc.), and
+`refreshS3` (`cmd/clasm/main.go`) both re-fetches bucket data AND prints
+the full bucket table (`ui.DisplayBuckets`) in the same step. Two
+problems fall out of that: the full table reprints after every action,
+not just when the operator asks to see it, cluttering the menu's
+redisplay; and `DisplayBuckets` has no pagination at all (unlike
+`ui.PickList`'s existing 50-item paging), so a large bucket count would
+print unboundedly.
+
+**Decision.**
+1. Split "refresh" into its two separate concerns: re-fetching bucket
+   data (still happens after every action, unchanged, so bucket-
+   selection prompts elsewhere stay current) and *displaying* the
+   bucket table (now happens only when "Show resource lists" is
+   explicitly chosen from the S3 menu).
+2. "Show resource lists" becomes its own paged display, not an inline
+   print: the banner (folding in the page count) and column header
+   repeat on every page, and the operator navigates with three
+   single-key commands — `n` (next page), `p` (previous page), `q`
+   (quit — returns to the S3 menu without printing anything further).
+   `n`/`p` are no-ops at the first/last page, matching `PickList`'s
+   existing boundary behavior.
+3. Mockup (approved 2026-07-10):
+
+   ```
+   ===== S3 BUCKETS (page 2 of 3, showing 21-40 of 47) =====
+
+   NAME                                     REGION     STATIC WEBSITE PURPOSE
+   caltech-static-assets                    us-west-1  yes            web-hosting
+   research-data-archive-2024               us-west-2  no             backup
+   thesis-submissions-fall2025              us-west-2  yes            production
+   ...                                       ...        ...            ...
+   cl-cold-storage-2023                     us-west-1  no             backup
+
+   'n' next page   'p' previous page   'q' quit to S3 menu
+   Command: 
+   ```
+
+4. **Reusability.** The pager is a new generic function in
+   `internal/ui` (working name `PagedTable`), decoupled from any
+   specific resource type: it takes a title-format callback (given page/
+   totalPages/shown/total, returns the banner line), an already-
+   rendered header line, and already-rendered row strings — it owns
+   only windowing, chrome, and `n`/`p`/`q` input, not column formatting.
+   `DisplayBuckets`'s existing `PadRight`/`Truncate` column rendering is
+   reused as-is to build the header/row strings passed in; only the
+   printing loop changes. This mirrors `PickList`'s own shape (a
+   generic mechanism domain code plugs labels into), so Compute/Key
+   Management's `DisplayInstances`/`DisplayImages`/`DisplayKeyPairs`
+   could later call the same `PagedTable` with their own header/row
+   strings, if and when those menus are revisited — not part of this
+   piece of work, but not precluded by it either.
+5. Stays fully accessible: this is sequential printing throughout —
+   print the banner+header+page of rows, print the command line, read
+   one line of input, then either print the next page's block or
+   return — no cursor repositioning or redraw at any point, so it
+   behaves identically over a real TTY, a `TERM=dumb` session, or (per
+   DECISIONS.md, "huh fields are pipe-testable...") a piped
+   input/output pair in tests. Note this mechanism doesn't involve
+   `huh` at all — it's plain `termlib` printing and `LineEditor.Prompt`
+   reading, the same style `PickList` already uses; "migrating to huh"
+   elsewhere in this codebase and "paging a resource list" are
+   orthogonal, and this design keeps them that way.
+
+**Rejected alternatives.**
+- *Print the whole table unpaginated, rely on terminal scrollback* —
+  today's actual behavior; rejected per this session's request (buckets
+  can exceed a screen's height, and the table shouldn't reprint after
+  unrelated actions).
+- *Give the paged display a `huh.Select`/`bubbletea`-style bounded
+  viewport (like the interactive file manager's panes)* — rejected:
+  that's a redraw-in-place rendering model, structurally the thing
+  accessible mode has to avoid; would need a parallel accessible-mode
+  fallback for no benefit over plain sequential paging, which already
+  works today via `PickList`.
+- *Reuse `ui.PickList` directly instead of a new `PagedTable`* —
+  `PickList` is shaped around choosing ONE item from a single-column
+  label list (it returns a selection). This display shows a
+  multi-column table and makes no selection (`q` just returns) — close
+  in spirit (same page-size/boundary conventions) but a distinct
+  function.
+
+**Consequences.** `ui.DisplayBuckets` is replaced by a `PagedTable`
+call site; `cmd/clasm/main.go`'s `refreshS3` closure splits into a
+silent data-refresh half (still called after every action) and a
+separate paged-display call reachable only from the "Show resource
+lists" menu item; `s3MenuItems`' "Show resource lists" entry
+(`s3_menu.go`) calls the new paged display instead of `a.Refresh(ctx)`
+alone.
+
+---
 
 ### S3 Object Management — Interactive File Manager (Design Addendum, 2026-07-09)
 

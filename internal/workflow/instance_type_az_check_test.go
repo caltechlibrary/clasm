@@ -102,6 +102,12 @@ func TestFilterSubnetsByInstanceTypeAZ_ReturnsUnfilteredWhenNoneMatch(t *testing
 	}
 }
 
+// The "how would you like to proceed?" incompatibility-remediation
+// picker (and any nested instance-type picker) converted to huh.Select
+// (DESIGN.md's full conversion punch list): their selections are fed via
+// a separate newHuhAccessibleInput reader (menuInput), not le, which
+// still feeds promptSubnetID's free-text fallback.
+
 func TestEnsureInstanceTypeSupportedInSubnet_CompatibleReturnsImmediately(t *testing.T) {
 	fake := &fakeEC2Client{instanceTypeOfferings: map[string][]string{
 		"t3.micro": {"us-west-2a"},
@@ -109,7 +115,7 @@ func TestEnsureInstanceTypeSupportedInSubnet_CompatibleReturnsImmediately(t *tes
 	term, le, buf := newPipeEditor(t, "") // no input needed -- must not prompt
 
 	subnet := SubnetInfo{SubnetID: "subnet-1", AvailabilityZone: "us-west-2a"}
-	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t3.micro", subnet)
+	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t3.micro", subnet, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +132,7 @@ func TestEnsureInstanceTypeSupportedInSubnet_UnknownAZSkipsCheck(t *testing.T) {
 	term, le, _ := newPipeEditor(t, "") // no input needed -- must not prompt
 
 	subnet := SubnetInfo{SubnetID: "subnet-manual"} // AvailabilityZone unknown (free-text fallback)
-	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet)
+	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,7 +146,7 @@ func TestEnsureInstanceTypeSupportedInSubnet_CheckErrorSkipsGracefully(t *testin
 	term, le, buf := newPipeEditor(t, "") // no input needed -- must not prompt
 
 	subnet := SubnetInfo{SubnetID: "subnet-1", AvailabilityZone: "us-west-2d"}
-	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet)
+	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,10 +163,10 @@ func TestEnsureInstanceTypeSupportedInSubnet_ChangeInstanceTypeToACompatibleOne(
 		"t2.micro": {"us-west-2a", "us-west-2b", "us-west-2c"},
 		"t3.micro": {"us-west-2a", "us-west-2b", "us-west-2c", "us-west-2d"},
 	}}
-	term, le, buf := newPipeEditor(t, "1\n1\n") // 1) Change instance type -> pick t3.micro from the curated list
+	term, le, buf := newPipeEditor(t, "")
 
 	subnet := SubnetInfo{SubnetID: "subnet-1", AvailabilityZone: "us-west-2d"}
-	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet)
+	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet, newHuhAccessibleInput("1\n1\n"), buf) // 1) Change instance type -> pick t3.micro from the curated list
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,10 +187,10 @@ func TestEnsureInstanceTypeSupportedInSubnet_PickADifferentCompatibleSubnet(t *t
 			"t2.micro": {"us-west-2a", "us-west-2b", "us-west-2c"},
 		},
 	}
-	term, le, _ := newPipeEditor(t, "2\nsubnet-good\n") // 2) Pick a different subnet -> free-text fallback (no subnets listed)
+	term, le, buf := newPipeEditor(t, "subnet-good\n") // free-text fallback (no subnets listed)
 
 	subnet := SubnetInfo{SubnetID: "subnet-bad", AvailabilityZone: "us-west-2d"}
-	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet)
+	gotType, gotSubnet, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet, newHuhAccessibleInput("2\n"), buf) // 2) Pick a different subnet
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,10 +209,10 @@ func TestEnsureInstanceTypeSupportedInSubnet_AbortReturnsErrCancelled(t *testing
 	fake := &fakeEC2Client{instanceTypeOfferings: map[string][]string{
 		"t2.micro": {"us-west-2a"},
 	}}
-	term, le, _ := newPipeEditor(t, "3\n") // 3) Abort this launch
+	term, le, buf := newPipeEditor(t, "")
 
 	subnet := SubnetInfo{SubnetID: "subnet-bad", AvailabilityZone: "us-west-2d"}
-	_, _, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet)
+	_, _, err := ensureInstanceTypeSupportedInSubnet(context.Background(), term, le, fake, "t2.micro", subnet, newHuhAccessibleInput("3\n"), buf) // 3) Abort this launch
 	if !errors.Is(err, ui.ErrCancelled) {
 		t.Fatalf("expected ui.ErrCancelled, got: %v", err)
 	}

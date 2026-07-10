@@ -2,10 +2,10 @@ package workflow
 
 import (
 	"context"
+	"io"
 
+	"github.com/charmbracelet/huh"
 	"github.com/rsdoiel/termlib"
-
-	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // KeyMgmtActions bundles the Key Management domain's menu entry points,
@@ -14,15 +14,23 @@ type KeyMgmtActions struct {
 	CreateKeyPair func(ctx context.Context) error
 	ImportKeyPair func(ctx context.Context) error
 	DeleteKeyPair func(ctx context.Context) error
-	// Refresh re-fetches and re-displays the key pair listing. Called
-	// once after every successful dispatched action (DECISIONS.md,
-	// "Refresh data after each operation"), and directly for the
-	// "Show resource lists" menu item itself.
+	// Refresh re-fetches the key pair listing, silently -- no display.
+	// Called once after every successful dispatched action (DECISIONS.md,
+	// "Refresh data after each operation") so key-pair-selection prompts
+	// elsewhere stay current, and once on entering the Key Management
+	// domain.
 	Refresh func(ctx context.Context) error
+	// ShowResourceLists shows the already-fetched key pair listing in the
+	// shared List-tier component (DESIGN.md, "Terminal UI Architecture:
+	// Menus, Actions, Lists, and Managers"). Called only by "Show resource
+	// lists" -- unlike Refresh, it never runs automatically after other
+	// actions (see MenuActions' own Refresh/ShowResourceLists split for
+	// why).
+	ShowResourceLists func(ctx context.Context) error
 }
 
 // keyMgmtItem pairs a Key Management menu label with the KeyMgmtActions
-// field it dispatches to; action is nil for "Back to domain picker".
+// field it dispatches to.
 type keyMgmtItem struct {
 	label  string
 	action func(KeyMgmtActions, context.Context) error
@@ -31,42 +39,71 @@ type keyMgmtItem struct {
 // keyMgmtMenuItems is DESIGN.md's Key Management menu, in order. "Show
 // resource lists" leads the menu, same convention as the Compute domain
 // (DECISIONS.md, "Move Show resource lists to the top of the Compute
-// menu; rename from Refresh").
+// menu; rename from Refresh"). No "Back to domain picker" entry --
+// DECISIONS.md, "TUI keybinding conventions": 'q' is the universal back
+// key everywhere, so a redundant menu item would just be a second way
+// to do the same thing (matching s3MenuItems' own drop of "Back to
+// domain picker" in Phase 20.7).
 var keyMgmtMenuItems = []keyMgmtItem{
-	{"Show resource lists", func(a KeyMgmtActions, ctx context.Context) error { return a.Refresh(ctx) }},
+	{"Show resource lists", func(a KeyMgmtActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
 	{"Create Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.CreateKeyPair(ctx) }},
 	{"Import Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.ImportKeyPair(ctx) }},
 	{"Delete Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.DeleteKeyPair(ctx) }},
-	{"Back to domain picker", nil},
 }
 
-func keyMgmtItemLabel(item keyMgmtItem) string { return item.label }
+// pickKeyMgmtItem runs the Key Management menu's huh.Select and returns
+// the chosen keyMgmtItem. Selects by index into keyMgmtMenuItems, not by
+// keyMgmtItem itself -- huh.Select's T must be comparable, and
+// keyMgmtItem.action (a func) isn't. input/output are nil in production
+// (interactive, real terminal) and supplied by tests for the accessible-
+// mode pipe path.
+func pickKeyMgmtItem(t *termlib.Terminal, input io.Reader, output io.Writer) (keyMgmtItem, error) {
+	opts := make([]huh.Option[int], len(keyMgmtMenuItems))
+	for i, item := range keyMgmtMenuItems {
+		opts[i] = huh.NewOption(item.label, i)
+	}
+
+	var idx int
+	field := huh.NewSelect[int]().
+		Title("Choose an option").
+		Options(opts...).
+		Value(&idx)
+
+	if err := runMenuField(t, "(q to go back)", field, input, output); err != nil {
+		return keyMgmtItem{}, err
+	}
+	return keyMgmtMenuItems[idx], nil
+}
 
 // RunKeyMgmtMenu runs the Key Management domain's interactive menu loop,
 // the same shape as RunMainMenu: show the menu, dispatch the chosen
 // action, refresh the listing after a successful dispatch, and repeat --
-// until "Back to domain picker" is chosen (returns ErrBackToDomainPicker)
-// or an exit signal is hit (reported as nil, which RunDomainPicker treats
-// as "exit the whole program"). A single action's error is shown and the
-// loop continues.
+// until the picker is aborted ('q'/ctrl+c, reported as
+// ErrBackToDomainPicker) or an exit signal is hit (reported as nil,
+// which RunDomainPicker treats as "exit the whole program"). A single
+// action's error is shown and the loop continues.
+//
+// The menu picker itself is huh.Select (DECISIONS.md, "Convert RunS3Menu
+// to huh.Select") -- le is accepted only to keep this loop's signature
+// the same shape as RunMainMenu's; it's otherwise unused here.
 func RunKeyMgmtMenu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, actions KeyMgmtActions) error {
+	return runKeyMgmtMenu(ctx, t, actions, nil, nil)
+}
+
+// runKeyMgmtMenu is RunKeyMgmtMenu's testable core: menuInput/menuOutput
+// are nil in production and supplied by tests to drive the same
+// huh.Select through its accessible-mode pipe path instead
+// (DECISIONS.md, "huh fields are pipe-testable...").
+func runKeyMgmtMenu(ctx context.Context, t *termlib.Terminal, actions KeyMgmtActions, menuInput io.Reader, menuOutput io.Writer) error {
 	for {
 		if ctx.Err() != nil {
 			printExiting(t)
 			return nil
 		}
 
-		choice, err := ui.PickList(t, le, keyMgmtMenuItems, keyMgmtItemLabel, "Choose an option")
+		choice, err := pickKeyMgmtItem(t, menuInput, menuOutput)
 		if err != nil {
-			if isExitSignal(err) {
-				printExiting(t)
-				return nil
-			}
-			return err
-		}
-
-		if choice.action == nil {
-			return ErrBackToDomainPicker
+			return mapMenuPickerErr(err)
 		}
 
 		if err := choice.action(actions, ctx); err != nil {

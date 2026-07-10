@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -52,7 +53,13 @@ var enaIncompatibilityChoices = []incompatibilityChoice{
 // Returns the (possibly updated) instance type, or ui.ErrCancelled if
 // the operator aborts. Skips gracefully if the check itself errors,
 // consistent with ensureInstanceTypeSupportedInSubnet's philosophy.
-func ensureInstanceTypeENACompatible(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string, amiEnaSupport bool) (string, error) {
+// menuInput/menuOutput are nil in production (the "how would you like to
+// proceed?" and any nested instance-type huh.Selects run interactively
+// on the real terminal, DESIGN.md's full conversion punch list) and are
+// supplied by tests to drive them through their accessible-mode pipe
+// path instead. Both share one reader/writer pair, read in sequence one
+// line at a time, same as a domain menu's own loop-iteration reads.
+func ensureInstanceTypeENACompatible(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string, amiEnaSupport bool, menuInput io.Reader, menuOutput io.Writer) (string, error) {
 	for {
 		requires, err := instanceTypeRequiresENA(ctx, client, instanceType)
 		if err != nil || !requires || amiEnaSupport {
@@ -63,14 +70,14 @@ func ensureInstanceTypeENACompatible(ctx context.Context, t *termlib.Terminal, l
 		t.Println("Non-Nitro types (e.g. t2.micro, t2.medium) don't require ENA and work with this AMI as-is; permanently fixing the AMI itself requires enabling ENA on the source instance and re-creating the AMI (outside awsops).")
 		t.Refresh()
 
-		choice, err := ui.PickList(t, le, enaIncompatibilityChoices, incompatibilityChoiceLabel, "How would you like to proceed?")
+		choice, err := pickComparable(t, "How would you like to proceed?", "(q to cancel)", enaIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
 		if err != nil {
 			return "", err
 		}
 
 		switch choice.kind {
 		case incompatibilityChangeInstanceType:
-			instanceType, err = promptInstanceType(t, le)
+			instanceType, err = promptInstanceType(t, le, menuInput, menuOutput)
 			if err != nil {
 				return "", err
 			}

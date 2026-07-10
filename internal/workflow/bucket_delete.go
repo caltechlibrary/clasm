@@ -10,7 +10,6 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
-	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // DeleteBucket runs the S3 domain's "Delete Bucket" workflow: pick a
@@ -21,6 +20,11 @@ import (
 // s3:DeleteBucket call with ConfirmDestructive
 // (type the bucket name back), the same heavier confirmation tier used
 // for Terminate/Remove AMI/Backup Delete.
+//
+// Bucket selection runs a real bubbletea Program (tui.RunPicker, PLAN.md
+// Phase 20.4) that can't be driven by a test's pipe input, so the rest
+// of the workflow lives in the unexported, directly-testable
+// deleteBucket.
 func DeleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
 	if len(buckets) == 0 {
 		t.Println("No buckets found.")
@@ -28,11 +32,15 @@ func DeleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdit
 		return nil
 	}
 
-	bucket, err := ui.PickList(t, le, buckets, bucketLabel, "Select a bucket to delete")
+	bucket, err := pickBucket(ctx, "Select a bucket to delete", buckets)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
 
+	return deleteBucket(ctx, t, le, newS3Client, bucket)
+}
+
+func deleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket) error {
 	client, err := newS3Client(ctx, bucket.Region)
 	if err != nil {
 		return err

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
@@ -10,29 +9,38 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
-func TestDisplayInstances_Empty(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
+// DisplayInstances/DisplayImages/DisplayKeyPairs converted to the
+// shared List-tier component (tui.RunListView, DESIGN.md's full
+// conversion punch list) -- like DisplayBuckets, each is now a thin
+// wrapper around an interactive bubbletea loop (see
+// internal/tui/listview_test.go for that component's own thorough test
+// suite) and isn't itself directly unit-tested. What's specific to this
+// package, and worth testing here, is each *ListViewConfig builder's
+// column formatting -- a pure data transformation with no interactive
+// loop to drive.
 
-	DisplayInstances(term, nil, false)
-
-	if !strings.Contains(buf.String(), "No EC2 instances found.") {
-		t.Errorf("output = %q, want it to mention no instances found", buf.String())
+func TestInstanceListViewConfig_Empty(t *testing.T) {
+	cfg := instanceListViewConfig(nil)
+	if len(cfg.Rows) != 0 {
+		t.Errorf("got %d rows, want 0 for an empty instance list", len(cfg.Rows))
+	}
+	if !strings.Contains(cfg.Header, "INSTANCE ID") || !strings.Contains(cfg.Header, "STATE") {
+		t.Errorf("header = %q, want it to still show column titles even when empty", cfg.Header)
 	}
 }
 
-func TestDisplayInstances_Populated(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
-
+func TestInstanceListViewConfig_Populated(t *testing.T) {
 	instances := []inventory.Instance{
 		{InstanceID: "i-012345", Name: "web-server", State: "running", ImageID: "ami-abc123", Region: "us-east-1", Project: "caltechauthors", Environment: "production", PublicIP: "203.0.113.25", PrivateIP: "10.0.1.25"},
 		{InstanceID: "i-067890", Name: "db-server", State: "stopped", ImageID: "ami-def456", Region: "us-west-2"},
 	}
 
-	DisplayInstances(term, instances, false)
-	out := buf.String()
+	cfg := instanceListViewConfig(instances)
+	if len(cfg.Rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(cfg.Rows))
+	}
 
+	out := cfg.Header + "\n" + strings.Join(cfg.Rows, "\n")
 	for _, want := range []string{"i-012345", "web-server", "running", "ami-abc123", "us-east-1", "caltechauthors", "production", "203.0.113.25", "10.0.1.25"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -46,56 +54,51 @@ func TestDisplayInstances_Populated(t *testing.T) {
 	if !strings.Contains(out, "none") {
 		t.Errorf("output missing %q rendering for an instance with no IPs:\n%s", "none", out)
 	}
-}
-
-func TestDisplayInstances_ColorEnabled_AppliesStateColor(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
-
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
-	DisplayInstances(term, instances, true)
-
-	out := buf.String()
-	if !strings.Contains(out, termlib.Green) || !strings.Contains(out, termlib.Reset) {
-		t.Errorf("expected a green/reset ANSI wrap around the running state, got:\n%q", out)
+	if cfg.Title == "" {
+		t.Error("expected a non-empty Title")
 	}
 }
 
-func TestDisplayInstances_ColorDisabled_NoANSICodes(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
+func TestInstanceRow_ColorEnabled_AppliesStateColor(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "web", State: "running"}
+	row := instanceRow(inst, true)
 
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running"}}
-	DisplayInstances(term, instances, false)
-
-	if strings.Contains(buf.String(), "\033[") {
-		t.Errorf("expected no ANSI escape codes with color disabled, got:\n%q", buf.String())
+	if !strings.Contains(row, termlib.Green) || !strings.Contains(row, termlib.Reset) {
+		t.Errorf("expected a green/reset ANSI wrap around the running state, got:\n%q", row)
 	}
 }
 
-func TestDisplayImages_Empty(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
+func TestInstanceRow_ColorDisabled_NoANSICodes(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "web", State: "running"}
+	row := instanceRow(inst, false)
 
-	DisplayImages(term, nil)
-
-	if !strings.Contains(buf.String(), "No AMIs found.") {
-		t.Errorf("output = %q, want it to mention no AMIs found", buf.String())
+	if strings.Contains(row, "\033[") {
+		t.Errorf("expected no ANSI escape codes with color disabled, got:\n%q", row)
 	}
 }
 
-func TestDisplayImages_Populated(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
+func TestImageListViewConfig_Empty(t *testing.T) {
+	cfg := imageListViewConfig(nil)
+	if len(cfg.Rows) != 0 {
+		t.Errorf("got %d rows, want 0 for an empty image list", len(cfg.Rows))
+	}
+	if !strings.Contains(cfg.Header, "AMI ID") || !strings.Contains(cfg.Header, "REGION") {
+		t.Errorf("header = %q, want it to still show column titles even when empty", cfg.Header)
+	}
+}
 
+func TestImageListViewConfig_Populated(t *testing.T) {
 	images := []inventory.Image{
 		{ImageID: "ami-abc123", Name: "base-ubuntu-2404", CreationDate: "2026-01-15", Region: "us-east-1", Project: "caltechauthors", Environment: "production"},
 		{ImageID: "ami-def456", Name: "custom-ami", CreationDate: "2026-03-10", Region: "us-east-1"},
 	}
 
-	DisplayImages(term, images)
-	out := buf.String()
+	cfg := imageListViewConfig(images)
+	if len(cfg.Rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(cfg.Rows))
+	}
 
+	out := cfg.Header + "\n" + strings.Join(cfg.Rows, "\n")
 	for _, want := range []string{"ami-abc123", "base-ubuntu-2404", "2026-01-15", "us-east-1", "caltechauthors", "production"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -104,64 +107,78 @@ func TestDisplayImages_Populated(t *testing.T) {
 	if !strings.Contains(out, "custom-ami") || !strings.Contains(out, "unknown") {
 		t.Errorf("output missing untagged image's %q rendering:\n%s", "unknown", out)
 	}
-}
-
-func TestDisplayKeyPairs_Empty(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
-
-	DisplayKeyPairs(term, nil)
-
-	if !strings.Contains(buf.String(), "No key pairs found.") {
-		t.Errorf("output = %q, want it to mention no key pairs found", buf.String())
+	if cfg.Title == "" {
+		t.Error("expected a non-empty Title")
 	}
 }
 
-func TestDisplayKeyPairs_Populated(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
+func TestKeyPairListViewConfig_Empty(t *testing.T) {
+	cfg := keyPairListViewConfig(nil)
+	if len(cfg.Rows) != 0 {
+		t.Errorf("got %d rows, want 0 for an empty key pair list", len(cfg.Rows))
+	}
+	if !strings.Contains(cfg.Header, "KEY NAME") || !strings.Contains(cfg.Header, "FINGERPRINT") {
+		t.Errorf("header = %q, want it to still show column titles even when empty", cfg.Header)
+	}
+}
 
+func TestKeyPairListViewConfig_Populated(t *testing.T) {
 	keyPairs := []inventory.KeyPair{
 		{KeyName: "my-laptop-key", KeyPairID: "key-0abc123", KeyFingerprint: "aa:bb:cc", KeyType: "ed25519", Region: "us-west-1"},
 	}
 
-	DisplayKeyPairs(term, keyPairs)
-	out := buf.String()
+	cfg := keyPairListViewConfig(keyPairs)
+	if len(cfg.Rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(cfg.Rows))
+	}
 
+	out := cfg.Header + "\n" + strings.Join(cfg.Rows, "\n")
 	for _, want := range []string{"my-laptop-key", "key-0abc123", "aa:bb:cc", "ed25519", "us-west-1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
-}
-
-func TestDisplayBuckets_Empty(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
-
-	DisplayBuckets(term, nil)
-
-	if !strings.Contains(buf.String(), "No buckets found.") {
-		t.Errorf("output = %q, want it to mention no buckets found", buf.String())
+	if cfg.Title == "" {
+		t.Error("expected a non-empty Title")
 	}
 }
 
-func TestDisplayBuckets_Populated(t *testing.T) {
-	var buf bytes.Buffer
-	term := termlib.New(&buf)
+// DisplayBuckets itself is a thin wrapper around tui.RunListView (an
+// interactive bubbletea loop -- see internal/tui/listview_test.go for
+// that component's own thorough test suite, teatest/direct-Model-driven
+// as appropriate). What's specific to this package, and worth testing
+// here, is bucketListViewConfig's column formatting -- a pure data
+// transformation with no interactive loop to drive.
 
+func TestBucketListViewConfig_Empty(t *testing.T) {
+	cfg := bucketListViewConfig(nil)
+	if len(cfg.Rows) != 0 {
+		t.Errorf("got %d rows, want 0 for an empty bucket list", len(cfg.Rows))
+	}
+	if !strings.Contains(cfg.Header, "NAME") || !strings.Contains(cfg.Header, "REGION") {
+		t.Errorf("header = %q, want it to still show column titles even when empty", cfg.Header)
+	}
+}
+
+func TestBucketListViewConfig_Populated(t *testing.T) {
 	buckets := []inventory.Bucket{
 		{Name: "sql-backups.library.caltech.edu", Region: "us-west-2", StaticWebsite: false, Purpose: "backup"},
 		{Name: "static-site", Region: "us-east-1", StaticWebsite: true, Purpose: "website"},
 		{Name: "untagged-bucket", Region: "us-east-1", StaticWebsite: false, Purpose: ""},
 	}
 
-	DisplayBuckets(term, buckets)
-	out := buf.String()
+	cfg := bucketListViewConfig(buckets)
+	if len(cfg.Rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(cfg.Rows))
+	}
 
-	for _, want := range []string{"sql-backups.library.caltech.edu", "us-west-2", "backup", "static-site", "yes", "website", "untagged-bucket"} {
+	out := cfg.Header + "\n" + strings.Join(cfg.Rows, "\n")
+	for _, want := range []string{"sql-backups.library.caltech.edu", "us-west-2", "backup", "static-site", "yes", "no", "website", "untagged-bucket", "NAME", "REGION", "STATIC WEBSITE", "PURPOSE"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+	if cfg.Title == "" {
+		t.Error("expected a non-empty Title")
 	}
 }

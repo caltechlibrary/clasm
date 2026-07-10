@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/rsdoiel/termlib"
@@ -28,11 +29,27 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	image, err := ui.PickList(t, le, imagesWithOfficialUbuntu(ctx, ec2Clients, images), imageLabel, "Select a base AMI")
+	image, err := pickImage(ctx, "Select a base AMI", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
+	return collectLaunchInstanceParamsFromCloudInit(ctx, t, le, ec2Clients, ssmClients, iamClient, userData, image, nil, nil)
+}
+
+// collectLaunchInstanceParamsFromCloudInit is
+// CollectLaunchInstanceParamsFromCloudInit's testable core, once the
+// cloud-init YAML is read and an AMI is resolved -- AMI selection runs a
+// real bubbletea Program (tui.RunPicker, DESIGN.md's full conversion
+// punch list) that can't be driven by a test's pipe input, same
+// limitation as every other Picker-tier conversion this session.
+// menuInput/menuOutput are nil in production (the instance-type
+// huh.Select and its ENA/AZ incompatibility-remediation huh.Selects run
+// interactively on the real terminal) and are supplied by tests to drive
+// them through their accessible-mode pipe path instead, separate from
+// le, which still feeds every other prompt in this function. All three
+// share one reader/writer pair, read in sequence one line at a time.
+func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, userData string, image inventory.Image, menuInput io.Reader, menuOutput io.Writer) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
 	ec2Client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, image.Region)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
@@ -43,12 +60,12 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := promptInstanceType(t, le)
+	instanceType, err := promptInstanceType(t, le, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err = ensureInstanceTypeENACompatible(ctx, t, le, ec2Client, instanceType, image.EnaSupport)
+	instanceType, err = ensureInstanceTypeENACompatible(ctx, t, le, ec2Client, instanceType, image.EnaSupport, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -68,7 +85,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, t, le, ec2Client, instanceType, subnet)
+	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, t, le, ec2Client, instanceType, subnet, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

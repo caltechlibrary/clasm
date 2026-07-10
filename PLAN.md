@@ -1729,6 +1729,860 @@ helpers are tested as plain Go functions independent of the `Model`
 
 ---
 
+## Phase 20.2 — S3 Menu: Convert RunS3Menu to huh.Select (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean). Continues
+`continue_next_time.txt`'s next-up item from the Phase 20.1 session:
+"replace the S3 management menu and display of buckets with the huh
+module" — this phase covers the menu half; bucket-selection call sites
+are Phase 20.4 (below).
+
+**Files:** `internal/workflow/s3_menu.go`, `s3_menu_test.go`,
+`huh_accessible_test.go` (new — reusable pipe-testable-input helper).
+
+### Work Items
+
+- [x] Resolve whether huh fields are pipe-testable at all before writing
+      more untested huh code (see DECISIONS.md, "huh fields are
+      pipe-testable via WithAccessible(true).WithInput/WithOutput") —
+      caught and fixed a real starvation bug in the first pass
+      (`strings.NewReader`-backed input silently drops every field after
+      the first); fixed with a one-line-per-`Read` reader
+      (`newHuhAccessibleInput`/`lineAtATimeReader`)
+- [x] Convert `RunS3Menu`'s picker from `ui.PickList` to `huh.Select`,
+      selecting by index into `s3MenuItems` (not by `s3Item` itself —
+      `huh.Select[T]` requires `T comparable`, and `s3Item.action` is a
+      func)
+- [x] Map `huh.ErrUserAborted` to `ErrBackToDomainPicker` (abort now
+      backs up one level, matching "Back to domain picker," instead of
+      exiting the whole program) — covered by a standalone unit test
+      (`mapS3MenuPickerErr`) since accessible mode can't itself produce
+      that error to drive an end-to-end test with
+- [x] Rewrite `s3_menu_test.go` against the new `runS3Menu` (unexported,
+      takes injectable input/output); retired
+      `TestRunS3Menu_CleanExitOnCancelledPickList` (tested a
+      `PickList`-only "0=Cancel" affordance that no longer exists)
+
+**Tests:** all existing dispatch/refresh/error-handling coverage
+carried over unchanged (same input strings — huh's accessible-mode
+1-indexed numbering happens to match `s3MenuItems`' order); new
+`TestMapS3MenuPickerErr` for the abort mapping.
+
+**Dependency:** Phase 20.1 (done, established the huh call-site
+pattern); the pipe-testability resolution above (done, same session).
+
+---
+
+## Phase 20.3 — S3 Domain: Paged, Accessible Resource List Display (superseded)
+
+**Superseded 2026-07-10, same day, by Phase 20.6 below.**
+Screen-reader/accessible-mode compatibility -- this phase's central
+constraint -- turned out not to be an actual requirement once discussed
+directly (DECISIONS.md, "Deprecate termlib; standardize on huh/
+bubbletea before 0.0.2"). `internal/ui.PagedTable`/`DisplayBuckets`,
+implemented below, are retired in favor of a `bubbletea`-based List-tier
+component built on a new shared `internal/tui` chrome package (Phase
+20.5), less than a day after landing. Left below as the accurate record
+of what was implemented and why it changed, not deleted.
+
+**Status (as originally completed): implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean). Exposed by testing
+Phase 20.2: every successful S3 menu action called `actions.Refresh(ctx)`,
+which both re-fetched bucket data and printed the *entire* bucket table
+(`ui.DisplayBuckets`) unconditionally — cluttering the menu's redisplay
+after every action, with no pagination for a large bucket count. Full
+design, mockup (approved before implementation started), and rejected
+alternatives: DESIGN.md, "S3 Resource List Display — Paged, Accessible-
+Compatible"; decision record: DECISIONS.md, "Decouple the S3 menu from
+resource-list display; add a generic paged table to internal/ui".
+
+**Priority:** requested directly by the user, ahead of Phase 20.4.
+**Files:** `internal/ui/paged_table.go` (new, generic — not
+bucket-specific), `paged_table_test.go` (new), `internal/ui/display.go`
+(`DisplayBuckets` now takes `le` and returns `error`, delegates to
+`PagedTable`), `display_test.go`, `internal/workflow/s3_menu.go`
+(`S3Actions.ShowResourceLists`, new field; "Show resource lists" entry
+now dispatches to it instead of `Refresh`), `s3_menu_test.go`,
+`cmd/clasm/main.go` (`refreshS3` now silent-refetch-only;
+`showS3ResourceLists`, new closure, wired to `ShowResourceLists`).
+
+### Work Items
+
+- [x] `internal/ui.PagedTable`: a generic pager (`Title` callback +
+      pre-rendered `Header`/`Rows` strings in, `n`/`p`/`q` command loop
+      via `le.Prompt`) — deliberately decoupled from any specific
+      resource type, so Compute/Key Management's `DisplayInstances`/
+      `DisplayImages`/`DisplayKeyPairs` can reuse it later without a
+      redesign, per the user's framing ("we'll reuse this UI approach as
+      needed migrating to huh for other parts of clasm"); not converting
+      those other domains now. Written test-first: `paged_table_test.go`
+      landed before `paged_table.go`.
+- [x] Built the S3 buckets header/row strings for `PagedTable` reusing
+      `DisplayBuckets`'s existing `PadRight`/`Truncate` column
+      formatting — only the print-loop changed, not the column layout.
+      `bucketsPageSize = 20` (smaller than `PickList`'s 50 -- a wide
+      multi-column table affords fewer rows per screen than a
+      single-column label list).
+- [x] Split `cmd/clasm/main.go`'s `refreshS3`: data re-fetch stays
+      unconditional (still called on S3 domain entry and after every S3
+      action, via `S3Actions.Refresh`, so bucket-selection prompts
+      elsewhere stay current); `showS3ResourceLists` is a separate
+      closure, wired only to the new `S3Actions.ShowResourceLists` field,
+      which `s3MenuItems`' "Show resource lists" entry calls instead of
+      `Refresh`.
+- [x] `q` (quit) returns to the S3 menu without printing anything
+      further; `n`/`p` no-op at the first/last page, matching
+      `PickList`'s existing boundary behavior. Commands are
+      case-insensitive; unrecognized input reprints an "invalid command"
+      message and redisplays the current page (mirrors `PickList`'s own
+      reprompt-on-invalid convention).
+- [x] Compute/Key Management's own "Show resource lists" listings are
+      explicitly NOT touched by this phase.
+
+**Tests:** `internal/ui/paged_table_test.go` (11 cases: single/multi
+page, next/previous navigation and their at-boundary no-ops, page-back,
+invalid-command reprompt, case-insensitive commands, empty rows, and
+read-error propagation — each via `Title`'s recorded call args, not
+string-scraping banners); `internal/ui/display_test.go` (`DisplayBuckets`
+empty/populated/paginates-large-lists); `internal/workflow/s3_menu_test.go`
+(new `TestRunS3Menu_ShowResourceListsDispatchesToItsOwnAction`, since no
+prior test exercised choosing menu item 1 at all). No new testability
+question — `PagedTable` is plain `termlib`/`LineEditor.Prompt` sequential
+printing (no `huh`), pipe-testable the same way `PickList`'s existing
+tests already are, reusing this package's own `newPipeEditor` helper.
+
+**Dependency:** Phase 20.2 (done — this phase was found while testing
+it, not a prerequisite of its design).
+
+---
+
+## Phase 20.4 — S3 Bucket Selection: Convert to tui.Picker (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Originally
+scoped to convert to `huh.Select` (`continue_next_time.txt`'s remaining
+next-up item from Phase 20.1's session); retargeted before any code was
+written once the user pointed out `huh.Select`'s rendering doesn't
+match the List/Manager tiers' chrome ("this UI should feel the same
+whether I select a bucket, an AMI or an EC2 instance") — see
+DECISIONS.md, "Add a Picker tier: resource selection gets its own
+internal/tui component, not huh.Select," and DESIGN.md's "Picker tier"
+section (with the full map of every current resource-selection call
+site across the app).
+
+Converted the bucket-selection step inside `ConfigureBucketWebsite`
+(`bucket_website.go`), `ManageBucketLifecyclePolicies`
+(`bucket_lifecycle.go`), and `DeleteBucket` (`bucket_delete.go`) —
+previously `ui.PickList(t, le, buckets, bucketLabel, "Select a
+bucket")` — to a shared `pickBucket` helper (`bucket_website.go`, next
+to `bucketLabel`) built on `tui.RunPicker`. `CreateBucket` stayed out of
+scope (it creates a new bucket, not select an existing one); the rest
+of each workflow stays on termlib. `object_browser.go`'s existing
+`huh.Select`-based bucket pre-flight was NOT touched by this phase —
+whether it should also move to `PickerModel` is a separate question,
+not decided here.
+
+**Testable-core split, since `tui.RunPicker` runs a real bubbletea
+Program that can't be driven by a test's pipe input** (mirrors the
+`RunS3Menu`/`runS3Menu` split from Phase 20.2): each of the three
+exported functions now does the picker call, then delegates to an
+unexported core taking the already-resolved `bucket` directly
+(`configureBucketWebsite`, `manageBucketLifecyclePolicies`,
+`deleteBucket`). Every existing test for "pick a bucket, then do X" was
+rewritten to call the unexported core with a bucket value instead of
+driving a `ui.PickList`-shaped `"1\n"` pipe input; each function's own
+"cancel while picking a bucket" test (`TestConfigureBucketWebsite_
+CancellationAbortsCleanly`, `TestManageBucketLifecyclePolicies_
+CancellationAtBucketPick`, and `DeleteBucket`'s equivalent) was retired
+— that tested `ui.PickList`'s "0=Cancel" numbered-option convention,
+which no longer exists once selection is `tui.RunPicker`-based. The
+picker-selection step itself is covered only by manual/interactive
+verification going forward, the same accepted limitation
+`object_browser.go`'s huh-based bucket pre-flight already has.
+`cancelledIsNil` (`manage_tags.go`) now also recognizes
+`tui.ErrCancelled` alongside `ui.ErrCancelled`, so cancelling either
+kind of picker behaves identically from the operator's point of view.
+
+**Dependency:** Phase 20.8 (`internal/tui.PickerModel` itself, done).
+
+---
+
+## Phase 20.5 — internal/tui: Shared Chrome Package (extracted from the file manager) (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean). First piece of
+DESIGN.md's "Terminal UI Architecture: Menus, Actions, Lists, and
+Managers"; decision record: DECISIONS.md, "Terminal UI architecture:
+menu → action/list/manager taxonomy; shared internal/tui chrome
+package."
+
+**Files:** new `internal/tui` package (`box.go`, `scroll.go`, `style.go`
++ their `_test.go` files, written test-first); `internal/filemanager/view.go`
+(box-drawing/scroll/style helpers removed, replaced with calls into
+`internal/tui`); `internal/filemanager/box_test.go`/`scroll_test.go`
+(moved tests removed, remaining Model-level tests updated to call
+`tui.RuneLen` instead of the now-moved `stripANSI`).
+
+### Work Items
+
+- [x] Moved `topBorder`→`TopBorder`, `bottomBorder`→`BottomBorder`,
+      `divider`→`Divider`, `splitDivider`→`SplitDivider`,
+      `mergeDivider`→`MergeDivider`, `boxLine`→`BoxLine`,
+      `boxRow2`→`BoxRow2`, `padOrTruncate`→`PadOrTruncate`,
+      `runeLen`→`RuneLen`, `stripANSI`→`StripANSI`, `scrollWindow`→
+      `ScrollWindow`, `styleRow`→`StyleRow` from
+      `internal/filemanager/view.go` into `internal/tui`, exported
+      (capitalized) since they're now a separate package's public API;
+      `truncateVisible`/`reverseVideo`/`bold`/the `ansi*` constants stay
+      unexported within `internal/tui` (only used internally, by
+      `PadOrTruncate`/`StyleRow` respectively) — confirmed no other
+      caller needed them exported. `splitWidths` (the double-pane
+      column-split math) stayed in `internal/filemanager` — it's
+      specific to that package's two-pane layout, not generic chrome.
+- [x] `internal/filemanager` imports `internal/tui` for all of the
+      above instead of keeping its own copy
+- [x] No behavior change: `internal/filemanager`'s existing test suite
+      continues to pass unmodified in assertions (only the two
+      Model-level width-check tests' direct `stripANSI` calls were
+      updated to `tui.RuneLen`, since `stripANSI` itself moved and is
+      now unexported in its new package)
+
+**Tests:** `internal/tui/box_test.go`/`scroll_test.go`/`style_test.go`
+(20 cases total, several new beyond what `internal/filemanager` already
+had indirectly — direct coverage for `TopBorder`/`BottomBorder`/
+`Divider`/`SplitDivider`/`MergeDivider`/`BoxLine`, which previously only
+had indirect coverage via `filemanager.Model.View()`'s tests), written
+before `box.go`/`scroll.go`/`style.go` existed. `internal/filemanager`'s
+existing test suite (unchanged assertions, `box_test.go`/`scroll_test.go`
+trimmed to their Model-level cases) is the regression check that the
+extraction was behavior-preserving.
+
+**Dependency:** none (pure refactor, no new external dependency).
+
+---
+
+## Phase 20.6 — S3 Domain: List Viewer bubbletea Component (replaces PagedTable) (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean). Replaces Phase 20.3
+(superseded, above). Full design: DESIGN.md, "Terminal UI
+Architecture...," "List tier" section; decision record: DECISIONS.md,
+"Terminal UI architecture...".
+
+**Files:** `internal/tui/listview.go` (new: `ListViewConfig`,
+`ListViewModel`, `NewListViewModel`, `RunListView`) + `listview_test.go`
+(new, written test-first); `internal/ui/display.go` (`DisplayBuckets`
+rewritten around `tui.RunListView`; `bucketListViewConfig` extracted as
+its testable core); `internal/ui/paged_table.go`/`paged_table_test.go`
+(removed); `cmd/clasm/main.go` (`showS3ResourceLists` now calls
+`ui.DisplayBuckets(ctx, s3State.buckets)` — no `term`/`le` needed, `huh`/
+`termlib` aren't involved at all). The "List S3 Buckets" rename and
+dropping "Back to domain picker" are Phase 20.7, not this phase — this
+phase only replaces the *rendering mechanism* behind "Show resource
+lists," not its label or the surrounding menu.
+
+### Work Items
+
+- [x] A single bordered box (no split panes), frozen header row,
+      scrollable body reusing `internal/tui`'s shared `ScrollWindow`
+      logic (Phase 20.5)
+- [x] Sized to the real terminal via `tea.WindowSizeMsg` (sent once at
+      start, again on every resize except Windows/no-SIGWINCH — an
+      initial size still arrives there); falls back to
+      `defaultListViewWidth`/`Height` before the first one lands
+- [x] A real legend bar at the bottom ("↑/↓,k/j scroll  q Quit") — this
+      tier fully owns its rendering, unlike the menu tier
+- [x] Renders inline, no `tea.WithAltScreen`, matching every other
+      screen in this app
+- [x] `q`/`ctrl+c` quits `RunListView` with a nil error, which
+      `DisplayBuckets`/`ShowResourceLists` simply propagate — `runS3Menu`
+      treats that the same as any other successful action, continuing
+      its own loop back to the S3 menu. No `ErrBackToDomainPicker`
+      special-casing needed; returning to the right screen falls out of
+      the existing dispatch structure by construction.
+- [x] Reuses `DisplayBuckets`'s existing bucket-row formatting
+      (`PadRight`/`Truncate` column layout), now isolated in
+      `bucketListViewConfig` — only the rendering mechanism changed, not
+      the column layout
+
+**Tests:** `internal/tui/listview_test.go` (9 cases). A real rendering
+lesson surfaced while writing them, worth keeping in mind for any future
+`internal/tui` component: when rendered content height *exactly* matches
+the declared terminal height (this component's own "fill the screen"
+design, by construction — `windowHeight = height - chrome`), driving it
+through a real `teatest.NewTestModel` Program can lose its own top line
+to the emulated terminal's scrolling, a known class of issue with inline
+(non-`tea.WithAltScreen`) bubbletea rendering, not a bug in this
+component specifically. `internal/filemanager`'s own test suite already
+sidesteps this the same way: exact-height/scroll-window assertions
+(`TestModel_LargeListing_*`) drive `Model` directly (set
+`width`/`height`, call `Update`/`View()` synchronously) rather than
+through `teatest`, reserving `teatest` for key-driven behavior with
+content comfortably smaller than the terminal. This phase's tests follow
+the same split.
+
+**Dependency:** Phase 20.5 (done — the shared chrome it's built on).
+
+**Dependency:** Phase 20.5 (the shared chrome it's built on).
+
+---
+
+## Phase 20.7 — S3 Menu: universal 'q' quit key; remove "Back to domain picker"; rename "Show resource lists" (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean). Applies DECISIONS.md's
+"TUI keybinding conventions" to the one menu converted so far.
+
+**Files:** `internal/workflow/s3_menu.go`, `s3_menu_test.go`.
+
+### Work Items
+
+- [x] `RunS3Menu`'s `huh.Select` gains `q` as an additional `Quit`
+      trigger (`Form.WithKeyMap`, `KeyMap.Quit` gains `"q"` alongside
+      the default `"ctrl+c"` via `key.NewBinding(key.WithKeys("ctrl+c",
+      "q"))`) — resolves through the already-existing
+      `mapS3MenuPickerErr`/`ErrUserAborted`→`ErrBackToDomainPicker`
+      path; no new dispatch logic
+- [x] A short static hint line (`"(q to go back)"`) printed via the
+      existing `t.Println`/`t.Refresh()` above the menu on every
+      redisplay (huh's own footer can't show a custom "q: quit" entry —
+      see DECISIONS.md for why)
+- [x] Removed "Back to domain picker" from `s3MenuItems` (redundant with
+      `q`); removed the now-dead `choice.action == nil` branch in
+      `runS3Menu` (`s3Item.action` is never nil anymore)
+- [x] Relabeled "Show resource lists" → "List S3 Buckets" (label only;
+      `S3Actions.ShowResourceLists` and other Go identifiers are
+      unchanged)
+
+**Tests:** `s3_menu_test.go` rewritten around a `context.WithCancel` +
+cancel-from-within-the-test-action-closure pattern for every test that
+previously chose "Back to domain picker" (item 7) to end the loop after
+observing one dispatch — that menu item no longer exists, and accessible
+mode has no way to simulate the `q`/ctrl+c abort that replaces it (same
+limitation `mapS3MenuPickerErr` already documented). New
+`TestS3MenuItems_NoBackToDomainPickerEntry` (exactly 6 items, no nil
+action) and `TestS3MenuItems_FirstItemIsListS3Buckets` guard the removal/
+rename directly. The `q`-triggers-Quit behavior itself can only be
+confirmed by real interactive use — not yet done, same class of gap as
+this session's other `huh`/`bubbletea` work.
+
+**Dependency:** Phase 20.2 (the menu this applies to).
+
+---
+
+## Phase 20.8 — internal/tui: PickerModel (selectable, filterable List-tier component) (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Full
+design: DESIGN.md, "Terminal UI Architecture...," "Picker tier" section;
+decision record: DECISIONS.md, "Add a Picker tier: resource selection
+gets its own internal/tui component, not huh.Select."
+
+**Files:** `internal/tui/picker.go` (`PickerConfig`, `PickerModel`,
+`NewPickerModel`, `RunPicker`, `ErrCancelled`) + `picker_test.go` (12
+cases, written test-first).
+
+### Work Items
+
+- [x] Same chrome as `ListViewModel` (`TopBorder`/`BoxLine`/`Divider`/
+      `ScrollWindow`/`StyleRow`/`BottomBorder`), same real
+      `tea.WindowSizeMsg` sizing, same inline (no altscreen) rendering,
+      same legend-bar convention
+- [x] `Enter` selects the row under the cursor and returns its index;
+      `q`/`ctrl+c` cancels, reported as the new `tui.ErrCancelled`
+      (mirrors `ui.PickList`'s `ErrCancelled` and huh's
+      `ErrUserAborted`, so callers use the same `if err != nil { return
+      cancelledIsNil(...) }` shape as every other pick-list-shaped call
+      site)
+- [x] `/` enters filter-typing mode (not always-on type-ahead — `j`/`k`
+      stay unambiguous navigation keys outside of filter mode), narrows
+      visible rows by case-insensitive substring match against each
+      row's rendered text (mirroring `ui.PickList`'s `filterByLabel`
+      convention and `internal/filemanager`'s pane filter), `Esc`
+      clears the filter. Deliberately does not special-case `q`/ctrl+c
+      while filtering (every key is literal text), matching
+      `internal/filemanager`'s own `handleCommandLineKey` precedent.
+- [x] Returns an index into the caller's original row slice, not a
+      typed value — `internal/tui` doesn't need generics; callers map
+      the index back into their own typed slice (`buckets[idx]`, ...),
+      the same pattern `pickS3MenuItem` already uses for `s3MenuItems`
+
+**A real rendering finding, beyond what Phase 20.6 already documented:**
+the content area's rendered height must be pinned to the *unfiltered*
+row count (bounded by the window height), not however many rows the
+current filter happens to match — otherwise the box's height shrinks
+and grows as the operator types a filter, which reproduced the same
+class of inline-bubbletea-rendering hiccup Phase 20.6 found with
+exact/changing frame heights (confirmed by a failing test before this
+fix, not just reasoned about). Fixed by padding the content area with
+blank rows up to a stable height determined by the total dataset size —
+incidentally also better UX (a fixed-height results viewport while
+typing a filter, `fzf`-style, rather than the box visibly resizing).
+
+**Tests:** written before the implementation, following
+`listview_test.go`'s established split (`teatest` for key-driven
+behavior with content comfortably smaller than the terminal, direct
+`Model`-driving for exact scroll-window/height assertions). Two
+`teatest`-based filter tests initially failed for a second, distinct
+reason: bubbletea only retransmits screen lines that changed since the
+*immediately preceding* frame, so checking for the same text across two
+separate `WaitFor` calls (one already having drained it from the stream)
+can race if a later frame doesn't happen to change that particular line
+again — fixed by combining assertions into single `WaitFor` calls,
+exactly the workaround `internal/filemanager`'s own tests already
+document for this same class of issue.
+
+**Dependency:** Phase 20.5 (the shared chrome it's built on).
+
+---
+
+## Phase 20.9 — Lifecycle Rules Action Menu: Convert to huh.Select (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Requested
+directly by the user after manually trying the S3 domain (Phase 20.7's
+`q` key took a moment to render the first time, prompting a live check):
+convert `ManageBucketLifecyclePolicies`'s "Choose an action" menu (Add
+rule/Edit rule/Remove rule/View rule details) from `ui.PickList` to
+`huh.Select`, matching `RunS3Menu`'s Phase 20.2/20.7 pattern exactly —
+this is a guide-menu-shaped choice (a small, fixed action set), not a
+Picker-tier candidate (DESIGN.md's "Picker tier" map already excluded it
+for this reason).
+
+**Files:** `internal/workflow/bucket_lifecycle.go`
+(`pickLifecycleAction`, new; `lifecycleActionLabel` removed, no longer
+needed), `bucket_lifecycle_test.go` (all 15 tests updated).
+
+### Work Items
+
+- [x] `pickLifecycleAction`: `huh.Select[string]` over `lifecycleActions`
+      (already comparable strings, no index-based workaround needed,
+      unlike Phase 20.2's `s3MenuItems`), `q` bound alongside `ctrl+c` on
+      `Quit`, input/output nil in production, supplied by tests for the
+      accessible-mode pipe path (same shape as `pickS3MenuItem`)
+- [x] "Back" removed from `lifecycleActions`; the loop's `switch`
+      statement is exhaustive over the remaining 4 actions, no `default`
+      fallback needed
+- [x] A `ctx.Err()` check added at the top of
+      `manageBucketLifecyclePolicies`'s loop (previously missing,
+      unlike `RunS3Menu`/`RunMainMenu`/`RunKeyMgmtMenu`'s loops) — needed
+      for test termination via context-cancellation, and closes a
+      pre-existing small gap in this loop's own convention
+- [x] `"(q to go back)"` hint printed above the action menu, matching
+      `RunS3Menu`'s convention (huh's own footer can't show it)
+- [x] Abort maps through `huhCancelledIsNil` (clean nil return, no
+      "Cancelled." message) — treated as equivalent to the old "Back"
+      choice, not to `ui.PickList`'s "0=Cancel" (which does print
+      "Cancelled." via `cancelledIsNil`); this action menu is a menu, not
+      an in-progress action, per the "quit vs. cancel" wording
+      convention
+
+**Tests:** action-menu selections now feed through a separate
+`newHuhAccessibleInput` reader, not `le` (which still feeds every other
+prompt in this function — rule/storage-class `PickList`s, confirms,
+day-count/ID input, unaffected by this phase). Several tests that used
+to select "Back" (position 5) to end the loop cleanly were restructured
+around real terminating actions instead, since that position no longer
+exists and the `q`/ctrl+c abort that replaces it can't be simulated in
+accessible mode (same limitation `mapS3MenuPickerErr` already
+documents) — e.g. choosing "Edit rule"/"View rule details" with zero
+rules present returns immediately by construction, which several tests
+already relied on incidentally and now rely on deliberately.
+`TestManageBucketLifecyclePolicies_BackActionSkipsPut` (tested the "Back"
+choice specifically) was retired, matching the precedent set by
+`TestRunS3Menu_BackToDomainPickerDoesNotRefresh` in Phase 20.2.
+
+**Dependency:** Phase 20.2 (established the pattern this reuses).
+
+---
+
+## Phase 20.10 — Menu Tier: Top-Level Navigation Menus (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). First
+batch of DESIGN.md's Menu-tier punch list, working through it in the
+order the user requested (menu tier, then picker, then list). Converts
+the three top-level navigation menus from `ui.PickList` to `huh.Select`,
+each an exact copy of `RunS3Menu`'s Phase 20.2/20.7 pattern: select by
+index (each item's `action` is a func, not comparable), `q` bound
+alongside `ctrl+c` on `Quit`, a printed hint above the menu, the
+redundant "Back"/"Exit" menu item dropped.
+
+**Files:** `domain_menu.go`/`domain_menu_test.go`, `menu.go`/
+`menu_test.go`, `keymgmt_menu.go`/`keymgmt_menu_test.go`.
+
+### Work Items
+
+- [x] Domain picker (`domain_menu.go`, `pickDomainItem`): drops "Exit"
+      (not "Back" -- this is the root menu, so `q` here means exit the
+      whole program, matching what "Exit" used to do); hint text is
+      `"(q to exit)"`, not `"(q to go back)"`
+- [x] Compute main menu (`menu.go`, `pickMainMenuItem`): drops "Back to
+      domain picker"
+- [x] Key Management menu (`keymgmt_menu.go`, `pickKeyMgmtItem`): drops
+      "Back to domain picker"
+- [x] `mapS3MenuPickerErr` generalized to `mapMenuPickerErr` and moved to
+      `domain_menu.go` (next to `ErrBackToDomainPicker`, its own natural
+      home) -- shared across all `huh`-converted domain menus instead of
+      duplicated per file
+
+**Tests:** every test that used to select "Back"/"Exit" (by position) to
+end a menu loop was rewritten around the `context.WithCancel` +
+cancel-from-within-the-test-action-closure pattern established in Phase
+20.7 (`cancelingAction`, shared from `s3_menu_test.go` rather than
+redefined per file); tests for the removed-item's own specific behavior
+(`TestRunMainMenu_BackToDomainPickerDoesNotRefresh`,
+`TestRunKeyMgmtMenu_BackToDomainPickerDoesNotRefresh`,
+`TestRunMainMenu_CleanExitOnCancelledPickList`,
+`TestRunKeyMgmtMenu_CleanExitOnCancelledPickList`,
+`TestRunDomainPicker_ExitEndsTheProgram`,
+`TestRunDomainPicker_CleanExitOnCancelledPickList`) were retired, same
+precedent as Phase 20.2/20.7/20.9. New `TestDomainItems_NoExitEntry`/
+`TestMainMenuItems_NoBackToDomainPickerEntry`/
+`TestKeyMgmtMenuItems_NoBackToDomainPickerEntry` guard each menu's
+item count and non-nil actions directly.
+
+**Dependency:** Phase 20.2 (the pattern this reuses).
+
+---
+
+## Phase 20.11 — Menu Tier: Remaining Punch-List Items (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Completes
+DESIGN.md's Menu-tier punch list -- every remaining `ui.PickList`
+call site classified as Menu tier is now `huh.Select`. Two shared
+helpers added to `domain_menu.go` next to `runMenuField`/
+`menuQuitKeyMap`: `pickString` (fixed `[]string` options) and its
+generic backer `pickComparable[T comparable]` (fixed `[]T` options with
+a caller-supplied label func) -- covers every remaining site without
+repeating the index-selection workaround `pickS3MenuItem`/
+`pickMainMenuItem`/etc. needed only because their option types embed a
+`func` field.
+
+### Work Items
+
+- [x] Instance-vs-AMI kind, `show_cloud_init.go`/`manage_tags.go`: split
+      `ShowCloudInit`/`ManageTags` into thin entry points + testable
+      `showCloudInit`/`manageTags` cores taking a shared
+      `menuInput`/`menuOutput` pair
+- [x] Tag Add/Update/Remove action + select-a-tag-to-update/remove,
+      `manage_tags.go`: same `menuInput`/`menuOutput` pair as the kind
+      picker above -- all four huh.Selects in one call read the shared
+      reader in sequence
+- [x] Region (S3, `bucket_create.go`) and Region (Key Management,
+      `keymgmt_common.go`): `promptRegion`/`promptS3Region` take
+      `input`/`output` now; `CreateBucket`, `CreateKeyPairStandalone`,
+      `ImportKeyPairStandalone` each split into entry point + testable
+      core
+- [x] Bucket-purpose enum, `bucket_create.go`: same `createBucket` core
+      as the region picker above
+- [x] Instance type (curated list + "Other"), `launch_prompts.go`:
+      `promptInstanceType` takes `input`/`output`; selects by
+      `instanceTypeChoice` value directly via `pickComparable` (no index
+      workaround needed -- the struct is `comparable`)
+- [x] AZ-incompatibility remediation choice,
+      `instance_type_az_check.go`, and ENA-incompatibility remediation
+      choice, `instance_type_ena_check.go`: `ensureInstanceType
+      SupportedInSubnet`/`ensureInstanceTypeENACompatible` take a shared
+      `menuInput`/`menuOutput` pair, threaded into their own nested
+      `promptInstanceType` call when the operator picks "Change instance
+      type" -- both are loops, so the pair is read across iterations the
+      same way a domain menu's own loop reads it
+  - Threading this up the call chain required splitting
+    `CollectLaunchInstanceParams`/`CollectLaunchInstanceParamsFromCloudInit`
+    (`launch_instance.go`/`launch_from_cloud_init.go`) and
+    `CreateInstanceFromAMI`/`CreateInstanceFromCloudInit`
+    (`create_instance_from_ami.go`/`create_instance_from_cloud_init.go`)
+    into entry points + testable cores, all sharing one
+    `menuInput`/`menuOutput` pair down to `promptInstanceType`
+- [x] Storage class, guided backup flow (curated 4) and generic editor
+      (full enum), `bucket_lifecycle.go`: `promptGuidedBackupRule`/
+      `promptGenericRule` take `menuInput`/`menuOutput`, reusing
+      `manageBucketLifecyclePolicies`'s existing `actionMenuInput`/
+      `actionMenuOutput` pair (already threaded through for
+      `pickLifecycleAction`) via `addLifecycleRule`/`editLifecycleRule`
+
+**Tests:** every affected test call site now feeds its huh.Select(s) via
+a separate `newHuhAccessibleInput` reader instead of the numbered
+`le`-pipe selection `ui.PickList` used to read; `le` still feeds every
+other prompt unaffected by these conversions. Cancellation tests for
+pickers that used to support a `PickList` "0=Cancel"/`le`-driven abort
+(`TestShowCloudInit_CancelledKindPickList`,
+`TestCreateBucket_RegionCancellationAbortsCleanly`,
+`TestCreateKeyPairStandalone_CancelledRegionPick`,
+`TestImportKeyPairStandalone_CancelledRegionPick`) were retired -- `q`/
+`ctrl+c` abort has no accessible-mode keyboard to simulate it with, same
+precedent as every prior phase's menu conversions. `cancelledIsNil`
+(`manage_tags.go`) now also matches `huh.ErrUserAborted`, unifying it
+with `ui.ErrCancelled`/`tui.ErrCancelled` as the one cancellation-mapping
+policy for one-off Menu-tier pickers (as opposed to `mapMenuPickerErr`,
+which is specific to domain-loop menus backing out to
+`ErrBackToDomainPicker`).
+
+**Files:** `domain_menu.go` (new `pickString`/`pickComparable`
+helpers), `show_cloud_init.go`/`_test.go`, `manage_tags.go`/`_test.go`,
+`bucket_create.go`/`_test.go`, `keymgmt_common.go`, `keypair_create.go`/
+`_test.go`, `keypair_import.go`/`_test.go`, `launch_prompts.go`/
+`_test.go`, `instance_type_az_check.go`/`_test.go`,
+`instance_type_ena_check.go`/`_test.go`, `launch_instance.go`/`_test.go`,
+`launch_from_cloud_init.go`/`_test.go`, `create_instance_from_ami.go`/
+`_test.go`, `create_instance_from_cloud_init.go`/`_test.go`,
+`bucket_lifecycle.go`/`_test.go`.
+
+**Dependency:** Phase 20.10 (the `runMenuField` helper this builds on).
+
+DESIGN.md's Menu-tier punch list is now fully converted -- next up is
+the Picker tier (8 remaining entries), per the user's requested order
+(menu, then picker, then list).
+
+---
+
+## Phase 20.12 — Picker Tier: Every Remaining Resource Selector (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Completes
+DESIGN.md's Picker-tier punch list -- every remaining `ui.PickList` call
+site classified as Picker tier (fetched/variable-length resource
+collections) is now `tui.RunPicker`. Six new one-line-per-type picker
+helpers added next to each resource's own label function, all following
+`pickBucket`'s exact shape (Phase 20.4): build `rows []string` from the
+resource's label func, call `tui.RunPicker`, index back into the
+original slice -- `pickInstance`/`pickImage` (power_state.go/
+launch_instance.go), `pickSubnet` (launch_prompts.go),
+`pickInstanceProfileChoice`/`pickRole` (create_instance_profile.go),
+`pickKeyPairChoice` (create_key_pair.go), `pickKeyPairForDeletion`
+(keypair_delete.go), `pickLifecycleRule` (bucket_lifecycle.go).
+
+### Work Items
+
+- [x] EC2 instance, 6 call sites (`backup_archive.go`,
+      `create_ami_from_instance.go`, `show_cloud_init.go`,
+      `power_state.go` x2, `terminate_instance.go`, `manage_tags.go`):
+      each split into a thin entry point (calls `pickInstance`) + a
+      testable core taking the already-resolved instance directly
+- [x] AMI, 5 call sites (`launch_from_cloud_init.go`, `launch_instance.go`,
+      `show_cloud_init.go`, `manage_tags.go`, `remove_ami.go`): same
+      split. `launch_instance.go`/`launch_from_cloud_init.go` required an
+      extra cascade -- `CollectLaunchInstanceParams(FromCloudInit)` and
+      `CreateInstanceFrom{AMI,CloudInit}` all split into entry points +
+      testable cores taking a resolved `image` instead of the full
+      `images` list, since AMI selection used to happen *inside* the
+      already-testable core built in Phase 20.11
+- [x] Subnet, `launch_prompts.go` (`promptSubnetID`): list-path tests
+      retired -- `filterSubnetsByInstanceTypeAZ`'s own tests
+      (instance_type_az_check_test.go) already cover the pre-picker
+      filtering logic; the free-text fallback path (zero subnets) stays
+      fully testable
+- [x] IAM instance profile (+ none/create-new) and IAM role (to attach),
+      `create_instance_profile.go`: `createInstanceProfileInteractive`
+      split so `createInstanceProfileForRole` (the create-new sub-flow,
+      once a role is resolved) is directly testable; list-path tests for
+      `promptIAMInstanceProfileOrCreate` itself retired since it always
+      builds a choices list of at least `["(none)", "Create new..."]`,
+      reaching the picker on every path except the list-fetch-error
+      free-text fallback
+- [x] Key pair (fetched, + create-new), `create_key_pair.go`
+      (`promptKeyPairNameOrCreate`): list-path tests retired (redundant
+      with `listKeyPairs`' own tests); `createNewKeyPairInteractive` (no
+      picker of its own) gained its own direct test coverage instead of
+      being driven indirectly through the picker
+- [x] Key pair (fetched, to delete), `keypair_delete.go`
+      (`DeleteKeyPair`): same entry-point/testable-core split as EC2
+      instance/AMI
+- [x] S3 lifecycle rule (view/edit/remove), `bucket_lifecycle.go`:
+      `viewLifecycleRuleDetail`/`editLifecycleRule`/`removeLifecycleRule`
+      all gained a `ctx` param and now call `pickLifecycleRule`;
+      `editLifecycleRuleForRule`/`removeLifecycleRuleForRule` extracted
+      as testable cores; the "view" path's own display logic
+      (`printLifecycleRuleDetail`) got direct test coverage instead of
+      being driven through the loop
+
+**Tests:** every affected call site's happy-path/error-path tests were
+rewritten to call the new testable core with an already-resolved
+resource instead of driving `ui.PickList`'s numbered selection through
+`le`; a handful of fakes needed a forced-error field
+(`fakeIAMClientNoProfiles()`, `errNoKeyPairsConfigured` on
+`fakeEC2Client`) so unrelated launch-params tests don't themselves
+reach the now-bubbletea IAM-profile/key-pair pickers. "0=Cancel"/
+list-selection tests for every converted picker were retired -- a real
+bubbletea Program can't be pipe-tested, no keyboard to simulate an abort
+or a specific-item selection with -- the same precedent `pickBucket`
+(Phase 20.4) already established; each retirement is commented in place
+noting what still covers the underlying logic directly (the resource's
+own list/filter tests, or a newly-split testable core).
+
+**Files:** `power_state.go`/`_test.go`, `launch_instance.go`/`_test.go`,
+`launch_from_cloud_init.go`/`_test.go`, `create_instance_from_ami.go`/
+`_test.go`, `create_instance_from_cloud_init.go`/`_test.go`,
+`terminate_instance.go`/`_test.go`, `backup_archive.go`/`_test.go`,
+`create_ami_from_instance.go`/`_test.go`, `remove_ami.go`/`_test.go`,
+`show_cloud_init.go`/`_test.go`, `manage_tags.go`/`_test.go`,
+`launch_prompts.go`/`_test.go`, `create_instance_profile.go`/`_test.go`,
+`create_key_pair.go`/`_test.go`, `keypair_delete.go`/`_test.go`,
+`bucket_lifecycle.go`/`_test.go`, `userdata_test.go` (gained
+`promptCloudInitYAMLFile`'s own direct tests, migrated out of
+`launch_from_cloud_init_test.go`).
+
+**Dependency:** Phase 20.4 (`pickBucket`, the pattern every helper here
+copies) and Phase 20.11 (the Menu-tier sweep that had to finish first).
+
+DESIGN.md's Picker-tier punch list is now fully converted -- next up is
+the List tier (3 remaining entries: EC2 instances, AMIs, Key pairs), per
+the user's requested order (menu, then picker, then list).
+
+---
+
+## Phase 20.13 — List Tier: EC2 Instances, AMIs, Key Pairs (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Completes
+DESIGN.md's List-tier punch list -- the last remaining tier from the
+full termlib-to-huh/bubbletea conversion sweep. `DisplayInstances`,
+`DisplayImages`, and `DisplayKeyPairs` (`internal/ui/display.go`)
+converted to `tui.RunListView`, mirroring `DisplayBuckets`/
+`bucketListViewConfig` (Phase 20.6) exactly: each gained an
+`instanceListViewConfig`/`imageListViewConfig`/`keyPairListViewConfig`
+builder (pure, unit-testable column formatting, reusing the existing
+`orUnknown`/`orNone`/`stateColor` helpers unchanged) and became a thin
+`func(ctx, ...) error` wrapper.
+
+### Work Items
+
+- [x] `DisplayInstances`/`DisplayImages`/`DisplayKeyPairs`: new
+      `*ListViewConfig` builders + `tui.RunListView` wrappers, signature
+      changed from `(t *termlib.Terminal, ...)` (no return) to
+      `(ctx context.Context, ...) error`, matching `DisplayBuckets`
+- [x] `instanceRow` extracted from `instanceListViewConfig` so the
+      STATE column's color-embedding logic (running=green,
+      stopped/terminated=red, pending/stopping=yellow) stays testable
+      via an explicit `colorEnabled bool` parameter, independent of the
+      real `ColorEnabled()` TTY/NO_COLOR check a test runs under
+      (`go test` never has a real stdout TTY, so `ColorEnabled()` itself
+      can't be forced true in-process)
+- [x] Fixed a real bug surfaced by preserving that STATE color: `tui.
+      reverseVideo` (internal/tui/style.go) now re-asserts reverse-video
+      after any reset a row already embeds, so a colorized STATE cell
+      landing on the cursor row doesn't cut the row's highlight short at
+      the cell's own closing reset
+- [x] `MenuActions`/`KeyMgmtActions` (`internal/workflow/menu.go`/
+      `keymgmt_menu.go`) each split their existing `Refresh` field into a
+      silent fetch-only `Refresh` + a new `ShowResourceLists` display
+      field, mirroring `S3Actions`' own split (Phase 20.6) -- required
+      because `tui.RunListView` blocks on an interactive bubbletea loop
+      until `q`, so calling it unconditionally after every dispatched
+      action (the old `Refresh` behavior) would force pressing `q` after
+      every single action just to get back to the menu. `mainMenuItems`/
+      `keyMgmtMenuItems`'s "Show resource lists" entries now dispatch to
+      `ShowResourceLists` instead of `Refresh`
+- [x] `cmd/clasm/main.go`: `refresh`/`refreshKeyMgmt` closures now only
+      fetch (no display); new `showComputeResourceLists`/
+      `showKeyMgmtResourceLists` closures call the converted `Display*`
+      functions and are wired to each `Actions` struct's new
+      `ShowResourceLists` field
+
+**Tests:** `display_test.go`'s `TestDisplayInstances_*`/
+`TestDisplayImages_*`/`TestDisplayKeyPairs_*` (direct calls against a
+`bytes.Buffer`-backed `termlib.Terminal`) replaced with
+`TestInstanceListViewConfig_*`/`TestImageListViewConfig_*`/
+`TestKeyPairListViewConfig_*` (direct calls against the new pure
+builders, asserting on `cfg.Header`/`cfg.Rows`/`cfg.Title`), matching
+`TestBucketListViewConfig_*`'s existing style exactly; the two
+color-specific tests became `TestInstanceRow_ColorEnabled_
+AppliesStateColor`/`ColorDisabled_NoANSICodes`, calling `instanceRow`
+directly with an explicit bool instead of relying on the ambient
+terminal state `DisplayInstances` used to take as a parameter. New
+`TestStyleRow_CursorRowReassertsReverseVideoAfterEmbeddedReset`
+(`internal/tui/style_test.go`) covers the `reverseVideo` fix directly.
+`menu_test.go`/`keymgmt_menu_test.go` gained
+`TestRunMainMenu_ShowResourceListsDispatchesToItsOwnAction`/
+`TestRunKeyMgmtMenu_ShowResourceListsDispatchesToItsOwnAction`, mirroring
+`s3_menu_test.go`'s existing `TestRunS3Menu_ShowResourceListsDispatches
+ToItsOwnAction` -- neither menu's "Show resource lists" dispatch had
+ever actually been exercised by a test before (both `testMenuActions`/
+`testKeyMgmtActions` helpers only wired `Refresh`), a real coverage gap
+this phase closed along the way.
+
+## Phase 20.14 — Chrome Consistency: Full-Height Rendering Fix + List-Tier Filtering (done)
+
+**Status: implemented and unit-tested 2026-07-10** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean). Follow-up
+to Phase 20.13, from user-reported feedback after using the newly
+converted List tier: (1) the List/Picker/file-manager boxes weren't
+using the full terminal height, and (2) List-tier filtering -- listed
+in DESIGN.md's keybinding table (`/` = Filter, "Menus, pickers, lists,
+managers") since Phase 20.8 but never built for lists -- was still
+missing.
+
+### Work Items
+
+- [x] Root-caused the height bug: these are inline (non-alt-screen)
+      bubbletea programs, and a box sized to nearly the full terminal
+      height renders wherever the cursor already sits rather than at
+      row 0; if that doesn't fit in the remaining rows below the
+      cursor, the terminal scrolls and bubbletea's redraw-in-place
+      bookkeeping goes stale, pushing the top of the box out of view.
+      Fixed by returning `tea.ClearScreen` from `Init()` on
+      `ListViewModel`, `PickerModel`, and `filemanager.Model` --
+      confirmed by the user ("Scrolling is much improved") -- see
+      DECISIONS.md, "Clear the screen on entry for every inline
+      bubbletea screen"
+- [x] Extracted `internal/tui/filter.go`'s `filterState` (`apply`,
+      `moveCursor`, `handleIdleKey`, `handleFilterKey`, `statusLine`)
+      out of `PickerModel`'s previously-inline filter fields/methods, so
+      `ListViewModel` and `PickerModel` share one filter implementation
+      instead of each keeping its own copy -- keeps them consistent by
+      construction rather than by convention, per the user's "we want
+      to have the chrome more consistent" feedback
+- [x] `ListViewModel` gained `/` filter-typing mode, the filter status
+      line + divider, and an updated legend
+      (`↑/↓,k/j scroll  / filter  q Quit`), reusing `PickerModel`'s
+      exact behavior (case-insensitive substring match, `Enter` commits
+      and keeps navigating the narrowed list, `Esc` clears it,
+      content-height pinned to the *unfiltered* row count so the box
+      doesn't jitter while typing)
+- [x] Also made `ListViewModel`'s header row conditional on
+      `Header != ""` (previously always rendered, even blank), matching
+      `PickerModel` exactly -- zero behavior change for existing
+      callers, all of which always supply a `Header`
+- [x] Unified both models' `windowHeight()` onto one shared
+      `filterableWindowHeight(height, hasHeader bool)` helper
+      (`baseChromeRows` + `headerChromeRows` if header + always
+      `filterChromeRowCount` for the filter line/divider), fixing a
+      minor pre-existing off-by-one in `PickerModel`'s own chrome math
+      (it subtracted an extra, imprecise `-1` "for the filter line"
+      rather than counting the filter line's own divider)
+
+**Tests:** `internal/tui/listview_test.go` gained
+`TestListView_SlashEntersFilterModeAndNarrowsRows`,
+`_FilterIsCaseInsensitive`, `_EscClearsFilter`,
+`_LettersDuringFilterModeAreTextNotCommands` -- direct mirrors of
+`picker_test.go`'s existing filter tests, minus selection (List has
+nothing to choose). `TestListView_LegendShowsScrollAndQuit` renamed to
+`_LegendShowsScrollFilterAndQuit` and now also asserts "filter" appears.
+All of `picker_test.go`'s existing filter tests continued to pass
+unchanged against the refactored `filterState`-backed `PickerModel`,
+confirming the extraction didn't change Picker's own behavior.
+
+**Files:** `internal/ui/display.go`/`display_test.go`,
+`internal/tui/style.go`/`style_test.go`, `internal/workflow/menu.go`/
+`menu_test.go`, `internal/workflow/keymgmt_menu.go`/
+`keymgmt_menu_test.go`, `cmd/clasm/main.go`.
+
+**Dependency:** Phase 20.6 (`bucketListViewConfig`/`DisplayBuckets`, the
+pattern every builder here copies) and Phase 20.12 (the Picker-tier
+sweep that had to finish first).
+
+DESIGN.md's full termlib-to-huh/bubbletea conversion punch list (Menu,
+Picker, and List tiers) is now completely converted. Remaining termlib
+call sites outside this punch list (e.g. `ui.PickList`/`ui.Prompt`/
+`Confirm` calls not classified into any of the three tiers) stay as-is
+per DESIGN.md's own note that `internal/ui` shrinks over the course of
+termlib removal rather than being replaced in one step.
+
+---
+
 ## Phase 21 — CloudFront Domain
 
 **Status: someday/maybe -- not on the active roadmap, no committed

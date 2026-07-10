@@ -80,8 +80,13 @@ func New(ctx context.Context, client awsclient.S3API, bucket, region, localDir s
 	return m
 }
 
+// Init clears the screen and homes the cursor before the first render,
+// alongside the initial listing loads -- see
+// internal/tui.ListViewModel.Init's doc comment for why this matters
+// for an inline (non-alt-screen), nearly-full-terminal-height box like
+// this one.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadRemoteCmd(m.remote.prefix)}
+	cmds := []tea.Cmd{tea.ClearScreen, m.loadRemoteCmd(m.remote.prefix)}
 	if m.local != nil {
 		cmds = append(cmds, m.loadLocalCmd(m.local.prefix))
 	}

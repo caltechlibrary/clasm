@@ -11,11 +11,32 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 func keyPairLabel(kp inventory.KeyPair) string {
 	return fmt.Sprintf("%s (%s, %s)", kp.KeyName, kp.Region, kp.KeyType)
+}
+
+// pickKeyPairForDeletion runs a Picker-tier tui.RunPicker (DESIGN.md's
+// full conversion punch list) over keyPairs and returns the chosen one.
+// Like pickInstance/pickImage/pickSubnet, this drives a real bubbletea
+// Program that can't be pipe-tested.
+func pickKeyPairForDeletion(ctx context.Context, title string, keyPairs []inventory.KeyPair) (inventory.KeyPair, error) {
+	rows := make([]string, len(keyPairs))
+	for i, kp := range keyPairs {
+		rows[i] = keyPairLabel(kp)
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return inventory.KeyPair{}, err
+	}
+	return keyPairs[idx], nil
 }
 
 // instancesUsingKeyPair finds instances whose KeyName matches keyName,
@@ -44,10 +65,19 @@ func DeleteKeyPair(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdi
 		return nil
 	}
 
-	kp, err := ui.PickList(t, le, keyPairs, keyPairLabel, "Select a key pair to delete")
+	kp, err := pickKeyPairForDeletion(ctx, "Select a key pair to delete", keyPairs)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
+	return deleteKeyPair(ctx, t, le, clients, kp, instances)
+}
+
+// deleteKeyPair is DeleteKeyPair's testable core, once a key pair is
+// resolved -- key pair selection runs a real bubbletea Program
+// (tui.RunPicker, DESIGN.md's full conversion punch list) that can't be
+// driven by a test's pipe input, same limitation as every other
+// Picker-tier conversion this session.
+func deleteKeyPair(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, kp inventory.KeyPair, instances []inventory.Instance) error {
 	client, err := resolveEC2(clients, kp.Region)
 	if err != nil {
 		return err

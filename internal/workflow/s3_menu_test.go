@@ -1,12 +1,14 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/huh"
 	"github.com/rsdoiel/termlib"
 )
 
@@ -19,19 +21,47 @@ func testS3Actions(refreshCalls *int) S3Actions {
 		ManageLifecyclePolicies: noop,
 		DeleteBucket:            noop,
 		Refresh:                 countingAction(refreshCalls),
+		ShowResourceLists:       noop,
+	}
+}
+
+// newTermOnly returns a *termlib.Terminal writing to a buffer, for
+// RunS3Menu's error/refresh output. The menu picker itself no longer
+// reads through termlib (see runS3Menu's menuInput/menuOutput), so no
+// LineEditor is needed here.
+func newTermOnly() (*termlib.Terminal, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return termlib.New(&buf), &buf
+}
+
+// cancelingAction increments *calls and cancels ctx via cancel, so a
+// test can drive one iteration of runS3Menu's loop and then have it
+// exit cleanly on the *next* iteration's ctx.Err() check -- standing in
+// for choosing "Back to domain picker" (removed in Phase 20.7: 'q' is
+// now the only way back, and accessible mode has no way to simulate
+// that abort -- see mapMenuPickerErr's doc comment). The resulting
+// exit is nil, not ErrBackToDomainPicker: this is a test-only device to
+// observe one dispatch's effects, not a claim about what a real abort
+// returns.
+func cancelingAction(calls *int, cancel context.CancelFunc) func(context.Context) error {
+	return func(ctx context.Context) error {
+		*calls++
+		cancel()
+		return nil
 	}
 }
 
 func TestRunS3Menu_DispatchesToTheChosenAction(t *testing.T) {
 	var createCalls, refreshCalls int
-	term, le, _ := newPipeEditor(t, "2\n7\n") // Create Bucket, then Back to domain picker
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	actions := testS3Actions(&refreshCalls)
-	actions.CreateBucket = countingAction(&createCalls)
+	actions.CreateBucket = cancelingAction(&createCalls, cancel)
 
-	err := RunS3Menu(context.Background(), term, le, actions)
-	if !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
+	err := runS3Menu(ctx, term, actions, newHuhAccessibleInput("2\n"), buf) // Create Bucket
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
 	if createCalls != 1 {
 		t.Errorf("createCalls = %d, want 1", createCalls)
@@ -39,141 +69,181 @@ func TestRunS3Menu_DispatchesToTheChosenAction(t *testing.T) {
 }
 
 func TestRunS3Menu_DispatchesEachActionByPosition(t *testing.T) {
-	var configureCalls, browseCalls, lifecycleCalls, deleteBucketCalls int
-
-	actionsFor := func() S3Actions {
-		var refreshCalls int
-		a := testS3Actions(&refreshCalls)
-		a.ConfigureWebsite = countingAction(&configureCalls)
-		a.BrowseAndManageObjects = countingAction(&browseCalls)
-		a.ManageLifecyclePolicies = countingAction(&lifecycleCalls)
-		a.DeleteBucket = countingAction(&deleteBucketCalls)
-		return a
+	cases := []struct {
+		menuInput   string
+		actionField string
+		assign      func(actions *S3Actions, calls *int, cancel context.CancelFunc)
+	}{
+		{"3\n", "ConfigureWebsite", func(a *S3Actions, calls *int, cancel context.CancelFunc) {
+			a.ConfigureWebsite = cancelingAction(calls, cancel)
+		}},
+		{"4\n", "BrowseAndManageObjects", func(a *S3Actions, calls *int, cancel context.CancelFunc) {
+			a.BrowseAndManageObjects = cancelingAction(calls, cancel)
+		}},
+		{"5\n", "ManageLifecyclePolicies", func(a *S3Actions, calls *int, cancel context.CancelFunc) {
+			a.ManageLifecyclePolicies = cancelingAction(calls, cancel)
+		}},
+		{"6\n", "DeleteBucket", func(a *S3Actions, calls *int, cancel context.CancelFunc) {
+			a.DeleteBucket = cancelingAction(calls, cancel)
+		}},
 	}
 
-	term, le, _ := newPipeEditor(t, "3\n7\n") // Configure Static Website Hosting
-	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
-	}
-	if configureCalls != 1 {
-		t.Errorf("configureCalls = %d, want 1", configureCalls)
-	}
+	for _, c := range cases {
+		var refreshCalls, calls int
+		term, buf := newTermOnly()
+		ctx, cancel := context.WithCancel(context.Background())
+		actions := testS3Actions(&refreshCalls)
+		c.assign(&actions, &calls, cancel)
 
-	term, le, _ = newPipeEditor(t, "4\n7\n") // Browse & Manage Objects
-	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
+		if err := runS3Menu(ctx, term, actions, newHuhAccessibleInput(c.menuInput), buf); err != nil {
+			t.Fatalf("%s: expected a clean exit (nil error) once ctx is cancelled, got: %v", c.actionField, err)
+		}
+		if calls != 1 {
+			t.Errorf("%s: calls = %d, want 1", c.actionField, calls)
+		}
 	}
-	if browseCalls != 1 {
-		t.Errorf("browseCalls = %d, want 1", browseCalls)
-	}
+}
 
-	term, le, _ = newPipeEditor(t, "5\n7\n") // Manage Bucket Lifecycle Policies
-	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
-	}
-	if lifecycleCalls != 1 {
-		t.Errorf("lifecycleCalls = %d, want 1", lifecycleCalls)
-	}
+// TestRunS3Menu_ShowResourceListsDispatchesToItsOwnAction covers a real
+// gap: "Show resource lists" used to dispatch to Refresh directly
+// (DESIGN.md, "S3 Resource List Display -- Paged, Accessible-
+// Compatible" changed this to a separate ShowResourceLists field), but
+// no existing test chose item 1 to exercise that dispatch at all. The
+// post-action refresh still fires afterward (unconditional for every
+// menu item, unchanged) -- this test checks both calls happen.
+func TestRunS3Menu_ShowResourceListsDispatchesToItsOwnAction(t *testing.T) {
+	var refreshCalls, showCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
 
-	term, le, _ = newPipeEditor(t, "6\n7\n") // Delete Bucket
-	if err := RunS3Menu(context.Background(), term, le, actionsFor()); !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
+	actions := testS3Actions(&refreshCalls)
+	actions.ShowResourceLists = cancelingAction(&showCalls, cancel)
+
+	err := runS3Menu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf)
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
-	if deleteBucketCalls != 1 {
-		t.Errorf("deleteBucketCalls = %d, want 1", deleteBucketCalls)
+	if showCalls != 1 {
+		t.Errorf("showCalls = %d, want 1", showCalls)
+	}
+	if refreshCalls != 1 {
+		t.Errorf("refreshCalls = %d, want 1 (the unconditional post-action refresh still runs)", refreshCalls)
 	}
 }
 
 func TestRunS3Menu_RefreshesAfterASuccessfulAction(t *testing.T) {
-	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "2\n7\n")
+	var refreshCalls, createCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	actions := testS3Actions(&refreshCalls)
+	actions.CreateBucket = cancelingAction(&createCalls, cancel)
 
-	err := RunS3Menu(context.Background(), term, le, actions)
-	if !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
+	err := runS3Menu(ctx, term, actions, newHuhAccessibleInput("2\n"), buf)
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
 	if refreshCalls != 1 {
 		t.Errorf("refreshCalls = %d, want 1 (once, after the dispatched action)", refreshCalls)
 	}
 }
 
-func TestRunS3Menu_BackToDomainPickerDoesNotRefresh(t *testing.T) {
-	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "7\n")
-
-	actions := testS3Actions(&refreshCalls)
-
-	err := RunS3Menu(context.Background(), term, le, actions)
-	if !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
-	}
-	if refreshCalls != 0 {
-		t.Errorf("refreshCalls = %d, want 0 (backing out shouldn't refresh)", refreshCalls)
-	}
-}
-
 func TestRunS3Menu_ActionErrorDoesNotCrashLoop(t *testing.T) {
-	var refreshCalls int
-	term, le, buf := newPipeEditor(t, "2\n7\n")
+	var refreshCalls, createCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	actions := testS3Actions(&refreshCalls)
-	actions.CreateBucket = failingAction(errors.New("boom"))
+	// Fails the first time (loop must survive and reprompt), succeeds
+	// (and cancels ctx to end the test) the second time.
+	actions.CreateBucket = func(ctx context.Context) error {
+		createCalls++
+		if createCalls == 1 {
+			return errors.New("boom")
+		}
+		cancel()
+		return nil
+	}
 
-	err := RunS3Menu(context.Background(), term, le, actions)
-	if !errors.Is(err, ErrBackToDomainPicker) {
-		t.Fatalf("expected the loop to survive a single action's error and report ErrBackToDomainPicker, got: %v", err)
+	err := runS3Menu(ctx, term, actions, newHuhAccessibleInput("2\n2\n"), buf)
+	if err != nil {
+		t.Fatalf("expected the loop to survive a single action's error and exit cleanly once ctx is cancelled, got: %v", err)
 	}
 	if !strings.Contains(buf.String(), "boom") {
 		t.Errorf("expected the error to be shown, got:\n%s", buf.String())
 	}
-	if refreshCalls != 0 {
-		t.Errorf("refreshCalls = %d, want 0 (a failed action shouldn't refresh)", refreshCalls)
-	}
-}
-
-func TestRunS3Menu_CleanExitOnCancelledPickList(t *testing.T) {
-	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "0\n")
-	actions := testS3Actions(&refreshCalls)
-
-	if err := RunS3Menu(context.Background(), term, le, actions); err != nil {
-		t.Fatalf("expected a clean exit (nil error), got: %v", err)
+	if refreshCalls != 1 {
+		t.Errorf("refreshCalls = %d, want 1 (only after the second, successful attempt)", refreshCalls)
 	}
 }
 
 func TestRunS3Menu_CleanExitOnAlreadyCancelledContext(t *testing.T) {
 	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "")
+	term, buf := newTermOnly()
 	actions := testS3Actions(&refreshCalls)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := RunS3Menu(ctx, term, le, actions); err != nil {
+	if err := runS3Menu(ctx, term, actions, newHuhAccessibleInput(""), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on an already-cancelled context, got: %v", err)
 	}
 }
 
 func TestRunS3Menu_CleanExitOnInterrupt(t *testing.T) {
 	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "2\n")
+	term, buf := newTermOnly()
 	actions := testS3Actions(&refreshCalls)
 	actions.CreateBucket = failingAction(termlib.ErrInterrupted)
 
-	if err := RunS3Menu(context.Background(), term, le, actions); err != nil {
+	if err := runS3Menu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on ErrInterrupted, got: %v", err)
 	}
 }
 
 func TestRunS3Menu_CleanExitOnEOF(t *testing.T) {
 	var refreshCalls int
-	term, le, _ := newPipeEditor(t, "2\n")
+	term, buf := newTermOnly()
 	actions := testS3Actions(&refreshCalls)
 	actions.CreateBucket = failingAction(io.EOF)
 
-	if err := RunS3Menu(context.Background(), term, le, actions); err != nil {
+	if err := runS3Menu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on io.EOF, got: %v", err)
+	}
+}
+
+// TestMapS3MenuPickerErr covers the abort-to-ErrBackToDomainPicker
+// mapping as a standalone pure function, since accessible mode (the only
+// path the tests above can drive) has no way to produce
+// huh.ErrUserAborted itself -- see mapMenuPickerErr's doc comment.
+func TestMapS3MenuPickerErr(t *testing.T) {
+	if err := mapMenuPickerErr(huh.ErrUserAborted); !errors.Is(err, ErrBackToDomainPicker) {
+		t.Errorf("aborting the picker should map to ErrBackToDomainPicker, got: %v", err)
+	}
+
+	boom := errors.New("boom")
+	if err := mapMenuPickerErr(boom); !errors.Is(err, boom) {
+		t.Errorf("a real error should pass through unchanged, got: %v", err)
+	}
+
+	if err := mapMenuPickerErr(nil); err != nil {
+		t.Errorf("nil should pass through as nil, got: %v", err)
+	}
+}
+
+func TestS3MenuItems_NoBackToDomainPickerEntry(t *testing.T) {
+	if len(s3MenuItems) != 6 {
+		t.Fatalf("len(s3MenuItems) = %d, want 6 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(s3MenuItems))
+	}
+	for _, item := range s3MenuItems {
+		if item.action == nil {
+			t.Errorf("found a nil-action item %q -- \"Back to domain picker\" should have been removed", item.label)
+		}
+	}
+}
+
+func TestS3MenuItems_FirstItemIsListS3Buckets(t *testing.T) {
+	if got := s3MenuItems[0].label; got != "List S3 Buckets" {
+		t.Errorf("s3MenuItems[0].label = %q, want %q", got, "List S3 Buckets")
 	}
 }

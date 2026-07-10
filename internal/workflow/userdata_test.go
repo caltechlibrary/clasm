@@ -93,3 +93,77 @@ func TestLoadUserData_BareNonExistentPathStaysLiteral(t *testing.T) {
 		t.Errorf("got %q, want the literal input %q back unchanged", got, input)
 	}
 }
+
+// promptCloudInitYAMLFile's own coverage -- moved here from
+// launch_from_cloud_init_test.go when CollectLaunchInstanceParamsFrom
+// CloudInit's AMI picker converted to tui.RunPicker (Picker tier,
+// DESIGN.md's full conversion punch list): the cloud-init YAML prompt
+// now runs entirely in the exported wrapper, before the (untestable)
+// AMI pick, so it's simplest to test standalone via le rather than
+// through the whole launch-params pipeline.
+
+func TestPromptCloudInitYAMLFile_RequiresNonEmpty(t *testing.T) {
+	path := writeCloudInitFixture(t, "#cloud-config")
+	term, le, buf := newPipeEditor(t, "\n"+path+"\n") // blank -- rejected, retry accepted
+
+	got, err := promptCloudInitYAMLFile(term, le)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "#cloud-config" {
+		t.Errorf("got %q, want %q", got, "#cloud-config")
+	}
+	if !strings.Contains(buf.String(), "invalid input") {
+		t.Errorf("expected a validation error message for the blank input, got:\n%s", buf.String())
+	}
+}
+
+func TestPromptCloudInitYAMLFile_ReadsFromFile(t *testing.T) {
+	want := "#cloud-config\npackages: [docker]\n"
+	path := writeCloudInitFixture(t, want)
+	term, le, _ := newPipeEditor(t, path+"\n")
+
+	got, err := promptCloudInitYAMLFile(term, le)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestPromptCloudInitYAMLFile_ToleratesLeadingAtSign(t *testing.T) {
+	// Backward-compat: an operator used to Feature 2's "@file path"
+	// convention shouldn't be broken by typing "@" out of habit here,
+	// even though this prompt no longer requires (or supports inline
+	// text as an alternative to) it.
+	want := "#cloud-config\n"
+	path := writeCloudInitFixture(t, want)
+	term, le, _ := newPipeEditor(t, "@"+path+"\n")
+
+	got, err := promptCloudInitYAMLFile(term, le)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestPromptCloudInitYAMLFile_RetriesOnUnreadableFile(t *testing.T) {
+	path := writeCloudInitFixture(t, "#cloud-config")
+	input := "/no/such/file-really-does-not-exist.yaml\n" + // rejected -- cannot read
+		path + "\n" // retry, accepted
+	term, le, buf := newPipeEditor(t, input)
+
+	got, err := promptCloudInitYAMLFile(term, le)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "#cloud-config" {
+		t.Errorf("got %q, want %q", got, "#cloud-config")
+	}
+	if !strings.Contains(buf.String(), "invalid input") {
+		t.Errorf("expected a validation error message for the unreadable file, got:\n%s", buf.String())
+	}
+}

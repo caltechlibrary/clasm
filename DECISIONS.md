@@ -4,6 +4,738 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-10 — Give ListView the same filter as Picker, via a shared filterState
+
+**Context.** Right after confirming the `tea.ClearScreen` scrolling fix
+("Scrolling is much improved"), the user asked whether List-tier
+filtering was still planned, recalling an earlier discussion. Checking
+DESIGN.md confirmed it: the keybinding conventions table has listed
+`/` = Filter for "Menus, pickers, lists, managers" since Phase 20.8,
+but `ListViewModel` (`internal/tui/listview.go`) had no filter code at
+all -- a real, previously-documented gap, not a misremembering.
+
+**Decision.** Add filtering to `ListViewModel`, matching `PickerModel`
+exactly (case-insensitive substring match, `/` to start typing, `Enter`
+commits, `Esc` clears, content-height pinned to the unfiltered row
+count while typing). Rather than copy `PickerModel`'s filter fields and
+methods a second time, extract them into a shared `filterState` type
+(`internal/tui/filter.go`) that both models embed: `visible []int`,
+`cursor int`, `filtering bool`, `filter string`, plus `apply`,
+`moveCursor`, `handleIdleKey`, `handleFilterKey`, `statusLine`. Each
+model's `Update` still owns its own quit/select semantics (List just
+quits on `q`; Picker also selects on `Enter`) and delegates everything
+else to the shared type.
+
+While unifying the two models' box-height math to accommodate the new
+filter status line, also folded in `PickerModel`'s existing (optional)
+header handling into `ListViewModel` (previously always rendered, even
+blank) and replaced both models' separate `windowHeight()` bodies with
+one shared `filterableWindowHeight(height, hasHeader bool)` helper --
+which also fixed a minor pre-existing off-by-one in `PickerModel`'s own
+chrome arithmetic (it subtracted a flat, imprecise `-1` for the filter
+line instead of counting the filter line's own divider row).
+
+**Rejected alternative.** Duplicate Picker's filter implementation
+directly into `ListViewModel`. Rejected because the user's stated goal
+across this whole follow-up ("we want to have the chrome more
+consistent") is exactly what a second hand-copy would undermine --
+consistency by convention (two implementations that happen to match
+today) drifts the moment either one is touched later. A shared type
+keeps them identical by construction.
+
+**Consequences.** `ListViewModel` and `PickerModel` are now guaranteed
+to filter, scroll, and size identically; any future filter change lands
+in one place. `internal/tui/listview_test.go` gained direct mirrors of
+`picker_test.go`'s filter tests (minus selection, which List doesn't
+have). No behavior change for any existing `ListView`/`Picker` caller:
+all currently supply a non-empty `Header`, so the now-conditional
+header line renders exactly as before.
+
+## 2026-07-10 — Clear the screen on entry for every inline bubbletea screen
+
+**Context.** After the List tier's conversion (Phase 20.13), the user
+reported that the List view "doesn't take advantage of the window
+height so a significant number of lines aren't visible much of the
+time," and separately wanted "the chrome more consistent" across
+screens so switching between them isn't jarring. Follow-up narrowed the
+first report to: the box *does* size to the real terminal height, but
+paging scrolls content out of view -- and the desired consistency is
+Picker/ListView/file-manager behaving identically to each other, not
+adopting `tea.WithAltScreen()` (which `huh`, used for every Menu-tier
+prompt, has no equivalent for at all -- adopting alt-screen for only
+some screens would make transitions *more* jarring, not less).
+
+**Root cause.** `windowHeight()` in each of `ListViewModel`/
+`PickerModel`/filemanager's `Model` sizes its box to (terminal height −
+a small fixed chrome overhead) -- nearly the *entire* terminal. None of
+the three clear the screen on entry (DESIGN.md's own note: "Renders
+inline, no `tea.WithAltScreen`, matching every other screen in
+clasm"), so each one starts rendering wherever the cursor already sits
+-- e.g. below a previous menu's prints. If that near-full-height box
+doesn't fit in the rows remaining below the cursor, the terminal
+scrolls to accommodate it, and bubbletea's redraw-in-place bookkeeping
+(how many lines to move the cursor up by, to redraw the same frame in
+place) goes stale relative to what the terminal actually did --
+pushing the top of the box (title, header, and however many rows above
+the scroll point) out of the visible viewport. This is exactly the
+"significant number of lines aren't visible much of the time" report:
+not a sizing bug, a scroll-desync bug, and it gets worse the fuller the
+terminal already is when the screen launches.
+
+**Decision.** Every inline bubbletea screen (`ListViewModel.Init`,
+`PickerModel.Init`, filemanager's `Model.Init`) now returns
+`tea.ClearScreen` (bubbletea's own built-in command for exactly this
+situation -- its doc comment: "can be used to move the cursor to the
+top left of the screen and clear visual clutter when the alt screen is
+not in use") as (part of) its initial command, guaranteeing every one
+of these screens always starts rendering from row 0. This makes the
+already-correct `windowHeight` sizing reliable (the box always fits,
+since there's nothing above the cursor to compete for terminal rows
+with it) and, as a side effect, gives Picker/ListView/file-manager one
+more point of behavioral consistency: each always wipes whatever was on
+screen and starts crisp, rather than accumulating underneath the
+previous screen's leftover output.
+
+**Rejected alternatives.**
+- *Shrink `windowHeight` to leave a safety margin below whatever's
+  already on screen* -- rejected: there's no reliable way to know how
+  many rows are already "used" above the cursor (that would require
+  querying the terminal's actual cursor position, which bubbletea
+  doesn't expose), so any fixed margin is either too conservative
+  (wastes screen space the user explicitly wants used) or still
+  breaks in a sufficiently full terminal.
+- *Switch Picker/ListView/file-manager to `tea.WithAltScreen()`* --
+  rejected per the user's own stated preference: `huh` (every
+  Menu-tier prompt) has no alt-screen equivalent, so only some screens
+  taking over the full terminal while others render inline beside
+  whatever's already there would be a *new* inconsistency, not a fix
+  for the existing one.
+
+**Consequences.** `tea.ClearScreen` clears the primary screen buffer,
+not the alternate one -- it doesn't touch terminal scrollback the way
+real alt-screen entry/exit does, so this is fully compatible with the
+existing "inline, no alt-screen" design decision; it complements it
+rather than reversing it. No test changes were needed -- every
+existing `teatest`/direct-`Model`-driven test already drains whatever
+`Init()`/`Update()` commands are queued, including the new
+`tea.ClearScreen`, without asserting on `Init()` returning `nil`.
+
+---
+
+## 2026-07-10 — Full conversion punch list: every PickList/Display* call site classified by target tier
+
+**Context.** After Phase 20.9 (lifecycle action menu → `huh.Select`),
+the user asked to "review the source code and identify all the places
+where we want to upgrade to the huh.Select, our Picker and View lists"
+— a comprehensive punch list to work through quickly, extending the
+Picker-only map from the previous decision entry to also cover Menu
+(`huh.Select`) and List (`tui.ListView`) targets.
+
+**Decision.** Surveyed every `ui.PickList` call site (33 total) and
+every `ui.Display*` function (4 total) directly from source, classified
+each into Menu / Picker / List, and recorded the full result in
+DESIGN.md's "Picker tier" section as three tables (one per target tier)
+with file:line references and a done/not-started status column.
+Classification rule applied consistently: fixed, small, compile-time-
+known option sets (domain/action menus, curated instance-type lists,
+storage-class enums, kind pickers) → Menu; fetched, potentially long,
+variable-length AWS resource collections → Picker; read-only resource
+displays → List.
+
+**Rejected alternatives.**
+- *Classify storage-class selection (`bucket_lifecycle.go:296,399`) as
+  Picker, since it's technically a list of AWS-defined values* —
+  rejected: both lists are fixed and known at compile time (one
+  curated to 4, one the full but still static `TransitionStorageClass`
+  enum), not fetched from AWS at runtime, and short enough that
+  scrolling/filtering wouldn't help — matching the Menu tier's
+  definition, not the Picker tier's.
+- *Classify region selection (`bucket_create.go:26`,
+  `keymgmt_common.go:25`) as Picker* — rejected for the same reason:
+  these are this team's own configured region list (typically 2
+  entries), not a fetched AWS resource collection.
+
+**Consequences.** No code changed by this decision — it's a planning
+artifact. Nothing beyond what's already marked "done" in the three
+tables is scheduled; each conversion still gets picked up and scoped
+individually, per this project's established incremental discipline
+(TODO.md, "Termlib Removal (before 0.0.2)").
+
+---
+
+## 2026-07-10 — Add a Picker tier: resource selection gets its own internal/tui component, not huh.Select
+
+**Context.** Starting Phase 20.4 (converting the three S3
+bucket-selection call sites from `ui.PickList` to `huh.Select`, reusing
+`object_browser.go`'s existing `runFieldWithHelp`/`huhCancelledIsNil`
+pattern) the user stopped this before any code was written: "I think
+this UI should feel the same whether I select a bucket, an AMI or an EC2
+instance." A real gap in the prior day's taxonomy: `huh.Select`'s own
+rendering looks nothing like the bordered-box/legend-bar chrome the List
+and Manager tiers just adopted (DESIGN.md, "Terminal UI Architecture"),
+so converting bucket-selection to `huh.Select` would have made the S3
+domain show two different visual languages depending on whether a
+screen displays a resource or selects one — precisely the inconsistency
+the whole termlib-deprecation effort exists to avoid.
+
+**Decision.** New `internal/tui.PickerModel`: reuses `ListViewModel`'s
+exact chrome (`TopBorder`/`BoxLine`/`Divider`/`ScrollWindow`/`StyleRow`/
+`BottomBorder`) but adds selection (`Enter` chooses the row under the
+cursor and returns it; `q`/`ctrl+c` cancels) and, per the user's explicit
+request, incremental filtering from the start ("this allows someone to
+go directly to the thing they want if they know the name or part of the
+name") — `/` enters filter-typing mode (matching the keybinding table
+and `huh.Select`'s own default, not an always-on type-ahead that would
+collide with `j`/`k` navigation), narrows by case-insensitive substring
+match, `Esc` clears it. Works on pre-rendered rows, returns an index
+(not a typed value) so `internal/tui` doesn't need generics — the same
+pattern `pickS3MenuItem` already uses for `s3MenuItems`.
+
+Per the user's request, DESIGN.md's taxonomy now includes a concrete
+map: every current `ui.PickList` call site that selects one instance of
+a fetched resource (bucket, EC2 instance, AMI, key pair, subnet, region,
+role, lifecycle rule, storage class — ~25 call sites across Compute, Key
+Management, and S3), each with its file:line and status. S3 buckets are
+the pilot (Phase 20.4, converting now); everything else is explicitly
+listed as not-yet-scheduled rather than silently left for someone to
+rediscover later. Guide-menu-shaped choices (small, fixed option sets —
+domain/action menus, Instance-vs-AMI kind pickers, the tag action menu,
+remediation choices) are explicitly excluded from this map; they stay on
+`PickList`/`huh.Select` since they're not selecting an instance of a
+resource collection.
+
+**Rejected alternatives.**
+- *Convert bucket-selection to `huh.Select` as originally planned* —
+  works functionally, but reintroduces the exact visual inconsistency
+  this session's termlib-deprecation work exists to eliminate; huh's
+  `Select` field can't be restyled to match `internal/tui`'s chrome
+  without forking huh.
+- *A `Selectable bool` flag on `ListViewModel` instead of a separate
+  `PickerModel`* — would avoid a second component, but conflates two
+  different interaction models (pure read-only browsing vs. choose-and-
+  return) in one type, against this project's established preference
+  for small, purpose-built components (the same reasoning that already
+  kept the List tier separate from `filemanager.Model`).
+- *Defer filtering, add it later if a list turns out to need it* — this
+  session's own default instinct (matching how `ListViewModel` itself
+  shipped without filtering, since bucket counts are usually small) —
+  overridden here because the user asked for it explicitly and gave a
+  concrete rationale (typing a known name/substring beats scrolling
+  through a long AMI or instance list), not a hypothetical future need.
+
+**Consequences.** Phase 20.4 is retargeted: bucket-selection converts to
+`tui.RunPicker`, not `huh.Select`. New PLAN.md Phase 20.8 builds
+`PickerModel` itself (a dependency of Phase 20.4). `object_browser.go`'s
+existing `huh.Select`-based bucket pre-flight is unaffected by this
+decision for now — revisiting it to also use `PickerModel` is a
+separate, not-yet-scoped question, not implied automatically by this
+one.
+
+**Implemented 2026-07-10, same session** (PLAN.md Phase 20.8):
+`PickerModel` built test-first. Two things worth keeping on record: (1)
+filtering must pin the rendered content area to the *unfiltered* row
+count, not however many rows currently match, or the box's height
+shrinks/grows while typing a filter and reproduces the same inline-
+rendering hiccup the List tier already found for exact/changing frame
+heights — confirmed by an actually-failing test, fixed by padding to a
+stable height (also better UX, `fzf`-style). (2) Two filter tests hit a
+second, distinct `teatest` gotcha already documented in this codebase
+(bubbletea skips retransmitting unchanged lines between consecutive
+frames, so checking the same text across two separate `WaitFor` calls
+can race) — fixed the same way `internal/filemanager`'s tests already
+do: combine assertions into one `WaitFor`.
+
+Phase 20.4 (bucket selection) also implemented, same session: each of
+the three call sites (`ConfigureBucketWebsite`, `ManageBucketLifecycle
+Policies`, `DeleteBucket`) now calls a shared `pickBucket` helper, then
+delegates to an unexported, directly-testable core taking the resolved
+bucket. `cancelledIsNil` recognizes `tui.ErrCancelled` alongside
+`ui.ErrCancelled`. Full detail: PLAN.md Phase 20.4.
+
+---
+
+## 2026-07-10 — Deprecate termlib; standardize on huh/bubbletea before 0.0.2; drop screen-reader/accessible-mode as a TUI requirement
+
+**Context.** Working through the S3 menu's huh.Select conversion and the
+paged bucket-list display (both same-day, below) surfaced a values
+question worth having directly rather than deciding by accretion: what
+is clasm actually *for*, and what does that imply about its UI? The
+user's framing: clasm exists to give this team a fluid alternative to
+AWS's own web console (which they find bad and getting worse) and to
+one-off Bash scripts — but that alternative only works if colleagues can
+learn it in one sitting, which requires every screen to look and behave
+like the same tool rather than a collection of differently-styled
+prompts. Reviewing `internal/filemanager/view.go` directly (not just
+recalling its design) found that its box-drawing/legend/scrolling code
+is already pure functions with no dependency on `filemanager.Model`, and
+that `'q'` already means quit there (`case "ctrl+c", "q": m.quitting =
+true; return m, tea.Quit`) and it already renders inline (no
+`tea.WithAltScreen`) — meaning the "consistent chrome, consistent keys"
+goal is mostly already *in* the codebase, just not applied project-wide.
+Separately, `termlib.Terminal.UpdateTerminalSize` was found to hardcode
+`os.Stdout.Fd()` regardless of what writer a `Terminal` was actually
+constructed with — a real defect for anything wanting genuine
+terminal-height-aware sizing, and a concrete symptom of `termlib` being
+a poorer fit than `bubbletea`'s own `tea.WindowSizeMsg` (sent to
+`Update` once at start and again on every resize) for where this tool is
+headed.
+
+**Decision.** `termlib` is removed entirely before 0.0.2. All TUI
+surfaces converge on `huh` (guide menus, action wizards) and `bubbletea`
+(lists, managers) exclusively — see "Terminal UI architecture" and "TUI
+keybinding conventions" below for what that looks like concretely.
+Screen-reader/non-TTY accessible rendering is explicitly **not** a
+requirement for clasm's TUI going forward: it's an internal tool for
+Library staff managing AWS resources, not public-facing, distinct from
+this workspace's Frontend Guidelines A11y requirement for browser-side
+Web Components (unaffected by this decision). In an ideal world the
+user would like the whole application to be screen-reader friendly, but
+set that aside as not a hard requirement once it was clear it was in
+real tension with the visual-consistency goal above.
+
+**This explicitly supersedes** (left in place as accurate history, not
+deleted or rewritten):
+- "0.0.1 scope: ship on termlib as-is; postpone CloudFront and the
+  UI/UX overhaul" (2026-06-30/07-09 era) — huh is no longer merely "the
+  leading candidate for the next release"; it and bubbletea are now the
+  committed direction, with a `termlib` removal target (before 0.0.2),
+  not an open evaluation.
+- "huh fields are pipe-testable via WithAccessible(true).WithInput/
+  WithOutput" (2026-07-10, earlier the same day) — remains factually
+  correct (the mechanics were verified against real huh source) but is
+  no longer load-bearing for design decisions, since accessible-mode
+  compatibility is no longer a goal. Testing anything built as a real
+  `bubbletea` component going forward uses `teatest` instead (already
+  proven against `internal/filemanager`'s `Model` in Phase 20.1), not
+  huh's accessible-mode pipe pattern.
+- "Decouple the S3 menu from resource-list display; add a generic paged
+  table to internal/ui" (2026-07-10, earlier the same day) —
+  `internal/ui.PagedTable`/`DisplayBuckets`, implemented and shipped
+  earlier today, are retired in favor of a `bubbletea`-based List-tier
+  component (see "Terminal UI architecture" below) less than a day
+  after landing. The design was correct given its stated constraint
+  (stay accessible); the constraint itself is what changed.
+
+**Rejected alternatives.**
+- *Keep termlib for simple prompts, use huh/bubbletea only for more
+  complex screens* — rejected because a mixed system is exactly the
+  "memorize different command sequences per screen" problem the user is
+  trying to avoid; partial consistency isn't the goal, whole-tool
+  consistency is.
+- *Fix termlib's `os.Stdout`-hardcoding bug and keep using it* —
+  rejected: `termlib` is the user's own separate project
+  (`~/Laboratory/termlib`), and fixing that one defect wouldn't address
+  the deeper mismatch (a blocking-prompt library isn't the right
+  foundation for a genuinely chrome-consistent, live-resizing bordered
+  UI). `termlib` served its purpose already — see Consequences.
+- *Keep accessible-mode support as a stretch goal* — rejected per the
+  user directly: nice-to-have in an ideal world, not required for an
+  internal staff tool, and in real tension with the visual-consistency
+  goal that matters more here.
+
+**Consequences.** `termlib` is credited with having answered three real
+design questions this project needed answered before committing to a
+final UI approach: how to organize an AWS-management menu system that's
+intuitive without deep AWS knowledge; how to make individual actions
+(create a bucket, update a policy) quick and easy; and how to keep
+workflows structured for future automation of repetitive tasks (see
+"Structure workflows for future record/replay ('Recorded Scripts')",
+2026-07-01 — unaffected by this decision; that design was already
+UI-toolkit-agnostic by construction, via the params-struct/execute
+split). Having answered those, it's no longer needed. The remaining
+~40 `termlib`-based call sites are not converted all at once — see
+"Terminal UI architecture"'s "Not decided yet" for pacing.
+
+---
+
+## 2026-07-10 — Terminal UI architecture: menu → action/list/manager taxonomy; shared internal/tui chrome package
+
+**Context.** Direct follow-on to the decision above: once `huh`/
+`bubbletea` are the committed direction, what's the concrete shape of
+"every screen looks and behaves like the same tool"? Full design:
+DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
+Managers."
+
+**Decision.**
+- Every navigation path resolves to one of three destinations reached
+  through a menu that is never itself a destination: **guide menu**
+  (`huh.Select` today), **action wizard** (a short prompt sequence that
+  gathers parameters and executes one thing), **list** (a read-only
+  scrollable resource display), or **manager** (a persistent stateful
+  screen, e.g. the S3 object manager).
+- New `internal/tui` package: the file manager's already-pure
+  box-drawing/scroll/style helpers (`topBorder`, `bottomBorder`,
+  `divider`, `splitDivider`, `mergeDivider`, `boxLine`, `boxRow2`,
+  `padOrTruncate`, `runeLen`, `stripANSI`, `truncateVisible`,
+  `scrollWindow`, `styleRow`) move there unchanged, and
+  `internal/filemanager` imports them instead of keeping its own copy.
+  `internal/ui` stays in place for as long as termlib-based call sites
+  remain, shrinking over the course of the termlib removal rather than
+  being replaced in one step.
+- New List-tier component in `internal/tui`, replacing
+  `internal/ui.PagedTable`/`DisplayBuckets`: single bordered box, frozen
+  header row, scrollable body via the shared `scrollWindow` logic, sized
+  to the real terminal via `tea.WindowSizeMsg`, a legend bar, rendered
+  inline (no alt-screen). Quitting returns to the menu it was opened
+  from (for S3 buckets, the S3 menu — not `ErrBackToDomainPicker`, which
+  is one level further up).
+
+**Rejected alternatives.**
+- *Keep chrome duplicated per screen* — the drift risk this whole
+  decision exists to avoid; one implementation shared via
+  `internal/tui` instead of `internal/filemanager` and a new List
+  component each maintaining their own box-drawing.
+- *Build the List tier as a variant of `filemanager.Model`* — rejected:
+  that `Model` carries file-manager-specific state (panes, tagging,
+  sync, linked local directories) that's the wrong shape for a plain
+  read-only list; a dedicated, smaller `internal/tui` component matches
+  this project's existing preference for small, purpose-built pieces
+  over one component doing everything (same reasoning as keeping
+  `Confirm`/`ConfirmDestructive` separate from `PickList`).
+
+**Consequences.** `internal/filemanager` is refactored to import
+`internal/tui`'s helpers with no behavior change (its existing
+`teatest`-based test suite should continue to pass unmodified — a
+regression there would mean the extraction wasn't actually behavior-
+preserving). `internal/ui.DisplayBuckets`/`PagedTable` and their tests
+are retired.
+
+---
+
+## 2026-07-10 — TUI keybinding conventions: q=back everywhere, arrows/j-k navigate, Enter=select, Esc cancels only an in-progress step, persistent legend bar
+
+**Context.** Direct follow-on to the two decisions above: a concrete,
+approved keybinding table so "consistent commands throughout the
+application" means something specific enough to implement and test
+against, not just a stated goal. Drafted, then approved by the user
+with no corrections.
+
+**Decision.**
+
+| Key | Action | Where |
+|---|---|---|
+| `q` | Back to the parent screen | Everywhere |
+| `↑`/`↓`, `k`/`j` | Navigate / scroll | Menus, lists, managers |
+| `Enter` | Select / confirm / submit | Menus, lists, wizards |
+| `Esc` | Cancel the *in-progress* action only — never closes a screen | Wizards, in-progress input |
+| `/` | Filter | Menus, lists, managers |
+| Legend bar | Always visible at the bottom of every screen, showing that screen's actual keys | Every screen |
+
+Mostly formalizes precedent already in the codebase rather than
+inventing new bindings: `'q'`/`ctrl+c` already quit the file manager;
+huh's own `Select` default keymap already binds `↑/k`, `↓/j`, and `/`
+for filter; `Esc`-cancels-not-closes matches the earlier "quit vs.
+cancel" wording note (TODO.md, "UX improvements," 2026-07-09). The one
+place this can't be applied uniformly: `huh.Select`'s own footer is
+built solely from the focused field's `KeyBinds()`
+(`SelectKeyMap` has no quit/back entry, and `KeyBinds()` isn't
+overridable without forking huh), so menus get `q` bound at the `Form`
+level (`Form.WithKeyMap`, `KeyMap.Quit` gains `"q"` alongside
+`"ctrl+c"`) plus a separately-printed static hint line above the menu,
+rather than a real legend-bar entry. List and manager tiers, which own
+their full rendering, show `q` in an actual legend bar.
+
+**Consequences.** `RunS3Menu`'s `huh.Select` gains `q` as an additional
+`Quit` trigger, resolving through the already-existing
+`mapS3MenuPickerErr`/`ErrUserAborted`→`ErrBackToDomainPicker` path — no
+new dispatch logic. "Back to domain picker" is removed from
+`s3MenuItems` (redundant with `q`); the `choice.action == nil` branch in
+`runS3Menu` becomes dead code and is removed with it. "Show resource
+lists" is relabeled "List S3 Buckets" (clearer, and matches what it
+actually does once it's a dedicated List-tier screen rather than a
+Refresh-and-print action) — label only, not the underlying
+`S3Actions.ShowResourceLists` Go identifier, kept as-is since renaming
+it carries no user-facing benefit and only adds diff noise.
+
+**Implemented 2026-07-10, same session** (PLAN.md Phase 20.7): exactly
+as scoped above. huh's own footer still can't show `q` (confirmed
+against source, as expected), so a static `"(q to go back)"` hint is
+printed via the existing `t.Println`/`t.Refresh()` before each menu
+redisplay. Tests exercising "one action dispatch, then the loop ends"
+were rewritten around a `context.WithCancel` + cancel-from-within-the-
+test-action-closure pattern, since there's no longer a "Back to domain
+picker" menu choice to select and accessible mode can't simulate the
+`q`/ctrl+c abort that replaces it (matching `mapS3MenuPickerErr`'s
+already-documented limitation). `go build`/`go vet`/`go test ./...
+-race`/`gofmt -l` all clean. The `q`-binding's actual effect (does
+pressing `q` really abort the `Select`) can only be confirmed by real
+interactive use — noted, not yet done, same class of gap as this
+session's other `huh`/`bubbletea` work.
+
+---
+
+## 2026-07-10 — Decouple the S3 menu from resource-list display; add a generic paged table to internal/ui
+
+**Context.** Following the `RunS3Menu` huh.Select conversion (below),
+the user pointed out a UX problem exposed by that same code path: every
+successful S3 menu action triggers `actions.Refresh(ctx)`, and
+`refreshS3` (`cmd/clasm/main.go`) both re-fetches bucket data and prints
+the *entire* bucket table (`ui.DisplayBuckets`) every time — so the S3
+menu redisplay is cluttered with a resource list after every action, not
+just when "Show resource lists" is chosen, and that table has no
+pagination at all (unlike `ui.PickList`'s existing 50-item paging), so
+it would print unboundedly for a large bucket count. Requested fix: the
+S3 menu should show only the menu; "Show resource lists" becomes its
+own dedicated, paged display with the column titles visible on every
+page, and `n`ext/`p`revious/`q`uit navigation (`q` returns to the S3
+menu). A mockup was drawn up and approved before any code was written,
+per this project's design-before-code process for non-trivial changes.
+
+**Decision.** Full design recorded in DESIGN.md, "S3 Resource List
+Display — Paged, Accessible-Compatible" (2026-07-10), and PLAN.md Phase
+20.3. Key points carried here for the decision record:
+- Split "refresh" into re-fetching data (unchanged, still happens after
+  every action) versus *displaying* it (now only on explicit "Show
+  resource lists").
+- New generic `internal/ui` component (`PagedTable`, PLAN.md Phase
+  20.3), not a bucket-specific one: takes a banner-format callback and
+  pre-rendered header/row strings, owns only windowing, chrome, and
+  `n`/`p`/`q` input. `DisplayBuckets`'s existing `PadRight`/`Truncate`
+  column formatting is reused to build the strings passed in.
+  Deliberately generic **so Compute/Key Management's own resource
+  listings can reuse the same mechanism later**, if/when those menus are
+  migrated — not part of this piece of work, but designed not to
+  preclude it, per the user's own framing ("we'll reuse this UI approach
+  as needed migrating to huh for other parts of clasm").
+- Stays fully accessible: sequential printing only (banner, header,
+  page of rows, command prompt, read one line, repeat or return) — no
+  cursor repositioning, so behavior is identical over a real TTY,
+  `TERM=dumb`, or a piped input/output pair in tests. Note this
+  mechanism doesn't involve `huh` at all -- it's the same plain
+  `termlib`/`LineEditor.Prompt` style `PickList` already uses; paging a
+  resource list and "migrating to huh" are orthogonal concerns here.
+
+**Rejected alternatives.** See DESIGN.md's addendum for the full list
+(unpaginated-with-scrollback, a `huh`/`bubbletea`-style redraw-in-place
+viewport, and reusing `PickList` directly) — each rejected for the
+reasons recorded there; not repeated here to avoid drift between the
+two documents.
+
+**Consequences.** `ui.DisplayBuckets` is replaced by a `PagedTable` call
+site (its signature changed: now takes `le` and returns `error`, its
+only call site updated); `refreshS3` splits into a silent-refresh half
+and a separate `showS3ResourceLists` closure; `s3MenuItems`' "Show
+resource lists" entry calls a new `S3Actions.ShowResourceLists` field
+instead of `Refresh`. Compute/Key Management's current unpaginated
+`DisplayInstances`/`DisplayImages`/`DisplayKeyPairs` are explicitly
+unchanged — ask before extending this pattern to them.
+
+**Implemented 2026-07-10, same session, test-first** (PLAN.md Phase
+20.3): `internal/ui/paged_table_test.go` was written and run against a
+stub before `paged_table.go` existed, then `PagedTable` was implemented
+to make it pass; `display_test.go`'s two `DisplayBuckets` tests were
+updated for the new signature plus a new pagination test; a real test
+gap was caught and closed along the way — no existing `s3_menu_test.go`
+case exercised choosing "Show resource lists" (menu item 1) at all,
+before or after this change, so a `TestRunS3Menu_ShowResourceListsDispatchesToItsOwnAction`
+was added. `go build`, `go vet`, and `go test ./... -race` all clean.
+
+---
+
+## 2026-07-10 — huh fields are pipe-testable via WithAccessible(true).WithInput/WithOutput
+
+**Context.** `internal/workflow/object_browser.go` (the only existing huh
+usage) has zero test coverage. huh's real interactive `Field.Run()`/
+`Form.Run()` isn't pipe-testable the way `termlib`'s `newPipeEditor`
+pattern is (see `confirm_test.go`). The prior session confirmed huh's
+accessible-mode text format from source but left untried whether
+`huh.NewForm(...).WithAccessible(true).WithInput(r).WithOutput(&buf).
+Run()` -- forcing accessible mode explicitly rather than relying on
+`TERM=dumb` auto-detection -- gives a clean, reliable pipe-testable
+path. This had to resolve before converting `RunS3Menu` and the three
+bucket-selection call sites (the next piece of work) to more untested
+huh code.
+
+**Decision.** Yes -- confirmed by direct experiment (a scratch test file,
+written, run, and deleted this session; `go test`/`go vet` clean
+throughout). `huh.NewForm(huh.NewGroup(field...)).WithAccessible(true).
+WithInput(r).WithOutput(&buf).Run()` drives `Select`, `Confirm`, and
+multi-field groups correctly from a plain `io.Reader`/`io.Writer` pair,
+with no terminal or `bubbletea` program involved -- `Form.RunWithContext`
+branches straight to `Form.runAccessible`, which calls each field's own
+`RunAccessible` in turn. This is the pattern to use for the
+S3-menu/bucket-selection conversions and retroactively for
+`object_browser.go` -- **with one correction to this same session's
+earlier finding**, below.
+
+Confirmed behavioral details worth keeping in mind writing those tests:
+- **Correction, found while implementing the `RunS3Menu` conversion:**
+  `r` must NOT be a `strings.NewReader`-style reader that returns
+  everything it has in one `Read` call. `accessibility.PromptString`
+  builds a brand-new `bufio.Scanner` on every single `RunAccessible`
+  call (there's no persistent, reused scanner the way `termlib`'s
+  `LineEditor` has one for its whole lifetime) -- so if the *first*
+  field's `Read` call greedily returns every remaining byte (as
+  `strings.Reader.Read` does when its buffer is smaller than the
+  request), that Scanner buffers and then discards everything past the
+  first newline when it returns, silently starving every field after it
+  -- both across two separate `Form.Run()` calls in a loop (as
+  `RunS3Menu` makes, once per menu redisplay) and within a single
+  multi-field `Form` (as `object_browser.go`'s three-field pre-flight
+  makes). This was NOT caught by this session's first three
+  experiments, because each one's second/third field happened to
+  assert a value that coincided with that field's own zero-input
+  default -- a false-positive risk worth flagging on its own. Confirmed
+  the actual bug with a repro using a *non-default* expected second
+  value, and confirmed the fix: use a reader that returns at most one
+  newline-terminated line per `Read` call (matching how a real terminal
+  in canonical mode delivers input, one `Read` per Enter keypress) --
+  implemented as `lineAtATimeReader`/`newHuhAccessibleInput` in
+  `internal/workflow/huh_accessible_test.go`, reusable across every huh
+  call site's tests. Use `newHuhAccessibleInput(s)`, never
+  `strings.NewReader(s)`, when feeding more than one field/prompt
+  through this pattern.
+- `Select.RunAccessible` reprompts on out-of-range input, writing
+  `"Invalid: must be a number between %d and %d"` before re-asking --
+  same reprompt-until-valid shape as `newPipeEditor`'s `Confirm` tests.
+- A `Select` field backed by a pointer `Value(&v)` accessor has an
+  implicit default (its initially-selected option, normally index 0),
+  which `PromptInt` returns on a blank line -- so premature EOF is not
+  the same as "no value set"; it silently resolves to that default
+  rather than erroring. Confirmed via `accessibility.PromptString`'s own
+  comment: `"no way to bubble up errors or signal cancellation ... but
+  the program is probably not continuing if stdin sent EOF"`. Test
+  input must supply one complete line per field; don't rely on EOF as
+  an error signal, and don't assert a value that coincides with this
+  default (see the correction above -- it masks real bugs).
+- `Form.runAccessible` discards each field's own `RunAccessible` error
+  return (`_ = field.WithAccessible(true).RunAccessible(w, r)`) --
+  harmless in practice since each field's own `RunAccessible` already
+  loops internally until it gets a valid value, so it only returns once
+  successful.
+- `huh.ErrUserAborted` (the normal-mode Ctrl-C/Esc signal that
+  `huhCancelledIsNil` maps to a clean return) has no accessible-mode
+  equivalent -- there is no keyboard to interrupt a plain
+  `io.Reader`/`io.Writer` pair, so cancellation-path tests for
+  huh-backed menus need a different signal than "user aborted" if one
+  is needed at all (see "Convert RunS3Menu to huh.Select" below for how
+  this was handled: unit-test the abort-mapping as a standalone pure
+  function instead of through the pipe path).
+
+**Rejected alternatives.**
+- *Rely on `TERM=dumb` auto-detection instead of explicit
+  `WithAccessible(true)`* -- works too (`NewForm` sets it automatically
+  when `TERM=dumb`), but requires mutating the test process's
+  environment (`t.Setenv("TERM", "dumb")`), which is less explicit and
+  risks leaking into unrelated parallel tests; calling
+  `WithAccessible(true)` directly is scoped to the one `*Form` under
+  test.
+- *Test only via `Field.RunAccessible` directly, skip `Form`* --
+  considered, since `Field.RunAccessible` is itself public and
+  no longer just an internal implementation detail (`WithAccessible`
+  is now deprecated in its favor per the huh v1.0.0 source). Rejected
+  for the *multi-field* menu/pre-flight tests specifically, since
+  `RunS3Menu`'s conversion and `object_browser.go`'s existing pre-flight
+  both group multiple fields in one `huh.Group`, and `Form` is what
+  sequences them in production code -- testing through `Form` keeps the
+  test closer to the real call path.
+
+**Consequences.** Unblocks converting `RunS3Menu`
+(`internal/workflow/s3_menu.go`) and the three `ui.PickList`
+bucket-selection call sites
+(`bucket_website.go`/`bucket_lifecycle.go`/`bucket_delete.go`) to
+`huh.Select` with test coverage from the start, and backfilling
+`object_browser.go`'s existing zero coverage using the same pattern.
+No production code changed by this decision -- it's a testing-approach
+resolution only.
+
+---
+
+## 2026-07-10 — Convert RunS3Menu to huh.Select; select by index, not by s3Item
+
+**Context.** `continue_next_time.txt`'s next-up item, now unblocked by
+the pipe-testability resolution above: convert `RunS3Menu`
+(`internal/workflow/s3_menu.go`), the S3 domain's 7-item action picker,
+from `ui.PickList` to `huh.Select`. Two problems came up that the prior
+session's scoping didn't anticipate:
+
+1. `huh.Select[T]` requires `T comparable` (`Option[T comparable]`,
+   confirmed from source), but `s3Item` holds an `action func(S3Actions,
+   context.Context) error` field -- funcs aren't comparable, so
+   `huh.Select[s3Item]` doesn't compile.
+2. Converting the picker changes what "cancel/abort the menu" does.
+   `ui.PickList`'s dedicated "0) Cancel" numbered option returned
+   `ui.ErrCancelled`, which `isExitSignal` recognizes -- so pressing 0
+   exited the whole program. `huh.Select` has no such numbered-cancel
+   convention; its only cancellation signal is `huh.ErrUserAborted`
+   (Ctrl-C/Esc), which `isExitSignal` does NOT recognize, so left
+   unhandled it would propagate out of `RunS3Menu` entirely and still
+   exit the whole program -- not the behavior the prior session asked
+   for ("change this so aborting the newly-huh-converted top-level S3
+   menu returns `ErrBackToDomainPicker` instead").
+
+**Decision.**
+- Select by `int` (index into `s3MenuItems`), not by `s3Item`:
+  `pickS3MenuItem` builds `huh.Option[int]` from each item's label and
+  its index, runs the `Select`, then looks up `s3MenuItems[idx]` after.
+  Sidesteps the comparability constraint without changing `s3Item`'s
+  shape (still holds a `func`, used everywhere else in this file).
+- `RunS3Menu`'s exported signature is unchanged
+  (`ctx, t, le, actions`), matching `RunMainMenu`/`RunKeyMgmtMenu`'s
+  shape -- it now delegates to an unexported `runS3Menu(ctx, t, actions,
+  menuInput, menuOutput)`. `le` is accepted but unused (huh doesn't read
+  through it); a doc comment says so explicitly rather than leaving a
+  reader to wonder if that's a bug. `menuInput`/`menuOutput` are nil in
+  production (the picker runs interactively via `pickS3MenuItem`'s bare
+  `form.Run()`, same as `object_browser.go`'s existing call sites) and
+  are supplied by tests to drive the exact same `huh.Select` through the
+  accessible-mode pipe path instead -- keeping the tested path identical
+  to the production path, not a parallel fake.
+- `huh.ErrUserAborted` from the picker maps to `ErrBackToDomainPicker`
+  via a new pure function, `mapS3MenuPickerErr`, rather than an inline
+  check -- because accessible mode (the only path integration tests can
+  drive; see the pipe-testability entry above) has no way to produce
+  `huh.ErrUserAborted` at all, this mapping can only be covered by
+  calling the pure function directly with a synthetic error, not by
+  driving `runS3Menu` end-to-end. Said so explicitly (this note) rather
+  than shipping the mapping uncovered.
+- `s3_menu_test.go`'s old `TestRunS3Menu_CleanExitOnCancelledPickList`
+  (input `"0\n"`, asserting a clean whole-program exit) tested a
+  `PickList`-specific affordance that no longer exists and asserted the
+  *old*, now-deliberately-changed behavior -- removed rather than kept
+  as a skipped/misleading test. Its replacement is
+  `TestMapS3MenuPickerErr`.
+- Every other `s3_menu_test.go` case kept its exact input strings
+  (`"2\n7\n"`, `"3\n7\n"`, etc.) -- `huh.Select`'s accessible-mode
+  1-indexed numbering happens to match `s3MenuItems`' order exactly, no
+  renumbering needed. They now call `runS3Menu` directly (unexported)
+  instead of `RunS3Menu`, with a `newTermOnly()` helper in place of
+  `newPipeEditor` (no `LineEditor`/pipe needed for `t` now that the
+  picker doesn't read through it) and `newHuhAccessibleInput` in place
+  of raw strings for the menu's input.
+
+**Rejected alternatives.**
+- *Keep `isExitSignal`'s current "abort exits the whole program"
+  behavior, defer the wording fix to a later pass* -- rejected because
+  the prior session scoped the abort-behavior change as part of this
+  same piece of work, not a separate one (this repo's own task list
+  keeps the label-wording pass, e.g. "quit" vs. "cancel" text,
+  separate, but the *behavior* change was explicitly bundled here).
+- *Give `s3Item` an `Equal` method or make `action` a comparable
+  reference (e.g. an int action-code) instead of switching to
+  index-based selection* -- more invasive (every existing
+  `s3MenuItems` literal and every call site that pattern-matches on
+  `choice.action == nil` for "Back to domain picker" would need to
+  change); index-based selection achieves the same result by touching
+  only `pickS3MenuItem`.
+- *Drop the now-unused `le` parameter from `RunS3Menu`* -- would ripple
+  into `main.go`'s one call site for no functional benefit, and would
+  make `RunS3Menu`'s signature diverge from `RunMainMenu`/
+  `RunKeyMgmtMenu`'s while those two remain on `termlib`. Deferred until
+  (if ever) all three domain loops are off `termlib`'s `PickList`.
+
+**Consequences.** `internal/ui` (`PickList`, `ErrCancelled`) is
+untouched and still used by `RunMainMenu`/`RunKeyMgmtMenu`/
+`RunDomainPicker` -- this conversion is scoped to the S3 menu only, per
+the prior session's explicit "don't let this expand" note. `go build`,
+`go vet`, and `go test ./... -race` are clean. Next up, unstarted: the
+three bucket-selection call sites
+(`bucket_website.go`/`bucket_lifecycle.go`/`bucket_delete.go`), which
+select `inventory.Bucket` values (already comparable, no func fields)
+so shouldn't need the same index-based workaround.
+
+---
+
 ## 2026-07-09 — Fix stale Find results after a refresh; name single targets in confirm prompts; add an explicit manual refresh
 
 **Context.** Real-bucket testing (`test-clasm`) surfaced three more gaps

@@ -3,9 +3,13 @@
 package ui
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
 
 // unknown renders an untagged Project/Environment value -- see
@@ -51,21 +55,21 @@ func stateColor(state string) string {
 	}
 }
 
-// DisplayInstances prints a formatted table of instances, replacing
-// ec2_ami_manager.bash's display_instances. When colorEnabled is true,
-// the STATE column is colorized (running=green, stopped/terminated=red,
-// pending/stopping=yellow); callers should set this from ColorEnabled
-// (NO_COLOR convention + a non-TTY fallback), not unconditionally.
-func DisplayInstances(t *termlib.Terminal, instances []inventory.Instance, colorEnabled bool) {
-	if len(instances) == 0 {
-		t.Println("No EC2 instances found.")
-		t.Refresh()
-		return
-	}
+// instanceListViewConfig builds a tui.ListViewConfig from instances,
+// reusing the same PadRight/Truncate column formatting DisplayInstances
+// has always used. Extracted so the formatting itself is unit-testable
+// without driving tui.RunListView's interactive loop (mirrors
+// bucketListViewConfig, Phase 20.6). The STATE column is colorized
+// (running=green, stopped/terminated=red, pending/stopping=yellow) when
+// ColorEnabled() is true (NO_COLOR convention + non-TTY fallback,
+// PLAN.md Phase 15, "Color output for state") -- embedding that color
+// into the row string works safely with ListView's own cursor-row
+// reverse-video highlight because reverseVideo (internal/tui/style.go)
+// re-asserts itself after any inner reset a row already carries.
+func instanceListViewConfig(instances []inventory.Instance) tui.ListViewConfig {
+	colorEnabled := ColorEnabled()
 
-	t.Println("===== CURRENT EC2 INSTANCES =====")
-	t.Println()
-	t.Printf("%s %s %s %s %s %s %s %s %s\n",
+	header := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
 		termlib.PadRight("INSTANCE ID", 20),
 		termlib.PadRight("NAME", 20),
 		termlib.PadRight("STATE", 12),
@@ -75,51 +79,70 @@ func DisplayInstances(t *termlib.Terminal, instances []inventory.Instance, color
 		termlib.PadRight("ENVIRONMENT", 11),
 		termlib.PadRight("PUBLIC IP", 15),
 		"PRIVATE IP")
-	for _, inst := range instances {
-		// Truncate/pad on the plain text first, then wrap in ANSI codes --
-		// escape sequences are zero-width on screen but would otherwise
-		// be counted as visible characters by PadRight/Truncate.
-		state := termlib.PadRight(termlib.Truncate(inst.State, 12), 12)
-		if colorEnabled {
-			if c := stateColor(inst.State); c != "" {
-				state = c + state + termlib.Reset
-			}
-		}
-		t.Printf("%s %s %s %s %s %s %s %s %s\n",
-			termlib.PadRight(termlib.Truncate(inst.InstanceID, 20), 20),
-			termlib.PadRight(termlib.Truncate(inst.Name, 20), 20),
-			state,
-			termlib.PadRight(termlib.Truncate(inst.ImageID, 20), 20),
-			termlib.PadRight(inst.Region, 10),
-			termlib.PadRight(termlib.Truncate(orUnknown(inst.Project), 16), 16),
-			termlib.PadRight(orUnknown(inst.Environment), 11),
-			termlib.PadRight(orNone(inst.PublicIP), 15),
-			orNone(inst.PrivateIP))
+
+	rows := make([]string, len(instances))
+	for i, inst := range instances {
+		rows[i] = instanceRow(inst, colorEnabled)
 	}
-	t.Println()
-	t.Refresh()
+
+	return tui.ListViewConfig{
+		Title:        "EC2 Instances",
+		Header:       header,
+		Rows:         rows,
+		ColorEnabled: colorEnabled,
+	}
 }
 
-// DisplayImages prints a formatted table of AMIs, replacing
-// ec2_ami_manager.bash's display_amis.
-func DisplayImages(t *termlib.Terminal, images []inventory.Image) {
-	if len(images) == 0 {
-		t.Println("No AMIs found.")
-		t.Refresh()
-		return
+// instanceRow formats one instance's row, taking colorEnabled as an
+// explicit parameter (rather than reading ColorEnabled() itself) so the
+// STATE column's color-embedding logic stays unit-testable independent
+// of the real terminal/NO_COLOR environment a test runs under.
+func instanceRow(inst inventory.Instance, colorEnabled bool) string {
+	// Truncate/pad on the plain text first, then wrap in ANSI codes --
+	// escape sequences are zero-width on screen but would otherwise be
+	// counted as visible characters by PadRight/Truncate.
+	state := termlib.PadRight(termlib.Truncate(inst.State, 12), 12)
+	if colorEnabled {
+		if c := stateColor(inst.State); c != "" {
+			state = c + state + termlib.Reset
+		}
 	}
+	return fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
+		termlib.PadRight(termlib.Truncate(inst.InstanceID, 20), 20),
+		termlib.PadRight(termlib.Truncate(inst.Name, 20), 20),
+		state,
+		termlib.PadRight(termlib.Truncate(inst.ImageID, 20), 20),
+		termlib.PadRight(inst.Region, 10),
+		termlib.PadRight(termlib.Truncate(orUnknown(inst.Project), 16), 16),
+		termlib.PadRight(orUnknown(inst.Environment), 11),
+		termlib.PadRight(orNone(inst.PublicIP), 15),
+		orNone(inst.PrivateIP))
+}
 
-	t.Println("===== AVAILABLE AMIs (owned by account) =====")
-	t.Println()
-	t.Printf("%s %s %s %s %s %s\n",
+// DisplayInstances shows EC2 instances in the shared List-tier
+// component (DESIGN.md, "Terminal UI Architecture: Menus, Actions,
+// Lists, and Managers"), replacing ec2_ami_manager.bash's
+// display_instances. Reachable only from the Compute menu's explicit
+// "Show resource lists" choice, not shown automatically after other
+// Compute actions -- see workflow.MenuActions.ShowResourceLists.
+func DisplayInstances(ctx context.Context, instances []inventory.Instance) error {
+	return tui.RunListView(ctx, instanceListViewConfig(instances))
+}
+
+// imageListViewConfig builds a tui.ListViewConfig from images -- see
+// instanceListViewConfig's doc comment for the extraction rationale.
+func imageListViewConfig(images []inventory.Image) tui.ListViewConfig {
+	header := fmt.Sprintf("%s %s %s %s %s %s",
 		termlib.PadRight("AMI ID", 20),
 		termlib.PadRight("NAME", 28),
 		termlib.PadRight("CREATION DATE", 20),
 		termlib.PadRight("REGION", 10),
 		termlib.PadRight("PROJECT", 16),
 		"ENVIRONMENT")
-	for _, img := range images {
-		t.Printf("%s %s %s %s %s %s\n",
+
+	rows := make([]string, len(images))
+	for i, img := range images {
+		rows[i] = fmt.Sprintf("%s %s %s %s %s %s",
 			termlib.PadRight(termlib.Truncate(img.ImageID, 20), 20),
 			termlib.PadRight(termlib.Truncate(img.Name, 28), 28),
 			termlib.PadRight(termlib.Truncate(img.CreationDate, 19), 20),
@@ -127,37 +150,55 @@ func DisplayImages(t *termlib.Terminal, images []inventory.Image) {
 			termlib.PadRight(termlib.Truncate(orUnknown(img.Project), 16), 16),
 			orUnknown(img.Environment))
 	}
-	t.Println()
-	t.Refresh()
+
+	return tui.ListViewConfig{
+		Title:        "AMIs (owned by account)",
+		Header:       header,
+		Rows:         rows,
+		ColorEnabled: ColorEnabled(),
+	}
 }
 
-// DisplayKeyPairs prints a formatted table of EC2 key pairs (DESIGN.md,
-// Feature 13: "List Key Pairs").
-func DisplayKeyPairs(t *termlib.Terminal, keyPairs []inventory.KeyPair) {
-	if len(keyPairs) == 0 {
-		t.Println("No key pairs found.")
-		t.Refresh()
-		return
-	}
+// DisplayImages shows AMIs in the shared List-tier component, replacing
+// ec2_ami_manager.bash's display_amis -- same reachability convention as
+// DisplayInstances.
+func DisplayImages(ctx context.Context, images []inventory.Image) error {
+	return tui.RunListView(ctx, imageListViewConfig(images))
+}
 
-	t.Println("===== KEY PAIRS =====")
-	t.Println()
-	t.Printf("%s %s %s %s %s\n",
+// keyPairListViewConfig builds a tui.ListViewConfig from keyPairs -- see
+// instanceListViewConfig's doc comment for the extraction rationale.
+func keyPairListViewConfig(keyPairs []inventory.KeyPair) tui.ListViewConfig {
+	header := fmt.Sprintf("%s %s %s %s %s",
 		termlib.PadRight("KEY NAME", 24),
 		termlib.PadRight("REGION", 10),
 		termlib.PadRight("TYPE", 8),
 		termlib.PadRight("KEY ID", 22),
 		"FINGERPRINT")
-	for _, kp := range keyPairs {
-		t.Printf("%s %s %s %s %s\n",
+
+	rows := make([]string, len(keyPairs))
+	for i, kp := range keyPairs {
+		rows[i] = fmt.Sprintf("%s %s %s %s %s",
 			termlib.PadRight(termlib.Truncate(kp.KeyName, 24), 24),
 			termlib.PadRight(kp.Region, 10),
 			termlib.PadRight(kp.KeyType, 8),
 			termlib.PadRight(termlib.Truncate(kp.KeyPairID, 22), 22),
 			kp.KeyFingerprint)
 	}
-	t.Println()
-	t.Refresh()
+
+	return tui.ListViewConfig{
+		Title:        "Key Pairs",
+		Header:       header,
+		Rows:         rows,
+		ColorEnabled: ColorEnabled(),
+	}
+}
+
+// DisplayKeyPairs shows EC2 key pairs in the shared List-tier component
+// (DESIGN.md, Feature 13: "List Key Pairs") -- same reachability
+// convention as DisplayInstances.
+func DisplayKeyPairs(ctx context.Context, keyPairs []inventory.KeyPair) error {
+	return tui.RunListView(ctx, keyPairListViewConfig(keyPairs))
 }
 
 // staticWebsiteLabel renders Bucket.StaticWebsite as a plain yes/no,
@@ -169,29 +210,40 @@ func staticWebsiteLabel(configured bool) string {
 	return "no"
 }
 
-// DisplayBuckets prints a formatted table of S3 buckets (DESIGN.md,
-// Feature 17: "List Buckets").
-func DisplayBuckets(t *termlib.Terminal, buckets []inventory.Bucket) {
-	if len(buckets) == 0 {
-		t.Println("No buckets found.")
-		t.Refresh()
-		return
-	}
-
-	t.Println("===== S3 BUCKETS =====")
-	t.Println()
-	t.Printf("%s %s %s %s\n",
+// bucketListViewConfig builds a tui.ListViewConfig from buckets, reusing
+// the same PadRight/Truncate column formatting this table has always
+// used. Extracted from DisplayBuckets so the formatting itself is
+// unit-testable without driving tui.RunListView's interactive loop.
+func bucketListViewConfig(buckets []inventory.Bucket) tui.ListViewConfig {
+	header := fmt.Sprintf("%s %s %s %s",
 		termlib.PadRight("NAME", 40),
 		termlib.PadRight("REGION", 10),
 		termlib.PadRight("STATIC WEBSITE", 14),
 		"PURPOSE")
-	for _, b := range buckets {
-		t.Printf("%s %s %s %s\n",
+
+	rows := make([]string, len(buckets))
+	for i, b := range buckets {
+		rows[i] = fmt.Sprintf("%s %s %s %s",
 			termlib.PadRight(termlib.Truncate(b.Name, 40), 40),
 			termlib.PadRight(b.Region, 10),
 			termlib.PadRight(staticWebsiteLabel(b.StaticWebsite), 14),
 			b.Purpose)
 	}
-	t.Println()
-	t.Refresh()
+
+	return tui.ListViewConfig{
+		Title:        "S3 Buckets",
+		Header:       header,
+		Rows:         rows,
+		ColorEnabled: ColorEnabled(),
+	}
+}
+
+// DisplayBuckets shows S3 buckets in the shared List-tier component
+// (DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
+// Managers," revising Feature 17: "List Buckets"). Reachable only from
+// the S3 menu's explicit "Show resource lists" choice, not shown
+// automatically after other S3 actions -- see
+// workflow.S3Actions.ShowResourceLists.
+func DisplayBuckets(ctx context.Context, buckets []inventory.Bucket) error {
+	return tui.RunListView(ctx, bucketListViewConfig(buckets))
 }

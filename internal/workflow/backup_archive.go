@@ -74,10 +74,19 @@ func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 		return nil
 	}
 
-	inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance")
+	inst, err := pickInstance(ctx, "Select an instance", instances)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
+	return backupArchiveAndTrim(ctx, t, le, ssmClients, s3Client, newS3Client, inst, backupDirRules)
+}
+
+// backupArchiveAndTrim is BackupArchiveAndTrim's testable core, once an
+// instance is resolved -- instance selection runs a real bubbletea
+// Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
+// can't be driven by a test's pipe input, same limitation as
+// terminateEC2Instance (terminate_instance.go).
+func backupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err

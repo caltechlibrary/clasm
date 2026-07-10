@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -127,8 +128,15 @@ var instanceTypeAZIncompatibilityChoices = []incompatibilityChoice{
 // unknown (e.g. promptSubnetID's free-text fallback) or the check
 // itself errors -- consistent with this tool's other best-effort
 // diagnostics (e.g. SSM-unavailable fallbacks) that never block the
-// whole flow over a check that couldn't be performed.
-func ensureInstanceTypeSupportedInSubnet(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string, subnet SubnetInfo) (string, SubnetInfo, error) {
+// whole flow over a check that couldn't be performed. menuInput/
+// menuOutput are nil in production (the "how would you like to
+// proceed?" and any nested instance-type huh.Selects run interactively
+// on the real terminal, DESIGN.md's full conversion punch list) and are
+// supplied by tests to drive them through their accessible-mode pipe
+// path instead, separate from le, which still feeds promptSubnetID's own
+// prompts. Both share one reader/writer pair, read in sequence one line
+// at a time, same as a domain menu's own loop-iteration reads.
+func ensureInstanceTypeSupportedInSubnet(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string, subnet SubnetInfo, menuInput io.Reader, menuOutput io.Writer) (string, SubnetInfo, error) {
 	for subnet.AvailabilityZone != "" {
 		ok, err := instanceTypeOfferedInAZ(ctx, client, instanceType, subnet.AvailabilityZone)
 		if err != nil || ok {
@@ -141,14 +149,14 @@ func ensureInstanceTypeSupportedInSubnet(ctx context.Context, t *termlib.Termina
 		}
 		t.Refresh()
 
-		choice, err := ui.PickList(t, le, instanceTypeAZIncompatibilityChoices, incompatibilityChoiceLabel, "How would you like to proceed?")
+		choice, err := pickComparable(t, "How would you like to proceed?", "(q to cancel)", instanceTypeAZIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
 		if err != nil {
 			return "", SubnetInfo{}, err
 		}
 
 		switch choice.kind {
 		case incompatibilityChangeInstanceType:
-			newType, err := promptInstanceType(t, le)
+			newType, err := promptInstanceType(t, le, menuInput, menuOutput)
 			if err != nil {
 				return "", SubnetInfo{}, err
 			}

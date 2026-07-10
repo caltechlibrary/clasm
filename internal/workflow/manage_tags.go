@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/charmbracelet/huh"
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -116,7 +119,20 @@ func displayTags(t *termlib.Terminal, label string, tags map[string]string) {
 // Takes a per-region client map and resolves the one matching the
 // picked resource's region.
 func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance, images []inventory.Image) error {
-	kind, err := ui.PickList(t, le, []string{"Instance", "AMI"}, identity, "Manage tags on")
+	return manageTags(ctx, t, le, clients, instances, images, nil, nil)
+}
+
+// manageTags is ManageTags's testable core: menuInput/menuOutput are nil
+// in production (the Instance-vs-AMI kind, Add/Update/Remove action, and
+// select-a-tag pickers all run interactively on the real terminal,
+// DESIGN.md's full conversion punch list) and are supplied by tests to
+// drive them through their accessible-mode pipe path instead
+// (DECISIONS.md, "huh fields are pipe-testable..."), separate from le,
+// which still feeds every other prompt in this function. All three
+// huh.Selects share one reader/writer pair, read in sequence one line
+// at a time, same as a domain menu's own loop-iteration reads.
+func manageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance, images []inventory.Image, menuInput io.Reader, menuOutput io.Writer) error {
+	kind, err := pickString(t, "Manage tags on", "(q to cancel)", []string{"Instance", "AMI"}, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
@@ -132,7 +148,7 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 			t.Refresh()
 			return nil
 		}
-		inst, err := ui.PickList(t, le, instances, instanceLabel, "Select an instance")
+		inst, err := pickInstance(ctx, "Select an instance", instances)
 		if err != nil {
 			return cancelledIsNil(t, err)
 		}
@@ -151,7 +167,7 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 			t.Refresh()
 			return nil
 		}
-		img, err := ui.PickList(t, le, images, imageLabel, "Select an AMI")
+		img, err := pickImage(ctx, "Select an AMI", images)
 		if err != nil {
 			return cancelledIsNil(t, err)
 		}
@@ -166,9 +182,19 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 		}
 	}
 
+	return manageTagsForResource(ctx, t, le, client, resourceID, resourceLabel, tags, menuInput, menuOutput)
+}
+
+// manageTagsForResource is manageTags' testable core for a single
+// resource, once an instance or AMI is resolved -- instance/AMI
+// selection runs a real bubbletea Program (tui.RunPicker, DESIGN.md's
+// full conversion punch list) that can't be driven by a test's pipe
+// input, same limitation as every other Picker-tier conversion this
+// session.
+func manageTagsForResource(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, resourceID, resourceLabel string, tags map[string]string, menuInput io.Reader, menuOutput io.Writer) error {
 	displayTags(t, resourceLabel, tags)
 
-	action, err := ui.PickList(t, le, []string{"Add", "Update", "Remove"}, identity, "Choose an action")
+	action, err := pickString(t, "Choose an action", "(q to cancel)", []string{"Add", "Update", "Remove"}, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
@@ -193,7 +219,7 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 			t.Refresh()
 			return nil
 		}
-		params.Key, err = ui.PickList(t, le, keys, identity, "Select a tag to update")
+		params.Key, err = pickString(t, "Select a tag to update", "(q to cancel)", keys, menuInput, menuOutput)
 		if err != nil {
 			return cancelledIsNil(t, err)
 		}
@@ -209,7 +235,7 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 			t.Refresh()
 			return nil
 		}
-		params.Key, err = ui.PickList(t, le, keys, identity, "Select a tag to remove")
+		params.Key, err = pickString(t, "Select a tag to remove", "(q to cancel)", keys, menuInput, menuOutput)
 		if err != nil {
 			return cancelledIsNil(t, err)
 		}
@@ -239,12 +265,11 @@ func ManageTags(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor
 	return nil
 }
 
-func identity(s string) string { return s }
-
-// cancelledIsNil turns a PickList cancellation into a clean nil return
-// (printing "Cancelled."), passing any other error through unchanged.
+// cancelledIsNil turns a PickList, Picker, or Menu-tier huh.Select
+// cancellation into a clean nil return (printing "Cancelled."), passing
+// any other error through unchanged.
 func cancelledIsNil(t *termlib.Terminal, err error) error {
-	if errors.Is(err, ui.ErrCancelled) {
+	if errors.Is(err, ui.ErrCancelled) || errors.Is(err, tui.ErrCancelled) || errors.Is(err, huh.ErrUserAborted) {
 		t.Println("Cancelled.")
 		t.Refresh()
 		return nil

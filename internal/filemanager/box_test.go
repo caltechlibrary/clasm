@@ -3,26 +3,9 @@ package filemanager
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
+
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
-
-func TestStyleRow_GatedByColorEnabled(t *testing.T) {
-	row := ">* logs/"
-
-	if got := styleRow(row, true, false, false); got != row {
-		t.Errorf("styleRow with colorEnabled=false = %q, want unchanged %q", got, row)
-	}
-	if got := styleRow(row, false, true, false); got != row {
-		t.Errorf("styleRow with colorEnabled=false = %q, want unchanged %q", got, row)
-	}
-
-	if got := styleRow(row, true, false, true); got == row || !strings.Contains(got, ansiReverse) {
-		t.Errorf("styleRow(cursor, colorEnabled=true) = %q, want reverse-video applied", got)
-	}
-	if got := styleRow(row, false, true, true); got == row || !strings.Contains(got, ansiBold) {
-		t.Errorf("styleRow(tagged, colorEnabled=true) = %q, want bold applied", got)
-	}
-}
 
 // TestPaneRows_ShowsLoadingIndicatorWhileFetching covers the reported
 // gap: Find/directory listing can take a noticeable amount of time
@@ -61,39 +44,6 @@ func TestPaneRows_ShowsSpinnerNextToActiveFindStatus(t *testing.T) {
 	}
 }
 
-func TestPadOrTruncate_ANSIStyledRowMeasuresVisibleWidthOnly(t *testing.T) {
-	plain := ">* logs/"
-	styled := reverseVideo(plain)
-
-	gotPlain := padOrTruncate(plain, 20)
-	gotStyled := padOrTruncate(styled, 20)
-
-	if runeLen(gotPlain) != 20 {
-		t.Fatalf("padOrTruncate(plain) visible width = %d, want 20", runeLen(gotPlain))
-	}
-	if runeLen(gotStyled) != 20 {
-		t.Fatalf("padOrTruncate(styled) visible width = %d, want 20 (ANSI codes must not count toward width)", runeLen(gotStyled))
-	}
-	// Same number of trailing space runes once ANSI is stripped, i.e.
-	// same visible column position for whatever follows.
-	if stripANSI(gotPlain) != stripANSI(gotStyled) {
-		t.Errorf("stripped forms differ: %q vs %q", stripANSI(gotPlain), stripANSI(gotStyled))
-	}
-}
-
-func TestBoxRow2_BothCellsAlignRegardlessOfANSIStyling(t *testing.T) {
-	leftW, rightW := 20, 15
-	plainRow := boxRow2("plain left", "plain right", leftW, rightW)
-	styledRow := boxRow2(reverseVideo("styled left"), bold("styled right"), leftW, rightW)
-
-	if got, want := utf8.RuneCountInString(stripANSI(plainRow)), utf8.RuneCountInString(stripANSI(styledRow)); got != want {
-		t.Fatalf("stripped rendered width differs: plain=%d styled=%d", got, want)
-	}
-	if !strings.HasSuffix(stripANSI(plainRow), "│\n") || !strings.HasSuffix(stripANSI(styledRow), "│\n") {
-		t.Fatalf("expected both rows to end with the right border: plain=%q styled=%q", plainRow, styledRow)
-	}
-}
-
 func TestJoinKey_EmptyNameReturnsParentUnchanged(t *testing.T) {
 	if got := joinKey("/path/on/disk", ""); got != "/path/on/disk" {
 		t.Errorf("joinKey(root, \"\") = %q, want %q (no spurious trailing slash)", got, "/path/on/disk")
@@ -122,9 +72,9 @@ func TestView_AllRowsBetweenBordersHaveEqualVisibleWidth(t *testing.T) {
 	if len(lines) < 3 {
 		t.Fatalf("expected a multi-line boxed view, got %d lines:\n%s", len(lines), out)
 	}
-	want := utf8.RuneCountInString(stripANSI(lines[0]))
+	want := tui.RuneLen(lines[0])
 	for i, l := range lines {
-		if got := utf8.RuneCountInString(stripANSI(l)); got != want {
+		if got := tui.RuneLen(l); got != want {
 			t.Errorf("line %d width = %d, want %d (box misaligned):\n%q\nfull view:\n%s", i, got, want, l, out)
 		}
 	}

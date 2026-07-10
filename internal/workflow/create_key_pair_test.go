@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -80,58 +78,27 @@ func TestCreateKeyPair_PropagatesErrorWithoutWritingAFile(t *testing.T) {
 	}
 }
 
-// Regression: a real launch failed with AWS's own
-// InvalidKeyPair.NotFound after every prompt had already been answered
-// and confirmed, because the picked AMI's region (surfaced by the
-// official-Ubuntu-AMI feature, which fans out across every configured
-// region) had zero key pairs -- yet the old free-text-only prompt
-// accepted any typed name unconditionally, with no way to know it
-// didn't exist there until the distant RunInstances call failed. See
-// DECISIONS.md, "Validate key pair name against the AMI's region".
-func TestPromptKeyPairNameOrCreate_NoKeyPairsInRegionOffersCreateFirst(t *testing.T) {
-	fake := &fakeEC2Client{}                             // zero key pairs in this region
-	term, le, buf := newPipeEditor(t, "1\nmy-new-key\n") // 1) Create new key pair
+// The key pair (+ create-new) picker converted to tui.RunPicker
+// (DESIGN.md's full conversion punch list, Picker tier): a real
+// bubbletea Program that can't be pipe-tested, so
+// promptKeyPairNameOrCreate's list-path tests (picking an existing key
+// pair, or "Create new key pair", from the fetched list) are retired --
+// listKeyPairs' own tests (resource_lists_test.go) cover the fetch/
+// listing logic directly, and the picker step itself is covered only by
+// manual/interactive verification, the same accepted limitation this
+// session's other Picker-tier conversions already have.
+// createNewKeyPairInteractive -- the "Create new key pair" sub-flow,
+// reached once the picker resolves to it -- has no picker of its own
+// and is fully testable directly, so its retry-on-duplicate-name and
+// propagates-other-errors behavior moved to test it in isolation below
+// instead of driving it indirectly through the (now-untestable) picker.
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, t.TempDir())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "my-new-key" {
-		t.Errorf("got %q, want %q", got, "my-new-key")
-	}
-	if fake.createKeyPairCalls != 1 {
-		t.Errorf("createKeyPairCalls = %d, want 1", fake.createKeyPairCalls)
-	}
-	if !strings.Contains(buf.String(), "No key pairs found in this region") {
-		t.Errorf("expected a message noting no key pairs exist yet, got:\n%s", buf.String())
-	}
-}
-
-func TestPromptKeyPairNameOrCreate_PicksFromExistingKeyPairsInRegion(t *testing.T) {
-	fake := &fakeEC2Client{keyPairs: []types.KeyPairInfo{
-		{KeyName: aws.String("etd-ami-test")},
-		{KeyName: aws.String("other-key")},
-	}}
-	term, le, _ := newPipeEditor(t, "1\n")
-
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, t.TempDir())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "etd-ami-test" {
-		t.Errorf("got %q, want %q", got, "etd-ami-test")
-	}
-	if fake.createKeyPairCalls != 0 {
-		t.Errorf("createKeyPairCalls = %d, want 0", fake.createKeyPairCalls)
-	}
-}
-
-func TestPromptKeyPairNameOrCreate_CreatesNewKeyPair(t *testing.T) {
+func TestCreateNewKeyPairInteractive_CreatesKeyPair(t *testing.T) {
 	dir := t.TempDir()
-	fake := &fakeEC2Client{keyPairs: []types.KeyPairInfo{{KeyName: aws.String("existing-key")}}}
-	term, le, buf := newPipeEditor(t, "2\nmy-fresh-key\n") // 1) existing-key, 2) Create new key pair
+	fake := &fakeEC2Client{}
+	term, le, buf := newPipeEditor(t, "my-fresh-key\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, dir)
+	got, err := createNewKeyPairInteractive(context.Background(), term, le, fake, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,15 +118,15 @@ func TestPromptKeyPairNameOrCreate_CreatesNewKeyPair(t *testing.T) {
 	}
 }
 
-func TestPromptKeyPairNameOrCreate_RetriesOnDuplicateName(t *testing.T) {
+func TestCreateNewKeyPairInteractive_RetriesOnDuplicateName(t *testing.T) {
 	dir := t.TempDir()
 	fake := &fakeEC2Client{
 		createKeyPairErr:     &smithy.GenericAPIError{Code: "InvalidKeyPair.Duplicate", Message: "already exists"},
 		createKeyPairErrOnce: true,
 	}
-	term, le, buf := newPipeEditor(t, "1\ntaken-name\nfresh-name\n") // zero existing keys -> 1) Create new key pair
+	term, le, buf := newPipeEditor(t, "taken-name\nfresh-name\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, dir)
+	got, err := createNewKeyPairInteractive(context.Background(), term, le, fake, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -174,12 +141,12 @@ func TestPromptKeyPairNameOrCreate_RetriesOnDuplicateName(t *testing.T) {
 	}
 }
 
-func TestPromptKeyPairNameOrCreate_PropagatesNonDuplicateError(t *testing.T) {
+func TestCreateNewKeyPairInteractive_PropagatesNonDuplicateError(t *testing.T) {
 	dir := t.TempDir()
 	fake := &fakeEC2Client{createKeyPairErr: &smithy.GenericAPIError{Code: "UnauthorizedOperation", Message: "no ec2:CreateKeyPair permission"}}
-	term, le, _ := newPipeEditor(t, "1\nmy-key\n") // zero existing keys -> 1) Create new key pair
+	term, le, _ := newPipeEditor(t, "my-key\n")
 
-	_, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, dir)
+	_, err := createNewKeyPairInteractive(context.Background(), term, le, fake, dir)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

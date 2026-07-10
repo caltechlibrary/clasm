@@ -12,6 +12,7 @@ import (
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -24,7 +25,43 @@ type instanceProfileChoice struct {
 	createNew bool
 }
 
-func instanceProfileChoiceLabel(c instanceProfileChoice) string { return c.label }
+// pickInstanceProfileChoice runs a Picker-tier tui.RunPicker (DESIGN.md's
+// full conversion punch list) over choices and returns the chosen one.
+// Like pickInstance/pickImage/pickSubnet, this drives a real bubbletea
+// Program that can't be pipe-tested.
+func pickInstanceProfileChoice(ctx context.Context, title string, choices []instanceProfileChoice) (instanceProfileChoice, error) {
+	rows := make([]string, len(choices))
+	for i, c := range choices {
+		rows[i] = c.label
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return instanceProfileChoice{}, err
+	}
+	return choices[idx], nil
+}
+
+// pickRole runs a Picker-tier tui.RunPicker over roles and returns the
+// chosen one -- same limitation as pickInstanceProfileChoice above.
+func pickRole(ctx context.Context, title string, roles []RoleInfo) (RoleInfo, error) {
+	rows := make([]string, len(roles))
+	for i, r := range roles {
+		rows[i] = roleLabel(r)
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return RoleInfo{}, err
+	}
+	return roles[idx], nil
+}
 
 func instanceProfileLabel(p InstanceProfileInfo) string {
 	if len(p.Roles) == 0 {
@@ -68,7 +105,7 @@ func promptIAMInstanceProfileOrCreate(ctx context.Context, t *termlib.Terminal, 
 		}
 		choices = append(choices, instanceProfileChoice{label: "Create new instance profile (attach an existing role)", createNew: true})
 
-		picked, err := ui.PickList(t, le, choices, instanceProfileChoiceLabel, "Select an IAM instance profile")
+		picked, err := pickInstanceProfileChoice(ctx, "Select an IAM instance profile", choices)
 		if err != nil {
 			return "", err
 		}
@@ -103,11 +140,19 @@ func createInstanceProfileInteractive(ctx context.Context, t *termlib.Terminal, 
 		return "", false, nil
 	}
 
-	role, err := ui.PickList(t, le, roles, roleLabel, "Select a role to attach")
+	role, err := pickRole(ctx, "Select a role to attach", roles)
 	if err != nil {
 		return "", false, err
 	}
+	return createInstanceProfileForRole(ctx, t, le, client, role)
+}
 
+// createInstanceProfileForRole is createInstanceProfileInteractive's
+// testable core, once a role is resolved -- role selection runs a real
+// bubbletea Program (tui.RunPicker, DESIGN.md's full conversion punch
+// list) that can't be driven by a test's pipe input, same limitation as
+// every other Picker-tier conversion this session.
+func createInstanceProfileForRole(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.IAMAPI, role RoleInfo) (name string, created bool, err error) {
 	for {
 		profileName, err := ui.Prompt(t, le, "New instance profile name", ui.WithDefault(role.Name), ui.WithValidator(requireNonEmpty))
 		if err != nil {

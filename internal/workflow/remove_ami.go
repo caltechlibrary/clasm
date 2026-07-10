@@ -11,7 +11,6 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
-	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // RemoveAMIParams is the resolved parameter set for removing an AMI --
@@ -58,10 +57,19 @@ func RemoveAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 		return nil
 	}
 
-	img, err := ui.PickList(t, le, images, imageLabel, "Select an AMI to remove")
+	img, err := pickImage(ctx, "Select an AMI to remove", images)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}
+	return removeAMI(ctx, t, le, clients, img, instances)
+}
+
+// removeAMI is RemoveAMI's testable core, once an AMI is resolved -- AMI
+// selection runs a real bubbletea Program (tui.RunPicker, DESIGN.md's
+// full conversion punch list) that can't be driven by a test's pipe
+// input, same limitation as createAMIFromInstance
+// (create_ami_from_instance.go).
+func removeAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, img inventory.Image, instances []inventory.Instance) error {
 	client, err := resolveEC2(clients, img.Region)
 	if err != nil {
 		return err

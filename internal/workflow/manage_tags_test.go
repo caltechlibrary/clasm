@@ -8,9 +8,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
-	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 func TestApplyTagChange_Add(t *testing.T) {
@@ -94,18 +91,31 @@ func TestFetchImageTags(t *testing.T) {
 	}
 }
 
+// The Add/Update/Remove action and select-a-tag pickers converted to
+// huh.Select (DESIGN.md's full conversion punch list): their selections
+// are fed via a separate newHuhAccessibleInput reader (menuInput), not
+// le, which still feeds every other prompt in this function (key/value
+// input, confirms). The Instance-vs-AMI kind picker and the instance/AMI
+// picker itself (also converted to tui.RunPicker, Picker tier -- a real
+// bubbletea Program that can't be pipe-tested) both now run in
+// manageTags, before manageTagsForResource -- tests below call
+// manageTagsForResource directly with an already-resolved resource;
+// manageTags' own kind/picker-selection steps are covered only by
+// manual/interactive verification, the same accepted limitation this
+// session's other Picker-tier conversions already have.
+
 func TestManageTags_AddOnInstance(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", State: "running", Region: "us-east-1"}}
-	input := "1\n" + // pick "Instance"
-		"1\n" + // pick i-1
-		"1\n" + // pick "Add"
-		"Owner\n" + // key
+	fake := &fakeEC2Client{}
+	tags, err := fetchInstanceTags(context.Background(), fake, "i-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	input := "Owner\n" + // key
 		"dld\n" + // value
 		"y\n" // confirm
-	term, le, _ := newPipeEditor(t, input)
-	fake := &fakeEC2Client{}
+	term, le, buf := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	err = manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", tags, newHuhAccessibleInput("1\n"), buf) // Add
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -115,17 +125,16 @@ func TestManageTags_AddOnInstance(t *testing.T) {
 }
 
 func TestManageTags_UpdateOnAMI(t *testing.T) {
-	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
 	fake := &fakeEC2Client{describeImagesTags: []types.Tag{{Key: aws.String("Project"), Value: aws.String("caltechdata")}}}
-	input := "2\n" + // pick "AMI"
-		"1\n" + // pick ami-1
-		"2\n" + // pick "Update"
-		"1\n" + // pick the only existing key (Project)
-		"caltechauthors\n" + // new value
+	tags, err := fetchImageTags(context.Background(), fake, "ami-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	input := "caltechauthors\n" + // new value
 		"y\n" // confirm
-	term, le, _ := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, nil, images)
+	err = manageTagsForResource(context.Background(), term, le, fake, "ami-1", "ami-1 - base", tags, newHuhAccessibleInput("2\n1\n"), buf) // Update, Project
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,16 +145,14 @@ func TestManageTags_UpdateOnAMI(t *testing.T) {
 }
 
 func TestManageTags_RemoveOnInstance(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{instanceTags: []types.Tag{{Key: aws.String("Owner"), Value: aws.String("dld")}}}
-	input := "1\n" + // Instance
-		"1\n" + // i-1
-		"3\n" + // Remove
-		"1\n" + // pick the only key (Owner)
-		"y\n" // confirm
-	term, le, _ := newPipeEditor(t, input)
+	tags, err := fetchInstanceTags(context.Background(), fake, "i-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	term, le, buf := newPipeEditor(t, "y\n") // confirm
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	err = manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", tags, newHuhAccessibleInput("3\n1\n"), buf) // Remove, Owner
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,12 +163,10 @@ func TestManageTags_RemoveOnInstance(t *testing.T) {
 }
 
 func TestManageTags_EnvironmentNoteShown(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
-	input := "1\n1\n1\nEnvironment\nproduction\ny\n"
-	term, le, buf := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(t, "Environment\nproduction\ny\n")
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("1\n"), buf) // Add
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,12 +176,10 @@ func TestManageTags_EnvironmentNoteShown(t *testing.T) {
 }
 
 func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
-	input := "1\n1\n1\nOwner\ndld\nn\n"
-	term, le, _ := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(t, "Owner\ndld\nn\n")
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("1\n"), buf) // Add
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,12 +189,10 @@ func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
 }
 
 func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
-	fake := &fakeEC2Client{} // no instanceTags set -> empty tag map
-	input := "1\n1\n2\n"     // Instance, i-1, Update
-	term, le, buf := newPipeEditor(t, input)
+	fake := &fakeEC2Client{} // no tags -> empty tag map
+	term, le, buf := newPipeEditor(t, "")
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("2\n"), buf) // Update
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,12 +202,11 @@ func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
 }
 
 func TestManageTags_RejectsBlankTagKeyOnAdd(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", Region: "us-east-1"}}
 	fake := &fakeEC2Client{}
-	input := "1\n1\n1\n\nOwner\ndld\ny\n" // Instance, i-1, Add, blank key (rejected), retry key, value, confirm
+	input := "\nOwner\ndld\ny\n" // blank key (rejected), retry key, value, confirm
 	term, le, buf := newPipeEditor(t, input)
 
-	err := ManageTags(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances, nil)
+	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("1\n"), buf) // Add
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

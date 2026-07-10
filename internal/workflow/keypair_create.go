@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"io"
 
 	"github.com/rsdoiel/termlib"
 
@@ -15,7 +16,16 @@ import (
 // already uses during instance launch, so both call sites share one
 // implementation.
 func CreateKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API) error {
-	region, err := promptRegion(t, le, clients)
+	return createKeyPairStandalone(ctx, t, le, clients, nil, nil)
+}
+
+// createKeyPairStandalone is CreateKeyPairStandalone's testable core:
+// regionInput/regionOutput are nil in production (the region huh.Select
+// runs interactively on the real terminal) and are supplied by tests to
+// drive it through its accessible-mode pipe path instead, separate from
+// le, which still feeds createNewKeyPairInteractive's own prompts.
+func createKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, regionInput io.Reader, regionOutput io.Writer) error {
+	region, err := promptRegion(t, clients, regionInput, regionOutput)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}

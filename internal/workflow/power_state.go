@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,8 +11,32 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
+
+// pickInstance runs a Picker-tier tui.RunPicker (DESIGN.md's full
+// conversion punch list) over instances and returns the chosen one.
+// Like pickBucket (Phase 20.4), this drives a real bubbletea Program
+// that can't be pipe-tested -- every caller splits into a thin entry
+// point (calls pickInstance) and a testable core taking the already-
+// resolved instance directly.
+func pickInstance(ctx context.Context, title string, instances []inventory.Instance) (inventory.Instance, error) {
+	rows := make([]string, len(instances))
+	for i, inst := range instances {
+		rows[i] = instanceLabel(inst)
+	}
+
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return inventory.Instance{}, err
+	}
+	return instances[idx], nil
+}
 
 // StartInstance calls ec2:StartInstances for a single instance.
 func StartInstance(ctx context.Context, client awsclient.EC2API, instanceID string) error {
@@ -39,15 +62,19 @@ func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.Line
 		return nil
 	}
 
-	inst, err := ui.PickList(t, le, stopped, instanceLabel, "Select an instance to start")
+	inst, err := pickInstance(ctx, "Select an instance to start", stopped)
 	if err != nil {
-		if errors.Is(err, ui.ErrCancelled) {
-			t.Println("Cancelled.")
-			t.Refresh()
-			return nil
-		}
-		return err
+		return cancelledIsNil(t, err)
 	}
+	return startEC2Instance(ctx, t, le, clients, inst)
+}
+
+// startEC2Instance is StartEC2Instance's testable core, once an instance
+// is resolved -- instance selection runs a real bubbletea Program
+// (tui.RunPicker, DESIGN.md's full conversion punch list) that can't be
+// driven by a test's pipe input, same limitation as pickBucket (Phase
+// 20.4).
+func startEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, inst inventory.Instance) error {
 	client, err := resolveEC2(clients, inst.Region)
 	if err != nil {
 		return err
@@ -110,15 +137,16 @@ func StopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineE
 		return nil
 	}
 
-	inst, err := ui.PickList(t, le, running, instanceLabel, "Select an instance to stop")
+	inst, err := pickInstance(ctx, "Select an instance to stop", running)
 	if err != nil {
-		if errors.Is(err, ui.ErrCancelled) {
-			t.Println("Cancelled.")
-			t.Refresh()
-			return nil
-		}
-		return err
+		return cancelledIsNil(t, err)
 	}
+	return stopEC2Instance(ctx, t, le, clients, inst)
+}
+
+// stopEC2Instance is StopEC2Instance's testable core, once an instance
+// is resolved -- same limitation as startEC2Instance above.
+func stopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, inst inventory.Instance) error {
 	client, err := resolveEC2(clients, inst.Region)
 	if err != nil {
 		return err

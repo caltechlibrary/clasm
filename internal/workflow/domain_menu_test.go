@@ -19,18 +19,35 @@ func backToPickerAction(calls *int) func(context.Context) error {
 	}
 }
 
+// cancelingBackToPickerAction is like backToPickerAction, but also
+// cancels ctx -- used to drive one iteration of runDomainPicker's loop
+// (a dispatch that returns ErrBackToDomainPicker, continuing the loop)
+// and then have the *next* iteration's ctx.Err() check end it cleanly.
+// Stands in for choosing "Exit" (removed in this phase: 'q' is now the
+// only way, and accessible mode has no way to simulate that abort --
+// see mapMenuPickerErr's doc comment for the same limitation).
+func cancelingBackToPickerAction(calls *int, cancel context.CancelFunc) func(context.Context) error {
+	return func(ctx context.Context) error {
+		*calls++
+		cancel()
+		return ErrBackToDomainPicker
+	}
+}
+
 func TestRunDomainPicker_DispatchesToTheChosenDomain(t *testing.T) {
 	var compute, keyMgmt, s3 int
-	term, le, _ := newPipeEditor(t, "2\n4\n") // Key Management, then Exit
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	actions := DomainActions{
 		Compute:       backToPickerAction(&compute),
-		KeyManagement: backToPickerAction(&keyMgmt),
+		KeyManagement: cancelingBackToPickerAction(&keyMgmt, cancel),
 		S3:            backToPickerAction(&s3),
 	}
 
-	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	menuInput := newHuhAccessibleInput("2\n") // Key Management
+	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
 	if keyMgmt != 1 {
 		t.Errorf("keyMgmt calls = %d, want 1", keyMgmt)
@@ -42,53 +59,26 @@ func TestRunDomainPicker_DispatchesToTheChosenDomain(t *testing.T) {
 
 func TestRunDomainPicker_BackToDomainPickerReturnsToThePicker(t *testing.T) {
 	var compute int
-	term, le, _ := newPipeEditor(t, "1\n4\n") // Compute (backs out), then Exit
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	actions := DomainActions{
-		Compute:       backToPickerAction(&compute),
+		Compute:       cancelingBackToPickerAction(&compute, cancel),
 		KeyManagement: backToPickerAction(new(int)),
 		S3:            backToPickerAction(new(int)),
 	}
 
-	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	menuInput := newHuhAccessibleInput("1\n") // Compute (backs out)
+	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
 	if compute != 1 {
 		t.Errorf("compute calls = %d, want 1", compute)
 	}
 }
 
-func TestRunDomainPicker_ExitEndsTheProgram(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "4\n")
-
-	actions := DomainActions{
-		Compute:       backToPickerAction(new(int)),
-		KeyManagement: backToPickerAction(new(int)),
-		S3:            backToPickerAction(new(int)),
-	}
-
-	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
-		t.Fatalf("expected a clean exit (nil error), got: %v", err)
-	}
-}
-
-func TestRunDomainPicker_CleanExitOnCancelledPickList(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "0\n") // cancel the domain pick
-
-	actions := DomainActions{
-		Compute:       backToPickerAction(new(int)),
-		KeyManagement: backToPickerAction(new(int)),
-		S3:            backToPickerAction(new(int)),
-	}
-
-	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
-		t.Fatalf("expected a clean exit (nil error), got: %v", err)
-	}
-}
-
 func TestRunDomainPicker_CleanExitOnAlreadyCancelledContext(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "") // no input needed -- should exit before prompting
-
+	term, buf := newTermOnly()
 	actions := DomainActions{
 		Compute:       backToPickerAction(new(int)),
 		KeyManagement: backToPickerAction(new(int)),
@@ -98,7 +88,7 @@ func TestRunDomainPicker_CleanExitOnAlreadyCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := RunDomainPicker(ctx, term, le, actions); err != nil {
+	if err := runDomainPicker(ctx, term, actions, newHuhAccessibleInput(""), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on an already-cancelled context, got: %v", err)
 	}
 }
@@ -111,7 +101,7 @@ func TestRunDomainPicker_CleanExitOnAlreadyCancelledContext(t *testing.T) {
 // get back to the picker, again to leave the picker) instead of once
 // (DESIGN.md, "Navigation: Domain Picker").
 func TestRunDomainPicker_DomainExitSignalEndsTheWholeProgramWithoutReturningToPicker(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "3\n") // pick S3; a second read would panic/hang the pipe if this looped back
+	term, buf := newTermOnly()
 	s3Runs := 0
 
 	actions := DomainActions{
@@ -123,7 +113,8 @@ func TestRunDomainPicker_DomainExitSignalEndsTheWholeProgramWithoutReturningToPi
 		},
 	}
 
-	if err := RunDomainPicker(context.Background(), term, le, actions); err != nil {
+	menuInput := newHuhAccessibleInput("3\n") // S3; a second read would starve if this looped back
+	if err := runDomainPicker(context.Background(), term, actions, menuInput, buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error), got: %v", err)
 	}
 	if s3Runs != 1 {
@@ -132,7 +123,7 @@ func TestRunDomainPicker_DomainExitSignalEndsTheWholeProgramWithoutReturningToPi
 }
 
 func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "3\n") // S3
+	term, buf := newTermOnly()
 	boom := errors.New("boom")
 
 	actions := DomainActions{
@@ -141,9 +132,21 @@ func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
 		S3:            failingAction(boom),
 	}
 
-	err := RunDomainPicker(context.Background(), term, le, actions)
+	menuInput := newHuhAccessibleInput("3\n") // S3
+	err := runDomainPicker(context.Background(), term, actions, menuInput, buf)
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the domain's error to propagate, got: %v", err)
+	}
+}
+
+func TestDomainItems_NoExitEntry(t *testing.T) {
+	if len(domainItems) != 3 {
+		t.Fatalf("len(domainItems) = %d, want 3 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
+	}
+	for _, item := range domainItems {
+		if item.action == nil {
+			t.Errorf("found a nil-action item %q -- \"Exit\" should have been removed", item.label)
+		}
 	}
 }
 

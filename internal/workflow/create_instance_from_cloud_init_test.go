@@ -11,27 +11,36 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
+// The curated-instance-type picker converted to huh.Select (DESIGN.md's
+// full conversion punch list): its selection is fed via a separate
+// newHuhAccessibleInput reader (menuInput), not le, which still feeds
+// every other prompt in this function. The cloud-init-YAML-file prompt
+// and the AMI picker (also converted to tui.RunPicker, Picker tier -- a
+// real bubbletea Program that can't be pipe-tested) both now run in the
+// exported CreateInstanceFromCloudInit, before the testable
+// createInstanceFromCloudInit core, which takes the resolved userData/
+// image directly. CreateInstanceFromCloudInit's own prompt/AMI-selection
+// steps (including cancellation) are covered only by manual/interactive
+// verification, the same accepted limitation this session's other
+// Picker-tier conversions already have.
+
 func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
-	images := []inventory.Image{{ImageID: "ami-1", Name: "base", Region: "us-east-1"}}
-	input := path + "\n" + // cloud-init YAML file path, first
-		"1\n" + // pick ami-1
-		"web\n" +
-		"1\n" + // instance type: t3.micro
-		"1\n" + // key pair: Create new key pair (zero existing keys)
+	image := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
+	input := "web\n" +
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
 		"subnet-1\n" +
-		"1\n" + // IAM profile: select (none)
+		"\n" + // IAM profile (blank -- free-text fallback via fakeIAMClientNoProfiles)
 		"caltechauthors\n" +
 		"production\n" +
 		"y\n" // confirm launch
 
 	term, le, buf := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{runInstancesID: "i-abc123", runningAfterCall: 1}
+	ec2Client := &fakeEC2Client{runInstancesID: "i-abc123", runningAfterCall: 1, describeKeyPairsErr: errNoKeyPairsConfigured}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeIAMClient{}, images)
+	err := createInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,47 +56,26 @@ func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
 }
 
 func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
-	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := path + "\n" +
-		"1\n" +
-		"web\n" +
-		"1\n" + // instance type: t3.micro
-		"1\n" + // key pair: Create new key pair (zero existing keys)
+	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
+	input := "web\n" +
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
 		"subnet-1\n" +
-		"1\n" + // IAM profile: select (none)
+		"\n" + // IAM profile (blank -- free-text fallback via fakeIAMClientNoProfiles)
 		"caltechauthors\n" +
 		"production\n" +
 		"n\n" // decline
 
-	term, le, _ := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
+	term, le, buf := newPipeEditor(t, input)
+	ec2Client := &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeIAMClient{}, images)
+	err := createInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ec2Client.lastRunInstancesInput != nil {
 		t.Error("RunInstances was called despite a declined confirmation")
-	}
-}
-
-func TestCreateInstanceFromCloudInit_CancelledPickListReturnsCleanly(t *testing.T) {
-	path := writeCloudInitFixture(t, "#cloud-config")
-	images := []inventory.Image{{ImageID: "ami-1", Region: "us-east-1"}}
-	input := path + "\n" + "0\n" // provide cloud-init, then cancel the AMI pick list
-	term, le, _ := newPipeEditor(t, input)
-	ec2Client := &fakeEC2Client{}
-	ssmClient := &fakeSSMClient{}
-
-	err := CreateInstanceFromCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, &fakeIAMClient{}, images)
-	if err != nil {
-		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
-	}
-	if ec2Client.lastRunInstancesInput != nil {
-		t.Error("RunInstances was called despite cancelling the AMI pick list")
 	}
 }

@@ -67,38 +67,32 @@ func newDuplicateInstanceProfileError() error {
 	return &smithy.GenericAPIError{Code: "EntityAlreadyExists", Message: "already exists"}
 }
 
-func TestPromptIAMInstanceProfileOrCreate_PicksFromList(t *testing.T) {
-	fake := &fakeIAMClient{instanceProfiles: []iamtypes.InstanceProfile{
-		{InstanceProfileName: aws.String("ec2-invenio-profile"), Roles: []iamtypes.Role{{RoleName: aws.String("ec2-invenio-role")}}},
-	}}
-	term, le, buf := newPipeEditor(t, "2\n") // 1) (none), 2) ec2-invenio-profile, 3) Create new
-
-	got, err := promptIAMInstanceProfileOrCreate(context.Background(), term, le, fake)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "ec2-invenio-profile" {
-		t.Errorf("got %q, want %q", got, "ec2-invenio-profile")
-	}
-	if !strings.Contains(buf.String(), "ec2-invenio-role") {
-		t.Errorf("expected the attached role name in the listing, got:\n%s", buf.String())
-	}
+// fakeIAMClientNoProfiles returns a fakeIAMClient configured to fail
+// ListInstanceProfiles, forcing promptIAMInstanceProfileOrCreate's
+// free-text fallback. Used by launch-params tests elsewhere in this
+// package that aren't about IAM profile selection itself -- the
+// instance-profile/role pickers converted to tui.RunPicker (Picker
+// tier, DESIGN.md's full conversion punch list) are real bubbletea
+// Programs that can't be pipe-tested, and a bare &fakeIAMClient{}
+// succeeds with an empty (but non-error) profile list, which still
+// reaches the picker.
+func fakeIAMClientNoProfiles() *fakeIAMClient {
+	return &fakeIAMClient{listInstanceProfilesErr: errors.New("no instance profiles configured for this test")}
 }
 
-func TestPromptIAMInstanceProfileOrCreate_NoneSkipsIt(t *testing.T) {
-	fake := &fakeIAMClient{instanceProfiles: []iamtypes.InstanceProfile{
-		{InstanceProfileName: aws.String("some-profile")},
-	}}
-	term, le, _ := newPipeEditor(t, "1\n") // (none)
-
-	got, err := promptIAMInstanceProfileOrCreate(context.Background(), term, le, fake)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "" {
-		t.Errorf("got %q, want empty (none)", got)
-	}
-}
+// The instance-profile and role pickers converted to tui.RunPicker
+// (DESIGN.md's full conversion punch list, Picker tier): real bubbletea
+// Programs that can't be pipe-tested. promptIAMInstanceProfileOrCreate
+// always builds a choices list of at least ["(none)", "Create new..."],
+// so it reaches the picker on every path except the list-fetch-error
+// free-text fallback -- the tests below that used to pick from that list
+// ("PicksFromList", "NoneSkipsIt") are retired; createInstanceProfile
+// ForRole (the create-new sub-flow once a role is resolved) and
+// createInstanceProfileInteractive's own no-roles-found short-circuit
+// (which returns before ever reaching the role picker) still exercise
+// their own logic directly below. Covered only by manual/interactive
+// verification otherwise, the same accepted limitation this session's
+// other Picker-tier conversions already have.
 
 func TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails(t *testing.T) {
 	fake := &fakeIAMClient{listInstanceProfilesErr: errors.New("access denied")}
@@ -113,20 +107,17 @@ func TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails(t *te
 	}
 }
 
-func TestPromptIAMInstanceProfileOrCreate_EmptyListStillOffersCreateNew(t *testing.T) {
-	fake := &fakeIAMClient{
-		roles: []iamtypes.Role{{RoleName: aws.String("ec2-invenio-role")}},
-	}
-	// choices: 1) (none), 2) Create new -- pick "create new", then role 1,
-	// then accept the default profile name (same as role name).
-	term, le, _ := newPipeEditor(t, "2\n1\n\n")
+func TestCreateInstanceProfileForRole_AcceptsDefaultName(t *testing.T) {
+	fake := &fakeIAMClient{}
+	role := RoleInfo{Name: "ec2-invenio-role"}
+	term, le, _ := newPipeEditor(t, "\n") // accept the default profile name (same as role name)
 
-	got, err := promptIAMInstanceProfileOrCreate(context.Background(), term, le, fake)
+	got, created, err := createInstanceProfileForRole(context.Background(), term, le, fake, role)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "ec2-invenio-role" {
-		t.Errorf("got %q, want %q (default profile name = role name)", got, "ec2-invenio-role")
+	if !created || got != "ec2-invenio-role" {
+		t.Errorf("got name=%q created=%v, want %q/true (default profile name = role name)", got, created, "ec2-invenio-role")
 	}
 	if aws.ToString(fake.lastCreateInstanceProfileInput.InstanceProfileName) != "ec2-invenio-role" {
 		t.Errorf("CreateInstanceProfile name = %q, want %q", aws.ToString(fake.lastCreateInstanceProfileInput.InstanceProfileName), "ec2-invenio-role")
@@ -136,32 +127,28 @@ func TestPromptIAMInstanceProfileOrCreate_EmptyListStillOffersCreateNew(t *testi
 	}
 }
 
-func TestPromptIAMInstanceProfileOrCreate_CreateNewWithNoRolesRedisplaysPicker(t *testing.T) {
-	fake := &fakeIAMClient{} // no profiles, no roles
-	// 1) (none), 2) Create new -- pick "create new" (no roles -> message,
-	// redisplay), then pick (none).
-	term, le, buf := newPipeEditor(t, "2\n1\n")
+func TestCreateInstanceProfileInteractive_NoRolesReturnsWithoutError(t *testing.T) {
+	fake := &fakeIAMClient{} // no roles
+	term, le, buf := newPipeEditor(t, "")
 
-	got, err := promptIAMInstanceProfileOrCreate(context.Background(), term, le, fake)
+	got, created, err := createInstanceProfileInteractive(context.Background(), term, le, fake)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "" {
-		t.Errorf("got %q, want empty (none, after redisplay)", got)
+	if created || got != "" {
+		t.Errorf("got name=%q created=%v, want empty/false when there are no roles to attach", got, created)
 	}
 	if !strings.Contains(buf.String(), "No IAM roles found") {
 		t.Errorf("expected a no-roles message, got:\n%s", buf.String())
 	}
 }
 
-func TestPromptIAMInstanceProfileOrCreate_NameCollisionRetries(t *testing.T) {
-	fake := &fakeIAMClient{
-		roles:                    []iamtypes.Role{{RoleName: aws.String("ec2-invenio-role")}},
-		createInstanceProfileErr: newDuplicateInstanceProfileError(),
-	}
-	term, le, buf := newPipeEditor(t, "2\n1\ntaken-name\n")
+func TestCreateInstanceProfileForRole_NameCollisionRetries(t *testing.T) {
+	fake := &fakeIAMClient{createInstanceProfileErr: newDuplicateInstanceProfileError()}
+	role := RoleInfo{Name: "ec2-invenio-role"}
+	term, le, buf := newPipeEditor(t, "taken-name\n")
 
-	_, err := promptIAMInstanceProfileOrCreate(context.Background(), term, le, fake)
+	_, _, err := createInstanceProfileForRole(context.Background(), term, le, fake, role)
 	if err == nil {
 		t.Fatal("expected the duplicate-name error to eventually surface (fake always errors)")
 	}

@@ -23,13 +23,21 @@ func writePubKeyFile(t *testing.T, contents string) string {
 	return path
 }
 
+// The region picker converted to huh.Select (DESIGN.md's full conversion
+// punch list): its selection is fed via a separate newHuhAccessibleInput
+// reader (regionInput), not le, which still feeds every other prompt in
+// this function. Cancelling it is only reachable via 'q'/ctrl+c, which
+// accessible mode has no keyboard to simulate (mapMenuPickerErr's doc
+// comment covers the same limitation), so the old "0=Cancel" test is
+// retired rather than kept.
+
 func TestImportKeyPairStandalone_Success(t *testing.T) {
 	pubPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "1\nmy-imported-key\n"+pubPath+"\n")
+	term, le, buf := newPipeEditor(t, "my-imported-key\n"+pubPath+"\n")
 
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
+	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,9 +69,9 @@ func TestImportKeyPairStandalone_PromptLabelStaysShort(t *testing.T) {
 	pubPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "1\nmy-imported-key\n"+pubPath+"\n")
+	term, le, buf := newPipeEditor(t, "my-imported-key\n"+pubPath+"\n")
 
-	if err := ImportKeyPairStandalone(context.Background(), term, le, clients); err != nil {
+	if err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -86,9 +94,9 @@ func TestImportKeyPairStandalone_MalformedFileRejectedAndReprompted(t *testing.T
 	goodPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "1\nmy-key\n"+badPath+"\n"+goodPath+"\n")
+	term, le, buf := newPipeEditor(t, "my-key\n"+badPath+"\n"+goodPath+"\n")
 
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
+	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,9 +119,9 @@ func TestImportKeyPairStandalone_PrivateKeyFileRejectionSuggestsSSHKeygen(t *tes
 	goodPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "1\nmy-key\n"+pemPath+"\n"+goodPath+"\n")
+	term, le, buf := newPipeEditor(t, "my-key\n"+pemPath+"\n"+goodPath+"\n")
 
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
+	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,9 +143,9 @@ func TestImportKeyPairStandalone_ExpandsHomeTilde(t *testing.T) {
 	}
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, _ := newPipeEditor(t, "1\nmy-key\n~/.ssh/id_ed25519.pub\n")
+	term, le, buf := newPipeEditor(t, "my-key\n~/.ssh/id_ed25519.pub\n")
 
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
+	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,9 +158,9 @@ func TestImportKeyPairStandalone_MissingFileRejected(t *testing.T) {
 	goodPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "1\nmy-key\n/no/such/file.pub\n"+goodPath+"\n")
+	term, le, buf := newPipeEditor(t, "my-key\n/no/such/file.pub\n"+goodPath+"\n")
 
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
+	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,9 +179,9 @@ func TestImportKeyPairStandalone_RetriesOnDuplicateName(t *testing.T) {
 		importKeyPairErrOnce: true,
 	}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "1\ntaken-name\n"+pubPath+"\nfresh-name\n"+pubPath+"\n")
+	term, le, buf := newPipeEditor(t, "taken-name\n"+pubPath+"\nfresh-name\n"+pubPath+"\n")
 
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
+	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,19 +190,5 @@ func TestImportKeyPairStandalone_RetriesOnDuplicateName(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "already exists") {
 		t.Errorf("expected a duplicate-name message in output, got:\n%s", buf.String())
-	}
-}
-
-func TestImportKeyPairStandalone_CancelledRegionPick(t *testing.T) {
-	fake := &fakeEC2Client{}
-	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, _ := newPipeEditor(t, "0\n")
-
-	err := ImportKeyPairStandalone(context.Background(), term, le, clients)
-	if err != nil {
-		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
-	}
-	if fake.lastImportKeyPairInput != nil {
-		t.Error("ImportKeyPair was called despite cancelling the region pick")
 	}
 }

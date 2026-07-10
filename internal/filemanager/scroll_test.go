@@ -7,38 +7,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
-
-func TestScrollWindow_FitsEverythingWhenShorterThanWindow(t *testing.T) {
-	start, end := scrollWindow(2, 5, 10)
-	if start != 0 || end != 5 {
-		t.Errorf("scrollWindow(2, 5, 10) = (%d, %d), want (0, 5)", start, end)
-	}
-}
-
-func TestScrollWindow_FollowsCursorPastTheBottom(t *testing.T) {
-	// 100 items, a 10-row window, cursor near the end -- the window
-	// must include the cursor, not stay pinned to the top.
-	start, end := scrollWindow(95, 100, 10)
-	if end <= 95 {
-		t.Fatalf("scrollWindow(95, 100, 10) = (%d, %d), cursor 95 falls outside the window", start, end)
-	}
-	if start < 0 || end > 100 {
-		t.Fatalf("scrollWindow(95, 100, 10) = (%d, %d), out of bounds", start, end)
-	}
-}
-
-func TestScrollWindow_NeverExceedsWindowHeight(t *testing.T) {
-	for _, cursor := range []int{0, 1, 50, 98, 99} {
-		start, end := scrollWindow(cursor, 100, 10)
-		if end-start != 10 {
-			t.Errorf("scrollWindow(%d, 100, 10) window size = %d, want 10", cursor, end-start)
-		}
-		if cursor < start || cursor >= end {
-			t.Errorf("scrollWindow(%d, 100, 10) = (%d, %d), cursor not inside window", cursor, start, end)
-		}
-	}
-}
 
 // TestModel_LargeListing_ScrollsToReachEntriesBelowTheFold is a
 // regression test for the reported bug: with no cap on rows rendered,
@@ -85,9 +56,9 @@ func TestModel_LargeListing_ScrollsToReachEntriesBelowTheFold(t *testing.T) {
 	// Every rendered box row must still line up (paging must not break
 	// the box's alignment invariant established in box_test.go).
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	want := len([]rune(stripANSI(lines[0])))
+	want := tui.RuneLen(lines[0])
 	for i, l := range lines {
-		if got := len([]rune(stripANSI(l))); got != want {
+		if got := tui.RuneLen(l); got != want {
 			t.Errorf("line %d width = %d, want %d:\n%q", i, got, want, l)
 		}
 	}

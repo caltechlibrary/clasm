@@ -10,12 +10,22 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
-func TestDeleteKeyPair_Success(t *testing.T) {
-	keyPairs := []inventory.KeyPair{{KeyName: "my-key", Region: "us-east-1", KeyType: "ed25519"}}
-	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "1\nmy-key\n")
+// Key pair selection (DESIGN.md's full conversion punch list, Picker
+// tier) now runs a real bubbletea Program (tui.RunPicker), which can't
+// be driven by a test's pipe input -- see internal/tui/picker_test.go
+// for that component's own thorough test suite. Tests below exercise
+// everything once a key pair is already resolved via the unexported
+// deleteKeyPair; DeleteKeyPair's own picker-selection step (including
+// cancellation) is covered only by manual/interactive verification, the
+// same accepted limitation this session's other Picker-tier conversions
+// already have.
 
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, keyPairs, nil)
+func TestDeleteKeyPair_Success(t *testing.T) {
+	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1", KeyType: "ed25519"}
+	fake := &fakeEC2Client{}
+	term, le, buf := newPipeEditor(t, "my-key\n")
+
+	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,15 +41,15 @@ func TestDeleteKeyPair_Success(t *testing.T) {
 }
 
 func TestDeleteKeyPair_DependencyWarningShownWhenInUse(t *testing.T) {
-	keyPairs := []inventory.KeyPair{{KeyName: "my-key", Region: "us-east-1"}}
+	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	instances := []inventory.Instance{
 		{InstanceID: "i-1", Name: "web", KeyName: "my-key"},
 		{InstanceID: "i-2", Name: "other", KeyName: "other-key"},
 	}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "1\nmy-key\n")
+	term, le, buf := newPipeEditor(t, "my-key\n")
 
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, keyPairs, instances)
+	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,12 +62,12 @@ func TestDeleteKeyPair_DependencyWarningShownWhenInUse(t *testing.T) {
 }
 
 func TestDeleteKeyPair_NoDependencyWarningWhenUnused(t *testing.T) {
-	keyPairs := []inventory.KeyPair{{KeyName: "my-key", Region: "us-east-1"}}
+	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", KeyName: "other-key"}}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "1\nmy-key\n")
+	term, le, buf := newPipeEditor(t, "my-key\n")
 
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, keyPairs, instances)
+	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,30 +77,16 @@ func TestDeleteKeyPair_NoDependencyWarningWhenUnused(t *testing.T) {
 }
 
 func TestDeleteKeyPair_TypeToConfirmMismatchCancels(t *testing.T) {
-	keyPairs := []inventory.KeyPair{{KeyName: "my-key", Region: "us-east-1"}}
+	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "1\nwrong\n")
+	term, le, _ := newPipeEditor(t, "wrong\n")
 
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, keyPairs, nil)
+	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.lastDeleteKeyPairInput != nil {
 		t.Error("DeleteKeyPair was called despite a type-to-confirm mismatch")
-	}
-}
-
-func TestDeleteKeyPair_CancelledPickList(t *testing.T) {
-	keyPairs := []inventory.KeyPair{{KeyName: "my-key", Region: "us-east-1"}}
-	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "0\n")
-
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, keyPairs, nil)
-	if err != nil {
-		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
-	}
-	if fake.lastDeleteKeyPairInput != nil {
-		t.Error("DeleteKeyPair was called despite cancelling the pick list")
 	}
 }
 
@@ -108,11 +104,11 @@ func TestDeleteKeyPair_NoKeyPairs(t *testing.T) {
 }
 
 func TestDeleteKeyPair_PropagatesDeleteError(t *testing.T) {
-	keyPairs := []inventory.KeyPair{{KeyName: "my-key", Region: "us-east-1"}}
+	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	fake := &fakeEC2Client{deleteKeyPairErr: errors.New("boom")}
-	term, le, _ := newPipeEditor(t, "1\nmy-key\n")
+	term, le, _ := newPipeEditor(t, "my-key\n")
 
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, keyPairs, nil)
+	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

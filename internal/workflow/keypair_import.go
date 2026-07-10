@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -62,7 +63,16 @@ func validatePublicKeyFile(path string) ([]byte, error) {
 // there's no private key material to save -- ec2:ImportKeyPair never
 // returns one, since AWS never sees the private half.
 func ImportKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API) error {
-	region, err := promptRegion(t, le, clients)
+	return importKeyPairStandalone(ctx, t, le, clients, nil, nil)
+}
+
+// importKeyPairStandalone is ImportKeyPairStandalone's testable core:
+// regionInput/regionOutput are nil in production (the region huh.Select
+// runs interactively on the real terminal) and are supplied by tests to
+// drive it through its accessible-mode pipe path instead, separate from
+// le, which still feeds every other prompt in this function.
+func importKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, regionInput io.Reader, regionOutput io.Writer) error {
+	region, err := promptRegion(t, clients, regionInput, regionOutput)
 	if err != nil {
 		return cancelledIsNil(t, err)
 	}

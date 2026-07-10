@@ -27,15 +27,23 @@ func TestStartInstance_Failure(t *testing.T) {
 	}
 }
 
+// Instance selection (DESIGN.md's full conversion punch list, Picker
+// tier) now runs a real bubbletea Program (tui.RunPicker), which can't
+// be driven by a test's pipe input -- see internal/tui/picker_test.go
+// for that component's own thorough test suite. Tests below exercise
+// everything once an instance is already resolved via the unexported
+// startEC2Instance/stopEC2Instance; StartEC2Instance/StopEC2Instance's
+// own picker-selection step is covered only by manual/interactive
+// verification, the same accepted limitation object_browser.go's
+// huh-based bucket pre-flight and pickBucket's own callers (Phase 20.4)
+// already have.
+
 func TestStartEC2Instance_HappyPath(t *testing.T) {
-	instances := []inventory.Instance{
-		{InstanceID: "i-running", Name: "web", State: "running", Region: "us-east-1"},
-		{InstanceID: "i-stopped", Name: "db", State: "stopped", Region: "us-east-1"},
-	}
-	term, le, buf := newPipeEditor(t, "1\ny\n") // only one stopped instance to pick, then confirm
+	inst := inventory.Instance{InstanceID: "i-stopped", Name: "db", State: "stopped", Region: "us-east-1"}
+	term, le, buf := newPipeEditor(t, "y\n") // confirm
 	fake := &fakeEC2Client{runningAfterCall: 1, publicIP: "5.6.7.8"}
 
-	err := StartEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := startEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,26 +76,12 @@ func TestStartEC2Instance_NoStoppedInstances(t *testing.T) {
 	}
 }
 
-func TestStartEC2Instance_CancelledPickList(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}}
-	term, le, _ := newPipeEditor(t, "0\n")
-	fake := &fakeEC2Client{}
-
-	err := StartEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
-	if err != nil {
-		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
-	}
-	if fake.lastStartInstancesInput != nil {
-		t.Error("StartInstances was called despite cancelling the pick list")
-	}
-}
-
 func TestStartEC2Instance_DeclinedConfirmationDoesNotStart(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}}
-	term, le, _ := newPipeEditor(t, "1\nn\n")
+	inst := inventory.Instance{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}
+	term, le, _ := newPipeEditor(t, "n\n")
 	fake := &fakeEC2Client{}
 
-	err := StartEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := startEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,11 +91,11 @@ func TestStartEC2Instance_DeclinedConfirmationDoesNotStart(t *testing.T) {
 }
 
 func TestStartEC2Instance_PropagatesStartError(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}}
-	term, le, _ := newPipeEditor(t, "1\ny\n")
+	inst := inventory.Instance{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}
+	term, le, _ := newPipeEditor(t, "y\n")
 	fake := &fakeEC2Client{startInstancesErr: errors.New("boom")}
 
-	err := StartEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := startEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -125,14 +119,11 @@ func TestStopInstance_Failure(t *testing.T) {
 }
 
 func TestStopEC2Instance_HappyPath(t *testing.T) {
-	instances := []inventory.Instance{
-		{InstanceID: "i-stopped", Name: "db", State: "stopped", Region: "us-east-1"},
-		{InstanceID: "i-running", Name: "web", State: "running", Region: "us-east-1"},
-	}
-	term, le, buf := newPipeEditor(t, "1\ny\n") // only one running instance to pick, then confirm
+	inst := inventory.Instance{InstanceID: "i-running", Name: "web", State: "running", Region: "us-east-1"}
+	term, le, buf := newPipeEditor(t, "y\n") // confirm
 	fake := &fakeEC2Client{stoppedAfterCall: 1}
 
-	err := StopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := stopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,26 +152,12 @@ func TestStopEC2Instance_NoRunningInstances(t *testing.T) {
 	}
 }
 
-func TestStopEC2Instance_CancelledPickList(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-running", State: "running", Region: "us-east-1"}}
-	term, le, _ := newPipeEditor(t, "0\n")
-	fake := &fakeEC2Client{}
-
-	err := StopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
-	if err != nil {
-		t.Fatalf("expected a clean cancel (nil error), got: %v", err)
-	}
-	if fake.lastStopInstancesInput != nil {
-		t.Error("StopInstances was called despite cancelling the pick list")
-	}
-}
-
 func TestStopEC2Instance_DeclinedConfirmationDoesNotStop(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-running", State: "running", Region: "us-east-1"}}
-	term, le, _ := newPipeEditor(t, "1\nn\n")
+	inst := inventory.Instance{InstanceID: "i-running", State: "running", Region: "us-east-1"}
+	term, le, _ := newPipeEditor(t, "n\n")
 	fake := &fakeEC2Client{}
 
-	err := StopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := stopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,11 +167,11 @@ func TestStopEC2Instance_DeclinedConfirmationDoesNotStop(t *testing.T) {
 }
 
 func TestStopEC2Instance_PropagatesStopError(t *testing.T) {
-	instances := []inventory.Instance{{InstanceID: "i-running", State: "running", Region: "us-east-1"}}
-	term, le, _ := newPipeEditor(t, "1\ny\n")
+	inst := inventory.Instance{InstanceID: "i-running", State: "running", Region: "us-east-1"}
+	term, le, _ := newPipeEditor(t, "y\n")
 	fake := &fakeEC2Client{stopInstancesErr: errors.New("boom")}
 
-	err := StopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := stopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

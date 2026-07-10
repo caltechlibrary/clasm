@@ -3,16 +3,42 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 func subnetLabel(s SubnetInfo) string {
 	return fmt.Sprintf("%s (%s, %s, %s)", s.SubnetID, s.VpcID, s.AvailabilityZone, s.CIDR)
+}
+
+// pickSubnet runs a Picker-tier tui.RunPicker (DESIGN.md's full
+// conversion punch list) over subnets and returns the chosen one. Like
+// pickInstance/pickImage, this drives a real bubbletea Program that
+// can't be pipe-tested -- promptSubnetID's own list-path tests were
+// retired for this reason; filterSubnetsByInstanceTypeAZ's own tests
+// (instance_type_az_check_test.go) cover the pre-picker filtering logic
+// directly.
+func pickSubnet(ctx context.Context, title string, subnets []SubnetInfo) (SubnetInfo, error) {
+	rows := make([]string, len(subnets))
+	for i, s := range subnets {
+		rows[i] = subnetLabel(s)
+	}
+
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+	if err != nil {
+		return SubnetInfo{}, err
+	}
+	return subnets[idx], nil
 }
 
 // promptSubnetID lists subnets available in client's region, narrowed to
@@ -40,11 +66,7 @@ func promptSubnetID(ctx context.Context, t *termlib.Terminal, le *termlib.LineEd
 
 	subnets = filterSubnetsByInstanceTypeAZ(ctx, client, instanceType, subnets)
 
-	picked, err := ui.PickList(t, le, subnets, subnetLabel, "Select a subnet")
-	if err != nil {
-		return SubnetInfo{}, err
-	}
-	return picked, nil
+	return pickSubnet(ctx, "Select a subnet", subnets)
 }
 
 func securityGroupLabel(g SecurityGroupInfo) string {
@@ -121,8 +143,6 @@ type instanceTypeChoice struct {
 	label string
 }
 
-func instanceTypeChoiceLabel(c instanceTypeChoice) string { return c.label }
-
 // curatedInstanceTypes is a short, hand-picked list of instance types
 // relevant to this team's actual usage (Invenio RDM deployments and
 // general EC2 ops) -- not an exhaustive AWS catalog. AWS offers 600+
@@ -155,18 +175,20 @@ var curatedInstanceTypes = []instanceTypeChoice{
 	{value: "t2.medium", label: "t2.medium (2 vCPU, 4 GiB) -- no ENA required, works with older/legacy AMIs"},
 }
 
-// promptInstanceType offers curatedInstanceTypes as a pick list, plus
+// promptInstanceType offers curatedInstanceTypes as a huh.Select, plus
 // "Other" to type any instance type not listed (DESIGN.md, Feature 2:
-// "Instance type"). No AWS call is made here -- the list is static; the
-// instance-type-vs-subnet-Availability-Zone pre-flight check
-// (instance_type_az_check.go) is what actually validates the chosen
-// value against AWS.
-func promptInstanceType(t *termlib.Terminal, le *termlib.LineEditor) (string, error) {
+// "Instance type"; DESIGN.md's full conversion punch list). No AWS call
+// is made here -- the list is static; the instance-type-vs-subnet-
+// Availability-Zone pre-flight check (instance_type_az_check.go) is what
+// actually validates the chosen value against AWS. input/output are nil
+// in production (interactive, real terminal) and supplied by tests for
+// the accessible-mode pipe path.
+func promptInstanceType(t *termlib.Terminal, le *termlib.LineEditor, input io.Reader, output io.Writer) (string, error) {
 	choices := make([]instanceTypeChoice, 0, len(curatedInstanceTypes)+1)
 	choices = append(choices, curatedInstanceTypes...)
 	choices = append(choices, instanceTypeChoice{label: "Other (type a custom instance type)"})
 
-	picked, err := ui.PickList(t, le, choices, instanceTypeChoiceLabel, "Select an instance type")
+	picked, err := pickComparable(t, "Select an instance type", "(q to cancel)", choices, func(c instanceTypeChoice) string { return c.label }, input, output)
 	if err != nil {
 		return "", err
 	}
