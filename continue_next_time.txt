@@ -13,7 +13,18 @@ Screen-reader/accessible-mode support is explicitly NOT a requirement
 going forward (internal staff tool, not public-facing). `go build
 ./...`, `go vet ./...`, `go test ./... -race`, and `gofmt -l` (except
 the pre-existing, unrelated `version.go`) are all clean as of the end of
-this session. Nothing is staged or committed -- that's the user's to do.
+this session. Nothing is staged or committed -- that's the user's to do
+(there's a large staged diff sitting from this whole session's work,
+untouched).
+
+UPDATE, later the same day: the full Menu/Picker/List conversion punch
+list from item 10 below is now completely done (Phases 20.10-20.13),
+plus a Phase 20.14 chrome-consistency pass (see items 11-15 below).
+`termlib` is NOT removed yet -- go.mod still lists it, and ~40 call
+sites (every action wizard: create/launch/terminate/backup flows, etc.,
+plus internal/ui's lower-level helpers) still import it. That's the
+deliberately-deferred next body of work -- see "NEXT UP" below, which
+supersedes item 10's original framing.
 
 DONE TODAY, in order (each is its own PLAN.md phase and DECISIONS.md
 entry -- read those for full detail, this file only summarizes):
@@ -110,40 +121,88 @@ entry -- read those for full detail, this file only summarizes):
     classification rule used and two close calls (storage-class
     selection and region selection classified as Menu, not Picker,
     since both are fixed/small/not fetched from AWS).
+11. Phase 20.10/20.11 -- worked through the rest of the Menu tier: domain
+    picker, Compute main menu, Key Management menu, both kind pickers
+    (show/export cloud-init, manage tags), the tag Add/Update/Remove
+    action + per-resource tag pickers, bucket-purpose enum, both region
+    pickers, curated instance-type list, both storage-class pickers
+    (guided + generic editor), and the AZ/ENA remediation choices -- all
+    converted to `huh.Select`, all now punch-list "done."
+12. Phase 20.12 -- the rest of the Picker tier: EC2 instance, AMI,
+    subnet, IAM instance profile/role, key pair (both fetched-list call
+    sites), and S3 lifecycle rule (view/edit/remove) all converted to
+    `tui.RunPicker`, same split-into-testable-core pattern as Phase 20.4.
+13. Phase 20.13 -- the List tier's last three: `DisplayInstances`/
+    `DisplayImages`/`DisplayKeyPairs` converted to `tui.RunListView`,
+    mirroring `DisplayBuckets` exactly (pure `*ListViewConfig` builders,
+    thin wrapper functions). `MenuActions`/`KeyMgmtActions` each split
+    `Refresh` into a silent fetch-only version + a new
+    `ShowResourceLists` field (mirrors `S3Actions`' Phase 20.6 split),
+    since `tui.RunListView` blocks on `q` and the old `Refresh` behavior
+    would've forced a `q` press after every single menu action.
+    Along the way, found and fixed a real bug in `tui.reverseVideo`
+    (internal/tui/style.go): it could prematurely end reverse-video
+    styling partway through a row that already embedded its own ANSI
+    reset (e.g. a colored STATE cell landing on the cursor row).
+14. Phase 20.14, part 1 -- user-reported bug right after trying the
+    newly-converted List tier: the box wasn't using the full terminal
+    height, a lot of content scrolled out of view. Root cause: these are
+    inline (non-alt-screen) bubbletea programs, and a box sized to
+    nearly the full terminal height renders wherever the cursor already
+    sits rather than at row 0 -- if that doesn't fit in the remaining
+    rows, the terminal scrolls and bubbletea's redraw bookkeeping goes
+    stale. Fixed by returning `tea.ClearScreen` from `Init()` on all
+    three inline screens (`ListViewModel`, `PickerModel`,
+    `filemanager.Model`). User confirmed: "Scrolling is much improved."
+15. Phase 20.14, part 2 -- same conversation, user asked whether
+    List-tier filtering was still planned (it was, per the keybinding
+    table, but never built). Added it to `ListViewModel`, extracting a
+    shared `filterState` type (`internal/tui/filter.go`) that both
+    `ListViewModel` and `PickerModel` now use, rather than duplicating
+    Picker's existing filter code -- keeps them identical by
+    construction. Also unified both models' `windowHeight()` math onto
+    one shared helper (fixed a minor pre-existing off-by-one in
+    Picker's own chrome arithmetic along the way) and made
+    `ListViewModel`'s header row conditional on `Header != ""`, matching
+    Picker (no behavior change for existing callers, which all supply a
+    header).
 
-NEXT UP: pick items from the punch list (DESIGN.md, "Full conversion punch list")
+NEXT UP: huh-vs-bubbletea triage for the termlib removal (Monday)
 --------------------------------------------------------------------
 
-Nothing beyond what's already done is scheduled -- this is a checklist
-to work through with the user's guidance, not a committed roadmap. Menu
-tier still has 15 unconverted candidates (domain picker, Compute/Key
-Management menus, kind pickers, storage-class/region/instance-type
-menus, AZ/ENA remediation choices); Picker tier has 9 (EC2 instance, AMI,
-subnet, IAM instance profile/role, key pair, S3 lifecycle rule); List
-tier has 3 (`DisplayInstances`/`DisplayImages`/`DisplayKeyPairs`). Ask
-which to pick up next; don't assume the whole list converts in one
-sweep -- same incremental discipline as everything else this session.
+The full Menu/Picker/List conversion punch list (item 10) is now
+completely done -- every row in DESIGN.md's three tables is "done."
+`termlib` itself is NOT removed: go.mod still lists it, and ~40 call
+sites remain (every action wizard -- create/launch/terminate/backup
+flows, etc. -- plus internal/ui's lower-level helpers like
+`color.go`/`picklist.go`/`prompt.go`/`display.go`). The user wants to
+first triage that remaining surface -- which call sites are simple
+enough for `huh` (guide-menu/wizard-shaped, no fetched/scrollable data)
+vs. which actually need a `bubbletea` component (anything with a
+scrollable list, live progress, or multi-pane layout) -- before
+converting anything. Do that triage first; don't start converting until
+it's done and reviewed with the user.
 
 Also still open:
-- **Manual/interactive verification.** Every `huh`/`bubbletea` change
-  this session (the S3 menu's `q` key, `ListViewModel`, `PickerModel`,
-  the bucket-selection sites, the lifecycle action menu) has only been
-  verified by automated tests -- nobody has actually run the tool at a
-  real terminal and pressed the keys yet. Worth doing before calling
-  this UI work fully finished, not just unit-tested.
+- **Manual/interactive verification.** Most `huh`/`bubbletea` UI from
+  this session has only been verified by automated tests, not run by a
+  human at a real terminal -- the one exception is the List/Picker
+  scrolling fix (item 14), which the user did verify interactively.
+  Worth a real pass through the rest (Compute/Key Management menus, the
+  Picker-tier conversions) before calling this UI work fully finished.
 - Whether `object_browser.go`'s existing `huh.Select`-based bucket
   pre-flight should also move to `PickerModel` for visual consistency
   with the newly-converted bucket-selection sites -- explicitly left
   open in DECISIONS.md, not decided.
+- DESIGN.md's original preliminary resource-selection map (written when
+  Phase 20.4 was the only conversion underway) is superseded by the full
+  punch list but was left in place as a historical snapshot, with a note
+  pointing to the authoritative table -- not deleted, in case that
+  bothers anyone later.
 
 Other unclaimed threads (lower priority, ask before picking one)
 --------------------------------------------------------------------
 
-- Termlib removal beyond today's pieces: Compute, Key Management, and
-  most other S3 action wizards (~40 remaining call sites, see DESIGN.md's
-  map for the resource-selection subset) are still on `termlib`. TODO.md,
-  "Termlib Removal (before 0.0.2)" tracks this as a standing goal,
-  deliberately NOT scheduled phase-by-phase.
 - Not verified against real AWS yet via the *formal* test plan --
   PLAN.md Phase 22 still covers this.
 - Batch delete via `s3:DeleteObjects` (up to 1000 keys/call) instead of
