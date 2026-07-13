@@ -22,10 +22,10 @@ import (
 // object_browser.go's huh-based bucket pre-flight already has.
 
 func TestDeleteBucket_NoBucketsFound(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return nil, nil }
 
-	if err := DeleteBucket(context.Background(), term, le, newClient, nil); err != nil {
+	if err := DeleteBucket(context.Background(), term, newClient, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "No buckets found") {
@@ -36,10 +36,10 @@ func TestDeleteBucket_NoBucketsFound(t *testing.T) {
 func TestDeleteBucket_RefusesNonEmptyBucket(t *testing.T) {
 	fake := &fakeS3Client{allObjects: []types.Object{{Key: aws.String("a")}, {Key: aws.String("b")}}}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2"}
-	term, le, buf := newPipeEditor(t, "")
+	term, le, buf := newPipeEditor("")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := deleteBucket(context.Background(), term, le, newClient, bucket); err != nil {
+	if err := deleteBucket(context.Background(), term, newClient, bucket, le, buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "not empty (2 object(s))") {
@@ -53,10 +53,10 @@ func TestDeleteBucket_RefusesNonEmptyBucket(t *testing.T) {
 func TestDeleteBucket_ConfirmedDeletesEmptyBucket(t *testing.T) {
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2"}
-	term, le, _ := newPipeEditor(t, "my-bucket\n") // type its name to confirm
+	term, le, buf := newPipeEditor("my-bucket\n") // type its name to confirm
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := deleteBucket(context.Background(), term, le, newClient, bucket); err != nil {
+	if err := deleteBucket(context.Background(), term, newClient, bucket, le, buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fake.deleteBucketCalls) != 1 || aws.ToString(fake.deleteBucketCalls[0].Bucket) != "my-bucket" {
@@ -67,10 +67,10 @@ func TestDeleteBucket_ConfirmedDeletesEmptyBucket(t *testing.T) {
 func TestDeleteBucket_WrongConfirmationCancels(t *testing.T) {
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2"}
-	term, le, buf := newPipeEditor(t, "not-the-bucket-name\n")
+	term, le, buf := newPipeEditor("not-the-bucket-name\n")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := deleteBucket(context.Background(), term, le, newClient, bucket); err != nil {
+	if err := deleteBucket(context.Background(), term, newClient, bucket, le, buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "Cancelled") {

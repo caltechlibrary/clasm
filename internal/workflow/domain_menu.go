@@ -3,11 +3,11 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
-	"github.com/rsdoiel/termlib"
 )
 
 // ErrBackToDomainPicker is returned by a domain's own menu loop (e.g.
@@ -46,7 +46,7 @@ func menuQuitKeyMap() *huh.KeyMap {
 }
 
 // runMenuField runs field as a Menu-tier huh.Select (DESIGN.md's full
-// conversion punch list): prints hint via t (huh's own footer can't
+// conversion punch list): prints hint via w (huh's own footer can't
 // show a custom "q: ..." entry -- its SelectKeyMap has no quit/back
 // binding to add one to, and KeyBinds() isn't overridable without
 // forking huh), binds 'q' alongside ctrl+c on Quit, and runs it.
@@ -56,9 +56,8 @@ func menuQuitKeyMap() *huh.KeyMap {
 // how to map it: mapMenuPickerErr for domain-loop menus that back out
 // to ErrBackToDomainPicker, huhCancelledIsNil for one-off workflow
 // sub-choices that just cancel the whole workflow cleanly.
-func runMenuField(t *termlib.Terminal, hint string, field huh.Field, input io.Reader, output io.Writer) error {
-	t.Println(hint)
-	t.Refresh()
+func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, output io.Writer) error {
+	fmt.Fprintln(w, hint)
 
 	form := huh.NewForm(huh.NewGroup(field)).WithKeyMap(menuQuitKeyMap())
 	if input != nil {
@@ -72,8 +71,8 @@ func runMenuField(t *termlib.Terminal, hint string, field huh.Field, input io.Re
 // chosen value, via runMenuField. input/output are nil in production
 // (interactive, real terminal) and supplied by tests for the
 // accessible-mode pipe path.
-func pickString(t *termlib.Terminal, title, hint string, options []string, input io.Reader, output io.Writer) (string, error) {
-	return pickComparable(t, title, hint, options, func(s string) string { return s }, input, output)
+func pickString(w io.Writer, title, hint string, options []string, input io.Reader, output io.Writer) (string, error) {
+	return pickComparable(w, title, hint, options, func(s string) string { return s }, input, output)
 }
 
 // pickComparable runs a Menu-tier huh.Select (DESIGN.md's full
@@ -81,7 +80,7 @@ func pickString(t *termlib.Terminal, title, hint string, options []string, input
 // labelling each with label, and returns the chosen value, via
 // runMenuField. input/output are nil in production (interactive, real
 // terminal) and supplied by tests for the accessible-mode pipe path.
-func pickComparable[T comparable](t *termlib.Terminal, title, hint string, options []T, label func(T) string, input io.Reader, output io.Writer) (T, error) {
+func pickComparable[T comparable](w io.Writer, title, hint string, options []T, label func(T) string, input io.Reader, output io.Writer) (T, error) {
 	opts := make([]huh.Option[T], len(options))
 	for i, o := range options {
 		opts[i] = huh.NewOption(label(o), o)
@@ -93,7 +92,7 @@ func pickComparable[T comparable](t *termlib.Terminal, title, hint string, optio
 		Options(opts...).
 		Value(&picked)
 
-	err := runMenuField(t, hint, field, input, output)
+	err := runMenuField(w, hint, field, input, output)
 	return picked, err
 }
 
@@ -134,7 +133,7 @@ var domainItems = []domainItem{
 // pickS3MenuItem already works around. input/output are nil in
 // production (interactive, real terminal) and supplied by tests for the
 // accessible-mode pipe path.
-func pickDomainItem(t *termlib.Terminal, input io.Reader, output io.Writer) (domainItem, error) {
+func pickDomainItem(w io.Writer, input io.Reader, output io.Writer) (domainItem, error) {
 	opts := make([]huh.Option[int], len(domainItems))
 	for i, item := range domainItems {
 		opts[i] = huh.NewOption(item.label, i)
@@ -147,7 +146,7 @@ func pickDomainItem(t *termlib.Terminal, input io.Reader, output io.Writer) (dom
 		Value(&idx)
 
 	// "Exit" (not "back") since this is the root menu.
-	if err := runMenuField(t, "(q to exit)", field, input, output); err != nil {
+	if err := runMenuField(w, "(q to exit)", field, input, output); err != nil {
 		return domainItem{}, err
 	}
 	return domainItems[idx], nil
@@ -163,28 +162,26 @@ func pickDomainItem(t *termlib.Terminal, input io.Reader, output io.Writer) (dom
 // the S3 domain never has to back out twice.
 //
 // The picker itself is huh.Select (DECISIONS.md, "Convert RunS3Menu to
-// huh.Select") -- le is accepted only to keep this loop's signature the
-// same shape as RunMainMenu/RunKeyMgmtMenu's; it's otherwise unused
-// here.
-func RunDomainPicker(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, actions DomainActions) error {
-	return runDomainPicker(ctx, t, actions, nil, nil)
+// huh.Select").
+func RunDomainPicker(ctx context.Context, w io.Writer, actions DomainActions) error {
+	return runDomainPicker(ctx, w, actions, nil, nil)
 }
 
 // runDomainPicker is RunDomainPicker's testable core: menuInput/
 // menuOutput are nil in production and supplied by tests to drive the
 // same huh.Select through its accessible-mode pipe path instead
 // (DECISIONS.md, "huh fields are pipe-testable...").
-func runDomainPicker(ctx context.Context, t *termlib.Terminal, actions DomainActions, menuInput io.Reader, menuOutput io.Writer) error {
+func runDomainPicker(ctx context.Context, w io.Writer, actions DomainActions, menuInput io.Reader, menuOutput io.Writer) error {
 	for {
 		if ctx.Err() != nil {
-			printExiting(t)
+			printExiting(w)
 			return nil
 		}
 
-		choice, err := pickDomainItem(t, menuInput, menuOutput)
+		choice, err := pickDomainItem(w, menuInput, menuOutput)
 		if err != nil {
 			if errors.Is(err, huh.ErrUserAborted) {
-				printExiting(t)
+				printExiting(w)
 				return nil
 			}
 			return err
@@ -204,8 +201,7 @@ func runDomainPicker(ctx context.Context, t *termlib.Terminal, actions DomainAct
 // NotYetImplemented prints a short placeholder message for a domain
 // whose menu loop hasn't been built yet (PLAN.md Phases 19-21) and
 // returns to the domain picker.
-func NotYetImplemented(t *termlib.Terminal, domainName string) error {
-	t.Printf("%s is not yet implemented -- coming in a later phase.\n", domainName)
-	t.Refresh()
+func NotYetImplemented(w io.Writer, domainName string) error {
+	fmt.Fprintf(w, "%s is not yet implemented -- coming in a later phase.\n", domainName)
 	return ErrBackToDomainPicker
 }

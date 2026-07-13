@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rsdoiel/termlib"
+	"github.com/charmbracelet/huh"
 )
 
 func testKeyMgmtActions(refreshCalls *int) KeyMgmtActions {
@@ -126,10 +126,10 @@ func TestRunKeyMgmtMenu_CleanExitOnInterrupt(t *testing.T) {
 	var refreshCalls int
 	term, buf := newTermOnly()
 	actions := testKeyMgmtActions(&refreshCalls)
-	actions.CreateKeyPair = failingAction(termlib.ErrInterrupted)
+	actions.CreateKeyPair = failingAction(huh.ErrUserAborted)
 
 	if err := runKeyMgmtMenu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
-		t.Fatalf("expected a clean exit (nil error) on ErrInterrupted, got: %v", err)
+		t.Fatalf("expected a clean exit (nil error) on huh.ErrUserAborted, got: %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,8 @@ import (
 )
 
 func TestLoadUserData_Empty(t *testing.T) {
-	term, _, _ := newPipeEditor(t, "")
-	got, err := loadUserData(term, "")
+	var buf bytes.Buffer
+	got, err := loadUserData(&buf, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19,8 +20,8 @@ func TestLoadUserData_Empty(t *testing.T) {
 }
 
 func TestLoadUserData_Inline(t *testing.T) {
-	term, _, _ := newPipeEditor(t, "")
-	got, err := loadUserData(term, "#cloud-config\npackages: [git]")
+	var buf bytes.Buffer
+	got, err := loadUserData(&buf, "#cloud-config\npackages: [git]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,8 +39,8 @@ func TestLoadUserData_FromFile(t *testing.T) {
 		t.Fatalf("writing test fixture: %v", err)
 	}
 
-	term, _, _ := newPipeEditor(t, "")
-	got, err := loadUserData(term, "@"+path)
+	var buf bytes.Buffer
+	got, err := loadUserData(&buf, "@"+path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,8 +50,8 @@ func TestLoadUserData_FromFile(t *testing.T) {
 }
 
 func TestLoadUserData_FileNotFound(t *testing.T) {
-	term, _, _ := newPipeEditor(t, "")
-	_, err := loadUserData(term, "@/no/such/file-really-does-not-exist.yaml")
+	var buf bytes.Buffer
+	_, err := loadUserData(&buf, "@/no/such/file-really-does-not-exist.yaml")
 	if err == nil {
 		t.Fatal("expected an error for a missing user-data file")
 	}
@@ -69,8 +70,8 @@ func TestLoadUserData_BareExistingFilePathIsAutoDetected(t *testing.T) {
 		t.Fatalf("writing test fixture: %v", err)
 	}
 
-	term, _, buf := newPipeEditor(t, "")
-	got, err := loadUserData(term, path)
+	var buf bytes.Buffer
+	got, err := loadUserData(&buf, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,9 +84,9 @@ func TestLoadUserData_BareExistingFilePathIsAutoDetected(t *testing.T) {
 }
 
 func TestLoadUserData_BareNonExistentPathStaysLiteral(t *testing.T) {
-	term, _, _ := newPipeEditor(t, "")
+	var buf bytes.Buffer
 	input := "definitely-does-not-exist-anywhere.yaml"
-	got, err := loadUserData(term, input)
+	got, err := loadUserData(&buf, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,14 +100,15 @@ func TestLoadUserData_BareNonExistentPathStaysLiteral(t *testing.T) {
 // CloudInit's AMI picker converted to tui.RunPicker (Picker tier,
 // DESIGN.md's full conversion punch list): the cloud-init YAML prompt
 // now runs entirely in the exported wrapper, before the (untestable)
-// AMI pick, so it's simplest to test standalone via le rather than
-// through the whole launch-params pipeline.
+// AMI pick, so it's simplest to test standalone via its own
+// accessible-mode pipe rather than through the whole launch-params
+// pipeline.
 
 func TestPromptCloudInitYAMLFile_RequiresNonEmpty(t *testing.T) {
 	path := writeCloudInitFixture(t, "#cloud-config")
-	term, le, buf := newPipeEditor(t, "\n"+path+"\n") // blank -- rejected, retry accepted
+	var buf bytes.Buffer
 
-	got, err := promptCloudInitYAMLFile(term, le)
+	got, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput("\n"+path+"\n"), &buf) // blank -- rejected, retry accepted
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,9 +123,9 @@ func TestPromptCloudInitYAMLFile_RequiresNonEmpty(t *testing.T) {
 func TestPromptCloudInitYAMLFile_ReadsFromFile(t *testing.T) {
 	want := "#cloud-config\npackages: [docker]\n"
 	path := writeCloudInitFixture(t, want)
-	term, le, _ := newPipeEditor(t, path+"\n")
+	var buf bytes.Buffer
 
-	got, err := promptCloudInitYAMLFile(term, le)
+	got, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput(path+"\n"), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,9 +141,9 @@ func TestPromptCloudInitYAMLFile_ToleratesLeadingAtSign(t *testing.T) {
 	// text as an alternative to) it.
 	want := "#cloud-config\n"
 	path := writeCloudInitFixture(t, want)
-	term, le, _ := newPipeEditor(t, "@"+path+"\n")
+	var buf bytes.Buffer
 
-	got, err := promptCloudInitYAMLFile(term, le)
+	got, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput("@"+path+"\n"), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,9 +156,9 @@ func TestPromptCloudInitYAMLFile_RetriesOnUnreadableFile(t *testing.T) {
 	path := writeCloudInitFixture(t, "#cloud-config")
 	input := "/no/such/file-really-does-not-exist.yaml\n" + // rejected -- cannot read
 		path + "\n" // retry, accepted
-	term, le, buf := newPipeEditor(t, input)
+	var buf bytes.Buffer
 
-	got, err := promptCloudInitYAMLFile(term, le)
+	got, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput(input), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -2,9 +2,8 @@ package workflow
 
 import (
 	"fmt"
+	"io"
 	"os"
-
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -14,8 +13,8 @@ import (
 // caltechlibrary/cloud-init-examples (see DESIGN.md, Feature 10, "no
 // inline fetch-and-diff against the GitHub repo in v1"). A blank path
 // skips the export cleanly.
-func exportCloudInit(t *termlib.Terminal, le *termlib.LineEditor, userData string) error {
-	path, err := ui.Prompt(t, le, "Save to file (blank to skip)")
+func exportCloudInit(w io.Writer, userData string, input io.Reader, output io.Writer) error {
+	path, err := ui.Prompt("Save to file (blank to skip)", ui.WithIO(input, output))
 	if err != nil {
 		return err
 	}
@@ -26,7 +25,6 @@ func exportCloudInit(t *termlib.Terminal, le *termlib.LineEditor, userData strin
 	if err := os.WriteFile(path, []byte(userData), 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	t.Printf("Saved to %s\n", path)
-	t.Refresh()
+	fmt.Fprintf(w, "Saved to %s\n", path)
 	return nil
 }

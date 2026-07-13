@@ -91,18 +91,18 @@ func TestFetchImageTags(t *testing.T) {
 	}
 }
 
-// The Add/Update/Remove action and select-a-tag pickers converted to
-// huh.Select (DESIGN.md's full conversion punch list): their selections
-// are fed via a separate newHuhAccessibleInput reader (menuInput), not
-// le, which still feeds every other prompt in this function (key/value
-// input, confirms). The Instance-vs-AMI kind picker and the instance/AMI
-// picker itself (also converted to tui.RunPicker, Picker tier -- a real
-// bubbletea Program that can't be pipe-tested) both now run in
-// manageTags, before manageTagsForResource -- tests below call
-// manageTagsForResource directly with an already-resolved resource;
-// manageTags' own kind/picker-selection steps are covered only by
-// manual/interactive verification, the same accepted limitation this
-// session's other Picker-tier conversions already have.
+// The Add/Update/Remove action menu, the select-a-tag pickers, and
+// every other prompt in this function (key/value input, confirms) now
+// share one accessible-mode reader, read in sequence one line at a time
+// -- the action choice first, then whatever that action needs. The
+// Instance-vs-AMI kind picker and the instance/AMI picker itself (also
+// converted to tui.RunPicker, Picker tier -- a real bubbletea Program
+// that can't be pipe-tested) both now run in manageTags, before
+// manageTagsForResource -- tests below call manageTagsForResource
+// directly with an already-resolved resource; manageTags' own
+// kind/picker-selection steps are covered only by manual/interactive
+// verification, the same accepted limitation this session's other
+// Picker-tier conversions already have.
 
 func TestManageTags_AddOnInstance(t *testing.T) {
 	fake := &fakeEC2Client{}
@@ -110,12 +110,13 @@ func TestManageTags_AddOnInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	input := "Owner\n" + // key
+	input := "1\n" + // Add
+		"Owner\n" + // key
 		"dld\n" + // value
 		"y\n" // confirm
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 
-	err = manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", tags, newHuhAccessibleInput("1\n"), buf) // Add
+	err = manageTagsForResource(context.Background(), term, fake, "i-1", "i-1 - web", tags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,11 +131,13 @@ func TestManageTags_UpdateOnAMI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	input := "caltechauthors\n" + // new value
+	input := "2\n" + // Update
+		"1\n" + // Project (only tag)
+		"caltechauthors\n" + // new value
 		"y\n" // confirm
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 
-	err = manageTagsForResource(context.Background(), term, le, fake, "ami-1", "ami-1 - base", tags, newHuhAccessibleInput("2\n1\n"), buf) // Update, Project
+	err = manageTagsForResource(context.Background(), term, fake, "ami-1", "ami-1 - base", tags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,9 +153,9 @@ func TestManageTags_RemoveOnInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	term, le, buf := newPipeEditor(t, "y\n") // confirm
+	term, menuInput, buf := newPipeEditor("3\n1\ny\n") // Remove, Owner, confirm
 
-	err = manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", tags, newHuhAccessibleInput("3\n1\n"), buf) // Remove, Owner
+	err = manageTagsForResource(context.Background(), term, fake, "i-1", "i-1 - web", tags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,9 +167,9 @@ func TestManageTags_RemoveOnInstance(t *testing.T) {
 
 func TestManageTags_EnvironmentNoteShown(t *testing.T) {
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "Environment\nproduction\ny\n")
+	term, menuInput, buf := newPipeEditor("1\nEnvironment\nproduction\ny\n") // Add
 
-	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("1\n"), buf) // Add
+	err := manageTagsForResource(context.Background(), term, fake, "i-1", "i-1 - web", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,9 +180,9 @@ func TestManageTags_EnvironmentNoteShown(t *testing.T) {
 
 func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "Owner\ndld\nn\n")
+	term, menuInput, buf := newPipeEditor("1\nOwner\ndld\nn\n") // Add
 
-	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("1\n"), buf) // Add
+	err := manageTagsForResource(context.Background(), term, fake, "i-1", "i-1 - web", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,10 +192,10 @@ func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
 }
 
 func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
-	fake := &fakeEC2Client{} // no tags -> empty tag map
-	term, le, buf := newPipeEditor(t, "")
+	fake := &fakeEC2Client{}                     // no tags -> empty tag map
+	term, menuInput, buf := newPipeEditor("2\n") // Update
 
-	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("2\n"), buf) // Update
+	err := manageTagsForResource(context.Background(), term, fake, "i-1", "i-1 - web", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,10 +206,10 @@ func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
 
 func TestManageTags_RejectsBlankTagKeyOnAdd(t *testing.T) {
 	fake := &fakeEC2Client{}
-	input := "\nOwner\ndld\ny\n" // blank key (rejected), retry key, value, confirm
-	term, le, buf := newPipeEditor(t, input)
+	input := "1\n\nOwner\ndld\ny\n" // Add, blank key (rejected), retry key, value, confirm
+	term, menuInput, buf := newPipeEditor(input)
 
-	err := manageTagsForResource(context.Background(), term, le, fake, "i-1", "i-1 - web", nil, newHuhAccessibleInput("1\n"), buf) // Add
+	err := manageTagsForResource(context.Background(), term, fake, "i-1", "i-1 - web", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

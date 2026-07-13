@@ -4,8 +4,6 @@ import (
 	"io"
 	"sort"
 
-	"github.com/rsdoiel/termlib"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
@@ -17,11 +15,11 @@ import (
 // (the huh.Select runs interactively on the real terminal, DESIGN.md's
 // full conversion punch list) and are supplied by tests for the
 // accessible-mode pipe path.
-func promptRegion(t *termlib.Terminal, clients map[string]awsclient.EC2API, input io.Reader, output io.Writer) (string, error) {
+func promptRegion(w io.Writer, clients map[string]awsclient.EC2API, input io.Reader, output io.Writer) (string, error) {
 	regions := make([]string, 0, len(clients))
 	for region := range clients {
 		regions = append(regions, region)
 	}
 	sort.Strings(regions)
-	return pickString(t, "Select a region", "(q to cancel)", regions, input, output)
+	return pickString(w, "Select a region", "(q to cancel)", regions, input, output)
 }

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -40,10 +41,10 @@ func TestStartInstance_Failure(t *testing.T) {
 
 func TestStartEC2Instance_HappyPath(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-stopped", Name: "db", State: "stopped", Region: "us-east-1"}
-	term, le, buf := newPipeEditor(t, "y\n") // confirm
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{runningAfterCall: 1, publicIP: "5.6.7.8"}
 
-	err := startEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
+	err := startEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, inst, newHuhAccessibleInput("y\n"), &buf) // confirm
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,10 +62,10 @@ func TestStartEC2Instance_HappyPath(t *testing.T) {
 
 func TestStartEC2Instance_NoStoppedInstances(t *testing.T) {
 	instances := []inventory.Instance{{InstanceID: "i-running", State: "running", Region: "us-east-1"}}
-	term, le, buf := newPipeEditor(t, "")
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{}
 
-	err := StartEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := StartEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,10 +79,10 @@ func TestStartEC2Instance_NoStoppedInstances(t *testing.T) {
 
 func TestStartEC2Instance_DeclinedConfirmationDoesNotStart(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}
-	term, le, _ := newPipeEditor(t, "n\n")
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{}
 
-	err := startEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
+	err := startEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, inst, newHuhAccessibleInput("n\n"), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,10 +93,10 @@ func TestStartEC2Instance_DeclinedConfirmationDoesNotStart(t *testing.T) {
 
 func TestStartEC2Instance_PropagatesStartError(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}
-	term, le, _ := newPipeEditor(t, "y\n")
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{startInstancesErr: errors.New("boom")}
 
-	err := startEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
+	err := startEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, inst, newHuhAccessibleInput("y\n"), &buf)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -120,10 +121,10 @@ func TestStopInstance_Failure(t *testing.T) {
 
 func TestStopEC2Instance_HappyPath(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-running", Name: "web", State: "running", Region: "us-east-1"}
-	term, le, buf := newPipeEditor(t, "y\n") // confirm
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{stoppedAfterCall: 1}
 
-	err := stopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
+	err := stopEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, inst, newHuhAccessibleInput("y\n"), &buf) // confirm
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,10 +138,10 @@ func TestStopEC2Instance_HappyPath(t *testing.T) {
 
 func TestStopEC2Instance_NoRunningInstances(t *testing.T) {
 	instances := []inventory.Instance{{InstanceID: "i-stopped", State: "stopped", Region: "us-east-1"}}
-	term, le, buf := newPipeEditor(t, "")
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{}
 
-	err := StopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
+	err := StopEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, instances)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,10 +155,10 @@ func TestStopEC2Instance_NoRunningInstances(t *testing.T) {
 
 func TestStopEC2Instance_DeclinedConfirmationDoesNotStop(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-running", State: "running", Region: "us-east-1"}
-	term, le, _ := newPipeEditor(t, "n\n")
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{}
 
-	err := stopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
+	err := stopEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, inst, newHuhAccessibleInput("n\n"), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,10 +169,10 @@ func TestStopEC2Instance_DeclinedConfirmationDoesNotStop(t *testing.T) {
 
 func TestStopEC2Instance_PropagatesStopError(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-running", State: "running", Region: "us-east-1"}
-	term, le, _ := newPipeEditor(t, "y\n")
+	var buf bytes.Buffer
 	fake := &fakeEC2Client{stopInstancesErr: errors.New("boom")}
 
-	err := stopEC2Instance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, inst)
+	err := stopEC2Instance(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": fake}, inst, newHuhAccessibleInput("y\n"), &buf)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

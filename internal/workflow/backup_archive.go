@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
@@ -67,26 +67,27 @@ type BackupArchiveParams struct {
 // directory for the picked instance's Name tag, still editable -- there
 // is deliberately no rule-match-skips-the-prompt mode, consistent with
 // this workflow's other fields having no silent defaults.
-func BackupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
+func BackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
 	if len(instances) == 0 {
-		t.Println("No instances found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No instances found.")
 		return nil
 	}
 
 	inst, err := pickInstance(ctx, "Select an instance", instances)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
-	return backupArchiveAndTrim(ctx, t, le, ssmClients, s3Client, newS3Client, inst, backupDirRules)
+	return backupArchiveAndTrim(ctx, w, ssmClients, s3Client, newS3Client, inst, backupDirRules, nil, nil)
 }
 
 // backupArchiveAndTrim is BackupArchiveAndTrim's testable core, once an
 // instance is resolved -- instance selection runs a real bubbletea
 // Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
 // can't be driven by a test's pipe input, same limitation as
-// terminateEC2Instance (terminate_instance.go).
-func backupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, backupDirRules []config.BackupDirectoryRule) error {
+// terminateEC2Instance (terminate_instance.go). input/output are nil in
+// production and supplied by tests to drive every prompt/confirm in this
+// function through its accessible-mode pipe path instead.
+func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, input io.Reader, output io.Writer) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err
@@ -99,17 +100,18 @@ func backupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 	if def := config.BackupDirectoryFor(backupDirRules, inst.Name); def != "" {
 		dirPromptOpts = append(dirPromptOpts, ui.WithDefault(def))
 	}
-	directory, err := ui.Prompt(t, le, "Backup directory (e.g. /opt/rdm_sql_backups)", dirPromptOpts...)
+	dirPromptOpts = append(dirPromptOpts, ui.WithIO(input, output))
+	directory, err := ui.Prompt("Backup directory (e.g. /opt/rdm_sql_backups)", dirPromptOpts...)
 	if err != nil {
 		return err
 	}
 
-	ageDays, err := promptAgeDays(t, le)
+	ageDays, err := promptAgeDays(w, input, output)
 	if err != nil {
 		return err
 	}
 
-	bucket, err := ui.Prompt(t, le, "S3 bucket", ui.WithValidator(requireNonEmpty))
+	bucket, err := ui.Prompt("S3 bucket", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 	if err != nil {
 		return err
 	}
@@ -133,20 +135,18 @@ func backupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 	}
 	candidates := FilterByAge(allFiles, params.AgeDays, time.Now())
 	if len(candidates) == 0 {
-		t.Println("No files match the age threshold. Nothing to do.")
-		t.Refresh()
+		fmt.Fprintln(w, "No files match the age threshold. Nothing to do.")
 		return nil
 	}
 
-	displayBackupDryRun(t, candidates)
+	displayBackupDryRun(w, candidates)
 
-	ok, err := ConfirmDestructive(t, le, inst.InstanceID, inst.Name)
+	ok, err := ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
 	if err != nil {
 		return err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
@@ -166,14 +166,13 @@ func backupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 		if !p.Result.OK {
 			status = "FAIL"
 		}
-		t.Printf("  ... uploading %d/%d (%s of %s) - %s %s\n", p.Done, p.Total, formatBytes(p.BytesDone), formatBytes(p.BytesTotal), status, p.Result.Key)
-		t.Refresh()
+		fmt.Fprintf(w, "  ... uploading %d/%d (%s of %s) - %s %s\n", p.Done, p.Total, formatBytes(p.BytesDone), formatBytes(p.BytesTotal), status, p.Result.Key)
 	})
 	if err != nil {
 		return err
 	}
 
-	stopVerifyTicker := startProgressTicker(t, 30*time.Second, "verifying uploads via s3:HeadObject")
+	stopVerifyTicker := startProgressTicker(w, 30*time.Second, "verifying uploads via s3:HeadObject")
 	verified := VerifyUploads(ctx, bucketClient, params.Bucket, uploads)
 	stopVerifyTicker()
 
@@ -201,50 +200,46 @@ func backupArchiveAndTrim(ctx context.Context, t *termlib.Terminal, le *termlib.
 	}
 
 	if _, status, err := RunShellCommand(ctx, ssmClient, params.InstanceID, "sudo fstrim -av", DefaultBackupFstrimTimeout, DefaultSSMPollInterval); err != nil {
-		t.Printf("fstrim did not complete: %v\n", err)
-		t.Refresh()
+		fmt.Fprintf(w, "fstrim did not complete: %v\n", err)
 	} else if status != ssmtypes.CommandInvocationStatusSuccess {
-		t.Printf("fstrim did not complete (status: %s)\n", status)
-		t.Refresh()
+		fmt.Fprintf(w, "fstrim did not complete (status: %s)\n", status)
 	}
 
-	t.Printf("\nArchived and deleted %d file(s), freed %d bytes.\n", len(toDelete), bytesFreed)
+	fmt.Fprintf(w, "\nArchived and deleted %d file(s), freed %d bytes.\n", len(toDelete), bytesFreed)
 	if len(failedKeys) > 0 {
-		t.Printf("%d file(s) failed verification and were left untouched: %s\n", len(failedKeys), strings.Join(failedKeys, ", "))
+		fmt.Fprintf(w, "%d file(s) failed verification and were left untouched: %s\n", len(failedKeys), strings.Join(failedKeys, ", "))
 	}
-	t.Refresh()
 	return nil
 }
 
 // promptAgeDays prompts for a positive integer age threshold, re-prompting
 // on invalid input. No default -- an explicit, deliberate choice every
 // time (see DESIGN.md, Feature 11).
-func promptAgeDays(t *termlib.Terminal, le *termlib.LineEditor) (int, error) {
+func promptAgeDays(w io.Writer, input io.Reader, output io.Writer) (int, error) {
 	var days int
-	_, err := ui.Prompt(t, le, "Age threshold in days", ui.WithValidator(func(s string) error {
+	_, err := ui.Prompt("Age threshold in days", ui.WithValidator(func(s string) error {
 		n, convErr := strconv.Atoi(strings.TrimSpace(s))
 		if convErr != nil || n <= 0 {
 			return errors.New("must be a positive integer")
 		}
 		days = n
 		return nil
-	}))
+	}), ui.WithIO(input, output))
 	if err != nil {
 		return 0, err
 	}
 	return days, nil
 }
 
-func displayBackupDryRun(t *termlib.Terminal, files []BackupFile) {
-	t.Println("\n=== DRY RUN: candidate files ===")
+func displayBackupDryRun(w io.Writer, files []BackupFile) {
+	fmt.Fprintln(w, "\n=== DRY RUN: candidate files ===")
 	var total int64
 	for _, f := range files {
 		ageDays := time.Since(f.ModTime).Hours() / 24
-		t.Printf("  %s  %d bytes  %.0f days old\n", f.Path, f.SizeBytes, ageDays)
+		fmt.Fprintf(w, "  %s  %d bytes  %.0f days old\n", f.Path, f.SizeBytes, ageDays)
 		total += f.SizeBytes
 	}
-	t.Printf("Total: %d file(s), %d bytes\n", len(files), total)
-	t.Refresh()
+	fmt.Fprintf(w, "Total: %d file(s), %d bytes\n", len(files), total)
 }
 
 // formatBytes renders n as a human-scaled size (e.g. "1.2 GiB") for the

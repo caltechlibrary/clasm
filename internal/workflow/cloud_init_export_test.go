@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,8 @@ import (
 )
 
 func TestExportCloudInit_SkipsOnBlankPath(t *testing.T) {
-	term, le, _ := newPipeEditor(t, "\n")
-	if err := exportCloudInit(term, le, "#cloud-config"); err != nil {
+	var buf bytes.Buffer
+	if err := exportCloudInit(&buf, "#cloud-config", newHuhAccessibleInput("\n"), &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -17,9 +18,9 @@ func TestExportCloudInit_SkipsOnBlankPath(t *testing.T) {
 func TestExportCloudInit_WritesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "exported.yaml")
-	term, le, buf := newPipeEditor(t, path+"\n")
+	var buf bytes.Buffer
 
-	if err := exportCloudInit(term, le, "#cloud-config\npackages: [docker]"); err != nil {
+	if err := exportCloudInit(&buf, "#cloud-config\npackages: [docker]", newHuhAccessibleInput(path+"\n"), &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -37,9 +38,9 @@ func TestExportCloudInit_WritesFile(t *testing.T) {
 func TestExportCloudInit_ReportsWriteError(t *testing.T) {
 	// A path inside a non-existent directory should fail to write.
 	path := filepath.Join(t.TempDir(), "no-such-dir", "exported.yaml")
-	term, le, _ := newPipeEditor(t, path+"\n")
+	var buf bytes.Buffer
 
-	err := exportCloudInit(term, le, "#cloud-config")
+	err := exportCloudInit(&buf, "#cloud-config", newHuhAccessibleInput(path+"\n"), &buf)
 	if err == nil {
 		t.Fatal("expected a write error for a path in a non-existent directory")
 	}

@@ -3,8 +3,19 @@ package ui
 import (
 	"os"
 
-	"github.com/rsdoiel/termlib"
 	"golang.org/x/term"
+)
+
+// ANSI escape codes for the small set of styles/colors this package
+// actually uses (bold for Highlight; state colors for display.go's
+// STATE column) -- replaces termlib's equivalent constants (DECISIONS.md,
+// "Remove termlib entirely: input via huh, output via io.Writer").
+const (
+	ansiReset  = "\033[0m"
+	ansiBold   = "\033[1m"
+	ansiRed    = "\033[31m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
 )
 
 // ColorEnabled reports whether DisplayInstances should colorize its
@@ -45,5 +56,5 @@ func Highlight(s string) string {
 	if !colorEnabled {
 		return s
 	}
-	return termlib.Bold + s + termlib.Reset
+	return ansiBold + s + ansiReset
 }

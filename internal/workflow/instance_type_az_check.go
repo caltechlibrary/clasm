@@ -2,13 +2,13 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -133,36 +133,34 @@ var instanceTypeAZIncompatibilityChoices = []incompatibilityChoice{
 // proceed?" and any nested instance-type huh.Selects run interactively
 // on the real terminal, DESIGN.md's full conversion punch list) and are
 // supplied by tests to drive them through their accessible-mode pipe
-// path instead, separate from le, which still feeds promptSubnetID's own
-// prompts. Both share one reader/writer pair, read in sequence one line
-// at a time, same as a domain menu's own loop-iteration reads.
-func ensureInstanceTypeSupportedInSubnet(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string, subnet SubnetInfo, menuInput io.Reader, menuOutput io.Writer) (string, SubnetInfo, error) {
+// path instead. Both share one reader/writer pair, read in sequence one
+// line at a time, same as a domain menu's own loop-iteration reads.
+func ensureInstanceTypeSupportedInSubnet(ctx context.Context, w io.Writer, client awsclient.EC2API, instanceType string, subnet SubnetInfo, menuInput io.Reader, menuOutput io.Writer) (string, SubnetInfo, error) {
 	for subnet.AvailabilityZone != "" {
 		ok, err := instanceTypeOfferedInAZ(ctx, client, instanceType, subnet.AvailabilityZone)
 		if err != nil || ok {
 			return instanceType, subnet, nil
 		}
 
-		t.Printf("Instance type %q is not offered in %s (subnet %q's Availability Zone).\n", instanceType, subnet.AvailabilityZone, subnet.SubnetID)
+		fmt.Fprintf(w, "Instance type %q is not offered in %s (subnet %q's Availability Zone).\n", instanceType, subnet.AvailabilityZone, subnet.SubnetID)
 		if azs, azErr := instanceTypeOfferedAZs(ctx, client, instanceType); azErr == nil && len(azs) > 0 {
-			t.Printf("It is offered in: %s\n", strings.Join(azs, ", "))
+			fmt.Fprintf(w, "It is offered in: %s\n", strings.Join(azs, ", "))
 		}
-		t.Refresh()
 
-		choice, err := pickComparable(t, "How would you like to proceed?", "(q to cancel)", instanceTypeAZIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
+		choice, err := pickComparable(w, "How would you like to proceed?", "(q to cancel)", instanceTypeAZIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
 		if err != nil {
 			return "", SubnetInfo{}, err
 		}
 
 		switch choice.kind {
 		case incompatibilityChangeInstanceType:
-			newType, err := promptInstanceType(t, le, menuInput, menuOutput)
+			newType, err := promptInstanceType(w, menuInput, menuOutput)
 			if err != nil {
 				return "", SubnetInfo{}, err
 			}
 			instanceType = newType
 		case incompatibilityChangeSubnet:
-			newSubnet, err := promptSubnetID(ctx, t, le, client, instanceType)
+			newSubnet, err := promptSubnetID(ctx, w, client, instanceType, menuInput, menuOutput)
 			if err != nil {
 				return "", SubnetInfo{}, err
 			}

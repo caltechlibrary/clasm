@@ -2,10 +2,10 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/charmbracelet/huh"
-	"github.com/rsdoiel/termlib"
 )
 
 // KeyMgmtActions bundles the Key Management domain's menu entry points,
@@ -57,7 +57,7 @@ var keyMgmtMenuItems = []keyMgmtItem{
 // keyMgmtItem.action (a func) isn't. input/output are nil in production
 // (interactive, real terminal) and supplied by tests for the accessible-
 // mode pipe path.
-func pickKeyMgmtItem(t *termlib.Terminal, input io.Reader, output io.Writer) (keyMgmtItem, error) {
+func pickKeyMgmtItem(w io.Writer, input io.Reader, output io.Writer) (keyMgmtItem, error) {
 	opts := make([]huh.Option[int], len(keyMgmtMenuItems))
 	for i, item := range keyMgmtMenuItems {
 		opts[i] = huh.NewOption(item.label, i)
@@ -69,7 +69,7 @@ func pickKeyMgmtItem(t *termlib.Terminal, input io.Reader, output io.Writer) (ke
 		Options(opts...).
 		Value(&idx)
 
-	if err := runMenuField(t, "(q to go back)", field, input, output); err != nil {
+	if err := runMenuField(w, "(q to go back)", field, input, output); err != nil {
 		return keyMgmtItem{}, err
 	}
 	return keyMgmtMenuItems[idx], nil
@@ -84,41 +84,38 @@ func pickKeyMgmtItem(t *termlib.Terminal, input io.Reader, output io.Writer) (ke
 // action's error is shown and the loop continues.
 //
 // The menu picker itself is huh.Select (DECISIONS.md, "Convert RunS3Menu
-// to huh.Select") -- le is accepted only to keep this loop's signature
-// the same shape as RunMainMenu's; it's otherwise unused here.
-func RunKeyMgmtMenu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, actions KeyMgmtActions) error {
-	return runKeyMgmtMenu(ctx, t, actions, nil, nil)
+// to huh.Select").
+func RunKeyMgmtMenu(ctx context.Context, w io.Writer, actions KeyMgmtActions) error {
+	return runKeyMgmtMenu(ctx, w, actions, nil, nil)
 }
 
 // runKeyMgmtMenu is RunKeyMgmtMenu's testable core: menuInput/menuOutput
 // are nil in production and supplied by tests to drive the same
 // huh.Select through its accessible-mode pipe path instead
 // (DECISIONS.md, "huh fields are pipe-testable...").
-func runKeyMgmtMenu(ctx context.Context, t *termlib.Terminal, actions KeyMgmtActions, menuInput io.Reader, menuOutput io.Writer) error {
+func runKeyMgmtMenu(ctx context.Context, w io.Writer, actions KeyMgmtActions, menuInput io.Reader, menuOutput io.Writer) error {
 	for {
 		if ctx.Err() != nil {
-			printExiting(t)
+			printExiting(w)
 			return nil
 		}
 
-		choice, err := pickKeyMgmtItem(t, menuInput, menuOutput)
+		choice, err := pickKeyMgmtItem(w, menuInput, menuOutput)
 		if err != nil {
 			return mapMenuPickerErr(err)
 		}
 
 		if err := choice.action(actions, ctx); err != nil {
 			if isExitSignal(err) {
-				printExiting(t)
+				printExiting(w)
 				return nil
 			}
-			t.Printf("Error: %s\n", formatError(err))
-			t.Refresh()
+			fmt.Fprintf(w, "Error: %s\n", formatError(err))
 			continue
 		}
 
 		if err := actions.Refresh(ctx); err != nil {
-			t.Printf("Error refreshing listings: %s\n", formatError(err))
-			t.Refresh()
+			fmt.Fprintf(w, "Error refreshing listings: %s\n", formatError(err))
 		}
 	}
 }

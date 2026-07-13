@@ -17,12 +17,14 @@ import (
 // real interface so any unimplemented method panics loudly if a test
 // exercises a path that needs it, and override just what's used.
 type fakeIAMClient struct {
-	instanceProfiles         []iamtypes.InstanceProfile
-	listInstanceProfilesErr  error
-	roles                    []iamtypes.Role
-	listRolesErr             error
-	createInstanceProfileErr error
-	addRoleToInstanceProfile error
+	instanceProfiles             []iamtypes.InstanceProfile
+	listInstanceProfilesErr      error
+	roles                        []iamtypes.Role
+	listRolesErr                 error
+	createInstanceProfileErr     error
+	createInstanceProfileErrOnce bool // if true, only the first CreateInstanceProfile call errors
+	createInstanceProfileCalls   int
+	addRoleToInstanceProfile     error
 
 	lastCreateInstanceProfileInput    *iam.CreateInstanceProfileInput
 	lastAddRoleToInstanceProfileInput *iam.AddRoleToInstanceProfileInput
@@ -43,8 +45,9 @@ func (f *fakeIAMClient) ListRoles(ctx context.Context, params *iam.ListRolesInpu
 }
 
 func (f *fakeIAMClient) CreateInstanceProfile(ctx context.Context, params *iam.CreateInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.CreateInstanceProfileOutput, error) {
+	f.createInstanceProfileCalls++
 	f.lastCreateInstanceProfileInput = params
-	if f.createInstanceProfileErr != nil {
+	if f.createInstanceProfileErr != nil && (!f.createInstanceProfileErrOnce || f.createInstanceProfileCalls == 1) {
 		return nil, f.createInstanceProfileErr
 	}
 	return &iam.CreateInstanceProfileOutput{
@@ -96,9 +99,9 @@ func fakeIAMClientNoProfiles() *fakeIAMClient {
 
 func TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails(t *testing.T) {
 	fake := &fakeIAMClient{listInstanceProfilesErr: errors.New("access denied")}
-	term, le, _ := newPipeEditor(t, "manual-profile-name\n")
+	term, le, buf := newPipeEditor("manual-profile-name\n")
 
-	got, err := promptIAMInstanceProfileOrCreate(context.Background(), term, le, fake)
+	got, err := promptIAMInstanceProfileOrCreate(context.Background(), term, fake, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,9 +113,9 @@ func TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails(t *te
 func TestCreateInstanceProfileForRole_AcceptsDefaultName(t *testing.T) {
 	fake := &fakeIAMClient{}
 	role := RoleInfo{Name: "ec2-invenio-role"}
-	term, le, _ := newPipeEditor(t, "\n") // accept the default profile name (same as role name)
+	term, le, buf := newPipeEditor("\n") // accept the default profile name (same as role name)
 
-	got, created, err := createInstanceProfileForRole(context.Background(), term, le, fake, role)
+	got, created, err := createInstanceProfileForRole(context.Background(), term, fake, role, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,9 +132,9 @@ func TestCreateInstanceProfileForRole_AcceptsDefaultName(t *testing.T) {
 
 func TestCreateInstanceProfileInteractive_NoRolesReturnsWithoutError(t *testing.T) {
 	fake := &fakeIAMClient{} // no roles
-	term, le, buf := newPipeEditor(t, "")
+	term, le, buf := newPipeEditor("")
 
-	got, created, err := createInstanceProfileInteractive(context.Background(), term, le, fake)
+	got, created, err := createInstanceProfileInteractive(context.Background(), term, fake, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,13 +147,23 @@ func TestCreateInstanceProfileInteractive_NoRolesReturnsWithoutError(t *testing.
 }
 
 func TestCreateInstanceProfileForRole_NameCollisionRetries(t *testing.T) {
-	fake := &fakeIAMClient{createInstanceProfileErr: newDuplicateInstanceProfileError()}
+	// huh's accessible-mode input never surfaces EOF as an error (it
+	// falls back to the field's default instead, DESIGN.md's own
+	// accepted limitation for this mode) -- so a fake that always
+	// errors would retry forever rather than eventually surfacing an
+	// error the way termlib's LineEditor.Prompt used to. Matches
+	// TestCreateNewKeyPairInteractive_RetriesOnDuplicateName's own
+	// errOnce shape: the first name collides, the retry succeeds.
+	fake := &fakeIAMClient{createInstanceProfileErr: newDuplicateInstanceProfileError(), createInstanceProfileErrOnce: true}
 	role := RoleInfo{Name: "ec2-invenio-role"}
-	term, le, buf := newPipeEditor(t, "taken-name\n")
+	term, le, buf := newPipeEditor("taken-name\nfresh-name\n")
 
-	_, _, err := createInstanceProfileForRole(context.Background(), term, le, fake, role)
-	if err == nil {
-		t.Fatal("expected the duplicate-name error to eventually surface (fake always errors)")
+	got, created, err := createInstanceProfileForRole(context.Background(), term, fake, role, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !created || got != "fresh-name" {
+		t.Errorf("got name=%q created=%v, want %q/true", got, created, "fresh-name")
 	}
 	if !strings.Contains(buf.String(), "already exists") {
 		t.Errorf("expected a name-collision message, got:\n%s", buf.String())

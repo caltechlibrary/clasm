@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rsdoiel/termlib"
+	"github.com/charmbracelet/huh"
 )
 
 func countingAction(calls *int) func(context.Context) error {
@@ -156,10 +156,10 @@ func TestRunMainMenu_CleanExitOnInterrupt(t *testing.T) {
 	var refreshCalls int
 	term, buf := newTermOnly()
 	actions := testMenuActions(&refreshCalls)
-	actions.CreateInstanceFromAMI = failingAction(termlib.ErrInterrupted)
+	actions.CreateInstanceFromAMI = failingAction(huh.ErrUserAborted)
 
 	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
-		t.Fatalf("expected a clean exit (nil error) on ErrInterrupted, got: %v", err)
+		t.Fatalf("expected a clean exit (nil error) on huh.ErrUserAborted, got: %v", err)
 	}
 }
 

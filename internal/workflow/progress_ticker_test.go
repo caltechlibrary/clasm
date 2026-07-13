@@ -5,15 +5,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/rsdoiel/termlib"
 )
 
 func TestStartProgressTicker_PrintsPeriodically(t *testing.T) {
 	var buf bytes.Buffer
-	term := termlib.New(&buf)
 
-	stop := startProgressTicker(term, 10*time.Millisecond, "waiting")
+	stop := startProgressTicker(&buf, 10*time.Millisecond, "waiting")
 	time.Sleep(35 * time.Millisecond)
 	stop()
 
@@ -24,11 +21,31 @@ func TestStartProgressTicker_PrintsPeriodically(t *testing.T) {
 	}
 }
 
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{3*time.Minute + 7*time.Second, "3:07"},
+		{0, "0:00"},
+		{59 * time.Second, "0:59"},
+		{time.Hour + 2*time.Minute + 5*time.Second, "1:02:05"},
+		{90*time.Minute + 30*time.Second, "1:30:30"},
+		// rounding: 500ms rounds up to 1s
+		{500 * time.Millisecond, "0:01"},
+	}
+	for _, c := range cases {
+		got := formatDuration(c.d)
+		if got != c.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
 func TestStartProgressTicker_StopsCleanly(t *testing.T) {
 	var buf bytes.Buffer
-	term := termlib.New(&buf)
 
-	stop := startProgressTicker(term, 5*time.Millisecond, "waiting")
+	stop := startProgressTicker(&buf, 5*time.Millisecond, "waiting")
 	stop()
 	lenAfterStop := buf.Len()
 	time.Sleep(30 * time.Millisecond)

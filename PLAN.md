@@ -2581,6 +2581,180 @@ call sites outside this punch list (e.g. `ui.PickList`/`ui.Prompt`/
 per DESIGN.md's own note that `internal/ui` shrinks over the course of
 termlib removal rather than being replaced in one step.
 
+## Phase 20.15 — Termlib Removal, Part 1: Foundational Helpers (done)
+
+**Status: implemented and unit-tested 2026-07-13** (`go build ./...`,
+`go vet ./...`, `go test ./... -race`, `gofmt -l` all clean except the
+pre-existing, unrelated `version.go`). Implements DESIGN.md, "Removing
+termlib: Action Wizards and Output," and DECISIONS.md, "Remove termlib
+entirely: input via huh, output via io.Writer."
+
+Landed differently from the original design in one real way, found
+while implementing: `ui.Prompt`/`Confirm`/`ConfirmDestructive` don't
+just need a *testable core* (the `RunXxx`/`runXxx` split used
+everywhere else) -- they need their accessible-mode I/O **exposed as a
+functional option** (`ui.WithIO(input, output)`, `WithConfirmIO(input,
+output)`), because these three are called from dozens of call sites
+spread across both `internal/ui` and `internal/workflow`, not from one
+function with one obvious "core" to split. `ConfirmDestructive` also
+changed shape slightly to make room for the options param: `mustMatch
+...string` became `mustMatch []string, opts ...ConfirmOption` (Go
+allows only one variadic per signature) -- the ~6 call sites now wrap
+their arguments in a slice literal instead of passing them bare. This
+option-based shape is what let Phase 20.16 thread the same input/output
+pair through every intermediate "leaf" prompt function (not just the
+handful anticipated below) without a second, parallel mechanism.
+
+### Work Items
+
+- [x] `internal/ui/prompt.go`: rebuilt `Prompt` on `huh.NewInput()`,
+      with a new `WithIO(input, output) PromptOption` for accessible-mode
+      testability (no separate `promptCore` needed -- see the note
+      above). `WithDefault` pre-fills the field's `Value`; `WithValidator`
+      becomes `.Validate()`, with a fix found via a real test failure:
+      the validator itself must treat a blank submission as automatically
+      valid when a default is set (skip validation, don't reject ""),
+      since huh validates before default-substitution -- otherwise a
+      validator that (correctly) never accepts blank input on its own
+      (e.g. `validateAMIName`) blocks the default from ever being used.
+- [x] `internal/workflow/confirm.go`: `Confirm` rebuilt on
+      `huh.NewConfirm()` (the re-prompt-on-bad-input loop disappears --
+      a toggle can't produce unrecognized input); `ConfirmDestructive`
+      rebuilt on `huh.NewInput()` with no validator (a validator would
+      make huh re-prompt until correct, changing the existing
+      single-attempt-then-cancel semantics) -- the exact-match check
+      runs after the field returns, same as before. Both take a new
+      `WithConfirmIO` option instead of a testable-core split.
+- [x] `internal/ui/picklist.go` and `picklist_test.go` deleted outright
+      -- confirmed dead code, no production caller remained. `ErrCancelled`
+      (still used by the AZ/ENA-incompatibility remediation menus) moved
+      to `prompt.go` rather than being deleted with the rest of the file.
+- [x] `internal/ui/color.go`: `termlib.Bold`/`Reset` replaced with local
+      `ansiBold`/`ansiReset` constants; `Highlight` otherwise unchanged.
+- [x] `internal/ui/display.go`: `termlib.PadRight`/`Truncate`/`Green`/
+      `Red`/`Yellow` replaced with local rune-aware `padRight`/`truncate`
+      helpers and local ANSI constants; `stateColor`/`instanceRow`/the
+      `*ListViewConfig` builders otherwise unchanged.
+- [x] `internal/workflow/progress_ticker.go`: `*termlib.Terminal` →
+      `io.Writer`; `termlib.FormatDuration` → local `formatDuration`
+      (same `m:ss`/`h:mm:ss`, rounded to the second). Mechanical parity
+      only -- no bubbletea spinner in this pass (deferred; see TODO.md).
+- [x] `internal/workflow/domain_menu.go`: `runMenuField`'s `t
+      *termlib.Terminal` parameter (used only to print the static
+      "(q to go back)" hint) → `io.Writer`, along with every other
+      function in the file (`pickString`, `pickComparable`,
+      `pickDomainItem`, `RunDomainPicker`/`runDomainPicker`,
+      `NotYetImplemented`).
+- [x] Every `errors.Is(err, termlib.ErrInterrupted)` check replaced with
+      the equivalent `errors.Is(err, huh.ErrUserAborted)` check, per call
+      site (`menu.go`'s `isExitSignal`, and the menu test files).
+
+**Tests:** `prompt_test.go`/`confirm_test.go` rewritten to call the
+public `Prompt`/`Confirm`/`ConfirmDestructive` directly with
+`WithIO`/`WithConfirmIO`, matching the accessible-mode pipe pattern
+already established for the Menu tier. `picklist_test.go` deleted.
+`display_test.go`/`color_test.go` updated for the local constants, plus
+new `TestTruncate`/`TestPadRight` parity tests (ported from termlib's
+own test cases) that weren't there before. `progress_ticker_test.go`
+updated to construct a `bytes.Buffer` directly instead of
+`termlib.New(&buf)`, plus a new `TestFormatDuration` (also ported from
+termlib's own test cases).
+
+**Files:** `internal/ui/{prompt,picklist,color,display}.go` (+ tests),
+`internal/workflow/{confirm,progress_ticker,domain_menu}.go` (+ tests).
+
+## Phase 20.16 — Termlib Removal, Part 2: Propagate Across Action Wizards (done)
+
+**Status: implemented and unit-tested 2026-07-13** (same clean sweep as
+Phase 20.15 -- the two landed together in one sitting, since Go's
+whole-module compilation meant Phase 20.15's signature changes and this
+phase's propagation had to be internally consistent at every commit
+boundary; see DESIGN.md's "Sequencing" note). Propagated `le
+*termlib.LineEditor` removal and `t *termlib.Terminal` → `io.Writer`
+across every remaining caller, then removed `termlib` from `go.mod`.
+
+The real scope turned out larger than the original work-item list
+below: `ui.Prompt`/`Confirm`/`ConfirmDestructive`'s new `WithIO`/
+`WithConfirmIO` options (Phase 20.15) meant every intermediate function
+between a workflow's testable core and its leaf prompt call also needed
+`input io.Reader, output io.Writer` parameters threaded through --
+`promptKeyPairNameOrCreate`, `promptSubnetID`, `promptSecurityGroupIDs`,
+`promptIAMInstanceProfileOrCreate`, `createInstanceProfileForRole`,
+`createInstanceProfileInteractive`, `promptCloudInitYAMLFile`,
+`offerFstrimIfAvailable`, `confirmLifecycleChange`,
+`promptOptionalDays`, `promptPositiveDays`, `removeLifecycleRule(ForRule)`,
+`startEC2Instance`/`stopEC2Instance`, `terminateEC2Instance`/
+`confirmTerminate`, `removeAMI`/`confirmRemoveAMI`, `deleteKeyPair`/
+`confirmDeleteKeyPair`, `runLaunch`, `createAMIFromInstance`, and
+`createBucket`/`configureBucketWebsite` (which previously had no
+menu-tier huh.Select at all, so no `menuInput`/`menuOutput` pair to
+reuse) -- none of these were anticipated in the original per-file list,
+found only by tracing every `Confirm(`/`ConfirmDestructive(`/
+`ui.Prompt(` call site after the mechanical sweep below and checking
+whether its enclosing function had any way to reach it from a test.
+
+A second real gap, found only by actually running the test suite (not
+by static analysis): huh's accessible-mode input (`accessibility.
+PromptString`, used by `Input.RunAccessible`) has **no way to surface
+EOF as an error** -- it silently falls back to the field's default (or
+blank) forever, unlike `termlib.LineEditor.Prompt`, which returned
+`io.EOF` once piped input ran out. `TestCreateInstanceProfileForRole_
+NameCollisionRetries` relied on that old behavior (a fake that always
+errors, expecting the retry loop to eventually surface an error once
+input was exhausted) and hung indefinitely under the new behavior
+instead. Fixed by giving `fakeIAMClient` the same `createInstanceProfile
+ErrOnce` shape `fakeEC2Client` already used for the analogous key-pair
+test, and rewriting the test to expect a successful retry rather than
+an eventual error -- the more accurate reflection of real interactive
+behavior anyway (an operator retrying a genuinely duplicate name would
+keep being asked forever, not have the tool give up on their behalf).
+
+`TestImportKeyPairStandalone_PromptLabelStaysShort` (a guard against a
+real, now-moot termlib bug -- `LineEditor.Prompt`'s raw-mode redraw math
+assumed a prompt fit on one terminal row) was retired outright, same
+treatment as `ui.PickList`'s own tests.
+
+### Work Items
+
+- [x] **Compute domain:** `launch_instance.go`, `launch_prompts.go`,
+      `launch_execute.go`, `launch_from_cloud_init.go`,
+      `create_instance_from_ami.go`, `create_instance_from_cloud_init.go`,
+      `create_ami_from_instance.go`, `create_instance_profile.go`,
+      `power_state.go`, `terminate_instance.go`, `remove_ami.go`,
+      `manage_tags.go`, `show_cloud_init.go`, `cloud_init_export.go`,
+      `instance_type_az_check.go`, `instance_type_ena_check.go`,
+      `fstrim.go`, `userdata.go`, `menu.go`, `backup_archive.go`
+- [x] **Key Management domain:** `keymgmt_menu.go`, `keymgmt_common.go`,
+      `create_key_pair.go`, `keypair_create.go`, `keypair_delete.go`,
+      `keypair_import.go`
+- [x] **S3 domain:** `s3_menu.go`, `bucket_create.go`, `bucket_delete.go`,
+      `bucket_website.go`, `bucket_lifecycle.go`
+- [x] `cmd/clasm/main.go`: deleted `termlib.New(out)`/
+      `termlib.NewLineEditor(...)` construction; `os.Stdout` passed
+      directly wherever an `io.Writer` is still needed.
+- [x] `go.mod`: removed the `github.com/rsdoiel/termlib` requirement via
+      `go mod tidy` -- confirmed zero remaining source references first.
+- [x] Full sweep: `go build ./...`, `go vet ./...`,
+      `go test ./... -race`, `gofmt -l` clean (except pre-existing
+      `version.go`).
+
+**Tests:** every `_test.go` file that constructed `termlib.New(&buf)`
+to capture output rewritten to use a `bytes.Buffer` directly.
+`newPipeEditor` (previously wrapping a real `os.Pipe` + `termlib.
+LineEditor`) rewritten to return a `(io.Writer, io.Reader, *bytes.Buffer)`
+trio backed by `newHuhAccessibleInput`'s line-at-a-time reader, with the
+writer and buffer deliberately the same value. Every test driving a
+menu-tier huh.Select *and* one or more free-text prompts/confirms in the
+same call had its two previously-independent input streams (`le` for
+free text, a separate `newHuhAccessibleInput` reader for the menu) 
+merged into one combined stream, in the exact order the production code
+actually reads them -- verified by running the suite, not just by
+tracing the code, since a wrong merge order fails loudly (wrong field
+gets the wrong text) rather than silently.
+
+**Files:** all files listed above, plus each one's corresponding
+`_test.go`, plus `go.mod`/`go.sum`.
+
 ---
 
 ## Phase 21 — CloudFront Domain

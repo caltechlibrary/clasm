@@ -6,8 +6,6 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/rsdoiel/termlib"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/tui"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -54,10 +52,10 @@ func pickSubnet(ctx context.Context, title string, subnets []SubnetInfo) (Subnet
 // incompatibility). That reactive check remains as a safety net for
 // cases this filtering can't cover (e.g. the AZ-offerings lookup itself
 // fails, or the free-text fallback was used).
-func promptSubnetID(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string) (SubnetInfo, error) {
+func promptSubnetID(ctx context.Context, w io.Writer, client awsclient.EC2API, instanceType string, input io.Reader, output io.Writer) (SubnetInfo, error) {
 	subnets, err := listSubnets(ctx, client)
 	if err != nil || len(subnets) == 0 {
-		id, err := ui.Prompt(t, le, "Subnet ID", ui.WithValidator(requireNonEmpty))
+		id, err := ui.Prompt("Subnet ID", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
 			return SubnetInfo{}, err
 		}
@@ -89,10 +87,10 @@ func securityGroupLabel(g SecurityGroupInfo) string {
 // validates that a referenced number is in range, not that a raw string
 // is a real ID. Falls back to the original free-text prompt if the list
 // can't be fetched or is empty.
-func promptSecurityGroupIDs(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API) ([]string, error) {
+func promptSecurityGroupIDs(ctx context.Context, w io.Writer, client awsclient.EC2API, input io.Reader, output io.Writer) ([]string, error) {
 	groups, err := listSecurityGroups(ctx, client)
 	if err != nil || len(groups) == 0 {
-		raw, err := ui.Prompt(t, le, "Security group IDs (comma-separated)", ui.WithValidator(requireAtLeastOneSecurityGroup))
+		raw, err := ui.Prompt("Security group IDs (comma-separated)", ui.WithValidator(requireAtLeastOneSecurityGroup), ui.WithIO(input, output))
 		if err != nil {
 			return nil, err
 		}
@@ -100,9 +98,8 @@ func promptSecurityGroupIDs(ctx context.Context, t *termlib.Terminal, le *termli
 	}
 
 	for i, g := range groups {
-		t.Printf("%3d) %s\n", i+1, securityGroupLabel(g))
+		fmt.Fprintf(w, "%3d) %s\n", i+1, securityGroupLabel(g))
 	}
-	t.Refresh()
 
 	validate := func(s string) error {
 		tokens := splitCSV(s)
@@ -119,7 +116,7 @@ func promptSecurityGroupIDs(ctx context.Context, t *termlib.Terminal, le *termli
 		return nil
 	}
 
-	raw, err := ui.Prompt(t, le, "Security group IDs (numbers above and/or raw IDs, comma-separated)", ui.WithValidator(validate))
+	raw, err := ui.Prompt("Security group IDs (numbers above and/or raw IDs, comma-separated)", ui.WithValidator(validate), ui.WithIO(input, output))
 	if err != nil {
 		return nil, err
 	}
@@ -183,17 +180,17 @@ var curatedInstanceTypes = []instanceTypeChoice{
 // actually validates the chosen value against AWS. input/output are nil
 // in production (interactive, real terminal) and supplied by tests for
 // the accessible-mode pipe path.
-func promptInstanceType(t *termlib.Terminal, le *termlib.LineEditor, input io.Reader, output io.Writer) (string, error) {
+func promptInstanceType(w io.Writer, input io.Reader, output io.Writer) (string, error) {
 	choices := make([]instanceTypeChoice, 0, len(curatedInstanceTypes)+1)
 	choices = append(choices, curatedInstanceTypes...)
 	choices = append(choices, instanceTypeChoice{label: "Other (type a custom instance type)"})
 
-	picked, err := pickComparable(t, "Select an instance type", "(q to cancel)", choices, func(c instanceTypeChoice) string { return c.label }, input, output)
+	picked, err := pickComparable(w, "Select an instance type", "(q to cancel)", choices, func(c instanceTypeChoice) string { return c.label }, input, output)
 	if err != nil {
 		return "", err
 	}
 	if picked.value != "" {
 		return picked.value, nil
 	}
-	return ui.Prompt(t, le, "Instance type", ui.WithValidator(requireNonEmpty))
+	return ui.Prompt("Instance type", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 }

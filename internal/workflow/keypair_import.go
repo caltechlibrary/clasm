@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -62,19 +61,18 @@ func validatePublicKeyFile(path string) ([]byte, error) {
 // key with AWS instead of generating a new one. Unlike Create Key Pair,
 // there's no private key material to save -- ec2:ImportKeyPair never
 // returns one, since AWS never sees the private half.
-func ImportKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API) error {
-	return importKeyPairStandalone(ctx, t, le, clients, nil, nil)
+func ImportKeyPairStandalone(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API) error {
+	return importKeyPairStandalone(ctx, w, clients, nil, nil)
 }
 
 // importKeyPairStandalone is ImportKeyPairStandalone's testable core:
 // regionInput/regionOutput are nil in production (the region huh.Select
 // runs interactively on the real terminal) and are supplied by tests to
-// drive it through its accessible-mode pipe path instead, separate from
-// le, which still feeds every other prompt in this function.
-func importKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, regionInput io.Reader, regionOutput io.Writer) error {
-	region, err := promptRegion(t, clients, regionInput, regionOutput)
+// drive it through its accessible-mode pipe path instead.
+func importKeyPairStandalone(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, regionInput io.Reader, regionOutput io.Writer) error {
+	region, err := promptRegion(w, clients, regionInput, regionOutput)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
 	client, err := resolveEC2(clients, region)
 	if err != nil {
@@ -82,7 +80,7 @@ func importKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *terml
 	}
 
 	for {
-		name, err := ui.Prompt(t, le, "New key pair name", ui.WithValidator(requireNonEmpty))
+		name, err := ui.Prompt("New key pair name", ui.WithValidator(requireNonEmpty), ui.WithIO(regionInput, regionOutput))
 		if err != nil {
 			return err
 		}
@@ -95,14 +93,14 @@ func importKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *terml
 		// operator gets the file type wrong; the prompt itself only
 		// needs a short example.
 		var publicKey []byte
-		_, err = ui.Prompt(t, le, "Public key file path (.pub -- e.g. ~/.ssh/id_ed25519.pub)", ui.WithValidator(func(raw string) error {
+		_, err = ui.Prompt("Public key file path (.pub -- e.g. ~/.ssh/id_ed25519.pub)", ui.WithValidator(func(raw string) error {
 			data, verr := validatePublicKeyFile(strings.TrimSpace(raw))
 			if verr != nil {
 				return verr
 			}
 			publicKey = data
 			return nil
-		}))
+		}), ui.WithIO(regionInput, regionOutput))
 		if err != nil {
 			return err
 		}
@@ -113,15 +111,13 @@ func importKeyPairStandalone(ctx context.Context, t *termlib.Terminal, le *terml
 		})
 		if err != nil {
 			if isDuplicateKeyPairError(err) {
-				t.Printf("invalid input: a key pair named %q already exists -- choose a different name\n", name)
-				t.Refresh()
+				fmt.Fprintf(w, "invalid input: a key pair named %q already exists -- choose a different name\n", name)
 				continue
 			}
 			return err
 		}
 
-		t.Printf("Imported key pair %q\n", name)
-		t.Refresh()
+		fmt.Fprintf(w, "Imported key pair %q\n", name)
 		return nil
 	}
 }

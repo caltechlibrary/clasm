@@ -2,8 +2,6 @@ package ui
 
 import (
 	"testing"
-
-	"github.com/rsdoiel/termlib"
 )
 
 func TestHighlight_WrapsWhenColorEnabled(t *testing.T) {
@@ -11,7 +9,7 @@ func TestHighlight_WrapsWhenColorEnabled(t *testing.T) {
 	defer SetColorEnabled(false)
 
 	got := Highlight("Select an instance to start")
-	want := termlib.Bold + "Select an instance to start" + termlib.Reset
+	want := ansiBold + "Select an instance to start" + ansiReset
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

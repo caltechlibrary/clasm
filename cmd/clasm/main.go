@@ -11,8 +11,6 @@ import (
 	"path"
 	"syscall"
 
-	"github.com/rsdoiel/termlib"
-
 	"github.com/caltechlibrary/clasm"
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
@@ -64,7 +62,7 @@ func main() {
 
 	// Ctrl+C (or SIGTERM) between prompts cancels ctx, which every
 	// workflow's poll loop already selects on; Ctrl+C *during* an active
-	// prompt is instead surfaced by termlib as ErrInterrupted (see
+	// huh field is instead surfaced as huh.ErrUserAborted (see
 	// internal/workflow/menu.go's isExitSignal).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -152,11 +150,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	term := termlib.New(out)
-	le := termlib.NewLineEditor(os.Stdin, out)
-
-	term.Printf("clasm %s -- authenticated as AWS account %s\n", version, account)
-	term.Refresh()
+	fmt.Fprintf(out, "clasm %s -- authenticated as AWS account %s\n", version, account)
 
 	colorEnabled := ui.ColorEnabled()
 	ui.SetColorEnabled(colorEnabled)
@@ -242,34 +236,34 @@ func main() {
 
 	actions := workflow.MenuActions{
 		CreateInstanceFromAMI: func(ctx context.Context) error {
-			return workflow.CreateInstanceFromAMI(ctx, term, le, ec2Clients, ssmClients, iamClient, state.images)
+			return workflow.CreateInstanceFromAMI(ctx, out, ec2Clients, ssmClients, iamClient, state.images)
 		},
 		CreateInstanceFromCloudInit: func(ctx context.Context) error {
-			return workflow.CreateInstanceFromCloudInit(ctx, term, le, ec2Clients, ssmClients, iamClient, state.images)
+			return workflow.CreateInstanceFromCloudInit(ctx, out, ec2Clients, ssmClients, iamClient, state.images)
 		},
 		StartEC2Instance: func(ctx context.Context) error {
-			return workflow.StartEC2Instance(ctx, term, le, ec2Clients, state.instances)
+			return workflow.StartEC2Instance(ctx, out, ec2Clients, state.instances)
 		},
 		StopEC2Instance: func(ctx context.Context) error {
-			return workflow.StopEC2Instance(ctx, term, le, ec2Clients, state.instances)
+			return workflow.StopEC2Instance(ctx, out, ec2Clients, state.instances)
 		},
 		TerminateEC2Instance: func(ctx context.Context) error {
-			return workflow.TerminateEC2Instance(ctx, term, le, ec2Clients, state.instances)
+			return workflow.TerminateEC2Instance(ctx, out, ec2Clients, state.instances)
 		},
 		ManageTags: func(ctx context.Context) error {
-			return workflow.ManageTags(ctx, term, le, ec2Clients, state.instances, state.images)
+			return workflow.ManageTags(ctx, out, ec2Clients, state.instances, state.images)
 		},
 		CreateAMIFromInstance: func(ctx context.Context) error {
-			return workflow.CreateAMIFromInstance(ctx, term, le, ec2Clients, ssmClients, state.instances)
+			return workflow.CreateAMIFromInstance(ctx, out, ec2Clients, ssmClients, state.instances)
 		},
 		RemoveAMI: func(ctx context.Context) error {
-			return workflow.RemoveAMI(ctx, term, le, ec2Clients, state.images, state.instances)
+			return workflow.RemoveAMI(ctx, out, ec2Clients, state.images, state.instances)
 		},
 		ShowCloudInit: func(ctx context.Context) error {
-			return workflow.ShowCloudInit(ctx, term, le, ec2Clients, ssmClients, state.instances, state.images)
+			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images)
 		},
 		BackupArchiveAndTrim: func(ctx context.Context) error {
-			return workflow.BackupArchiveAndTrim(ctx, term, le, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories)
+			return workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories)
 		},
 		Refresh:           refresh,
 		ShowResourceLists: showComputeResourceLists,
@@ -277,19 +271,19 @@ func main() {
 
 	s3Actions := workflow.S3Actions{
 		CreateBucket: func(ctx context.Context) error {
-			return workflow.CreateBucket(ctx, term, le, newS3Client, cfg.Regions)
+			return workflow.CreateBucket(ctx, out, newS3Client, cfg.Regions)
 		},
 		ConfigureWebsite: func(ctx context.Context) error {
-			return workflow.ConfigureBucketWebsite(ctx, term, le, newS3Client, s3State.buckets)
+			return workflow.ConfigureBucketWebsite(ctx, out, newS3Client, s3State.buckets)
 		},
 		BrowseAndManageObjects: func(ctx context.Context) error {
 			return workflow.BrowseAndManageObjects(ctx, newS3Client, s3State.buckets)
 		},
 		ManageLifecyclePolicies: func(ctx context.Context) error {
-			return workflow.ManageBucketLifecyclePolicies(ctx, term, le, newS3Client, s3State.buckets)
+			return workflow.ManageBucketLifecyclePolicies(ctx, out, newS3Client, s3State.buckets)
 		},
 		DeleteBucket: func(ctx context.Context) error {
-			return workflow.DeleteBucket(ctx, term, le, newS3Client, s3State.buckets)
+			return workflow.DeleteBucket(ctx, out, newS3Client, s3State.buckets)
 		},
 		Refresh:           refreshS3,
 		ShowResourceLists: showS3ResourceLists,
@@ -297,13 +291,13 @@ func main() {
 
 	keyMgmtActions := workflow.KeyMgmtActions{
 		CreateKeyPair: func(ctx context.Context) error {
-			return workflow.CreateKeyPairStandalone(ctx, term, le, ec2Clients)
+			return workflow.CreateKeyPairStandalone(ctx, out, ec2Clients)
 		},
 		ImportKeyPair: func(ctx context.Context) error {
-			return workflow.ImportKeyPairStandalone(ctx, term, le, ec2Clients)
+			return workflow.ImportKeyPairStandalone(ctx, out, ec2Clients)
 		},
 		DeleteKeyPair: func(ctx context.Context) error {
-			return workflow.DeleteKeyPair(ctx, term, le, ec2Clients, keyMgmtState.keyPairs, state.instances)
+			return workflow.DeleteKeyPair(ctx, out, ec2Clients, keyMgmtState.keyPairs, state.instances)
 		},
 		Refresh:           refreshKeyMgmt,
 		ShowResourceLists: showKeyMgmtResourceLists,
@@ -318,13 +312,13 @@ func main() {
 			if err := refresh(ctx); err != nil {
 				return err
 			}
-			return workflow.RunMainMenu(ctx, term, le, actions)
+			return workflow.RunMainMenu(ctx, out, actions)
 		},
 		KeyManagement: func(ctx context.Context) error {
 			if err := refreshKeyMgmt(ctx); err != nil {
 				return err
 			}
-			return workflow.RunKeyMgmtMenu(ctx, term, le, keyMgmtActions)
+			return workflow.RunKeyMgmtMenu(ctx, out, keyMgmtActions)
 		},
 		S3: func(ctx context.Context) error {
 			// Fetch (not display -- see refreshS3's own comment) the S3
@@ -336,11 +330,11 @@ func main() {
 			if err := refreshS3(ctx); err != nil {
 				return err
 			}
-			return workflow.RunS3Menu(ctx, term, le, s3Actions)
+			return workflow.RunS3Menu(ctx, out, s3Actions)
 		},
 	}
 
-	if err := workflow.RunDomainPicker(ctx, term, le, domains); err != nil {
+	if err := workflow.RunDomainPicker(ctx, out, domains); err != nil {
 		fmt.Fprintf(eout, "%v\n", err)
 		os.Exit(1)
 	}

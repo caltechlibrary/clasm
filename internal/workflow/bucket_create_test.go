@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -9,24 +10,24 @@ import (
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
-// The region and bucket-purpose pickers converted to huh.Select
-// (DESIGN.md's full conversion punch list): their selections are fed via
-// a separate newHuhAccessibleInput reader (menuInput), not le, which
-// still feeds the bucket-name prompt. Cancelling either picker is only
-// reachable via 'q'/ctrl+c, which accessible mode has no keyboard to
-// simulate (mapMenuPickerErr's doc comment covers the same limitation),
-// so the old "0=Cancel" region-cancellation test is retired rather than
-// kept.
+// The bucket-name prompt and the region/purpose pickers all now share
+// one accessible-mode reader (menuInput), read in sequence one line at
+// a time -- name first, then region, then purpose, matching createBucket's
+// own prompt order. Cancelling either picker is only reachable via
+// 'q'/ctrl+c, which accessible mode has no keyboard to simulate
+// (mapMenuPickerErr's doc comment covers the same limitation), so the
+// old "0=Cancel" region-cancellation test is retired rather than kept.
 
 func TestCreateBucket_InvalidNameNeverCallsAWS(t *testing.T) {
 	fake := &fakeS3Client{}
 	input := "Bad_Name\n" + // uppercase/underscore -- rejected locally, re-prompt
-		"valid-bucket-name\n"
-
-	term, le, buf := newPipeEditor(t, input)
+		"valid-bucket-name\n" +
+		"1\n" + // region
+		"1\n" // purpose
+	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	err := createBucket(context.Background(), term, le, newClient, []string{"us-west-2"}, newHuhAccessibleInput("1\n1\n"), buf) // region, purpose
+	err := createBucket(context.Background(), &buf, newClient, []string{"us-west-2"}, newHuhAccessibleInput(input), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,10 +44,13 @@ func TestCreateBucket_InvalidNameNeverCallsAWS(t *testing.T) {
 
 func TestCreateBucket_SuccessPath(t *testing.T) {
 	fake := &fakeS3Client{}
-	term, le, buf := newPipeEditor(t, "my-website-bucket\n")
+	input := "my-website-bucket\n" +
+		"2\n" + // us-west-2
+		"1\n" // website
+	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	err := createBucket(context.Background(), term, le, newClient, []string{"us-east-1", "us-west-2"}, newHuhAccessibleInput("2\n1\n"), buf) // us-west-2, website
+	err := createBucket(context.Background(), &buf, newClient, []string{"us-east-1", "us-west-2"}, newHuhAccessibleInput(input), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,10 +81,11 @@ func TestCreateBucket_SuccessPath(t *testing.T) {
 
 func TestCreateBucket_UsEast1OmitsLocationConstraint(t *testing.T) {
 	fake := &fakeS3Client{}
-	term, le, buf := newPipeEditor(t, "my-bucket\n")
+	input := "my-bucket\n1\n1\n"
+	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := createBucket(context.Background(), term, le, newClient, []string{"us-east-1"}, newHuhAccessibleInput("1\n1\n"), buf); err != nil {
+	if err := createBucket(context.Background(), &buf, newClient, []string{"us-east-1"}, newHuhAccessibleInput(input), &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg := fake.createBucketCalls[0].CreateBucketConfiguration; cfg != nil {
@@ -90,10 +95,11 @@ func TestCreateBucket_UsEast1OmitsLocationConstraint(t *testing.T) {
 
 func TestCreateBucket_NonDefaultRegionSetsLocationConstraint(t *testing.T) {
 	fake := &fakeS3Client{}
-	term, le, buf := newPipeEditor(t, "my-bucket\n")
+	input := "my-bucket\n1\n1\n"
+	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := createBucket(context.Background(), term, le, newClient, []string{"us-west-2"}, newHuhAccessibleInput("1\n1\n"), buf); err != nil {
+	if err := createBucket(context.Background(), &buf, newClient, []string{"us-west-2"}, newHuhAccessibleInput(input), &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	cfg := fake.createBucketCalls[0].CreateBucketConfiguration

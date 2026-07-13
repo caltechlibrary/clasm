@@ -31,7 +31,7 @@ func TestCreateAMIFromInstance_HappyPathRunningInstance(t *testing.T) {
 		"production\n" + // Environment
 		"y\n" // confirm create
 
-	term, le, buf := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	ec2Client := &fakeEC2Client{
 		createImageID:           "ami-new1",
 		imageAvailableAfterCall: 1,
@@ -39,7 +39,7 @@ func TestCreateAMIFromInstance_HappyPathRunningInstance(t *testing.T) {
 	}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 0} // SSM unavailable -> fstrim skipped cleanly, no extra input needed
 
-	err := createAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst)
+	err := createAMIFromInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,11 +78,11 @@ func TestCreateAMIFromInstance_StoppedInstanceSkipsCrashGuidanceAndReboot(t *tes
 		"test\n" + // Environment
 		"y\n" // confirm create
 
-	term, le, buf := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	ec2Client := &fakeEC2Client{createImageID: "ami-new2", imageAvailableAfterCall: 1}
 	ssmClient := &fakeSSMClient{}
 
-	err := createAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst)
+	err := createAMIFromInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,11 +97,11 @@ func TestCreateAMIFromInstance_StoppedInstanceSkipsCrashGuidanceAndReboot(t *tes
 func TestCreateAMIFromInstance_DeclinedConfirmationDoesNotCreate(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "web", State: "stopped", Region: "us-east-1"}
 	input := "\n\ncaltechauthors\ntest\nn\n"
-	term, le, _ := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := createAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst)
+	err := createAMIFromInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,11 +113,11 @@ func TestCreateAMIFromInstance_DeclinedConfirmationDoesNotCreate(t *testing.T) {
 func TestCreateAMIFromInstance_ReportsFailedState(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "web", State: "stopped", Region: "us-east-1"}
 	input := "\n\ncaltechauthors\ntest\ny\n"
-	term, le, buf := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	ec2Client := &fakeEC2Client{createImageID: "ami-new3", imageFailedAfterCall: 1}
 	ssmClient := &fakeSSMClient{}
 
-	err := createAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst)
+	err := createAMIFromInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,11 +127,11 @@ func TestCreateAMIFromInstance_ReportsFailedState(t *testing.T) {
 }
 
 func TestCreateAMIFromInstance_NoInstances(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := CreateAMIFromInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil)
+	err := CreateAMIFromInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

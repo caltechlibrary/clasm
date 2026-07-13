@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -21,8 +20,8 @@ import (
 // Policies later reads that tag back to decide which UX to show.
 var bucketPurposes = []string{"website", "backup", "internal"}
 
-func promptS3Region(t *termlib.Terminal, regions []string, input io.Reader, output io.Writer) (string, error) {
-	return pickString(t, "Select a region", "(q to cancel)", regions, input, output)
+func promptS3Region(w io.Writer, regions []string, input io.Reader, output io.Writer) (string, error) {
+	return pickString(w, "Select a region", "(q to cancel)", regions, input, output)
 }
 
 // validateBucketName checks a bucket name against S3's naming rules
@@ -56,31 +55,30 @@ func validateBucketName(name string) error {
 // newS3Client builds a client scoped to the chosen region -- unlike
 // Backup Archive & Trim, there's no existing bucket to discover a region
 // from via BucketRegion, since this bucket doesn't exist yet.
-func CreateBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string) error {
-	return createBucket(ctx, t, le, newS3Client, regions, nil, nil)
+func CreateBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string) error {
+	return createBucket(ctx, w, newS3Client, regions, nil, nil)
 }
 
 // createBucket is CreateBucket's testable core: menuInput/menuOutput are
 // nil in production (the region and purpose huh.Selects run
 // interactively on the real terminal, DESIGN.md's full conversion punch
 // list) and are supplied by tests to drive them through their
-// accessible-mode pipe path instead, separate from le, which still feeds
-// the bucket-name prompt. Both huh.Selects share one reader/writer pair,
-// read in sequence one line at a time.
-func createBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string, menuInput io.Reader, menuOutput io.Writer) error {
-	name, err := ui.Prompt(t, le, "Bucket name", ui.WithValidator(validateBucketName))
+// accessible-mode pipe path instead. Both huh.Selects share one reader/
+// writer pair, read in sequence one line at a time.
+func createBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string, menuInput io.Reader, menuOutput io.Writer) error {
+	name, err := ui.Prompt("Bucket name", ui.WithValidator(validateBucketName), ui.WithIO(menuInput, menuOutput))
 	if err != nil {
 		return err
 	}
 
-	region, err := promptS3Region(t, regions, menuInput, menuOutput)
+	region, err := promptS3Region(w, regions, menuInput, menuOutput)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
 
-	purpose, err := pickString(t, "Select the bucket's purpose", "(q to cancel)", bucketPurposes, menuInput, menuOutput)
+	purpose, err := pickString(w, "Select the bucket's purpose", "(q to cancel)", bucketPurposes, menuInput, menuOutput)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
 
 	client, err := newS3Client(ctx, region)
@@ -120,7 +118,6 @@ func createBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdit
 		return fmt.Errorf("tagging bucket %s: %w", name, err)
 	}
 
-	t.Printf("Created bucket %s in %s (purpose: %s), public access blocked.\n", name, region, purpose)
-	t.Refresh()
+	fmt.Fprintf(w, "Created bucket %s in %s (purpose: %s), public access blocked.\n", name, region, purpose)
 	return nil
 }

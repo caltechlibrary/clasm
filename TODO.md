@@ -9,24 +9,27 @@
 
   Decided 2026-07-10 (DECISIONS.md, "TUI keybinding conventions"): `q`
   is the universal back/quit key everywhere; `Esc` is reserved for
-  cancelling an in-progress action, never for closing a menu. Tracked
-  per-screen in PLAN.md as each one converts (Phase 20.7 for the S3
-  menu first; Compute/Key Management follow as they're migrated off
-  termlib -- see below).
+  cancelling an in-progress action, never for closing a menu. Landed
+  across every screen as the Menu/Picker/List punch list and the
+  termlib removal completed (PLAN.md Phases 20.2-20.16, all done).
 
-## Termlib Removal (before 0.0.2)
+## Termlib Removal (done 2026-07-13)
 
-- [ ] `termlib` is being removed entirely before 0.0.2 in favor of `huh`
-      (guide menus, action wizards) and `bubbletea` (lists, managers)
-      exclusively -- see DESIGN.md, "Terminal UI Architecture: Menus,
-      Actions, Lists, and Managers," and DECISIONS.md, "Deprecate
-      termlib; standardize on huh/bubbletea before 0.0.2." The pace and
-      order of converting the remaining ~40 `termlib`-based call sites
-      (Compute, Key Management, most S3 action wizards) is deliberately
-      NOT scheduled phase-by-phase yet -- "may evolve as we work through
-      the transition." Each conversion gets its own PLAN.md phase when
-      it's actually picked up, not planned exhaustively in advance.
-      S3's menu/list pieces are first (PLAN.md Phases 20.4-20.7).
+- [x] `termlib` removed entirely in favor of `huh` (guide menus, action
+      wizards) and `bubbletea` (lists, managers) exclusively -- see
+      DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
+      Managers" and "Removing termlib: Action Wizards and Output,"
+      DECISIONS.md, "Remove termlib entirely: input via huh, output via
+      io.Writer," and PLAN.md Phases 20.2-20.16 (all done). `github.com/
+      rsdoiel/termlib` is gone from `go.mod`/`go.sum`; `go build ./...`,
+      `go vet ./...`, `go test ./... -race`, `gofmt -l` all clean (except
+      the pre-existing, unrelated `version.go`).
+- [ ] Deferred out of the termlib-removal pass, for a later
+      chrome-standardization pass: `progress_ticker.go`'s periodic
+      elapsed-time line could become a real `bubbletea` spinner instead
+      of a printed line; `internal/ui`'s color/format helpers could
+      adopt `lipgloss` (already a transitive dependency via `huh`/
+      `bubbletea`) instead of local ANSI constants.
 
 ## Done (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
 

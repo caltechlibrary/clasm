@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/huh"
-	"github.com/rsdoiel/termlib"
 )
 
 func testS3Actions(refreshCalls *int) S3Actions {
@@ -25,13 +24,12 @@ func testS3Actions(refreshCalls *int) S3Actions {
 	}
 }
 
-// newTermOnly returns a *termlib.Terminal writing to a buffer, for
-// RunS3Menu's error/refresh output. The menu picker itself no longer
-// reads through termlib (see runS3Menu's menuInput/menuOutput), so no
-// LineEditor is needed here.
-func newTermOnly() (*termlib.Terminal, *bytes.Buffer) {
+// newTermOnly returns a bytes.Buffer usable both as the io.Writer every
+// menu loop prints error/refresh output to, and as the buffer tests
+// inspect that output through -- both are the same value.
+func newTermOnly() (io.Writer, *bytes.Buffer) {
 	var buf bytes.Buffer
-	return termlib.New(&buf), &buf
+	return &buf, &buf
 }
 
 // cancelingAction increments *calls and cancels ctx via cancel, so a
@@ -194,10 +192,10 @@ func TestRunS3Menu_CleanExitOnInterrupt(t *testing.T) {
 	var refreshCalls int
 	term, buf := newTermOnly()
 	actions := testS3Actions(&refreshCalls)
-	actions.CreateBucket = failingAction(termlib.ErrInterrupted)
+	actions.CreateBucket = failingAction(huh.ErrUserAborted)
 
 	if err := runS3Menu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
-		t.Fatalf("expected a clean exit (nil error) on ErrInterrupted, got: %v", err)
+		t.Fatalf("expected a clean exit (nil error) on huh.ErrUserAborted, got: %v", err)
 	}
 }
 

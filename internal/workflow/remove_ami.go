@@ -3,11 +3,11 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -50,26 +50,27 @@ func instancesUsingAMI(instances []inventory.Instance, imageID string) []invento
 // cancellation or when there are no AMIs to pick from. Takes a
 // per-region client map and resolves the one matching the picked AMI's
 // region.
-func RemoveAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, images []inventory.Image, instances []inventory.Instance) error {
+func RemoveAMI(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, images []inventory.Image, instances []inventory.Instance) error {
 	if len(images) == 0 {
-		t.Println("No AMIs found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No AMIs found.")
 		return nil
 	}
 
 	img, err := pickImage(ctx, "Select an AMI to remove", images)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
-	return removeAMI(ctx, t, le, clients, img, instances)
+	return removeAMI(ctx, w, clients, img, instances, nil, nil)
 }
 
 // removeAMI is RemoveAMI's testable core, once an AMI is resolved -- AMI
 // selection runs a real bubbletea Program (tui.RunPicker, DESIGN.md's
 // full conversion punch list) that can't be driven by a test's pipe
 // input, same limitation as createAMIFromInstance
-// (create_ami_from_instance.go).
-func removeAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, img inventory.Image, instances []inventory.Instance) error {
+// (create_ami_from_instance.go). input/output are nil in production and
+// supplied by tests to drive the type-to-confirm gate through its
+// accessible-mode pipe path instead.
+func removeAMI(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, img inventory.Image, instances []inventory.Instance, input io.Reader, output io.Writer) error {
 	client, err := resolveEC2(clients, img.Region)
 	if err != nil {
 		return err
@@ -77,13 +78,12 @@ func removeAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 	params := RemoveAMIParams{ImageID: img.ImageID}
 
 	dependents := instancesUsingAMI(instances, img.ImageID)
-	ok, err := confirmRemoveAMI(t, le, img, dependents)
+	ok, err := confirmRemoveAMI(w, img, dependents, input, output)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
@@ -91,27 +91,25 @@ func removeAMI(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 		return fmt.Errorf("removing AMI %s: %w", params.ImageID, err)
 	}
 
-	t.Printf("AMI %s removed.\n", params.ImageID)
-	t.Refresh()
+	fmt.Fprintf(w, "AMI %s removed.\n", params.ImageID)
 	return nil
 }
 
 // confirmRemoveAMI shows the dry-run display (what would be deleted,
 // which instances depend on it), an Environment=production warning if
 // applicable, then runs the type-to-confirm gate.
-func confirmRemoveAMI(t *termlib.Terminal, le *termlib.LineEditor, img inventory.Image, dependents []inventory.Instance) (bool, error) {
-	t.Printf("\n=== DRY RUN: removing AMI %s (%s) ===\n", img.ImageID, img.Name)
+func confirmRemoveAMI(w io.Writer, img inventory.Image, dependents []inventory.Instance, input io.Reader, output io.Writer) (bool, error) {
+	fmt.Fprintf(w, "\n=== DRY RUN: removing AMI %s (%s) ===\n", img.ImageID, img.Name)
 	if len(dependents) > 0 {
 		labels := make([]string, 0, len(dependents))
 		for _, inst := range dependents {
 			labels = append(labels, fmt.Sprintf("%s (%s)", inst.InstanceID, inst.Name))
 		}
-		t.Printf("WARNING: %d instance(s) currently reference this AMI: %s\n", len(dependents), strings.Join(labels, ", "))
+		fmt.Fprintf(w, "WARNING: %d instance(s) currently reference this AMI: %s\n", len(dependents), strings.Join(labels, ", "))
 	}
 	if img.Environment == "production" {
-		t.Println("WARNING: this AMI is tagged Environment=production.")
+		fmt.Fprintln(w, "WARNING: this AMI is tagged Environment=production.")
 	}
-	t.Refresh()
 
-	return ConfirmDestructive(t, le, img.ImageID, img.Name)
+	return ConfirmDestructive([]string{img.ImageID, img.Name}, WithConfirmIO(input, output))
 }

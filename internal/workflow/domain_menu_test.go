@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -151,9 +152,9 @@ func TestDomainItems_NoExitEntry(t *testing.T) {
 }
 
 func TestNotYetImplemented_PrintsAMessageAndReturnsToPicker(t *testing.T) {
-	term, _, buf := newPipeEditor(t, "")
+	var buf bytes.Buffer
 
-	err := NotYetImplemented(term, "Key Management")
+	err := NotYetImplemented(&buf, "Key Management")
 	if !errors.Is(err, ErrBackToDomainPicker) {
 		t.Fatalf("expected ErrBackToDomainPicker, got: %v", err)
 	}

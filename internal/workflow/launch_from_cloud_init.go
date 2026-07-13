@@ -6,8 +6,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/rsdoiel/termlib"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -23,8 +21,8 @@ import (
 // primitive"). Resolves and returns the region-specific clients itself,
 // same as CollectLaunchInstanceParams, since security group/subnet
 // listing needs them too.
-func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
-	userData, err := promptCloudInitYAMLFile(t, le)
+func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
+	userData, err := promptCloudInitYAMLFile(w, nil, nil)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -34,7 +32,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	return collectLaunchInstanceParamsFromCloudInit(ctx, t, le, ec2Clients, ssmClients, iamClient, userData, image, nil, nil)
+	return collectLaunchInstanceParamsFromCloudInit(ctx, w, ec2Clients, ssmClients, iamClient, userData, image, nil, nil)
 }
 
 // collectLaunchInstanceParamsFromCloudInit is
@@ -46,51 +44,50 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 // menuInput/menuOutput are nil in production (the instance-type
 // huh.Select and its ENA/AZ incompatibility-remediation huh.Selects run
 // interactively on the real terminal) and are supplied by tests to drive
-// them through their accessible-mode pipe path instead, separate from
-// le, which still feeds every other prompt in this function. All three
-// share one reader/writer pair, read in sequence one line at a time.
-func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, userData string, image inventory.Image, menuInput io.Reader, menuOutput io.Writer) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
+// them through their accessible-mode pipe path instead. All three share
+// one reader/writer pair, read in sequence one line at a time.
+func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, userData string, image inventory.Image, menuInput io.Reader, menuOutput io.Writer) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
 	ec2Client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, image.Region)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	name, err := ui.Prompt(t, le, "Name tag", ui.WithValidator(requireNonEmpty))
+	name, err := ui.Prompt("Name tag", ui.WithValidator(requireNonEmpty), ui.WithIO(menuInput, menuOutput))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := promptInstanceType(t, le, menuInput, menuOutput)
+	instanceType, err := promptInstanceType(w, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err = ensureInstanceTypeENACompatible(ctx, t, le, ec2Client, instanceType, image.EnaSupport, menuInput, menuOutput)
+	instanceType, err = ensureInstanceTypeENACompatible(ctx, w, ec2Client, instanceType, image.EnaSupport, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	keyName, err := promptKeyPairNameOrCreate(ctx, t, le, ec2Client, sshKeyDir())
+	keyName, err := promptKeyPairNameOrCreate(ctx, w, ec2Client, sshKeyDir(), menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	securityGroupIDs, err := promptSecurityGroupIDs(ctx, t, le, ec2Client)
+	securityGroupIDs, err := promptSecurityGroupIDs(ctx, w, ec2Client, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	subnet, err := promptSubnetID(ctx, t, le, ec2Client, instanceType)
+	subnet, err := promptSubnetID(ctx, w, ec2Client, instanceType, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, t, le, ec2Client, instanceType, subnet, menuInput, menuOutput)
+	instanceType, subnet, err = ensureInstanceTypeSupportedInSubnet(ctx, w, ec2Client, instanceType, subnet, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	iamProfile, err := promptIAMInstanceProfileOrCreate(ctx, t, le, iamClient)
+	iamProfile, err := promptIAMInstanceProfileOrCreate(ctx, w, iamClient, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -99,12 +96,13 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, t *termlib.Te
 	if image.Project != "" {
 		projectOpts = append(projectOpts, ui.WithDefault(image.Project))
 	}
-	project, err := ui.Prompt(t, le, "Project tag", projectOpts...)
+	projectOpts = append(projectOpts, ui.WithIO(menuInput, menuOutput))
+	project, err := ui.Prompt("Project tag", projectOpts...)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	environment, err := ui.Prompt(t, le, "Environment tag (production, development, or test)", ui.WithValidator(validateEnvironment))
+	environment, err := ui.Prompt("Environment tag (production, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(menuInput, menuOutput))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

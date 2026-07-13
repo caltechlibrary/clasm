@@ -3,11 +3,11 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -62,32 +62,35 @@ func pickBucket(ctx context.Context, title string, buckets []inventory.Bucket) (
 // can't be driven by a test's pipe input, so the rest of the workflow --
 // everything once a bucket is resolved -- lives in the unexported,
 // directly-testable configureBucketWebsite.
-func ConfigureBucketWebsite(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
+func ConfigureBucketWebsite(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
 	if len(buckets) == 0 {
-		t.Println("No buckets found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No buckets found.")
 		return nil
 	}
 
 	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
 
-	return configureBucketWebsite(ctx, t, le, newS3Client, bucket)
+	return configureBucketWebsite(ctx, w, newS3Client, bucket, nil, nil)
 }
 
-func configureBucketWebsite(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket) error {
+// configureBucketWebsite is ConfigureBucketWebsite's testable core, once
+// a bucket is resolved. input/output are nil in production and supplied
+// by tests to drive both prompts through their accessible-mode pipe
+// path instead.
+func configureBucketWebsite(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket, input io.Reader, output io.Writer) error {
 	client, err := newS3Client(ctx, bucket.Region)
 	if err != nil {
 		return err
 	}
 
-	indexDoc, err := ui.Prompt(t, le, "Index document", ui.WithDefault("index.html"), ui.WithValidator(requireNonEmpty))
+	indexDoc, err := ui.Prompt("Index document", ui.WithDefault("index.html"), ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 	if err != nil {
 		return err
 	}
-	errorDoc, err := ui.Prompt(t, le, "Error document", ui.WithDefault("error.html"), ui.WithValidator(requireNonEmpty))
+	errorDoc, err := ui.Prompt("Error document", ui.WithDefault("error.html"), ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 	if err != nil {
 		return err
 	}
@@ -102,8 +105,7 @@ func configureBucketWebsite(ctx context.Context, t *termlib.Terminal, le *termli
 		return fmt.Errorf("configuring static website hosting on bucket %s: %w", bucket.Name, err)
 	}
 
-	t.Printf("Configured static website hosting on bucket %s (index: %s, error: %s).\n", bucket.Name, indexDoc, errorDoc)
-	t.Println("CloudFront support isn't implemented yet (Phase 21) -- once it is, front this bucket with a CloudFront distribution rather than making it public.")
-	t.Refresh()
+	fmt.Fprintf(w, "Configured static website hosting on bucket %s (index: %s, error: %s).\n", bucket.Name, indexDoc, errorDoc)
+	fmt.Fprintln(w, "CloudFront support isn't implemented yet (Phase 21) -- once it is, front this bucket with a CloudFront distribution rather than making it public.")
 	return nil
 }

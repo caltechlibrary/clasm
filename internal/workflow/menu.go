@@ -3,10 +3,10 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/charmbracelet/huh"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -82,7 +82,7 @@ var mainMenuItems = []menuItem{
 // already works around. input/output are nil in production
 // (interactive, real terminal) and supplied by tests for the
 // accessible-mode pipe path.
-func pickMainMenuItem(t *termlib.Terminal, input io.Reader, output io.Writer) (menuItem, error) {
+func pickMainMenuItem(w io.Writer, input io.Reader, output io.Writer) (menuItem, error) {
 	opts := make([]huh.Option[int], len(mainMenuItems))
 	for i, item := range mainMenuItems {
 		opts[i] = huh.NewOption(item.label, i)
@@ -94,7 +94,7 @@ func pickMainMenuItem(t *termlib.Terminal, input io.Reader, output io.Writer) (m
 		Options(opts...).
 		Value(&idx)
 
-	if err := runMenuField(t, "(q to go back)", field, input, output); err != nil {
+	if err := runMenuField(w, "(q to go back)", field, input, output); err != nil {
 		return menuItem{}, err
 	}
 	return mainMenuItems[idx], nil
@@ -105,59 +105,55 @@ func pickMainMenuItem(t *termlib.Terminal, input io.Reader, output io.Writer) (m
 // chosen action, refresh listings after a successful dispatch, and
 // repeat -- until the picker is aborted ('q'/ctrl+c, reported as
 // ErrBackToDomainPicker), a cancelled ctx (e.g. Ctrl+C delivered as
-// os.Interrupt between prompts), or an interrupted/EOF prompt from a
-// dispatched action (e.g. Ctrl+C/Ctrl+D during an active termlib
-// prompt, which surfaces as an error rather than a process signal) --
-// the latter two report nil, which RunDomainPicker treats as "exit the
-// whole program", not "return to the picker". A single action's error
-// is shown and the loop continues -- one failed operation shouldn't
-// force restarting the whole CLI.
+// os.Interrupt between prompts), or an aborted/EOF prompt from a
+// dispatched action (e.g. Ctrl+C during an active huh field, which
+// surfaces as an error rather than a process signal) -- the latter two
+// report nil, which RunDomainPicker treats as "exit the whole program",
+// not "return to the picker". A single action's error is shown and the
+// loop continues -- one failed operation shouldn't force restarting the
+// whole CLI.
 //
 // The menu picker itself is huh.Select (DECISIONS.md, "Convert RunS3Menu
-// to huh.Select") -- le is accepted only to keep this loop's signature
-// the same shape as RunKeyMgmtMenu's; it's otherwise unused here.
-func RunMainMenu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, actions MenuActions) error {
-	return runMainMenu(ctx, t, actions, nil, nil)
+// to huh.Select").
+func RunMainMenu(ctx context.Context, w io.Writer, actions MenuActions) error {
+	return runMainMenu(ctx, w, actions, nil, nil)
 }
 
 // runMainMenu is RunMainMenu's testable core: menuInput/menuOutput are
 // nil in production and supplied by tests to drive the same huh.Select
 // through its accessible-mode pipe path instead (DECISIONS.md, "huh
 // fields are pipe-testable...").
-func runMainMenu(ctx context.Context, t *termlib.Terminal, actions MenuActions, menuInput io.Reader, menuOutput io.Writer) error {
+func runMainMenu(ctx context.Context, w io.Writer, actions MenuActions, menuInput io.Reader, menuOutput io.Writer) error {
 	for {
 		if ctx.Err() != nil {
-			printExiting(t)
+			printExiting(w)
 			return nil
 		}
 
-		choice, err := pickMainMenuItem(t, menuInput, menuOutput)
+		choice, err := pickMainMenuItem(w, menuInput, menuOutput)
 		if err != nil {
 			return mapMenuPickerErr(err)
 		}
 
 		if err := choice.action(actions, ctx); err != nil {
 			if isExitSignal(err) {
-				printExiting(t)
+				printExiting(w)
 				return nil
 			}
-			t.Printf("Error: %s\n", formatError(err))
-			t.Refresh()
+			fmt.Fprintf(w, "Error: %s\n", formatError(err))
 			continue
 		}
 
 		if err := actions.Refresh(ctx); err != nil {
-			t.Printf("Error refreshing listings: %s\n", formatError(err))
-			t.Refresh()
+			fmt.Fprintf(w, "Error refreshing listings: %s\n", formatError(err))
 		}
 	}
 }
 
-func printExiting(t *termlib.Terminal) {
-	t.Println("\nExiting.")
-	t.Refresh()
+func printExiting(w io.Writer) {
+	fmt.Fprintln(w, "\nExiting.")
 }
 
 func isExitSignal(err error) bool {
-	return errors.Is(err, ui.ErrCancelled) || errors.Is(err, termlib.ErrInterrupted) || errors.Is(err, io.EOF)
+	return errors.Is(err, ui.ErrCancelled) || errors.Is(err, huh.ErrUserAborted) || errors.Is(err, io.EOF)
 }

@@ -22,6 +22,19 @@ func newHuhAccessibleInput(s string) io.Reader {
 	return &lineAtATimeReader{remaining: []byte(s)}
 }
 
+// newPipeEditor returns a writer/reader/buffer trio for driving a
+// workflow function's output (w, same value as buf) and accessible-mode
+// prompt/confirm input (input) through a single pipe -- replaces the
+// termlib.LineEditor-backed helper of the same name from before the
+// termlib removal (DECISIONS.md, "Remove termlib entirely: input via
+// huh, output via io.Writer"). w and buf are deliberately the same
+// value: callers pass w as the function's output writer and inspect
+// buf.String() afterward.
+func newPipeEditor(input string) (w io.Writer, pipeInput io.Reader, buf *bytes.Buffer) {
+	var b bytes.Buffer
+	return &b, newHuhAccessibleInput(input), &b
+}
+
 type lineAtATimeReader struct {
 	remaining []byte
 }

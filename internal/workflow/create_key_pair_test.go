@@ -96,9 +96,9 @@ func TestCreateKeyPair_PropagatesErrorWithoutWritingAFile(t *testing.T) {
 func TestCreateNewKeyPairInteractive_CreatesKeyPair(t *testing.T) {
 	dir := t.TempDir()
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "my-fresh-key\n")
+	term, le, buf := newPipeEditor("my-fresh-key\n")
 
-	got, err := createNewKeyPairInteractive(context.Background(), term, le, fake, dir)
+	got, err := createNewKeyPairInteractive(context.Background(), term, fake, dir, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,9 +124,9 @@ func TestCreateNewKeyPairInteractive_RetriesOnDuplicateName(t *testing.T) {
 		createKeyPairErr:     &smithy.GenericAPIError{Code: "InvalidKeyPair.Duplicate", Message: "already exists"},
 		createKeyPairErrOnce: true,
 	}
-	term, le, buf := newPipeEditor(t, "taken-name\nfresh-name\n")
+	term, le, buf := newPipeEditor("taken-name\nfresh-name\n")
 
-	got, err := createNewKeyPairInteractive(context.Background(), term, le, fake, dir)
+	got, err := createNewKeyPairInteractive(context.Background(), term, fake, dir, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,9 +144,9 @@ func TestCreateNewKeyPairInteractive_RetriesOnDuplicateName(t *testing.T) {
 func TestCreateNewKeyPairInteractive_PropagatesNonDuplicateError(t *testing.T) {
 	dir := t.TempDir()
 	fake := &fakeEC2Client{createKeyPairErr: &smithy.GenericAPIError{Code: "UnauthorizedOperation", Message: "no ec2:CreateKeyPair permission"}}
-	term, le, _ := newPipeEditor(t, "my-key\n")
+	term, le, buf := newPipeEditor("my-key\n")
 
-	_, err := createNewKeyPairInteractive(context.Background(), term, le, fake, dir)
+	_, err := createNewKeyPairInteractive(context.Background(), term, fake, dir, le, buf)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -157,9 +157,9 @@ func TestCreateNewKeyPairInteractive_PropagatesNonDuplicateError(t *testing.T) {
 
 func TestPromptKeyPairNameOrCreate_FallsBackToFreeTextWhenListErrors(t *testing.T) {
 	fake := &fakeEC2Client{describeKeyPairsErr: errors.New("access denied")}
-	term, le, _ := newPipeEditor(t, "some-existing-key\n")
+	term, le, buf := newPipeEditor("some-existing-key\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, t.TempDir())
+	got, err := promptKeyPairNameOrCreate(context.Background(), term, fake, t.TempDir(), le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,9 +170,9 @@ func TestPromptKeyPairNameOrCreate_FallsBackToFreeTextWhenListErrors(t *testing.
 
 func TestPromptKeyPairNameOrCreate_FreeTextFallbackStillSupportsNewKeyword(t *testing.T) {
 	fake := &fakeEC2Client{describeKeyPairsErr: errors.New("access denied")}
-	term, le, _ := newPipeEditor(t, "new\nmy-fresh-key\n")
+	term, le, buf := newPipeEditor("new\nmy-fresh-key\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, t.TempDir())
+	got, err := promptKeyPairNameOrCreate(context.Background(), term, fake, t.TempDir(), le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -274,9 +274,9 @@ func TestPromptKeyPairNameOrCreate_DerivesNameFromFullPath(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	fake := &fakeEC2Client{describeKeyPairsErr: errors.New("access denied")} // free-text fallback path
-	term, le, buf := newPipeEditor(t, fullPath+"\n")
+	term, le, buf := newPipeEditor(fullPath + "\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, t.TempDir())
+	got, err := promptKeyPairNameOrCreate(context.Background(), term, fake, t.TempDir(), le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -294,9 +294,9 @@ func TestPromptKeyPairNameOrCreate_DerivesNameFromBareFilenameViaKeyDir(t *testi
 		t.Fatalf("writing fixture: %v", err)
 	}
 	fake := &fakeEC2Client{describeKeyPairsErr: errors.New("access denied")} // free-text fallback path
-	term, le, _ := newPipeEditor(t, "etd-ami-test.pem\n")
+	term, le, buf := newPipeEditor("etd-ami-test.pem\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, keyDir)
+	got, err := promptKeyPairNameOrCreate(context.Background(), term, fake, keyDir, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,9 +307,9 @@ func TestPromptKeyPairNameOrCreate_DerivesNameFromBareFilenameViaKeyDir(t *testi
 
 func TestPromptKeyPairNameOrCreate_RetriesWhenKeyFileUnreadable(t *testing.T) {
 	fake := &fakeEC2Client{describeKeyPairsErr: errors.New("access denied")} // free-text fallback path
-	term, le, buf := newPipeEditor(t, "/no/such/file.pem\nexisting-key\n")
+	term, le, buf := newPipeEditor("/no/such/file.pem\nexisting-key\n")
 
-	got, err := promptKeyPairNameOrCreate(context.Background(), term, le, fake, t.TempDir())
+	got, err := promptKeyPairNameOrCreate(context.Background(), term, fake, t.TempDir(), le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

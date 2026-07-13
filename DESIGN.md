@@ -498,13 +498,110 @@ accurate but is no longer load-bearing for design decisions; testing
 shifts to `teatest` (already proven against `internal/filemanager`'s
 `Model`) for anything built as a real `bubbletea` component.
 
-**Not decided yet.** The pace and order of converting the remaining
-~40 `termlib`-based wizard call sites (Compute, Key Management, most S3
-action wizards) is intentionally not scheduled phase-by-phase now — "may
-evolve as we work through the transition" (the user's own framing).
-Tracked as a standing goal (TODO.md) rather than a committed roadmap;
-each conversion gets its own PLAN.md phase when it's actually picked up,
-the same incremental discipline this project has used throughout.
+**Superseded 2026-07-13** by "Removing termlib: Action Wizards and
+Output" immediately below, which is now the committed plan for exactly
+this remaining work.
+
+## Removing termlib: Action Wizards and Output (Design Addendum, 2026-07-13)
+
+**Status: designed 2026-07-13, not yet implemented.** Closes out the
+"Not decided yet" paragraph above by giving the remaining ~40 `termlib`
+call sites (every action wizard, plus `internal/ui`'s lower-level
+helpers) a committed conversion plan, per DECISIONS.md, "Remove termlib
+entirely: input via huh, output via `io.Writer`." Menu/Picker/List tiers
+are unaffected — they're already fully converted (Phase 20.2-20.14).
+
+**Surface audit.** Every remaining `termlib` symbol was traced to its
+actual call sites (not just its imports) across the ~44 files that still
+reference it:
+
+| Symbol | Refs | Actual usage |
+|---|---|---|
+| `termlib.Terminal` | 109 | Only `.Printf`/`.Println`/`.Refresh()` are ever called anywhere in this codebase — no cursor movement, no color state (`Move`/`Clear`/`SetFgColor`/etc. are unused). It's used purely as a buffered `io.Writer`. |
+| `termlib.LineEditor` | 83 | Only `.Prompt()` is ever called. History (`AppendHistory`/`SetHistory`/`History`), tab-completion (`Completer`), `$EDITOR` composition, and multi-line input (Ctrl+J) are all unused — no call site needs anything beyond single-line text entry with Ctrl+C/Ctrl+D handling. |
+| `termlib.PadRight` / `Truncate` | 40 / 12 | Column formatting, `internal/ui/display.go` only. |
+| `termlib.Bold` / `Reset` / `Green` / `Red` / `Yellow` | 4 / 5 / 2 / 1 / 1 | ANSI constants, `internal/ui/color.go` (`Highlight`) and `display.go` (`stateColor`) only. |
+| `termlib.FormatDuration` | 2 | 10-line `m:ss`/`h:mm:ss` formatter, `progress_ticker.go` and `create_ami_from_instance.go`. |
+| `termlib.New` / `NewLineEditor` | 6 / 3 | Constructors — `cmd/clasm/main.go` and tests only. |
+| `termlib.ErrInterrupted` | 4 | Ctrl+C sentinel from `LineEditor.Prompt`, checked in `isExitSignal`/`mapMenuPickerErr`-style error mapping. |
+
+Only three files call `le.Prompt()` directly: `internal/ui/prompt.go`
+(`Prompt`), `internal/ui/picklist.go` (`PickList` — see below), and
+`internal/workflow/confirm.go` (`Confirm`/`ConfirmDestructive`). Every
+other file that imports `termlib` merely threads `t`/`le` through its
+own signature to reach one of these three, or to call `t.Println`/
+`t.Printf` directly for status/error text. This means `le
+*termlib.LineEditor` disappears from every signature in the codebase
+once these three functions are rebuilt — there is no other direct
+caller to migrate.
+
+**`internal/ui.PickList` is dead code.** Every real call site was
+already converted to `huh.Select`/`tui.Picker` in the Phase 20.2-20.13
+punch list; only comments still reference it (`internal/tui/picker.go`,
+`object_browser.go`, `s3_menu.go`). `internal/ui/picklist.go` and
+`picklist_test.go` are deleted outright, not migrated.
+
+**Mapping: termlib construct → replacement.**
+
+- **`ui.Prompt`** (free-text input, optional default + validator; ~30
+  call sites) → rebuilt on `huh.NewInput()`, following the same
+  split-into-testable-core pattern already used for every Menu/Picker
+  conversion (Phase 20.2 etc.): a thin public wrapper plus an
+  `input io.Reader, output io.Writer`-accepting core that tests drive
+  via huh's accessible-mode pipe path. `WithDefault`/`WithValidator`
+  map to `huh.Input.Value(&s)` with a default pre-fill and
+  `.Validate(func(string) error)` — huh already re-prompts on a
+  validator error without any surrounding loop needed.
+- **`Confirm`** (y/n, re-prompt on unrecognized input) → `huh.NewConfirm()`.
+  The re-prompt-on-bad-input loop disappears entirely: a toggle
+  can't produce unrecognized input.
+- **`ConfirmDestructive`** (type-to-confirm, single attempt, mismatch
+  cancels rather than re-prompting) → `huh.NewInput()` with *no*
+  validator (a validator would make huh re-prompt until correct,
+  changing the single-attempt semantics); the exact-match check runs
+  after the field returns, same as today. The instructional text
+  currently printed via `t.Printf` before the prompt becomes the
+  field's `.Description()`.
+- **Plain status/error output** (`t.Println`/`t.Printf` for things like
+  "Exiting.", "Error: %s", the progress ticker's periodic elapsed-time
+  line, `loadUserData`'s "looks like an existing file" note) → the
+  `*termlib.Terminal` parameter becomes a plain `io.Writer`; `t.Println`/
+  `t.Printf` become `fmt.Fprintln`/`fmt.Fprintf`; `t.Refresh()` calls are
+  deleted outright (nothing buffers anymore, so there's nothing to
+  flush). In the ~9 files where `t`/`le` were pure pass-through (never
+  called directly, only forwarded to a callee), the parameter is
+  dropped or renamed to `w io.Writer` depending on whether that file's
+  own callees still need one.
+- **`progress_ticker.go`** — mechanical parity only: `*termlib.Terminal`
+  → `io.Writer`, `termlib.FormatDuration` → a local reimplementation
+  (same `m:ss`/`h:mm:ss` rounding). No new bubbletea spinner component
+  in this pass — explicitly deferred to a later chrome-improvement pass
+  (see TODO.md) rather than mixed into a pure removal.
+- **`termlib.Bold`/`Reset`/`Green`/`Red`/`Yellow`, `PadRight`/`Truncate`**
+  → reimplemented locally in `internal/ui` as the same small set of ANSI
+  constants and rune-aware pad/truncate helpers actually used (~20
+  lines total). No new dependency (e.g. `lipgloss`) introduced in this
+  pass — deferred to the later chrome-standardization pass so this
+  removal stays scoped to "delete termlib," not "restyle everything."
+- **`termlib.ErrInterrupted`** → once every input path runs through huh,
+  Ctrl+C during input surfaces as `huh.ErrUserAborted`, which the
+  Menu-tier conversions already map (`mapMenuPickerErr`,
+  `huhCancelledIsNil`). Each remaining `errors.Is(err,
+  termlib.ErrInterrupted)` check is replaced with the equivalent
+  `huh.ErrUserAborted` check at its call site, not a blanket rename —
+  some of these sites may find the check is already redundant once
+  the underlying prompt is gone.
+- **`cmd/clasm/main.go`** — `termlib.New(out)`/`termlib.NewLineEditor(...)`
+  construction is deleted; `os.Stdout` is passed directly wherever an
+  `io.Writer` is still needed.
+
+**Sequencing.** Unlike the Menu/Picker/List conversions (each
+independent, one call site at a time), this refactor changes a type
+threaded through nearly every `internal/workflow` function signature —
+Go requires the whole module to compile together, so it can't ship as
+40 independent single-file changes. See PLAN.md Phase 20.15 (foundational
+helpers) and 20.16 (mechanical propagation, domain by domain) for the
+ordered work breakdown.
 
 ## Core Features
 

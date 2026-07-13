@@ -2,10 +2,10 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/charmbracelet/huh"
-	"github.com/rsdoiel/termlib"
 )
 
 // S3Actions bundles the S3 domain's menu entry points, mirroring
@@ -63,11 +63,9 @@ var s3MenuItems = []s3Item{
 // is shown and the loop continues.
 //
 // The menu picker itself is huh.Select (DECISIONS.md, "Convert RunS3Menu
-// to huh.Select"), not termlib's ui.PickList -- le is accepted only to
-// keep this loop's signature the same shape as RunMainMenu/
-// RunKeyMgmtMenu's; it's otherwise unused here.
-func RunS3Menu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, actions S3Actions) error {
-	return runS3Menu(ctx, t, actions, nil, nil)
+// to huh.Select").
+func RunS3Menu(ctx context.Context, w io.Writer, actions S3Actions) error {
+	return runS3Menu(ctx, w, actions, nil, nil)
 }
 
 // runS3Menu is RunS3Menu's testable core: menuInput/menuOutput are nil in
@@ -78,31 +76,29 @@ func RunS3Menu(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 // WithAccessible(true).WithInput/WithOutput" -- see that entry's
 // lineAtATimeReader caveat: a reader that returns more than one buffered
 // line per Read call starves every field after the first).
-func runS3Menu(ctx context.Context, t *termlib.Terminal, actions S3Actions, menuInput io.Reader, menuOutput io.Writer) error {
+func runS3Menu(ctx context.Context, w io.Writer, actions S3Actions, menuInput io.Reader, menuOutput io.Writer) error {
 	for {
 		if ctx.Err() != nil {
-			printExiting(t)
+			printExiting(w)
 			return nil
 		}
 
-		choice, err := pickS3MenuItem(t, menuInput, menuOutput)
+		choice, err := pickS3MenuItem(w, menuInput, menuOutput)
 		if err != nil {
 			return mapMenuPickerErr(err)
 		}
 
 		if err := choice.action(actions, ctx); err != nil {
 			if isExitSignal(err) {
-				printExiting(t)
+				printExiting(w)
 				return nil
 			}
-			t.Printf("Error: %s\n", formatError(err))
-			t.Refresh()
+			fmt.Fprintf(w, "Error: %s\n", formatError(err))
 			continue
 		}
 
 		if err := actions.Refresh(ctx); err != nil {
-			t.Printf("Error refreshing listings: %s\n", formatError(err))
-			t.Refresh()
+			fmt.Fprintf(w, "Error refreshing listings: %s\n", formatError(err))
 		}
 	}
 }
@@ -115,7 +111,7 @@ func runS3Menu(ctx context.Context, t *termlib.Terminal, actions S3Actions, menu
 // This can only be exercised in real interactive use: accessible mode
 // (the tested path here) has no keyboard to simulate an abort with --
 // see mapMenuPickerErr's own doc comment for the same limitation.
-func pickS3MenuItem(t *termlib.Terminal, input io.Reader, output io.Writer) (s3Item, error) {
+func pickS3MenuItem(w io.Writer, input io.Reader, output io.Writer) (s3Item, error) {
 	opts := make([]huh.Option[int], len(s3MenuItems))
 	for i, item := range s3MenuItems {
 		opts[i] = huh.NewOption(item.label, i)
@@ -127,7 +123,7 @@ func pickS3MenuItem(t *termlib.Terminal, input io.Reader, output io.Writer) (s3I
 		Options(opts...).
 		Value(&idx)
 
-	if err := runMenuField(t, "(q to go back)", field, input, output); err != nil {
+	if err := runMenuField(w, "(q to go back)", field, input, output); err != nil {
 		return s3Item{}, err
 	}
 	return s3MenuItems[idx], nil

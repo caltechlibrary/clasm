@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -63,8 +62,8 @@ var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View ru
 // pickString. input/output are nil in production (the field runs
 // interactively on the real terminal) or supplied by tests to drive it
 // through its accessible-mode pipe path instead.
-func pickLifecycleAction(t *termlib.Terminal, input io.Reader, output io.Writer) (string, error) {
-	return pickString(t, "Choose an action", "(q to go back)", lifecycleActions, input, output)
+func pickLifecycleAction(w io.Writer, input io.Reader, output io.Writer) (string, error) {
+	return pickString(w, "Choose an action", "(q to go back)", lifecycleActions, input, output)
 }
 
 func lifecycleRuleLabel(r types.LifecycleRule) string {
@@ -114,17 +113,15 @@ func getLifecycleRules(ctx context.Context, client awsclient.S3API, bucket strin
 	return out.Rules, nil
 }
 
-func displayLifecycleRules(t *termlib.Terminal, rules []types.LifecycleRule) {
+func displayLifecycleRules(w io.Writer, rules []types.LifecycleRule) {
 	if len(rules) == 0 {
-		t.Println("No lifecycle rules configured.")
-		t.Refresh()
+		fmt.Fprintln(w, "No lifecycle rules configured.")
 		return
 	}
-	t.Println("Current lifecycle rules:")
+	fmt.Fprintln(w, "Current lifecycle rules:")
 	for _, r := range rules {
-		t.Printf("  %s\n", lifecycleRuleLabel(r))
+		fmt.Fprintf(w, "  %s\n", lifecycleRuleLabel(r))
 	}
-	t.Refresh()
 }
 
 // viewLifecycleRuleDetail lets the operator pick one existing rule and
@@ -133,50 +130,48 @@ func displayLifecycleRules(t *termlib.Terminal, rules []types.LifecycleRule) {
 // testing found the terse ID+prefix line displayLifecycleRules already
 // prints isn't enough to check a rule's actual expiration/transition
 // schedule at a glance.
-func viewLifecycleRuleDetail(ctx context.Context, t *termlib.Terminal, rules []types.LifecycleRule) error {
+func viewLifecycleRuleDetail(ctx context.Context, w io.Writer, rules []types.LifecycleRule) error {
 	if len(rules) == 0 {
-		t.Println("No rules to view.")
-		t.Refresh()
+		fmt.Fprintln(w, "No rules to view.")
 		return nil
 	}
 	rule, err := pickLifecycleRule(ctx, "Select a rule to view", rules)
 	if err != nil {
 		return err
 	}
-	printLifecycleRuleDetail(t, rule)
+	printLifecycleRuleDetail(w, rule)
 	return nil
 }
 
-func printLifecycleRuleDetail(t *termlib.Terminal, r types.LifecycleRule) {
+func printLifecycleRuleDetail(w io.Writer, r types.LifecycleRule) {
 	prefix := "(whole bucket)"
 	if r.Filter != nil && aws.ToString(r.Filter.Prefix) != "" {
 		prefix = aws.ToString(r.Filter.Prefix)
 	}
-	t.Printf("Rule %s\n", aws.ToString(r.ID))
-	t.Printf("  Status: %s\n", r.Status)
-	t.Printf("  Applies to: %s\n", prefix)
+	fmt.Fprintf(w, "Rule %s\n", aws.ToString(r.ID))
+	fmt.Fprintf(w, "  Status: %s\n", r.Status)
+	fmt.Fprintf(w, "  Applies to: %s\n", prefix)
 	if r.Expiration != nil && r.Expiration.Days != nil {
-		t.Printf("  Expires after %d day(s)\n", aws.ToInt32(r.Expiration.Days))
+		fmt.Fprintf(w, "  Expires after %d day(s)\n", aws.ToInt32(r.Expiration.Days))
 	} else {
-		t.Println("  No expiration set")
+		fmt.Fprintln(w, "  No expiration set")
 	}
 	if len(r.Transitions) == 0 {
-		t.Println("  No transitions set")
+		fmt.Fprintln(w, "  No transitions set")
 	} else {
-		t.Println("  Transitions:")
+		fmt.Fprintln(w, "  Transitions:")
 		for _, tr := range r.Transitions {
-			t.Printf("    %d day(s) -> %s\n", aws.ToInt32(tr.Days), storageClassLabel(tr.StorageClass))
+			fmt.Fprintf(w, "    %d day(s) -> %s\n", aws.ToInt32(tr.Days), storageClassLabel(tr.StorageClass))
 		}
 	}
-	t.Refresh()
 }
 
 // confirmLifecycleChange gates every add/edit/remove with a reminder that
 // AWS evaluates lifecycle rules on its own ~24-48h cadence -- this
 // schedules future automated deletion/transition, not an immediate one
 // (DESIGN.md Security Consideration #13).
-func confirmLifecycleChange(t *termlib.Terminal, le *termlib.LineEditor, action string) (bool, error) {
-	return Confirm(t, le, fmt.Sprintf("%s -- AWS applies lifecycle rule changes on its own evaluation cycle (typically 24-48 hours), not immediately. Proceed?", action))
+func confirmLifecycleChange(w io.Writer, action string, input io.Reader, output io.Writer) (bool, error) {
+	return Confirm(fmt.Sprintf("%s -- AWS applies lifecycle rule changes on its own evaluation cycle (typically 24-48 hours), not immediately. Proceed?", action), WithConfirmIO(input, output))
 }
 
 // promptOptionalDays prompts for a blank-to-skip, optionally-defaulted
@@ -188,7 +183,7 @@ func confirmLifecycleChange(t *termlib.Terminal, le *termlib.LineEditor, action 
 // Configuration rejects a transition scheduled on or after its rule's
 // expiration, and previously that rejection only surfaced as AWS's raw
 // error message (TODO.md, found during Phase 20's real-AWS verification).
-func promptOptionalDays(t *termlib.Terminal, le *termlib.LineEditor, label, def string, checks ...func(int32) error) (int32, bool, error) {
+func promptOptionalDays(w io.Writer, label, def string, input io.Reader, output io.Writer, checks ...func(int32) error) (int32, bool, error) {
 	var days int32
 	var set bool
 	opts := []ui.PromptOption{ui.WithValidator(func(s string) error {
@@ -213,7 +208,8 @@ func promptOptionalDays(t *termlib.Terminal, le *termlib.LineEditor, label, def 
 	if def != "" {
 		opts = append(opts, ui.WithDefault(def))
 	}
-	if _, err := ui.Prompt(t, le, label, opts...); err != nil {
+	opts = append(opts, ui.WithIO(input, output))
+	if _, err := ui.Prompt(label, opts...); err != nil {
 		return 0, false, err
 	}
 	return days, set, nil
@@ -246,16 +242,16 @@ func validateGreaterThan(limit int32, limitSet bool, limitLabel string) func(int
 // promptPositiveDays requires a positive integer -- used once the
 // operator has already opted into adding a transition, unlike
 // promptOptionalDays' blank-to-skip semantics.
-func promptPositiveDays(t *termlib.Terminal, le *termlib.LineEditor, label string) (int32, error) {
+func promptPositiveDays(w io.Writer, label string, input io.Reader, output io.Writer) (int32, error) {
 	var days int32
-	_, err := ui.Prompt(t, le, label, ui.WithValidator(func(s string) error {
+	_, err := ui.Prompt(label, ui.WithValidator(func(s string) error {
 		n, convErr := strconv.Atoi(strings.TrimSpace(s))
 		if convErr != nil || n <= 0 {
 			return errors.New("must be a positive integer")
 		}
 		days = int32(n)
 		return nil
-	}))
+	}), ui.WithIO(input, output))
 	return days, err
 }
 
@@ -271,12 +267,12 @@ func backupRuleID(prefix string) string {
 // transition is set, and an optional key-prefix scope. current is the
 // zero value for Add, or the rule being edited (its values become each
 // prompt's default) for Edit.
-func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) (types.LifecycleRule, error) {
+func promptGuidedBackupRule(w io.Writer, current types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) (types.LifecycleRule, error) {
 	expireDefault := ""
 	if current.Expiration != nil && current.Expiration.Days != nil {
 		expireDefault = strconv.Itoa(int(*current.Expiration.Days))
 	}
-	expireDays, expireSet, err := promptOptionalDays(t, le, "Expire objects after how many days? (blank to skip)", expireDefault)
+	expireDays, expireSet, err := promptOptionalDays(w, "Expire objects after how many days? (blank to skip)", expireDefault, menuInput, menuOutput)
 	if err != nil {
 		return types.LifecycleRule{}, err
 	}
@@ -285,7 +281,7 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 	if len(current.Transitions) > 0 && current.Transitions[0].Days != nil {
 		transitionDefault = strconv.Itoa(int(*current.Transitions[0].Days))
 	}
-	transitionDays, transitionSet, err := promptOptionalDays(t, le, "Transition to cheaper storage after how many days? (blank to skip)", transitionDefault,
+	transitionDays, transitionSet, err := promptOptionalDays(w, "Transition to cheaper storage after how many days? (blank to skip)", transitionDefault, menuInput, menuOutput,
 		validateLessThan(expireDays, expireSet, "the expiration"))
 	if err != nil {
 		return types.LifecycleRule{}, err
@@ -293,15 +289,14 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 
 	var storageClass types.TransitionStorageClass
 	if transitionSet {
-		storageClass, err = pickComparable(t, "Select a storage class to transition to", "(q to cancel)", backupStorageClasses, storageClassLabel, menuInput, menuOutput)
+		storageClass, err = pickComparable(w, "Select a storage class to transition to", "(q to cancel)", backupStorageClasses, storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
 	}
 
 	if !expireSet && !transitionSet {
-		t.Println("At least one of expiration or transition must be set -- nothing to do.")
-		t.Refresh()
+		fmt.Fprintln(w, "At least one of expiration or transition must be set -- nothing to do.")
 		return types.LifecycleRule{}, errNothingToDo
 	}
 
@@ -313,7 +308,8 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 	if prefixDefault != "" {
 		prefixOpts = append(prefixOpts, ui.WithDefault(prefixDefault))
 	}
-	prefix, err := ui.Prompt(t, le, "Key prefix (blank for whole bucket)", prefixOpts...)
+	prefixOpts = append(prefixOpts, ui.WithIO(menuInput, menuOutput))
+	prefix, err := ui.Prompt("Key prefix (blank for whole bucket)", prefixOpts...)
 	if err != nil {
 		return types.LifecycleRule{}, err
 	}
@@ -342,11 +338,11 @@ func promptGuidedBackupRule(t *termlib.Terminal, le *termlib.LineEditor, current
 // an optional prefix, a loop collecting zero-or-more transitions from the
 // full storage-class enum, and an optional expiration. current is the
 // zero value for Add, or the rule being edited for Edit.
-func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current types.LifecycleRule, existingRules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) (types.LifecycleRule, error) {
+func promptGenericRule(w io.Writer, current types.LifecycleRule, existingRules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) (types.LifecycleRule, error) {
 	id := aws.ToString(current.ID)
 	if id == "" {
 		var err error
-		id, err = ui.Prompt(t, le, "Rule ID", ui.WithValidator(func(s string) error {
+		id, err = ui.Prompt("Rule ID", ui.WithValidator(func(s string) error {
 			s = strings.TrimSpace(s)
 			if s == "" {
 				return errors.New("must not be blank")
@@ -357,7 +353,7 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 				}
 			}
 			return nil
-		}))
+		}), ui.WithIO(menuInput, menuOutput))
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -371,32 +367,32 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 	if prefixDefault != "" {
 		prefixOpts = append(prefixOpts, ui.WithDefault(prefixDefault))
 	}
-	prefix, err := ui.Prompt(t, le, "Key prefix (blank for whole bucket)", prefixOpts...)
+	prefixOpts = append(prefixOpts, ui.WithIO(menuInput, menuOutput))
+	prefix, err := ui.Prompt("Key prefix (blank for whole bucket)", prefixOpts...)
 	if err != nil {
 		return types.LifecycleRule{}, err
 	}
 
 	if len(current.Transitions) > 0 {
-		t.Println("Current transitions:")
+		fmt.Fprintln(w, "Current transitions:")
 		for _, tr := range current.Transitions {
-			t.Printf("  %d days -> %s\n", aws.ToInt32(tr.Days), storageClassLabel(tr.StorageClass))
+			fmt.Fprintf(w, "  %d days -> %s\n", aws.ToInt32(tr.Days), storageClassLabel(tr.StorageClass))
 		}
-		t.Refresh()
 	}
 	var transitions []types.Transition
 	for {
-		addMore, err := Confirm(t, le, "Add a transition?")
+		addMore, err := Confirm("Add a transition?", WithConfirmIO(menuInput, menuOutput))
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
 		if !addMore {
 			break
 		}
-		days, err := promptPositiveDays(t, le, "Transition after how many days?")
+		days, err := promptPositiveDays(w, "Transition after how many days?", menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
-		class, err := pickComparable(t, "Select a storage class", "(q to cancel)", types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
+		class, err := pickComparable(w, "Select a storage class", "(q to cancel)", types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -414,15 +410,14 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 	if current.Expiration != nil && current.Expiration.Days != nil {
 		expireDefault = strconv.Itoa(int(*current.Expiration.Days))
 	}
-	expireDays, expireSet, err := promptOptionalDays(t, le, "Expire objects after how many days? (blank to skip)", expireDefault,
+	expireDays, expireSet, err := promptOptionalDays(w, "Expire objects after how many days? (blank to skip)", expireDefault, menuInput, menuOutput,
 		validateGreaterThan(latestTransitionDays, len(transitions) > 0, "the latest transition"))
 	if err != nil {
 		return types.LifecycleRule{}, err
 	}
 
 	if len(transitions) == 0 && !expireSet {
-		t.Println("At least one transition or an expiration must be set -- nothing to do.")
-		t.Refresh()
+		fmt.Fprintln(w, "At least one transition or an expiration must be set -- nothing to do.")
 		return types.LifecycleRule{}, errNothingToDo
 	}
 
@@ -445,13 +440,13 @@ func promptGenericRule(t *termlib.Terminal, le *termlib.LineEditor, current type
 // Configuration, error). proceed is false without an error when the
 // operator declined a confirmation or the prompts collected nothing to
 // do -- both already reported, neither a reason to call AWS.
-func addLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
+func addLifecycleRule(w io.Writer, purpose string, rules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
 	var rule types.LifecycleRule
 	var err error
 	if purpose == "backup" {
-		rule, err = promptGuidedBackupRule(t, le, types.LifecycleRule{}, menuInput, menuOutput)
+		rule, err = promptGuidedBackupRule(w, types.LifecycleRule{}, menuInput, menuOutput)
 	} else {
-		rule, err = promptGenericRule(t, le, types.LifecycleRule{}, rules, menuInput, menuOutput)
+		rule, err = promptGenericRule(w, types.LifecycleRule{}, rules, menuInput, menuOutput)
 	}
 	if errors.Is(err, errNothingToDo) {
 		return nil, false, nil
@@ -460,30 +455,28 @@ func addLifecycleRule(t *termlib.Terminal, le *termlib.LineEditor, purpose strin
 		return nil, false, err
 	}
 
-	ok, err := confirmLifecycleChange(t, le, fmt.Sprintf("Add lifecycle rule %s", aws.ToString(rule.ID)))
+	ok, err := confirmLifecycleChange(w, fmt.Sprintf("Add lifecycle rule %s", aws.ToString(rule.ID)), menuInput, menuOutput)
 	if err != nil {
 		return nil, false, err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil, false, nil
 	}
 
 	return append(append([]types.LifecycleRule{}, rules...), rule), true, nil
 }
 
-func editLifecycleRule(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
+func editLifecycleRule(ctx context.Context, w io.Writer, purpose string, rules []types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
 	if len(rules) == 0 {
-		t.Println("No rules to edit.")
-		t.Refresh()
+		fmt.Fprintln(w, "No rules to edit.")
 		return nil, false, nil
 	}
 	existing, err := pickLifecycleRule(ctx, "Select a rule to edit", rules)
 	if err != nil {
 		return nil, false, err
 	}
-	return editLifecycleRuleForRule(t, le, purpose, rules, existing, menuInput, menuOutput)
+	return editLifecycleRuleForRule(w, purpose, rules, existing, menuInput, menuOutput)
 }
 
 // editLifecycleRuleForRule is editLifecycleRule's testable core, once
@@ -491,13 +484,13 @@ func editLifecycleRule(ctx context.Context, t *termlib.Terminal, le *termlib.Lin
 // Program (tui.RunPicker, DESIGN.md's full conversion punch list) that
 // can't be driven by a test's pipe input, same limitation as every
 // other Picker-tier conversion this session.
-func editLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, purpose string, rules []types.LifecycleRule, existing types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
+func editLifecycleRuleForRule(w io.Writer, purpose string, rules []types.LifecycleRule, existing types.LifecycleRule, menuInput io.Reader, menuOutput io.Writer) ([]types.LifecycleRule, bool, error) {
 	var updated types.LifecycleRule
 	var err error
 	if purpose == "backup" {
-		updated, err = promptGuidedBackupRule(t, le, existing, menuInput, menuOutput)
+		updated, err = promptGuidedBackupRule(w, existing, menuInput, menuOutput)
 	} else {
-		updated, err = promptGenericRule(t, le, existing, rules, menuInput, menuOutput)
+		updated, err = promptGenericRule(w, existing, rules, menuInput, menuOutput)
 	}
 	if errors.Is(err, errNothingToDo) {
 		return nil, false, nil
@@ -506,13 +499,12 @@ func editLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, purpo
 		return nil, false, err
 	}
 
-	ok, err := confirmLifecycleChange(t, le, fmt.Sprintf("Update lifecycle rule %s", aws.ToString(updated.ID)))
+	ok, err := confirmLifecycleChange(w, fmt.Sprintf("Update lifecycle rule %s", aws.ToString(updated.ID)), menuInput, menuOutput)
 	if err != nil {
 		return nil, false, err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil, false, nil
 	}
 
@@ -526,30 +518,28 @@ func editLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, purpo
 	return newRules, true, nil
 }
 
-func removeLifecycleRule(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
+func removeLifecycleRule(ctx context.Context, w io.Writer, rules []types.LifecycleRule, input io.Reader, output io.Writer) ([]types.LifecycleRule, bool, error) {
 	if len(rules) == 0 {
-		t.Println("No rules to remove.")
-		t.Refresh()
+		fmt.Fprintln(w, "No rules to remove.")
 		return nil, false, nil
 	}
 	existing, err := pickLifecycleRule(ctx, "Select a rule to remove", rules)
 	if err != nil {
 		return nil, false, err
 	}
-	return removeLifecycleRuleForRule(t, le, rules, existing)
+	return removeLifecycleRuleForRule(w, rules, existing, input, output)
 }
 
 // removeLifecycleRuleForRule is removeLifecycleRule's testable core,
 // once the rule to remove is resolved -- same limitation as
 // editLifecycleRuleForRule above.
-func removeLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, rules []types.LifecycleRule, existing types.LifecycleRule) ([]types.LifecycleRule, bool, error) {
-	ok, err := Confirm(t, le, fmt.Sprintf("Remove lifecycle rule %s? AWS applies this on its own evaluation cycle (typically 24-48 hours), not immediately.", aws.ToString(existing.ID)))
+func removeLifecycleRuleForRule(w io.Writer, rules []types.LifecycleRule, existing types.LifecycleRule, input io.Reader, output io.Writer) ([]types.LifecycleRule, bool, error) {
+	ok, err := Confirm(fmt.Sprintf("Remove lifecycle rule %s? AWS applies this on its own evaluation cycle (typically 24-48 hours), not immediately.", aws.ToString(existing.ID)), WithConfirmIO(input, output))
 	if err != nil {
 		return nil, false, err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil, false, nil
 	}
 
@@ -570,19 +560,18 @@ func removeLifecycleRuleForRule(t *termlib.Terminal, le *termlib.LineEditor, rul
 // two separate features). The API has no per-rule operations, so every
 // action ends by writing the complete modified rule set via one
 // s3:PutBucketLifecycleConfiguration call.
-func ManageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
+func ManageBucketLifecyclePolicies(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
 	if len(buckets) == 0 {
-		t.Println("No buckets found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No buckets found.")
 		return nil
 	}
 
 	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
 
-	return manageBucketLifecyclePolicies(ctx, t, le, newS3Client, bucket, nil, nil)
+	return manageBucketLifecyclePolicies(ctx, w, newS3Client, bucket, nil, nil)
 }
 
 // manageBucketLifecyclePolicies is ManageBucketLifecyclePolicies's
@@ -592,10 +581,8 @@ func ManageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 // nil in production (the action menu's huh.Select runs interactively on
 // the real terminal) and are supplied by tests to drive it through its
 // accessible-mode pipe path instead (DECISIONS.md, "huh fields are
-// pipe-testable...") -- separate from le, which still feeds every other
-// prompt in this function (rule/storage-class PickLists, confirms,
-// day-count/ID input), unaffected by this phase.
-func manageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket, actionMenuInput io.Reader, actionMenuOutput io.Writer) error {
+// pipe-testable...").
+func manageBucketLifecyclePolicies(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket, actionMenuInput io.Reader, actionMenuOutput io.Writer) error {
 	client, err := newS3Client(ctx, bucket.Region)
 	if err != nil {
 		return err
@@ -603,7 +590,7 @@ func manageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 
 	for {
 		if ctx.Err() != nil {
-			printExiting(t)
+			printExiting(w)
 			return nil
 		}
 
@@ -611,16 +598,16 @@ func manageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 		if err != nil {
 			return fmt.Errorf("getting lifecycle configuration for bucket %s: %w", bucket.Name, err)
 		}
-		displayLifecycleRules(t, rules)
+		displayLifecycleRules(w, rules)
 
-		action, err := pickLifecycleAction(t, actionMenuInput, actionMenuOutput)
+		action, err := pickLifecycleAction(w, actionMenuInput, actionMenuOutput)
 		if err != nil {
 			return huhCancelledIsNil(err)
 		}
 
 		if action == "View rule details" {
-			if err := viewLifecycleRuleDetail(ctx, t, rules); err != nil {
-				return cancelledIsNil(t, err)
+			if err := viewLifecycleRuleDetail(ctx, w, rules); err != nil {
+				return cancelledIsNil(w, err)
 			}
 			continue // read-only -- back to the action menu, not out of the workflow
 		}
@@ -629,14 +616,14 @@ func manageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 		var proceed bool
 		switch action {
 		case "Add rule":
-			newRules, proceed, err = addLifecycleRule(t, le, bucket.Purpose, rules, actionMenuInput, actionMenuOutput)
+			newRules, proceed, err = addLifecycleRule(w, bucket.Purpose, rules, actionMenuInput, actionMenuOutput)
 		case "Edit rule":
-			newRules, proceed, err = editLifecycleRule(ctx, t, le, bucket.Purpose, rules, actionMenuInput, actionMenuOutput)
+			newRules, proceed, err = editLifecycleRule(ctx, w, bucket.Purpose, rules, actionMenuInput, actionMenuOutput)
 		case "Remove rule":
-			newRules, proceed, err = removeLifecycleRule(ctx, t, le, rules)
+			newRules, proceed, err = removeLifecycleRule(ctx, w, rules, actionMenuInput, actionMenuOutput)
 		}
 		if err != nil {
-			return cancelledIsNil(t, err)
+			return cancelledIsNil(w, err)
 		}
 		if !proceed {
 			return nil
@@ -658,8 +645,7 @@ func manageBucketLifecyclePolicies(ctx context.Context, t *termlib.Terminal, le 
 			return fmt.Errorf("updating lifecycle configuration for bucket %s: %w", bucket.Name, err)
 		}
 
-		t.Printf("Updated lifecycle configuration for bucket %s (%d rule(s)).\n", bucket.Name, len(newRules))
-		t.Refresh()
+		fmt.Fprintf(w, "Updated lifecycle configuration for bucket %s (%d rule(s)).\n", bucket.Name, len(newRules))
 		return nil
 	}
 }

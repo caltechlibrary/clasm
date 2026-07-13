@@ -5,13 +5,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
@@ -144,18 +144,16 @@ func findInstance(out *ec2.DescribeInstancesOutput, instanceID string) (types.In
 // info. Shared by CreateInstanceFromAMI and CreateInstanceFromCloudInit,
 // which differ only in how params is collected (see DECISIONS.md, "Add
 // Create EC2 Instance from Cloud-Init YAML as a v1 primitive").
-func runLaunch(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, ec2Client awsclient.EC2API, ssmClient awsclient.SSMAPI, params LaunchInstanceParams) error {
-	t.Printf("\nAbout to launch: image=%s type=%s key=%s subnet=%s tags=%v\n",
+func runLaunch(ctx context.Context, w io.Writer, ec2Client awsclient.EC2API, ssmClient awsclient.SSMAPI, params LaunchInstanceParams, input io.Reader, output io.Writer) error {
+	fmt.Fprintf(w, "\nAbout to launch: image=%s type=%s key=%s subnet=%s tags=%v\n",
 		params.ImageID, params.InstanceType, params.KeyName, params.SubnetID, params.Tags)
-	t.Refresh()
 
-	ok, err := Confirm(t, le, "Launch this instance?")
+	ok, err := Confirm("Launch this instance?", WithConfirmIO(input, output))
 	if err != nil {
 		return err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
@@ -164,32 +162,29 @@ func runLaunch(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 		return fmt.Errorf("launching instance: %w", err)
 	}
 
-	t.Printf("Launched %s, waiting for it to reach running...\n", instanceID)
-	t.Refresh()
+	fmt.Fprintf(w, "Launched %s, waiting for it to reach running...\n", instanceID)
 	inst, err := WaitUntilRunning(ctx, ec2Client, instanceID, DefaultLaunchTimeout, DefaultLaunchPollInterval)
 	if err != nil {
 		return err
 	}
 
 	if params.UserData != "" {
-		t.Println("Waiting for SSM and checking cloud-init completion...")
-		t.Refresh()
+		fmt.Fprintln(w, "Waiting for SSM and checking cloud-init completion...")
 		result, err := checkCloudInitCompletion(ctx, ssmClient, instanceID, DefaultSSMOnlineTimeout, DefaultCloudInitTimeout, DefaultSSMPollInterval)
 		if err != nil {
 			return err
 		}
 		switch {
 		case result.Skipped:
-			t.Println("SSM never came online; skipping the cloud-init completion check.")
+			fmt.Fprintln(w, "SSM never came online; skipping the cloud-init completion check.")
 		case result.Status == "done":
-			t.Println("cloud-init completed successfully.")
+			fmt.Fprintln(w, "cloud-init completed successfully.")
 		default:
-			t.Println("cloud-init reported an error -- check the instance before using it.")
+			fmt.Fprintln(w, "cloud-init reported an error -- check the instance before using it.")
 		}
-		t.Refresh()
 	}
 
-	displayConnectionInfo(t, instanceID, inst)
+	displayConnectionInfo(w, instanceID, inst)
 	return nil
 }
 
@@ -197,14 +192,13 @@ func runLaunch(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor,
 // has a public IP, a ready-to-copy ssh command -- shared by every
 // workflow that ends with a running instance (Create Instance from AMI/
 // Cloud-Init YAML, Start Instance).
-func displayConnectionInfo(t *termlib.Terminal, instanceID string, inst types.Instance) {
-	t.Printf("\nInstance %s is running.\n", instanceID)
-	t.Printf("  Public IP:  %s\n", displayOrNone(aws.ToString(inst.PublicIpAddress)))
-	t.Printf("  Private IP: %s\n", displayOrNone(aws.ToString(inst.PrivateIpAddress)))
+func displayConnectionInfo(w io.Writer, instanceID string, inst types.Instance) {
+	fmt.Fprintf(w, "\nInstance %s is running.\n", instanceID)
+	fmt.Fprintf(w, "  Public IP:  %s\n", displayOrNone(aws.ToString(inst.PublicIpAddress)))
+	fmt.Fprintf(w, "  Private IP: %s\n", displayOrNone(aws.ToString(inst.PrivateIpAddress)))
 	if inst.PublicIpAddress != nil {
-		t.Printf("  ssh ec2-user@%s\n", aws.ToString(inst.PublicIpAddress))
+		fmt.Fprintf(w, "  ssh ec2-user@%s\n", aws.ToString(inst.PublicIpAddress))
 	}
-	t.Refresh()
 }
 
 func displayOrNone(s string) string {

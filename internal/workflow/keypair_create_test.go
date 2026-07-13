@@ -12,22 +12,21 @@ import (
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
-// The region picker converted to huh.Select (DESIGN.md's full conversion
-// punch list): its selection is fed via a separate newHuhAccessibleInput
-// reader (regionInput), not le, which still feeds createNewKeyPair
-// Interactive's own name prompt. Cancelling it is only reachable via
-// 'q'/ctrl+c, which accessible mode has no keyboard to simulate
-// (mapMenuPickerErr's doc comment covers the same limitation), so the
-// old "0=Cancel" test is retired rather than kept.
+// The region picker (huh.Select) and createNewKeyPairInteractive's own
+// name prompt now share one accessible-mode reader, read in sequence
+// one line at a time -- region first, then name. Cancelling the picker
+// is only reachable via 'q'/ctrl+c, which accessible mode has no
+// keyboard to simulate (mapMenuPickerErr's doc comment covers the same
+// limitation), so the old "0=Cancel" test is retired rather than kept.
 
 func TestCreateKeyPairStandalone_Success(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-new-key\n")
+	term, input, buf := newPipeEditor("1\nmy-new-key\n") // region, then key pair name
 
-	err := createKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := createKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,9 +51,9 @@ func TestCreateKeyPairStandalone_RetriesOnDuplicateName(t *testing.T) {
 		createKeyPairErrOnce: true,
 	}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "taken-name\nfresh-name\n")
+	term, input, buf := newPipeEditor("1\ntaken-name\nfresh-name\n")
 
-	err := createKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := createKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

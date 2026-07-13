@@ -35,9 +35,9 @@ func TestImportKeyPairStandalone_Success(t *testing.T) {
 	pubPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-imported-key\n"+pubPath+"\n")
+	term, input, buf := newPipeEditor("1\n" + "my-imported-key\n" + pubPath + "\n")
 
-	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := importKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,51 +52,23 @@ func TestImportKeyPairStandalone_Success(t *testing.T) {
 	}
 }
 
-func TestImportKeyPairStandalone_PromptLabelStaysShort(t *testing.T) {
-	// termlib's LineEditor.Prompt computes its input viewport as
-	// terminal-width minus prompt length, assuming the whole prompt fits
-	// on one row -- an overlong prompt label causes garbled, repeated
-	// redraws in a real terminal (this was a real reported bug: a ~180
-	// char label embedding the full ssh-keygen derivation hint). This
-	// can't be reproduced via this pipe-based test harness -- a non-TTY
-	// input makes LineEditor always fall back to its plain, non-raw-mode
-	// path, which has none of the affected redraw logic -- so this
-	// guards the actual invariant directly instead: the prompt label
-	// handed to ui.Prompt must stay well under a safe terminal width,
-	// even with the label's own "(.pub -- e.g. ...)" suffix plus room
-	// left over for whatever the operator types.
-	const maxSafePromptLen = 70
-	pubPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
-	fake := &fakeEC2Client{}
-	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-imported-key\n"+pubPath+"\n")
-
-	if err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	const marker = "Public key file path"
-	i := strings.Index(buf.String(), marker)
-	if i < 0 {
-		t.Fatalf("expected to find the public key file prompt, got:\n%s", buf.String())
-	}
-	promptLine := buf.String()[i:]
-	if j := strings.Index(promptLine, ": "); j >= 0 {
-		promptLine = promptLine[:j]
-	}
-	if len(promptLine) > maxSafePromptLen {
-		t.Errorf("prompt label is %d chars (%q), want <= %d -- long prompts break termlib's raw-mode redraw", len(promptLine), promptLine, maxSafePromptLen)
-	}
-}
+// TestImportKeyPairStandalone_PromptLabelStaysShort used to guard
+// against a real termlib.LineEditor.Prompt bug: its input viewport was
+// computed as terminal-width minus prompt length, assuming the whole
+// prompt fit on one row, so an overlong label caused garbled, repeated
+// redraws in a real terminal. Retired with termlib itself (DECISIONS.md,
+// "Remove termlib entirely: input via huh, output via io.Writer") --
+// huh.Input's own rendering doesn't share that implementation or its
+// single-row assumption, so the invariant no longer applies.
 
 func TestImportKeyPairStandalone_MalformedFileRejectedAndReprompted(t *testing.T) {
 	badPath := writePubKeyFile(t, "this is not a public key\n")
 	goodPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-key\n"+badPath+"\n"+goodPath+"\n")
+	term, input, buf := newPipeEditor("1\n" + "my-key\n" + badPath + "\n" + goodPath + "\n")
 
-	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := importKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,9 +91,9 @@ func TestImportKeyPairStandalone_PrivateKeyFileRejectionSuggestsSSHKeygen(t *tes
 	goodPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-key\n"+pemPath+"\n"+goodPath+"\n")
+	term, input, buf := newPipeEditor("1\n" + "my-key\n" + pemPath + "\n" + goodPath + "\n")
 
-	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := importKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,9 +115,9 @@ func TestImportKeyPairStandalone_ExpandsHomeTilde(t *testing.T) {
 	}
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-key\n~/.ssh/id_ed25519.pub\n")
+	term, input, buf := newPipeEditor("1\n" + "my-key\n~/.ssh/id_ed25519.pub\n")
 
-	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := importKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,9 +130,9 @@ func TestImportKeyPairStandalone_MissingFileRejected(t *testing.T) {
 	goodPath := writePubKeyFile(t, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial user@host\n")
 	fake := &fakeEC2Client{}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "my-key\n/no/such/file.pub\n"+goodPath+"\n")
+	term, input, buf := newPipeEditor("1\n" + "my-key\n/no/such/file.pub\n" + goodPath + "\n")
 
-	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := importKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,9 +151,9 @@ func TestImportKeyPairStandalone_RetriesOnDuplicateName(t *testing.T) {
 		importKeyPairErrOnce: true,
 	}
 	clients := map[string]awsclient.EC2API{"us-west-1": fake}
-	term, le, buf := newPipeEditor(t, "taken-name\n"+pubPath+"\nfresh-name\n"+pubPath+"\n")
+	term, input, buf := newPipeEditor("1\n" + "taken-name\n" + pubPath + "\nfresh-name\n" + pubPath + "\n")
 
-	err := importKeyPairStandalone(context.Background(), term, le, clients, newHuhAccessibleInput("1\n"), buf)
+	err := importKeyPairStandalone(context.Background(), term, clients, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/smithy-go"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/tui"
@@ -91,10 +91,10 @@ func roleLabel(r RoleInfo) string {
 // permission) -- an empty-but-successful list still offers "create new",
 // unlike promptSecurityGroupIDs/promptSubnetID, since this field's whole
 // point is to also cover the "I don't have one yet" case.
-func promptIAMInstanceProfileOrCreate(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.IAMAPI) (string, error) {
+func promptIAMInstanceProfileOrCreate(ctx context.Context, w io.Writer, client awsclient.IAMAPI, input io.Reader, output io.Writer) (string, error) {
 	profiles, err := listInstanceProfiles(ctx, client)
 	if err != nil {
-		return ui.Prompt(t, le, "IAM instance profile (optional; the instance profile name, not the IAM role name -- see IAM console > Roles > <role> > Instance profile ARNs)")
+		return ui.Prompt("IAM instance profile (optional; the instance profile name, not the IAM role name -- see IAM console > Roles > <role> > Instance profile ARNs)", ui.WithIO(input, output))
 	}
 
 	for {
@@ -113,7 +113,7 @@ func promptIAMInstanceProfileOrCreate(ctx context.Context, t *termlib.Terminal, 
 			return picked.name, nil
 		}
 
-		name, created, err := createInstanceProfileInteractive(ctx, t, le, client)
+		name, created, err := createInstanceProfileInteractive(ctx, w, client, input, output)
 		if err != nil {
 			return "", err
 		}
@@ -129,14 +129,13 @@ func promptIAMInstanceProfileOrCreate(ctx context.Context, t *termlib.Terminal, 
 // a new instance profile attached to it. Returns created=false (not an
 // error) if there are no roles to attach, so the caller can redisplay
 // the instance-profile picker.
-func createInstanceProfileInteractive(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.IAMAPI) (name string, created bool, err error) {
+func createInstanceProfileInteractive(ctx context.Context, w io.Writer, client awsclient.IAMAPI, input io.Reader, output io.Writer) (name string, created bool, err error) {
 	roles, err := listRoles(ctx, client)
 	if err != nil {
 		return "", false, err
 	}
 	if len(roles) == 0 {
-		t.Println("No IAM roles found in this account -- cannot create an instance profile without one to attach.")
-		t.Refresh()
+		fmt.Fprintln(w, "No IAM roles found in this account -- cannot create an instance profile without one to attach.")
 		return "", false, nil
 	}
 
@@ -144,7 +143,7 @@ func createInstanceProfileInteractive(ctx context.Context, t *termlib.Terminal, 
 	if err != nil {
 		return "", false, err
 	}
-	return createInstanceProfileForRole(ctx, t, le, client, role)
+	return createInstanceProfileForRole(ctx, w, client, role, input, output)
 }
 
 // createInstanceProfileForRole is createInstanceProfileInteractive's
@@ -152,24 +151,22 @@ func createInstanceProfileInteractive(ctx context.Context, t *termlib.Terminal, 
 // bubbletea Program (tui.RunPicker, DESIGN.md's full conversion punch
 // list) that can't be driven by a test's pipe input, same limitation as
 // every other Picker-tier conversion this session.
-func createInstanceProfileForRole(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.IAMAPI, role RoleInfo) (name string, created bool, err error) {
+func createInstanceProfileForRole(ctx context.Context, w io.Writer, client awsclient.IAMAPI, role RoleInfo, input io.Reader, output io.Writer) (name string, created bool, err error) {
 	for {
-		profileName, err := ui.Prompt(t, le, "New instance profile name", ui.WithDefault(role.Name), ui.WithValidator(requireNonEmpty))
+		profileName, err := ui.Prompt("New instance profile name", ui.WithDefault(role.Name), ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
 			return "", false, err
 		}
 
 		if err := createInstanceProfileFromRole(ctx, client, profileName, role.Name); err != nil {
 			if isDuplicateInstanceProfileError(err) {
-				t.Printf("invalid input: an instance profile named %q already exists -- choose a different name\n", profileName)
-				t.Refresh()
+				fmt.Fprintf(w, "invalid input: an instance profile named %q already exists -- choose a different name\n", profileName)
 				continue
 			}
 			return "", false, err
 		}
 
-		t.Printf("Created instance profile %q attached to role %q. Note: newly created instance profiles can take a few seconds to propagate -- if launching the instance fails with an instance-profile-not-found error, wait a moment and retry.\n", profileName, role.Name)
-		t.Refresh()
+		fmt.Fprintf(w, "Created instance profile %q attached to role %q. Note: newly created instance profiles can take a few seconds to propagate -- if launching the instance fails with an instance-profile-not-found error, wait a moment and retry.\n", profileName, role.Name)
 		return profileName, true, nil
 	}
 }

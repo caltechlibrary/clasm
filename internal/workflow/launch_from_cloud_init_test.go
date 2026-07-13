@@ -23,16 +23,17 @@ func writeCloudInitFixture(t *testing.T, contents string) string {
 	return path
 }
 
-// The curated-instance-type picker converted to huh.Select (DESIGN.md's
-// full conversion punch list): its selection is fed via a separate
-// newHuhAccessibleInput reader (menuInput), not le, which still feeds
-// every other prompt in this function. The cloud-init-YAML-file prompt
-// and the AMI picker (also converted to tui.RunPicker, Picker tier --
-// a real bubbletea Program that can't be pipe-tested) both now run in
-// the exported CollectLaunchInstanceParamsFromCloudInit, before this
-// testable core -- see userdata_test.go's promptCloudInitYAMLFile
-// tests for that prompt's own coverage (blank rejection, retry-on-
-// unreadable-file, "@" prefix tolerance), migrated there from this file.
+// The curated-instance-type picker (huh.Select) and every free-text
+// prompt in this function now share one accessible-mode reader
+// (menuInput), read in sequence one line at a time, in the exact order
+// collectLaunchInstanceParamsFromCloudInit's own flow reads them. The
+// cloud-init-YAML-file prompt and the AMI picker (also converted to
+// tui.RunPicker, Picker tier -- a real bubbletea Program that can't be
+// pipe-tested) both now run in the exported
+// CollectLaunchInstanceParamsFromCloudInit, before this testable core --
+// see userdata_test.go's promptCloudInitYAMLFile tests for that
+// prompt's own coverage (blank rejection, retry-on-unreadable-file, "@"
+// prefix tolerance), migrated there from this file.
 // CollectLaunchInstanceParamsFromCloudInit's own prompt-ordering and
 // AMI-selection behavior is covered only by manual/interactive
 // verification, the same accepted limitation this session's other
@@ -42,6 +43,7 @@ func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
 	image := inventory.Image{ImageID: "ami-2", Name: "invenio-rdm", Region: "us-east-1", Project: "caltechauthors"}
 
 	input := "newauthors\n" + // Name tag
+		"4\n" + // instance type: t3.large
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1\n" + // security groups
@@ -50,11 +52,11 @@ func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
 		"\n" + // Project tag (blank -> default from ami-2)
 		"development\n" // Environment tag
 
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput("4\n"), buf) // instance type: t3.large
+	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,16 +102,17 @@ func TestCollectLaunchInstanceParamsFromCloudInit_OfficialUbuntuAMIIsSelectableF
 	image := expanded[len(expanded)-1] // the appended official Ubuntu AMI
 
 	input := "web\n" +
+		"1\n" + // instance type: t3.micro
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
 		"subnet-1\n" +
-		"1\n" +
+		"1\n" + // IAM profile (free-text fallback via fakeIAMClientNoProfiles; value unchecked)
 		"caltechdata\n" +
 		"test\n"
 
-	term, le, buf := newPipeEditor(t, input)
-	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
+	term, menuInput, buf := newPipeEditor(input)
+	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

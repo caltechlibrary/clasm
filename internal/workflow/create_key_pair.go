@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/tui"
@@ -94,14 +94,13 @@ func pickKeyPairChoice(ctx context.Context, title string, choices []keyPairChoic
 // auto-detection) only if the list itself can't be fetched (e.g.
 // missing ec2:DescribeKeyPairs permission) -- in which case there's
 // nothing more reliable to offer than free text.
-func promptKeyPairNameOrCreate(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, keyDir string) (string, error) {
+func promptKeyPairNameOrCreate(ctx context.Context, w io.Writer, client awsclient.EC2API, keyDir string, input io.Reader, output io.Writer) (string, error) {
 	keyPairs, err := listKeyPairs(ctx, client)
 	if err != nil {
-		return promptKeyPairNameFreeText(ctx, t, le, client, keyDir)
+		return promptKeyPairNameFreeText(ctx, w, client, keyDir, input, output)
 	}
 	if len(keyPairs) == 0 {
-		t.Println("No key pairs found in this region.")
-		t.Refresh()
+		fmt.Fprintln(w, "No key pairs found in this region.")
 	}
 
 	choices := make([]keyPairChoice, 0, len(keyPairs)+1)
@@ -115,7 +114,7 @@ func promptKeyPairNameOrCreate(ctx context.Context, t *termlib.Terminal, le *ter
 		return "", err
 	}
 	if picked.createNew {
-		return createNewKeyPairInteractive(ctx, t, le, client, keyDir)
+		return createNewKeyPairInteractive(ctx, w, client, keyDir, input, output)
 	}
 	return picked.name, nil
 }
@@ -130,16 +129,16 @@ func promptKeyPairNameOrCreate(ctx context.Context, t *termlib.Terminal, le *ter
 // DECISIONS.md, "Derive the AWS key pair name from a private key
 // filename/path"). Kept as promptKeyPairNameOrCreate's fallback for when
 // the region's key pairs can't be listed at all.
-func promptKeyPairNameFreeText(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, keyDir string) (string, error) {
+func promptKeyPairNameFreeText(ctx context.Context, w io.Writer, client awsclient.EC2API, keyDir string, input io.Reader, output io.Writer) (string, error) {
 	for {
-		raw, err := ui.Prompt(t, le, "Key pair name (the name registered in AWS, not a local file path; type 'new' to create one; e.g. my-laptop-key; see EC2 console > Key Pairs)", ui.WithValidator(requireNonEmpty))
+		raw, err := ui.Prompt("Key pair name (the name registered in AWS, not a local file path; type 'new' to create one; e.g. my-laptop-key; see EC2 console > Key Pairs)", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
 			return "", err
 		}
 		raw = strings.TrimSpace(raw)
 
 		if strings.EqualFold(raw, "new") {
-			return createNewKeyPairInteractive(ctx, t, le, client, keyDir)
+			return createNewKeyPairInteractive(ctx, w, client, keyDir, input, output)
 		}
 
 		if !looksLikeKeyFilename(raw) {
@@ -148,13 +147,11 @@ func promptKeyPairNameFreeText(ctx context.Context, t *termlib.Terminal, le *ter
 
 		name, err := keyPairNameFromFilePath(raw, keyDir)
 		if err != nil {
-			t.Printf("invalid input: %v -- enter the AWS key pair name instead (see EC2 console > Key Pairs)\n", err)
-			t.Refresh()
+			fmt.Fprintf(w, "invalid input: %v -- enter the AWS key pair name instead (see EC2 console > Key Pairs)\n", err)
 			continue
 		}
 
-		t.Printf("%q looks like a private key file -- using AWS key pair name %q (derived from its filename)\n", raw, name)
-		t.Refresh()
+		fmt.Fprintf(w, "%q looks like a private key file -- using AWS key pair name %q (derived from its filename)\n", raw, name)
 		return name, nil
 	}
 }
@@ -162,9 +159,9 @@ func promptKeyPairNameFreeText(ctx context.Context, t *termlib.Terminal, le *ter
 // createNewKeyPairInteractive is promptKeyPairNameOrCreate's "new"
 // sub-flow, extracted so the outer function can also loop on a bad
 // key-filename input without duplicating this retry logic.
-func createNewKeyPairInteractive(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, keyDir string) (string, error) {
+func createNewKeyPairInteractive(ctx context.Context, w io.Writer, client awsclient.EC2API, keyDir string, input io.Reader, output io.Writer) (string, error) {
 	for {
-		name, err := ui.Prompt(t, le, "New key pair name", ui.WithValidator(requireNonEmpty))
+		name, err := ui.Prompt("New key pair name", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
 			return "", err
 		}
@@ -172,15 +169,13 @@ func createNewKeyPairInteractive(ctx context.Context, t *termlib.Terminal, le *t
 		path, err := createKeyPair(ctx, client, name, keyDir)
 		if err != nil {
 			if isDuplicateKeyPairError(err) {
-				t.Printf("invalid input: a key pair named %q already exists -- choose a different name\n", name)
-				t.Refresh()
+				fmt.Fprintf(w, "invalid input: a key pair named %q already exists -- choose a different name\n", name)
 				continue
 			}
 			return "", err
 		}
 
-		t.Printf("Created key pair %q (ED25519); private key saved to %s (mode 0600)\n", name, path)
-		t.Refresh()
+		fmt.Fprintf(w, "Created key pair %q (ED25519); private key saved to %s (mode 0600)\n", name, path)
 		return name, nil
 	}
 }

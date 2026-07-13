@@ -2,11 +2,11 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -59,25 +59,24 @@ var enaIncompatibilityChoices = []incompatibilityChoice{
 // supplied by tests to drive them through their accessible-mode pipe
 // path instead. Both share one reader/writer pair, read in sequence one
 // line at a time, same as a domain menu's own loop-iteration reads.
-func ensureInstanceTypeENACompatible(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.EC2API, instanceType string, amiEnaSupport bool, menuInput io.Reader, menuOutput io.Writer) (string, error) {
+func ensureInstanceTypeENACompatible(ctx context.Context, w io.Writer, client awsclient.EC2API, instanceType string, amiEnaSupport bool, menuInput io.Reader, menuOutput io.Writer) (string, error) {
 	for {
 		requires, err := instanceTypeRequiresENA(ctx, client, instanceType)
 		if err != nil || !requires || amiEnaSupport {
 			return instanceType, nil
 		}
 
-		t.Printf("Instance type %q requires Enhanced Networking (ENA), but the picked AMI is not ENA-enabled.\n", instanceType)
-		t.Println("Non-Nitro types (e.g. t2.micro, t2.medium) don't require ENA and work with this AMI as-is; permanently fixing the AMI itself requires enabling ENA on the source instance and re-creating the AMI (outside awsops).")
-		t.Refresh()
+		fmt.Fprintf(w, "Instance type %q requires Enhanced Networking (ENA), but the picked AMI is not ENA-enabled.\n", instanceType)
+		fmt.Fprintln(w, "Non-Nitro types (e.g. t2.micro, t2.medium) don't require ENA and work with this AMI as-is; permanently fixing the AMI itself requires enabling ENA on the source instance and re-creating the AMI (outside awsops).")
 
-		choice, err := pickComparable(t, "How would you like to proceed?", "(q to cancel)", enaIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
+		choice, err := pickComparable(w, "How would you like to proceed?", "(q to cancel)", enaIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
 		if err != nil {
 			return "", err
 		}
 
 		switch choice.kind {
 		case incompatibilityChangeInstanceType:
-			instanceType, err = promptInstanceType(t, le, menuInput, menuOutput)
+			instanceType, err = promptInstanceType(w, menuInput, menuOutput)
 			if err != nil {
 				return "", err
 			}

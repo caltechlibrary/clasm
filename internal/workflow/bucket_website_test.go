@@ -21,10 +21,10 @@ import (
 // object_browser.go's huh-based bucket pre-flight already has.
 
 func TestConfigureBucketWebsite_NoBucketsFound(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return nil, nil }
 
-	if err := ConfigureBucketWebsite(context.Background(), term, le, newClient, nil); err != nil {
+	if err := ConfigureBucketWebsite(context.Background(), term, newClient, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "No buckets found") {
@@ -38,10 +38,10 @@ func TestConfigureBucketWebsite_DefaultsAppliedViaEnter(t *testing.T) {
 	input := "\n" + // accept default index document
 		"\n" // accept default error document
 
-	term, le, _ := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := configureBucketWebsite(context.Background(), term, le, newClient, bucket); err != nil {
+	if err := configureBucketWebsite(context.Background(), term, newClient, bucket, le, buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -63,10 +63,10 @@ func TestConfigureBucketWebsite_SuccessPathWithCustomDocuments(t *testing.T) {
 	input := "home.html\n" +
 		"oops.html\n"
 
-	term, le, buf := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := configureBucketWebsite(context.Background(), term, le, newClient, bucket); err != nil {
+	if err := configureBucketWebsite(context.Background(), term, newClient, bucket, le, buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

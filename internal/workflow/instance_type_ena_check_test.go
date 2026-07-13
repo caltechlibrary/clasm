@@ -45,10 +45,10 @@ func TestInstanceTypeRequiresENA_PropagatesError(t *testing.T) {
 // a separate newHuhAccessibleInput reader (menuInput), not le.
 
 func TestEnsureInstanceTypeENACompatible_CompatibleReturnsImmediately(t *testing.T) {
-	fake := &fakeEC2Client{}              // no type requires ENA
-	term, le, buf := newPipeEditor(t, "") // no input needed -- must not prompt
+	fake := &fakeEC2Client{}          // no type requires ENA
+	term, _, buf := newPipeEditor("") // no input needed -- must not prompt
 
-	got, err := ensureInstanceTypeENACompatible(context.Background(), term, le, fake, "t2.micro", false, nil, nil)
+	got, err := ensureInstanceTypeENACompatible(context.Background(), term, fake, "t2.micro", false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,9 +62,9 @@ func TestEnsureInstanceTypeENACompatible_CompatibleReturnsImmediately(t *testing
 
 func TestEnsureInstanceTypeENACompatible_ENARequiredButAMISupportsIt(t *testing.T) {
 	fake := &fakeEC2Client{enaRequiredInstanceTypes: map[string]bool{"t3.small": true}}
-	term, le, buf := newPipeEditor(t, "") // no input needed -- must not prompt
+	term, _, buf := newPipeEditor("") // no input needed -- must not prompt
 
-	got, err := ensureInstanceTypeENACompatible(context.Background(), term, le, fake, "t3.small", true, nil, nil)
+	got, err := ensureInstanceTypeENACompatible(context.Background(), term, fake, "t3.small", true, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,9 +78,9 @@ func TestEnsureInstanceTypeENACompatible_ENARequiredButAMISupportsIt(t *testing.
 
 func TestEnsureInstanceTypeENACompatible_CheckErrorSkipsGracefully(t *testing.T) {
 	fake := &fakeEC2Client{describeInstanceTypesErr: errors.New("access denied")}
-	term, le, buf := newPipeEditor(t, "") // no input needed -- must not prompt
+	term, _, buf := newPipeEditor("") // no input needed -- must not prompt
 
-	got, err := ensureInstanceTypeENACompatible(context.Background(), term, le, fake, "t3.small", false, nil, nil)
+	got, err := ensureInstanceTypeENACompatible(context.Background(), term, fake, "t3.small", false, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,10 +94,10 @@ func TestEnsureInstanceTypeENACompatible_CheckErrorSkipsGracefully(t *testing.T)
 
 func TestEnsureInstanceTypeENACompatible_ChangeToACompatibleType(t *testing.T) {
 	fake := &fakeEC2Client{enaRequiredInstanceTypes: map[string]bool{"t3.small": true}}
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 
 	// 1) Change instance type -> pick curated entry 1 (t3.micro, not ENA-required)
-	got, err := ensureInstanceTypeENACompatible(context.Background(), term, le, fake, "t3.small", false, newHuhAccessibleInput("1\n1\n"), buf)
+	got, err := ensureInstanceTypeENACompatible(context.Background(), term, fake, "t3.small", false, newHuhAccessibleInput("1\n1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,9 +111,9 @@ func TestEnsureInstanceTypeENACompatible_ChangeToACompatibleType(t *testing.T) {
 
 func TestEnsureInstanceTypeENACompatible_AbortReturnsErrCancelled(t *testing.T) {
 	fake := &fakeEC2Client{enaRequiredInstanceTypes: map[string]bool{"t3.small": true}}
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 
-	_, err := ensureInstanceTypeENACompatible(context.Background(), term, le, fake, "t3.small", false, newHuhAccessibleInput("2\n"), buf) // 2) Abort this launch
+	_, err := ensureInstanceTypeENACompatible(context.Background(), term, fake, "t3.small", false, newHuhAccessibleInput("2\n"), buf) // 2) Abort this launch
 	if !errors.Is(err, ui.ErrCancelled) {
 		t.Fatalf("expected ui.ErrCancelled, got: %v", err)
 	}

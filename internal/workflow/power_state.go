@@ -3,11 +3,11 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -54,39 +54,38 @@ func StartInstance(ctx context.Context, client awsclient.EC2API, instanceID stri
 // to pick from. Takes a per-region client map (Phase 2 aggregates
 // instances across all four regions) and resolves the one matching the
 // picked instance's region.
-func StartEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
+func StartEC2Instance(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
 	stopped := filterInstancesByState(instances, "stopped")
 	if len(stopped) == 0 {
-		t.Println("No stopped instances found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No stopped instances found.")
 		return nil
 	}
 
 	inst, err := pickInstance(ctx, "Select an instance to start", stopped)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
-	return startEC2Instance(ctx, t, le, clients, inst)
+	return startEC2Instance(ctx, w, clients, inst, nil, nil)
 }
 
 // startEC2Instance is StartEC2Instance's testable core, once an instance
 // is resolved -- instance selection runs a real bubbletea Program
 // (tui.RunPicker, DESIGN.md's full conversion punch list) that can't be
 // driven by a test's pipe input, same limitation as pickBucket (Phase
-// 20.4).
-func startEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, inst inventory.Instance) error {
+// 20.4). input/output are nil in production and supplied by tests to
+// drive the confirmation through its accessible-mode pipe path instead.
+func startEC2Instance(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, inst inventory.Instance, input io.Reader, output io.Writer) error {
 	client, err := resolveEC2(clients, inst.Region)
 	if err != nil {
 		return err
 	}
 
-	ok, err := Confirm(t, le, fmt.Sprintf("Start instance %s (%s)?", inst.InstanceID, inst.Name))
+	ok, err := Confirm(fmt.Sprintf("Start instance %s (%s)?", inst.InstanceID, inst.Name), WithConfirmIO(input, output))
 	if err != nil {
 		return err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
@@ -94,16 +93,14 @@ func startEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.Line
 		return fmt.Errorf("starting instance %s: %w", inst.InstanceID, err)
 	}
 
-	t.Printf("Starting %s, waiting for it to reach running...\n", inst.InstanceID)
-	t.Refresh()
+	fmt.Fprintf(w, "Starting %s, waiting for it to reach running...\n", inst.InstanceID)
 	running, err := WaitUntilRunning(ctx, client, inst.InstanceID, DefaultLaunchTimeout, DefaultLaunchPollInterval)
 	if err != nil {
 		return err
 	}
 
-	displayConnectionInfo(t, inst.InstanceID, running)
-	t.Println("Note: the public IP may have changed since this instance was last running, unless it uses an Elastic IP.")
-	t.Refresh()
+	displayConnectionInfo(w, inst.InstanceID, running)
+	fmt.Fprintln(w, "Note: the public IP may have changed since this instance was last running, unless it uses an Elastic IP.")
 	return nil
 }
 
@@ -129,36 +126,34 @@ func WaitUntilStopped(ctx context.Context, client awsclient.EC2API, instanceID s
 // (not an error) on cancellation or when there are no running instances
 // to pick from. Takes a per-region client map and resolves the one
 // matching the picked instance's region, same as StartEC2Instance.
-func StopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
+func StopEC2Instance(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance) error {
 	running := filterInstancesByState(instances, "running")
 	if len(running) == 0 {
-		t.Println("No running instances found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No running instances found.")
 		return nil
 	}
 
 	inst, err := pickInstance(ctx, "Select an instance to stop", running)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
-	return stopEC2Instance(ctx, t, le, clients, inst)
+	return stopEC2Instance(ctx, w, clients, inst, nil, nil)
 }
 
 // stopEC2Instance is StopEC2Instance's testable core, once an instance
 // is resolved -- same limitation as startEC2Instance above.
-func stopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, clients map[string]awsclient.EC2API, inst inventory.Instance) error {
+func stopEC2Instance(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, inst inventory.Instance, input io.Reader, output io.Writer) error {
 	client, err := resolveEC2(clients, inst.Region)
 	if err != nil {
 		return err
 	}
 
-	ok, err := Confirm(t, le, fmt.Sprintf("Stop instance %s (%s)?", inst.InstanceID, inst.Name))
+	ok, err := Confirm(fmt.Sprintf("Stop instance %s (%s)?", inst.InstanceID, inst.Name), WithConfirmIO(input, output))
 	if err != nil {
 		return err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
@@ -166,14 +161,12 @@ func stopEC2Instance(ctx context.Context, t *termlib.Terminal, le *termlib.LineE
 		return fmt.Errorf("stopping instance %s: %w", inst.InstanceID, err)
 	}
 
-	t.Printf("Stopping %s, waiting for it to reach stopped...\n", inst.InstanceID)
-	t.Refresh()
+	fmt.Fprintf(w, "Stopping %s, waiting for it to reach stopped...\n", inst.InstanceID)
 	if _, err := WaitUntilStopped(ctx, client, inst.InstanceID, DefaultLaunchTimeout, DefaultLaunchPollInterval); err != nil {
 		return err
 	}
 
-	t.Printf("Instance %s is now stopped.\n", inst.InstanceID)
-	t.Refresh()
+	fmt.Fprintf(w, "Instance %s is now stopped.\n", inst.InstanceID)
 	return nil
 }
 

@@ -15,7 +15,6 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260705004817-2cc9a8fe1146
-	github.com/rsdoiel/termlib v0.0.10-0.20260708184214-354195d36c57
 	golang.org/x/term v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
 )

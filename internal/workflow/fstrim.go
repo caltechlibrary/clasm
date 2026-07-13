@@ -2,11 +2,12 @@ package workflow
 
 import (
 	"context"
+	"fmt"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
@@ -41,18 +42,17 @@ func isSSMOnline(ctx context.Context, client awsclient.SSMAPI, instanceID string
 // to complete, this returns cleanly (nil) -- fstrim is an optimization,
 // never a precondition for AMI creation (see DESIGN.md, "Domain
 // Knowledge Carried Forward").
-func offerFstrimIfAvailable(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, client awsclient.SSMAPI, instanceID string) error {
+func offerFstrimIfAvailable(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID string, input io.Reader, output io.Writer) error {
 	online, err := isSSMOnline(ctx, client, instanceID)
 	if err != nil {
 		return err
 	}
 	if !online {
-		t.Println("SSM is not available on this instance; skipping fstrim.")
-		t.Refresh()
+		fmt.Fprintln(w, "SSM is not available on this instance; skipping fstrim.")
 		return nil
 	}
 
-	run, err := Confirm(t, le, "Run fstrim via SSM before snapshotting?")
+	run, err := Confirm("Run fstrim via SSM before snapshotting?", WithConfirmIO(input, output))
 	if err != nil {
 		return err
 	}
@@ -65,10 +65,9 @@ func offerFstrimIfAvailable(ctx context.Context, t *termlib.Terminal, le *termli
 		return err
 	}
 	if status != types.CommandInvocationStatusSuccess {
-		t.Printf("fstrim did not complete (status: %s)\n", status)
+		fmt.Fprintf(w, "fstrim did not complete (status: %s)\n", status)
 	} else {
-		t.Printf("fstrim output:\n%s\n", stdout)
+		fmt.Fprintf(w, "fstrim output:\n%s\n", stdout)
 	}
-	t.Refresh()
 	return nil
 }

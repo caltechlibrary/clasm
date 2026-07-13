@@ -10,9 +10,9 @@ import (
 
 func TestOfferFstrim_SkipsCleanlyWhenSSMUnavailable(t *testing.T) {
 	fake := &fakeSSMClient{onlineAfterCalls: 0}
-	term, le, buf := newPipeEditor(t, "")
+	term, le, buf := newPipeEditor("")
 
-	err := offerFstrimIfAvailable(context.Background(), term, le, fake, "i-1")
+	err := offerFstrimIfAvailable(context.Background(), term, fake, "i-1", le, buf)
 	if err != nil {
 		t.Fatalf("expected a clean skip, got error: %v", err)
 	}
@@ -23,9 +23,9 @@ func TestOfferFstrim_SkipsCleanlyWhenSSMUnavailable(t *testing.T) {
 
 func TestOfferFstrim_DeclinedDoesNotRun(t *testing.T) {
 	fake := &fakeSSMClient{onlineAfterCalls: 1}
-	term, le, _ := newPipeEditor(t, "n\n")
+	term, le, buf := newPipeEditor("n\n")
 
-	err := offerFstrimIfAvailable(context.Background(), term, le, fake, "i-1")
+	err := offerFstrimIfAvailable(context.Background(), term, fake, "i-1", le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -36,9 +36,9 @@ func TestOfferFstrim_DeclinedDoesNotRun(t *testing.T) {
 
 func TestOfferFstrim_AcceptedRunsSuccessfully(t *testing.T) {
 	fake := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "/dev/root: 1.2 GiB (1234567890 bytes) trimmed\n"}
-	term, le, buf := newPipeEditor(t, "y\n")
+	term, le, buf := newPipeEditor("y\n")
 
-	err := offerFstrimIfAvailable(context.Background(), term, le, fake, "i-1")
+	err := offerFstrimIfAvailable(context.Background(), term, fake, "i-1", le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,9 +52,9 @@ func TestOfferFstrim_AcceptedRunsSuccessfully(t *testing.T) {
 
 func TestOfferFstrim_AcceptedButCommandFails(t *testing.T) {
 	fake := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	term, le, buf := newPipeEditor(t, "y\n")
+	term, le, buf := newPipeEditor("y\n")
 
-	err := offerFstrimIfAvailable(context.Background(), term, le, fake, "i-1")
+	err := offerFstrimIfAvailable(context.Background(), term, fake, "i-1", le, buf)
 	if err != nil {
 		t.Fatalf("expected a warning, not an error, when fstrim itself fails: %v", err)
 	}

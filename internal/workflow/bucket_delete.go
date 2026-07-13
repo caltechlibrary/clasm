@@ -3,10 +3,10 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -25,22 +25,25 @@ import (
 // Phase 20.4) that can't be driven by a test's pipe input, so the rest
 // of the workflow lives in the unexported, directly-testable
 // deleteBucket.
-func DeleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
+func DeleteBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
 	if len(buckets) == 0 {
-		t.Println("No buckets found.")
-		t.Refresh()
+		fmt.Fprintln(w, "No buckets found.")
 		return nil
 	}
 
 	bucket, err := pickBucket(ctx, "Select a bucket to delete", buckets)
 	if err != nil {
-		return cancelledIsNil(t, err)
+		return cancelledIsNil(w, err)
 	}
 
-	return deleteBucket(ctx, t, le, newS3Client, bucket)
+	return deleteBucket(ctx, w, newS3Client, bucket, nil, nil)
 }
 
-func deleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEditor, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket) error {
+// deleteBucket is DeleteBucket's testable core, once a bucket is
+// resolved. input/output are nil in production and supplied by tests to
+// drive the ConfirmDestructive gate through its accessible-mode pipe
+// path instead.
+func deleteBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), bucket inventory.Bucket, input io.Reader, output io.Writer) error {
 	client, err := newS3Client(ctx, bucket.Region)
 	if err != nil {
 		return err
@@ -51,27 +54,23 @@ func deleteBucket(ctx context.Context, t *termlib.Terminal, le *termlib.LineEdit
 		return fmt.Errorf("checking whether bucket %s is empty: %w", bucket.Name, err)
 	}
 	if len(objects) > 0 {
-		t.Printf("Bucket %s is not empty (%d object(s)) -- empty it first via Browse & Manage Objects.\n", bucket.Name, len(objects))
-		t.Refresh()
+		fmt.Fprintf(w, "Bucket %s is not empty (%d object(s)) -- empty it first via Browse & Manage Objects.\n", bucket.Name, len(objects))
 		return nil
 	}
 
-	t.Printf("This permanently deletes bucket %s. This cannot be undone.\n", bucket.Name)
-	t.Refresh()
-	ok, err := ConfirmDestructive(t, le, bucket.Name)
+	fmt.Fprintf(w, "This permanently deletes bucket %s. This cannot be undone.\n", bucket.Name)
+	ok, err := ConfirmDestructive([]string{bucket.Name}, WithConfirmIO(input, output))
 	if err != nil {
 		return err
 	}
 	if !ok {
-		t.Println("Cancelled.")
-		t.Refresh()
+		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
 	if _, err := client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket.Name)}); err != nil {
 		return fmt.Errorf("deleting bucket %s: %w", bucket.Name, err)
 	}
-	t.Printf("Deleted bucket %s.\n", bucket.Name)
-	t.Refresh()
+	fmt.Fprintf(w, "Deleted bucket %s.\n", bucket.Name)
 	return nil
 }

@@ -39,9 +39,9 @@ func TestDeregisterAMI_Failure(t *testing.T) {
 func TestRemoveAMI_DryRunDisplay(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base-ubuntu", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "ami-1\n")
+	term, le, buf := newPipeEditor("ami-1\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,9 +60,9 @@ func TestRemoveAMI_DependencyWarningShownWhenInUse(t *testing.T) {
 		{InstanceID: "i-2", Name: "other", ImageID: "ami-2"},
 	}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "ami-1\n")
+	term, le, buf := newPipeEditor("ami-1\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, instances)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, instances, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,9 +78,9 @@ func TestRemoveAMI_NoDependencyWarningWhenUnused(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
 	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", ImageID: "ami-2"}}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "ami-1\n")
+	term, le, buf := newPipeEditor("ami-1\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, instances)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, instances, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,9 +92,9 @@ func TestRemoveAMI_NoDependencyWarningWhenUnused(t *testing.T) {
 func TestRemoveAMI_ProductionWarningShown(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base", Environment: "production", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "ami-1\n")
+	term, le, buf := newPipeEditor("ami-1\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,9 +106,9 @@ func TestRemoveAMI_ProductionWarningShown(t *testing.T) {
 func TestRemoveAMI_ProductionWarningAbsentOtherwise(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base", Environment: "development", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "ami-1\n")
+	term, le, buf := newPipeEditor("ami-1\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,9 +120,9 @@ func TestRemoveAMI_ProductionWarningAbsentOtherwise(t *testing.T) {
 func TestRemoveAMI_TypeToConfirmAcceptsName(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base-ubuntu", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "base-ubuntu\n") // type the Name, not the ID
+	term, le, buf := newPipeEditor("base-ubuntu\n") // type the Name, not the ID
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,9 +134,9 @@ func TestRemoveAMI_TypeToConfirmAcceptsName(t *testing.T) {
 func TestRemoveAMI_TypeToConfirmMismatchCancels(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base-ubuntu", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "wrong\n")
+	term, le, buf := newPipeEditor("wrong\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,9 +147,9 @@ func TestRemoveAMI_TypeToConfirmMismatchCancels(t *testing.T) {
 
 func TestRemoveAMI_NoAMIs(t *testing.T) {
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 
-	err := RemoveAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, nil, nil)
+	err := RemoveAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,9 +161,9 @@ func TestRemoveAMI_NoAMIs(t *testing.T) {
 func TestRemoveAMI_PropagatesRemoveError(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
 	fake := &fakeEC2Client{deregisterImageErr: errors.New("boom")}
-	term, le, _ := newPipeEditor(t, "ami-1\n")
+	term, le, buf := newPipeEditor("ami-1\n")
 
-	err := removeAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil)
+	err := removeAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, img, nil, le, buf)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rsdoiel/termlib"
-
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
@@ -18,6 +16,46 @@ import (
 // package, and worth testing here, is each *ListViewConfig builder's
 // column formatting -- a pure data transformation with no interactive
 // loop to drive.
+
+func TestTruncate(t *testing.T) {
+	cases := []struct {
+		in   string
+		maxW int
+		want string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello world", 8, "hello w…"},
+		{"hello", 1, "…"},
+		{"", 5, ""},
+		{"日本語テスト", 4, "日本語…"},
+	}
+	for _, c := range cases {
+		got := truncate(c.in, c.maxW)
+		if got != c.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.maxW, got, c.want)
+		}
+	}
+}
+
+func TestPadRight(t *testing.T) {
+	cases := []struct {
+		in   string
+		w    int
+		want string
+	}{
+		{"hi", 5, "hi   "},
+		{"hello", 5, "hello"},
+		{"hello world", 5, "hell…"},
+		{"", 3, "   "},
+	}
+	for _, c := range cases {
+		got := padRight(c.in, c.w)
+		if got != c.want {
+			t.Errorf("padRight(%q, %d) = %q, want %q", c.in, c.w, got, c.want)
+		}
+	}
+}
 
 func TestInstanceListViewConfig_Empty(t *testing.T) {
 	cfg := instanceListViewConfig(nil)
@@ -63,7 +101,7 @@ func TestInstanceRow_ColorEnabled_AppliesStateColor(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "web", State: "running"}
 	row := instanceRow(inst, true)
 
-	if !strings.Contains(row, termlib.Green) || !strings.Contains(row, termlib.Reset) {
+	if !strings.Contains(row, ansiGreen) || !strings.Contains(row, ansiReset) {
 		t.Errorf("expected a green/reset ANSI wrap around the running state, got:\n%q", row)
 	}
 }

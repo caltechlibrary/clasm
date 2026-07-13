@@ -5,10 +5,9 @@ package workflow
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
-
-	"github.com/rsdoiel/termlib"
 
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -28,7 +27,7 @@ import (
 // silent, confusing failure mode found in real use. See DECISIONS.md,
 // "Auto-detect a bare existing-file path in User data / Cloud-init
 // YAML input".
-func loadUserData(t *termlib.Terminal, input string) (string, error) {
+func loadUserData(w io.Writer, input string) (string, error) {
 	path, isFile := strings.CutPrefix(input, "@")
 	if !isFile {
 		info, err := os.Stat(input)
@@ -36,8 +35,7 @@ func loadUserData(t *termlib.Terminal, input string) (string, error) {
 			return input, nil
 		}
 		path = input
-		t.Printf("%q looks like an existing file -- loading its contents (prefix with \"@\" to make this explicit next time)\n", input)
-		t.Refresh()
+		fmt.Fprintf(w, "%q looks like an existing file -- loading its contents (prefix with \"@\" to make this explicit next time)\n", input)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -57,9 +55,9 @@ func loadUserData(t *termlib.Terminal, input string) (string, error) {
 // "Create EC2 Instance from Cloud-Init YAML always reads from a file").
 // A leading "@" is tolerated (muscle memory from Feature 2's prompt) but
 // not required.
-func promptCloudInitYAMLFile(t *termlib.Terminal, le *termlib.LineEditor) (string, error) {
+func promptCloudInitYAMLFile(w io.Writer, input io.Reader, output io.Writer) (string, error) {
 	for {
-		raw, err := ui.Prompt(t, le, "Cloud-init YAML file path", ui.WithValidator(requireNonEmpty))
+		raw, err := ui.Prompt("Cloud-init YAML file path", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
 			return "", err
 		}
@@ -67,8 +65,7 @@ func promptCloudInitYAMLFile(t *termlib.Terminal, le *termlib.LineEditor) (strin
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Printf("invalid input: cannot read %q: %v\n", path, err)
-			t.Refresh()
+			fmt.Fprintf(w, "invalid input: cannot read %q: %v\n", path, err)
 			continue
 		}
 		return string(data), nil

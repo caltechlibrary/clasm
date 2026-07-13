@@ -29,10 +29,10 @@ import (
 
 func TestShowCloudInit_InstancePathWithUserData(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "web", Region: "us-east-1"}
-	term, le, buf := newPipeEditor(t, "\n") // skip export
+	term, le, buf := newPipeEditor("\n") // skip export
 	ec2Client := &fakeEC2Client{userDataValue: base64.StdEncoding.EncodeToString([]byte("#cloud-config"))}
 
-	err := showCloudInitForInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, inst)
+	err := showCloudInitForInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, inst, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,10 +43,10 @@ func TestShowCloudInit_InstancePathWithUserData(t *testing.T) {
 
 func TestShowCloudInit_InstancePathNoUserData(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "web", Region: "us-east-1"}
-	term, le, buf := newPipeEditor(t, "")
+	term, le, buf := newPipeEditor("")
 	ec2Client := &fakeEC2Client{}
 
-	err := showCloudInitForInstance(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, inst)
+	err := showCloudInitForInstance(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, inst, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,11 +59,11 @@ func TestShowCloudInit_AMIPathAcceptedConfirmation(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
 	input := "y\n" + // confirm the billable extraction
 		"\n" // skip export
-	term, le, buf := newPipeEditor(t, input)
+	term, le, buf := newPipeEditor(input)
 	ec2Client := &fakeEC2Client{runInstancesID: "i-temp1", runningAfterCall: 1}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "#cloud-config from AMI"}
 
-	err := showCloudInitForAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img)
+	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,11 +77,11 @@ func TestShowCloudInit_AMIPathAcceptedConfirmation(t *testing.T) {
 
 func TestShowCloudInit_AMIPathDeclinedConfirmation(t *testing.T) {
 	img := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
-	term, le, _ := newPipeEditor(t, "n\n")
+	term, le, buf := newPipeEditor("n\n")
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := showCloudInitForAMI(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img)
+	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,11 +91,11 @@ func TestShowCloudInit_AMIPathDeclinedConfirmation(t *testing.T) {
 }
 
 func TestShowCloudInit_NoInstances(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := showCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, newHuhAccessibleInput("1\n"), buf)
+	err := showCloudInit(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,11 +105,11 @@ func TestShowCloudInit_NoInstances(t *testing.T) {
 }
 
 func TestShowCloudInit_NoAMIs(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := showCloudInit(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, newHuhAccessibleInput("2\n"), buf)
+	err := showCloudInit(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, newHuhAccessibleInput("2\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

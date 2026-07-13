@@ -23,9 +23,9 @@ import (
 func TestDeleteKeyPair_Success(t *testing.T) {
 	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1", KeyType: "ed25519"}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "my-key\n")
+	term, le, buf := newPipeEditor("my-key\n")
 
-	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil)
+	err := deleteKeyPair(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,9 +47,9 @@ func TestDeleteKeyPair_DependencyWarningShownWhenInUse(t *testing.T) {
 		{InstanceID: "i-2", Name: "other", KeyName: "other-key"},
 	}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "my-key\n")
+	term, le, buf := newPipeEditor("my-key\n")
 
-	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, instances)
+	err := deleteKeyPair(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, kp, instances, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,9 +65,9 @@ func TestDeleteKeyPair_NoDependencyWarningWhenUnused(t *testing.T) {
 	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	instances := []inventory.Instance{{InstanceID: "i-1", Name: "web", KeyName: "other-key"}}
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "my-key\n")
+	term, le, buf := newPipeEditor("my-key\n")
 
-	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, instances)
+	err := deleteKeyPair(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, kp, instances, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,9 +79,9 @@ func TestDeleteKeyPair_NoDependencyWarningWhenUnused(t *testing.T) {
 func TestDeleteKeyPair_TypeToConfirmMismatchCancels(t *testing.T) {
 	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "wrong\n")
+	term, le, buf := newPipeEditor("wrong\n")
 
-	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil)
+	err := deleteKeyPair(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,9 +92,9 @@ func TestDeleteKeyPair_TypeToConfirmMismatchCancels(t *testing.T) {
 
 func TestDeleteKeyPair_NoKeyPairs(t *testing.T) {
 	fake := &fakeEC2Client{}
-	term, le, buf := newPipeEditor(t, "")
+	term, _, buf := newPipeEditor("")
 
-	err := DeleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, nil, nil)
+	err := DeleteKeyPair(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,9 +106,9 @@ func TestDeleteKeyPair_NoKeyPairs(t *testing.T) {
 func TestDeleteKeyPair_PropagatesDeleteError(t *testing.T) {
 	kp := inventory.KeyPair{KeyName: "my-key", Region: "us-east-1"}
 	fake := &fakeEC2Client{deleteKeyPairErr: errors.New("boom")}
-	term, le, _ := newPipeEditor(t, "my-key\n")
+	term, le, buf := newPipeEditor("my-key\n")
 
-	err := deleteKeyPair(context.Background(), term, le, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil)
+	err := deleteKeyPair(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": fake}, kp, nil, le, buf)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

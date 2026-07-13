@@ -23,9 +23,9 @@ import (
 
 func TestPromptSubnetID_FallsBackToFreeTextWhenEmpty(t *testing.T) {
 	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "subnet-manual\n")
+	term, le, buf := newPipeEditor("subnet-manual\n")
 
-	got, err := promptSubnetID(context.Background(), term, le, fake, "t3.micro")
+	got, err := promptSubnetID(context.Background(), term, fake, "t3.micro", le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,9 +42,9 @@ func TestPromptSecurityGroupIDs_ResolvesNumbersFromList(t *testing.T) {
 		{GroupId: aws.String("sg-1"), GroupName: aws.String("web"), Description: aws.String("web tier")},
 		{GroupId: aws.String("sg-2"), GroupName: aws.String("db"), Description: aws.String("db tier")},
 	}}
-	term, le, buf := newPipeEditor(t, "1,2\n")
+	term, le, buf := newPipeEditor("1,2\n")
 
-	got, err := promptSecurityGroupIDs(context.Background(), term, le, fake)
+	got, err := promptSecurityGroupIDs(context.Background(), term, fake, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,9 +60,9 @@ func TestPromptSecurityGroupIDs_AcceptsRawIDsAlongsideNumbers(t *testing.T) {
 	fake := &fakeEC2Client{securityGroups: []types.SecurityGroup{
 		{GroupId: aws.String("sg-1"), GroupName: aws.String("web")},
 	}}
-	term, le, _ := newPipeEditor(t, "1,sg-999\n")
+	term, le, buf := newPipeEditor("1,sg-999\n")
 
-	got, err := promptSecurityGroupIDs(context.Background(), term, le, fake)
+	got, err := promptSecurityGroupIDs(context.Background(), term, fake, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,9 +75,9 @@ func TestPromptSecurityGroupIDs_RejectsOutOfRangeNumberThenRetries(t *testing.T)
 	fake := &fakeEC2Client{securityGroups: []types.SecurityGroup{
 		{GroupId: aws.String("sg-1"), GroupName: aws.String("web")},
 	}}
-	term, le, buf := newPipeEditor(t, "99\n1\n")
+	term, le, buf := newPipeEditor("99\n1\n")
 
-	got, err := promptSecurityGroupIDs(context.Background(), term, le, fake)
+	got, err := promptSecurityGroupIDs(context.Background(), term, fake, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,9 +91,9 @@ func TestPromptSecurityGroupIDs_RejectsOutOfRangeNumberThenRetries(t *testing.T)
 
 func TestPromptSecurityGroupIDs_FallsBackToFreeTextWhenEmpty(t *testing.T) {
 	fake := &fakeEC2Client{}
-	term, le, _ := newPipeEditor(t, "sg-manual\n")
+	term, le, buf := newPipeEditor("sg-manual\n")
 
-	got, err := promptSecurityGroupIDs(context.Background(), term, le, fake)
+	got, err := promptSecurityGroupIDs(context.Background(), term, fake, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,15 +102,15 @@ func TestPromptSecurityGroupIDs_FallsBackToFreeTextWhenEmpty(t *testing.T) {
 	}
 }
 
-// The curated-instance-type/"Other" picker converted to huh.Select
-// (DESIGN.md's full conversion punch list): its selection is fed via a
-// separate newHuhAccessibleInput reader (menuInput), not le, which still
-// feeds the "Other" free-text fallback prompt.
+// The curated-instance-type/"Other" picker (huh.Select) and the
+// "Other" free-text fallback prompt now share one accessible-mode
+// reader, read in sequence one line at a time -- the menu choice first,
+// then (only for "Other") the typed value.
 
 func TestPromptInstanceType_PicksFromCuratedList(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, input, buf := newPipeEditor("1\n")
 
-	got, err := promptInstanceType(term, le, newHuhAccessibleInput("1\n"), buf)
+	got, err := promptInstanceType(term, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,9 +123,9 @@ func TestPromptInstanceType_PicksFromCuratedList(t *testing.T) {
 }
 
 func TestPromptInstanceType_PicksALaterCuratedEntry(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "")
+	term, input, buf := newPipeEditor("4\n")
 
-	got, err := promptInstanceType(term, le, newHuhAccessibleInput("4\n"), buf)
+	got, err := promptInstanceType(term, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,9 +139,9 @@ func TestPromptInstanceType_IncludesNonENARequiredEntries(t *testing.T) {
 	// every other entry requires ENA (DECISIONS.md, "Add non-ENA-
 	// required options to the curated instance type list"), so an AMI
 	// without ENA support needs one of these to launch at all.
-	term, le, buf := newPipeEditor(t, "")
+	term, input, buf := newPipeEditor("10\n")
 
-	got, err := promptInstanceType(term, le, newHuhAccessibleInput("10\n"), buf)
+	got, err := promptInstanceType(term, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,9 +154,9 @@ func TestPromptInstanceType_IncludesNonENARequiredEntries(t *testing.T) {
 }
 
 func TestPromptInstanceType_OtherFallsBackToFreeText(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "c6g.medium\n")
+	term, input, buf := newPipeEditor("12\nc6g.medium\n") // 12) Other
 
-	got, err := promptInstanceType(term, le, newHuhAccessibleInput("12\n"), buf) // 12) Other
+	got, err := promptInstanceType(term, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,9 +166,9 @@ func TestPromptInstanceType_OtherFallsBackToFreeText(t *testing.T) {
 }
 
 func TestPromptInstanceType_OtherRejectsBlank(t *testing.T) {
-	term, le, buf := newPipeEditor(t, "\nt4g.nano\n") // blank (rejected), retry
+	term, input, buf := newPipeEditor("12\n\nt4g.nano\n") // 12) Other, blank (rejected), retry
 
-	got, err := promptInstanceType(term, le, newHuhAccessibleInput("12\n"), buf) // 12) Other
+	got, err := promptInstanceType(term, input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -36,6 +36,7 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 	image := inventory.Image{ImageID: "ami-2", Name: "invenio-rdm", Region: "us-east-1", CreationDate: "2026-02-01", Project: "caltechauthors"}
 
 	input := "authorstest\n" + // Name tag
+		"4\n" + // instance type: t3.large
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1, sg-2\n" + // security groups (no groups fetched -> free-text fallback)
@@ -45,12 +46,12 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 		"\n" + // Project tag (blank -> default from ami-2)
 		"test\n" // Environment tag
 
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 	fake := &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, newHuhAccessibleInput("4\n"), buf) // instance type: t3.large
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,6 +92,7 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T) {
 	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
 	input := "web\n" + // Name tag
+		"1\n" + // instance type: t3.micro
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" + // security groups
@@ -100,11 +102,11 @@ func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T)
 		"caltechdata\n" + // Project tag
 		"test\n" // Environment tag
 
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,6 +141,7 @@ func TestCollectLaunchInstanceParams_PicksSecurityGroupsFromList(t *testing.T) {
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
 	input := "web\n" + // Name tag
+		"1\n" + // instance type: t3.micro
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"1,2\n" + // pick both security groups by number
@@ -148,8 +151,8 @@ func TestCollectLaunchInstanceParams_PicksSecurityGroupsFromList(t *testing.T) {
 		"caltechdata\n" + // Project tag
 		"test\n" // Environment tag
 
-	term, le, buf := newPipeEditor(t, input)
-	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
+	term, menuInput, buf := newPipeEditor(input)
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,6 +171,7 @@ func TestCollectLaunchInstanceParams_RejectsInvalidEnvironment(t *testing.T) {
 	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
 
 	input := "web\n" + // Name tag
+		"1\n" + // instance type: t3.micro
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1\n" + // security groups
@@ -178,11 +182,11 @@ func TestCollectLaunchInstanceParams_RejectsInvalidEnvironment(t *testing.T) {
 		"prod\n" + // Environment tag (invalid)
 		"production\n" // Environment tag (retry, valid)
 
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,6 +203,7 @@ func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
 
 	input := "\n" + // Name tag (blank -- rejected)
 		"web\n" + // Name tag (retry, valid)
+		"1\n" + // instance type: t3.micro
 		"\n" + // Key pair name (blank -- invalid, rejected; free-text fallback)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
@@ -211,11 +216,11 @@ func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
 		"caltechdata\n" + // Project tag
 		"test\n" // Environment tag
 
-	term, le, buf := newPipeEditor(t, input)
+	term, menuInput, buf := newPipeEditor(input)
 	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}}
 	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
 
-	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,6 +256,7 @@ func TestCollectLaunchInstanceParams_OfficialUbuntuAMIIsSelectableFromThePickLis
 	image := expanded[len(expanded)-1] // the appended official Ubuntu AMI
 
 	input := "web\n" +
+		"1\n" + // instance type: t3.micro
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
@@ -260,8 +266,8 @@ func TestCollectLaunchInstanceParams_OfficialUbuntuAMIIsSelectableFromThePickLis
 		"caltechdata\n" +
 		"test\n"
 
-	term, le, buf := newPipeEditor(t, input)
-	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, le, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, newHuhAccessibleInput("1\n"), buf) // instance type: t3.micro
+	term, menuInput, buf := newPipeEditor(input)
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
