@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"io"
 
 	"github.com/charmbracelet/huh"
 
@@ -10,33 +11,24 @@ import (
 	"github.com/caltechlibrary/clasm/internal/filemanager"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 	"github.com/caltechlibrary/clasm/internal/s3diff"
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
 
 // BrowseAndManageObjects runs the S3 domain's "Browse & Manage Objects"
-// entry point (DESIGN.md 21.2-21.3; PLAN.md Phase 20.1): a huh
-// pre-flight -- pick a bucket (reusing Feature 17's already-fetched
-// listing) and optionally link a local directory -- then launches the
-// scoped bubbletea file manager screen (internal/filemanager). This is
-// the one place in the S3 domain that uses huh instead of termlib's
-// PickList/Prompt (DECISIONS.md, "Use a scoped bubbletea screen...");
-// every other S3 wizard is unaffected.
-func BrowseAndManageObjects(ctx context.Context, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
+// entry point (DESIGN.md 21.2-21.3; PLAN.md Phase 20.1): a Picker-tier
+// bucket pre-flight (reusing Feature 17's already-fetched listing, and
+// the same pickBucket/cancelledIsNil convention every other
+// bucket-selection call site uses -- PLAN.md, Phase 20.19) followed by
+// an optional local-directory link, then launches the scoped
+// bubbletea file manager screen (internal/filemanager).
+func BrowseAndManageObjects(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), buckets []inventory.Bucket) error {
 	if len(buckets) == 0 {
 		return errors.New("no buckets found")
 	}
 
-	bucketOptions := make([]huh.Option[inventory.Bucket], len(buckets))
-	for i, b := range buckets {
-		bucketOptions[i] = huh.NewOption(bucketLabel(b), b)
-	}
-
-	var bucket inventory.Bucket
-	selectBucket := huh.NewSelect[inventory.Bucket]().
-		Title("Select a bucket").
-		Options(bucketOptions...).
-		Value(&bucket)
-	if err := runFieldWithHelp(selectBucket); err != nil {
-		return huhCancelledIsNil(err)
+	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
+	if err != nil {
+		return cancelledIsNil(w, err)
 	}
 
 	client, err := newS3Client(ctx, bucket.Region)
@@ -89,5 +81,5 @@ func huhCancelledIsNil(err error) error {
 // showed no keybinding hints at all; every other huh usage in this
 // codebase should call this helper instead of a bare field.Run().
 func runFieldWithHelp(field huh.Field) error {
-	return huh.NewForm(huh.NewGroup(field)).Run()
+	return huh.NewForm(huh.NewGroup(field)).WithTheme(tui.Theme()).Run()
 }

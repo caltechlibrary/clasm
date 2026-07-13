@@ -150,7 +150,7 @@ func createAMIFromInstance(ctx context.Context, w io.Writer, ec2Clients map[stri
 	fmt.Fprintf(w, "AMI creation started: %s. Waiting (estimated %s)...\n", imageID, EstimateAMICreationTime(totalGB))
 
 	start := time.Now()
-	stopTicker := startProgressTicker(w, 30*time.Second, "waiting for AMI to become available")
+	stopTicker := startProgressTicker(w, "waiting for AMI to become available")
 	state, err := WaitForAMIAvailable(ctx, client, imageID, DefaultAMIPollInterval)
 	stopTicker()
 	if err != nil {

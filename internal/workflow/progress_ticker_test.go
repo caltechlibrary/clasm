@@ -10,14 +10,14 @@ import (
 func TestStartProgressTicker_PrintsPeriodically(t *testing.T) {
 	var buf bytes.Buffer
 
-	stop := startProgressTicker(&buf, 10*time.Millisecond, "waiting")
-	time.Sleep(35 * time.Millisecond)
+	stop := startProgressTicker(&buf, "waiting")
+	time.Sleep(3 * DefaultSpinnerInterval)
 	stop()
 
 	out := buf.String()
 	count := strings.Count(out, "waiting")
 	if count < 2 {
-		t.Errorf("got %d ticks in output, want at least 2:\n%s", count, out)
+		t.Errorf("got %d frames in output, want at least 2:\n%s", count, out)
 	}
 }
 
@@ -45,10 +45,10 @@ func TestFormatDuration(t *testing.T) {
 func TestStartProgressTicker_StopsCleanly(t *testing.T) {
 	var buf bytes.Buffer
 
-	stop := startProgressTicker(&buf, 5*time.Millisecond, "waiting")
+	stop := startProgressTicker(&buf, "waiting")
 	stop()
 	lenAfterStop := buf.Len()
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(3 * DefaultSpinnerInterval)
 
 	if buf.Len() != lenAfterStop {
 		t.Errorf("output grew after stop() returned: %d -> %d bytes", lenAfterStop, buf.Len())

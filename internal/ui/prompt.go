@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
 
 // ErrCancelled is returned by callers (e.g. the AZ/ENA-incompatibility
@@ -81,7 +83,7 @@ func Prompt(label string, opts ...PromptOption) (string, error) {
 		})
 	}
 
-	form := huh.NewForm(huh.NewGroup(field))
+	form := huh.NewForm(huh.NewGroup(field)).WithTheme(tui.Theme())
 	if cfg.input != nil {
 		form = form.WithAccessible(true).WithInput(cfg.input).WithOutput(cfg.output)
 	}

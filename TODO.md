@@ -24,12 +24,28 @@
       rsdoiel/termlib` is gone from `go.mod`/`go.sum`; `go build ./...`,
       `go vet ./...`, `go test ./... -race`, `gofmt -l` all clean (except
       the pre-existing, unrelated `version.go`).
-- [ ] Deferred out of the termlib-removal pass, for a later
-      chrome-standardization pass: `progress_ticker.go`'s periodic
-      elapsed-time line could become a real `bubbletea` spinner instead
-      of a printed line; `internal/ui`'s color/format helpers could
-      adopt `lipgloss` (already a transitive dependency via `huh`/
-      `bubbletea`) instead of local ANSI constants.
+## Chrome Standardization (done 2026-07-13)
+
+- [x] One shared indigo accent across every screen -- `tui.Theme()`
+      wired into all five `huh.NewForm(...)` call sites,
+      `internal/tui/box.go`'s border/title functions styled to match --
+      see DESIGN.md, "Chrome Standardization: A Shared lipgloss
+      Palette," DECISIONS.md, "Chrome standardization: one shared
+      indigo accent via lipgloss," and PLAN.md Phases 20.17-20.19 (all
+      done).
+- [x] `progress_ticker.go`'s periodic elapsed-time line replaced with a
+      real animated `bubbles/spinner`-based `bubbletea` component,
+      styled with the shared accent, clearing itself on stop.
+- [x] `object_browser.go`'s bare `huh.Select` bucket pre-flight moved
+      onto the shared `pickBucket`/`PickerModel` convention every other
+      bucket-selection call site already used.
+- [ ] Not pursued: `internal/ui`'s color/format helpers (`ansiBold`/
+      `ansiRed`/etc., `padRight`/`truncate`) adopting `lipgloss` instead
+      of local ANSI constants -- these govern the STATE column's
+      semantic data colors (green=running, red=stopped, ...), which
+      DESIGN.md's chrome-standardization addendum explicitly leaves
+      alone as "not decorative chrome" (see DESIGN.md, "Deliberately
+      unchanged").
 
 ## Done (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
 
 type confirmConfig struct {
@@ -45,7 +47,7 @@ func Confirm(question string, opts ...ConfirmOption) (bool, error) {
 	var ok bool
 	field := huh.NewConfirm().Title(question).Value(&ok)
 
-	form := huh.NewForm(huh.NewGroup(field))
+	form := huh.NewForm(huh.NewGroup(field)).WithTheme(tui.Theme())
 	if cfg.input != nil {
 		form = form.WithAccessible(true).WithInput(cfg.input).WithOutput(cfg.output)
 	}
@@ -85,7 +87,7 @@ func ConfirmDestructive(mustMatch []string, opts ...ConfirmOption) (bool, error)
 		Description(fmt.Sprintf("To proceed, type the exact identifier: %s", strings.Join(accepted, " or "))).
 		Value(&typed)
 
-	form := huh.NewForm(huh.NewGroup(field))
+	form := huh.NewForm(huh.NewGroup(field)).WithTheme(tui.Theme())
 	if cfg.input != nil {
 		form = form.WithAccessible(true).WithInput(cfg.input).WithOutput(cfg.output)
 	}

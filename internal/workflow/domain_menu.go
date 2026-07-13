@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
+
+	"github.com/caltechlibrary/clasm/internal/tui"
 )
 
 // ErrBackToDomainPicker is returned by a domain's own menu loop (e.g.
@@ -59,7 +61,7 @@ func menuQuitKeyMap() *huh.KeyMap {
 func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, output io.Writer) error {
 	fmt.Fprintln(w, hint)
 
-	form := huh.NewForm(huh.NewGroup(field)).WithKeyMap(menuQuitKeyMap())
+	form := huh.NewForm(huh.NewGroup(field)).WithKeyMap(menuQuitKeyMap()).WithTheme(tui.Theme())
 	if input != nil {
 		form = form.WithAccessible(true).WithInput(input).WithOutput(output)
 	}

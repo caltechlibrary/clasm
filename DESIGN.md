@@ -603,6 +603,94 @@ Go requires the whole module to compile together, so it can't ship as
 helpers) and 20.16 (mechanical propagation, domain by domain) for the
 ordered work breakdown.
 
+## Chrome Standardization: A Shared lipgloss Palette (Design Addendum, 2026-07-13)
+
+**Status: designed 2026-07-13, not yet implemented.** With termlib gone
+(Phase 20.15/20.16), every screen in clasm is now either a `huh` field
+or a `bubbletea` component — but they don't yet look like one system.
+`huh`'s default theme (`ThemeCharm`) renders a colorful indigo/fuchsia/
+cream card with a thick colored left border; `internal/tui`'s List/
+Picker/Manager chrome (`box.go`/`style.go`) is plain ASCII box-drawing
+with no color at all beyond the cursor row's reverse-video and the
+instance-state column's green/red/yellow. An operator moving from a
+Menu-tier `huh.Select` into a Picker or List sees two unrelated visual
+languages depending on which tier they happen to be in, not a
+deliberate design.
+
+**A single shared accent, not a repaint.** Rather than inventing a new
+palette, this reuses the one color `huh`'s own default theme already
+established and has been on screen since Phase 20.2: the adaptive
+indigo `ThemeCharm` uses for focused titles/borders (`#5A56E0` light /
+`#7571F9` dark — already light/dark-terminal-aware via
+`lipgloss.AdaptiveColor`). Two pieces:
+
+1. **`tui.Theme() *huh.Theme`** — built from `huh.ThemeBase()`
+   (structural styling only: spacing, borders-as-shapes, no color) with
+   *only* the indigo accent applied to focused titles, borders, and the
+   selected-option marker (bold + indigo, mirroring exactly what
+   `ThemeCharm` already does for those same elements) — deliberately
+   omitting `ThemeCharm`'s fuchsia highlight, cream backgrounds, and
+   green/red confirm-button colors. A single accent suits an internal
+   ops tool better than a five-color rainbow; this is a restrained
+   subset of `ThemeCharm`, not a new invention.
+2. **`internal/tui/box.go`'s border/title rendering** (`TopBorder`,
+   `BottomBorder`, `Divider`, `SplitDivider`, `MergeDivider`) styled
+   with the same indigo + bold via `lipgloss.NewStyle()`. Because
+   `ListViewModel`, `PickerModel`, *and* `internal/filemanager` (the one
+   Manager-tier screen) all call these same shared functions directly
+   (confirmed: no per-tier copies survived the Phase 20.5 extraction),
+   styling them once re-skins all three tiers in a single change.
+
+**Deliberately unchanged:**
+- **Cursor-row selection** stays reverse-video (`style.go`'s
+  `StyleRow`) — the existing mc/ranger/WinSCP-style convention is
+  already correct and unrelated to color branding.
+- **Instance-state colors** (green=running, red=stopped/terminated,
+  yellow=pending/stopping, `internal/ui/display.go`'s `stateColor`)
+  stay as-is — semantic data indicators, not decorative chrome.
+- **NO_COLOR/non-TTY handling** needs no new plumbing: `lipgloss`
+  already detects both automatically (via `termenv`, checking the
+  output file descriptor and the `NO_COLOR` env var) and no-ops its own
+  ANSI codes accordingly — the existing manual `ui.ColorEnabled()` gate
+  stays scoped to the STATE column it already governs, unrelated to
+  this addendum's border/title styling.
+
+**Every `huh.NewForm(...)` call site gets `.WithTheme(tui.Theme())`.**
+Traced directly (not estimated): there are exactly five constructors in
+the whole app — `internal/ui/prompt.go` (`Prompt`), `internal/workflow/
+confirm.go` (`Confirm`, `ConfirmDestructive`), `internal/workflow/
+domain_menu.go` (`runMenuField`, the Menu tier's shared entry point),
+and `internal/workflow/object_browser.go` (`runFieldWithHelp`). Every
+other `huh.Select`/`huh.Input`/`huh.Confirm` in the app already funnels
+through one of these, a direct consequence of the shared-helper pattern
+established across Phase 20.2-20.16 — so five edits cover the entire
+app's `huh` surface.
+
+**Progress ticker becomes a real spinner.** `internal/workflow/
+progress_ticker.go`'s periodic `"  ... waiting for AMI (elapsed 1:23)"`
+printed line is the one place in the app that isn't a `huh` field or a
+`bubbletea` component — deferred out of the termlib-removal pass
+specifically to avoid mixing "remove termlib" with "improve chrome"
+(DECISIONS.md, "Remove termlib entirely..."). It becomes a small
+`bubbletea` component using `github.com/charmbracelet/bubbles/spinner`
+(already a direct dependency — `bubbles` is the same charm-ecosystem
+package `key` already comes from), styled with the same indigo accent,
+running inline for the duration of the wait and clearing itself when
+the operation completes.
+
+**`object_browser.go`'s bucket pre-flight moves onto `PickerModel`.**
+Resolves the one item DESIGN.md's "Terminal UI Architecture" section
+left explicitly undecided: `BrowseAndManageObjects`'s `selectBucket`
+(a bare `huh.Select` over buckets) is the only bucket-selection call
+site in the app that isn't already on `pickBucket`/`tui.RunPicker`
+(every other one converted in Phase 20.4). Replacing it makes bucket
+selection look identical everywhere, and lets this one call site drop
+its own bespoke `huhCancelledIsNil`-for-bucket-selection path in favor
+of the same `cancelledIsNil` convention `pickBucket`'s other callers
+already use. `confirmLink` (huh.Confirm) and the local-directory
+`huh.Input` in the same function are wizard-shaped, not picker-shaped,
+and stay as `huh` fields.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

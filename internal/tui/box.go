@@ -95,43 +95,50 @@ func truncateVisible(s string, width int) string {
 
 // TopBorder renders a box's top border with title embedded, e.g.
 // "┌ my title ────┐". If title is wider than inner, it's truncated to
-// fit rather than widening the box.
+// fit rather than widening the box. The corners/fill render in the
+// shared accent color (theme.go); the title renders in the same accent,
+// bold.
 func TopBorder(title string, inner int) string {
-	fill := inner - RuneLen(title)
+	styledTitle := titleStyle.Render(title)
+	fill := inner - RuneLen(styledTitle)
+	corner := borderStyle.Render("┌")
+	endCorner := borderStyle.Render("┐")
 	if fill < 1 {
-		return "┌" + PadOrTruncate(title, inner) + "┐\n"
+		return corner + PadOrTruncate(styledTitle, inner) + endCorner + "\n"
 	}
-	return "┌" + title + strings.Repeat("─", fill) + "┐\n"
+	return corner + styledTitle + borderStyle.Render(strings.Repeat("─", fill)) + endCorner + "\n"
 }
 
 // BottomBorder renders a box's bottom border.
 func BottomBorder(inner int) string {
-	return "└" + strings.Repeat("─", inner) + "┘\n"
+	return borderStyle.Render("└"+strings.Repeat("─", inner)+"┘") + "\n"
 }
 
 // Divider renders a horizontal rule between two box sections.
 func Divider(inner int) string {
-	return "├" + strings.Repeat("─", inner) + "┤\n"
+	return borderStyle.Render("├"+strings.Repeat("─", inner)+"┤") + "\n"
 }
 
 // SplitDivider renders the divider used above a two-column split (a
 // "┬" where the columns begin).
 func SplitDivider(leftW, rightW int) string {
-	return "├" + strings.Repeat("─", leftW+2) + "┬" + strings.Repeat("─", rightW+2) + "┤\n"
+	return borderStyle.Render("├"+strings.Repeat("─", leftW+2)+"┬"+strings.Repeat("─", rightW+2)+"┤") + "\n"
 }
 
 // MergeDivider renders the divider used below a two-column split (a
 // "┴" where the columns end).
 func MergeDivider(leftW, rightW int) string {
-	return "├" + strings.Repeat("─", leftW+2) + "┴" + strings.Repeat("─", rightW+2) + "┤\n"
+	return borderStyle.Render("├"+strings.Repeat("─", leftW+2)+"┴"+strings.Repeat("─", rightW+2)+"┤") + "\n"
 }
 
 // BoxLine renders one full-width row of box content.
 func BoxLine(content string, inner int) string {
-	return "│ " + PadOrTruncate(content, inner-2) + " │\n"
+	side := borderStyle.Render("│")
+	return side + " " + PadOrTruncate(content, inner-2) + " " + side + "\n"
 }
 
 // BoxRow2 renders one row split into two side-by-side cells.
 func BoxRow2(left, right string, leftW, rightW int) string {
-	return "│ " + PadOrTruncate(left, leftW) + " │ " + PadOrTruncate(right, rightW) + " │\n"
+	side := borderStyle.Render("│")
+	return side + " " + PadOrTruncate(left, leftW) + " " + side + " " + PadOrTruncate(right, rightW) + " " + side + "\n"
 }

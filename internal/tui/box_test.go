@@ -53,7 +53,7 @@ func TestBoxRow2_BothCellsAlignRegardlessOfANSIStyling(t *testing.T) {
 }
 
 func TestBoxLine_PadsToInnerWidthAndAddsBorders(t *testing.T) {
-	got := BoxLine("hello", 20)
+	got := StripANSI(BoxLine("hello", 20))
 	if !strings.HasPrefix(got, "│ ") || !strings.HasSuffix(got, " │\n") {
 		t.Fatalf("BoxLine(%q) = %q, want it wrapped in │ ... │", "hello", got)
 	}
@@ -66,7 +66,7 @@ func TestBoxLine_PadsToInnerWidthAndAddsBorders(t *testing.T) {
 }
 
 func TestTopBorder_TitleFitsWithinWidth(t *testing.T) {
-	got := TopBorder(" my title ", 40)
+	got := StripANSI(TopBorder(" my title ", 40))
 	if !strings.HasPrefix(got, "┌ my title ") {
 		t.Fatalf("TopBorder = %q, want it to start with the title", got)
 	}
@@ -86,25 +86,25 @@ func TestTopBorder_TitleLongerThanInnerIsTruncated(t *testing.T) {
 }
 
 func TestBottomBorder_MatchesInnerWidth(t *testing.T) {
-	got := BottomBorder(10)
+	got := StripANSI(BottomBorder(10))
 	if got != "└"+strings.Repeat("─", 10)+"┘\n" {
 		t.Errorf("BottomBorder(10) = %q", got)
 	}
 }
 
 func TestDivider_MatchesInnerWidth(t *testing.T) {
-	got := Divider(10)
+	got := StripANSI(Divider(10))
 	if got != "├"+strings.Repeat("─", 10)+"┤\n" {
 		t.Errorf("Divider(10) = %q", got)
 	}
 }
 
 func TestSplitAndMergeDividers_JoinAtTheMiddleColumn(t *testing.T) {
-	split := SplitDivider(10, 8)
+	split := StripANSI(SplitDivider(10, 8))
 	if !strings.Contains(split, "┬") {
 		t.Errorf("SplitDivider = %q, want it to contain ┬", split)
 	}
-	merge := MergeDivider(10, 8)
+	merge := StripANSI(MergeDivider(10, 8))
 	if !strings.Contains(merge, "┴") {
 		t.Errorf("MergeDivider = %q, want it to contain ┴", merge)
 	}

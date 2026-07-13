@@ -2755,6 +2755,146 @@ gets the wrong text) rather than silently.
 **Files:** all files listed above, plus each one's corresponding
 `_test.go`, plus `go.mod`/`go.sum`.
 
+## Phase 20.17 — Chrome Standardization: Shared lipgloss Palette (done)
+
+**Status: implemented and verified 2026-07-13.** Implements DESIGN.md,
+"Chrome Standardization: A Shared lipgloss Palette," and DECISIONS.md,
+"Chrome standardization: one shared indigo accent via lipgloss."
+
+### Work Items
+
+- [x] `internal/tui/theme.go` (new): `accentColor` (the same adaptive
+      indigo huh's `ThemeCharm` uses), `borderStyle`/`titleStyle`
+      `lipgloss.Style`s for `box.go`, and `Theme() *huh.Theme` — built
+      from `huh.ThemeBase()` with the indigo accent applied to focused
+      titles/borders/selection indicator+marker/confirm button/text
+      input prompt+cursor; `Blurred` mirrors `Focused` with a hidden
+      border, `Group.Title` matches `Focused.Title`.
+- [x] `internal/tui/box.go`: `TopBorder`/`BottomBorder`/`Divider`/
+      `SplitDivider`/`MergeDivider`/`BoxLine`/`BoxRow2` all render their
+      border characters (and `TopBorder`'s title) through
+      `borderStyle`/`titleStyle`. `BoxLine`/`BoxRow2` render their `│`
+      per call (not cached in a package var) so they track the current
+      lipgloss color profile the same way every other function in the
+      file does — an earlier draft cached a package-level `boxSide`
+      string rendered once at init time, which silently froze in
+      whatever color profile was active at package load and stopped
+      responding to later profile changes; caught via a throwaway
+      sanity test that forced `lipgloss.SetColorProfile` and diffed the
+      raw escape codes. Width math (`RuneLen`/`PadOrTruncate`) already
+      stripped ANSI, so no change needed there.
+- [x] `internal/ui/prompt.go` (`Prompt`), `internal/workflow/confirm.go`
+      (`Confirm`, `ConfirmDestructive`), `internal/workflow/domain_menu.go`
+      (`runMenuField`), `internal/workflow/object_browser.go`
+      (`runFieldWithHelp`): each `huh.NewForm(...)` gained
+      `.WithTheme(tui.Theme())`.
+
+**Tests:** `internal/tui/box_test.go` — the four tests asserting exact/
+literal border strings (`TestBottomBorder_MatchesInnerWidth`,
+`TestDivider_MatchesInnerWidth`, `TestTopBorder_TitleFitsWithinWidth`,
+`TestSplitAndMergeDividers_JoinAtTheMiddleColumn`) and
+`TestBoxLine_PadsToInnerWidthAndAddsBorders` updated to compare against
+`StripANSI(got)`. New `internal/tui/theme_test.go` confirms `Theme()`
+is non-nil, `Focused.Title`'s foreground matches the shared
+`accentColor`, and `Blurred.Base`'s border style is
+`lipgloss.HiddenBorder()`. Full `go build ./...`, `go vet ./...`,
+`go test ./... -race` sweep green; `gofmt -l .` clean except a
+pre-existing, unrelated `version.go` (generated file).
+
+**Files:** `internal/tui/{theme.go (new),theme_test.go (new),box.go,
+box_test.go}`, `internal/ui/prompt.go`, `internal/workflow/{confirm,
+domain_menu,object_browser}.go`, `go.mod`/`go.sum` (`lipgloss` promoted
+from indirect to direct via `go mod tidy`).
+
+**Dependency:** None — additive styling, no signature changes.
+
+## Phase 20.18 — Progress Ticker: Real bubbletea Spinner (done)
+
+**Status: implemented and verified 2026-07-13.** Depended on Phase
+20.17 for the shared accent color (`tui.SpinnerStyle()`).
+
+### Work Items
+
+- [x] `internal/workflow/progress_ticker.go`: replaced the periodic
+      `fmt.Fprintf` loop with a small `bubbletea` model (`progressModel`)
+      pairing a `github.com/charmbracelet/bubbles/spinner.Model`
+      (`spinner.MiniDot`, styled via `tui.SpinnerStyle()`) with an
+      elapsed-time label recomputed on every render. Driven by its own
+      `progressTickMsg` cadence (`tea.Tick(interval, ...)`) rather than
+      `spinner.Model`'s built-in FPS-based tick, so the refresh rate
+      stays caller/test-controlled instead of hardcoded per spinner
+      style. `startProgressTicker`'s signature dropped the `interval
+      time.Duration` parameter it used to take (`func(w io.Writer, label
+      string) (stop func())`): under the old `fmt.Fprintf`-per-tick
+      design that argument meant "how often a new status line prints"
+      and all three call sites already passed the identical
+      `30*time.Second`; under a real animated spinner it would have
+      meant "how often the glyph advances," and 30s is far too slow to
+      look like an animation, so keeping it would have left the
+      argument either dead or silently wrong at every call site.
+      Replaced with a package constant, `DefaultSpinnerInterval =
+      120*time.Millisecond`, used internally.
+- [x] `progressModel` clears itself on stop: `stop()` now sends a
+      `progressStopMsg` (not a bare `p.Quit()`), which the model handles
+      by rendering one final blank `View()` before returning `tea.Quit`
+      -- confirmed via a throwaway sanity test capturing the raw
+      program output, which showed the terminal's final control
+      sequences clear the spinner's line (`\x1b[J`/`\x1b[2K`)
+      rather than leaving "⠹ waiting (elapsed 0:12)" printed.
+      `startProgressTicker`'s returned `stop` still blocks until the
+      underlying `tea.Program`'s `Run()` goroutine has fully exited
+      (same no-race-with-post-stop-output contract the old
+      ticker/goroutine pair had).
+- [x] `tui.SpinnerStyle()` added to `internal/tui/theme.go` alongside
+      `Theme()`, returning a `lipgloss.Style` in the shared accent for
+      the spinner glyph.
+- [x] Updated callers (`create_ami_from_instance.go`, `show_cloud_init.go`
+      -- which also dropped its now-unused `time` import --,
+      `backup_archive.go`) to the new two-argument call shape.
+
+**Tests:** `progress_ticker_test.go`'s two async tests
+(`TestStartProgressTicker_PrintsPeriodically`,
+`TestStartProgressTicker_StopsCleanly`) updated to drop the removed
+`interval` argument and sleep in multiples of `DefaultSpinnerInterval`
+instead of a caller-supplied fast interval; `TestFormatDuration`
+unchanged. Full `go build ./...`, `go vet ./...`, `go test ./...
+-race` sweep green.
+
+**Files:** `internal/workflow/progress_ticker.go` (+ test),
+`internal/workflow/{create_ami_from_instance,show_cloud_init,
+backup_archive}.go`, `internal/tui/theme.go`.
+
+**Dependency:** Phase 20.17 (soft).
+
+## Phase 20.19 — object_browser.go: Bucket Pre-flight onto pickBucket (done)
+
+**Status: implemented and verified 2026-07-13.**
+
+### Work Items
+
+- [x] `internal/workflow/object_browser.go`: `BrowseAndManageObjects`'s
+      `selectBucket` (bare `huh.Select` + `bucketOptions`/`huh.NewOption`
+      construction) replaced with `pickBucket(ctx, "Select a bucket",
+      buckets)`; cancellation mapped via `cancelledIsNil(w, err)`
+      instead of `huhCancelledIsNil` for this call site (`confirmLink`/
+      the local-directory `huh.Input` keep `huhCancelledIsNil`,
+      unaffected). `cancelledIsNil` needs a `w io.Writer` (it prints
+      "Cancelled." on the way out, unlike `huhCancelledIsNil`'s silent
+      return), so `BrowseAndManageObjects` gained a `w io.Writer`
+      parameter (`func(ctx, w, newS3Client, buckets) error`, matching
+      every sibling `S3Actions` workflow function's own shape) threaded
+      from `cmd/clasm/main.go`'s existing `out`.
+
+**Tests:** No `object_browser_test.go` existed before this change (bare
+`huh.Select` fields aren't unit-tested via the accessible-mode pipe
+path in this codebase the way Menu-tier `huh.Select`s are -- there was
+nothing to retire or update). Full `go build ./...`, `go vet ./...`,
+`go test ./... -race` sweep green.
+
+**Files:** `internal/workflow/object_browser.go`, `cmd/clasm/main.go`.
+
+**Dependency:** None.
+
 ---
 
 ## Phase 21 — CloudFront Domain

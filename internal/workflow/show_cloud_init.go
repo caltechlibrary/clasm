@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -96,7 +95,7 @@ func showCloudInitForAMI(ctx context.Context, w io.Writer, ec2Clients map[string
 		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
-	stopTicker := startProgressTicker(w, 30*time.Second, "extracting cloud-init from a temporary instance")
+	stopTicker := startProgressTicker(w, "extracting cloud-init from a temporary instance")
 	data, err := ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
 	stopTicker()
 	if err != nil {

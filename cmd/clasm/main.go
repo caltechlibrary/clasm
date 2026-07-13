@@ -277,7 +277,7 @@ func main() {
 			return workflow.ConfigureBucketWebsite(ctx, out, newS3Client, s3State.buckets)
 		},
 		BrowseAndManageObjects: func(ctx context.Context) error {
-			return workflow.BrowseAndManageObjects(ctx, newS3Client, s3State.buckets)
+			return workflow.BrowseAndManageObjects(ctx, out, newS3Client, s3State.buckets)
 		},
 		ManageLifecyclePolicies: func(ctx context.Context) error {
 			return workflow.ManageBucketLifecyclePolicies(ctx, out, newS3Client, s3State.buckets)

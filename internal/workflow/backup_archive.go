@@ -172,7 +172,7 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 		return err
 	}
 
-	stopVerifyTicker := startProgressTicker(w, 30*time.Second, "verifying uploads via s3:HeadObject")
+	stopVerifyTicker := startProgressTicker(w, "verifying uploads via s3:HeadObject")
 	verified := VerifyUploads(ctx, bucketClient, params.Bucket, uploads)
 	stopVerifyTicker()
 
