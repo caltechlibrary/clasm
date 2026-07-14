@@ -1,218 +1,83 @@
-clasm — where we left off (2026-07-10, end of the termlib-deprecation/TUI-pivot session)
+clasm — where we left off (2026-07-13, end of the chrome/UX-refinements session)
 ==============================================================================
 
-STATUS: What started as "convert the S3 menu and bucket display to huh"
-(PLAN.md Phase 20.2/20.4) grew into a much bigger, deliberate decision:
-`termlib` is being removed from clasm entirely before 0.0.2, in favor of
-`huh` (guide menus, action wizards) and `bubbletea` (lists, managers,
-pickers) exclusively — see DECISIONS.md, "Deprecate termlib; standardize
-on huh/bubbletea before 0.0.2," and DESIGN.md, "Terminal UI Architecture:
-Menus, Actions, Lists, and Managers," for the full taxonomy/rationale
-(now five concepts: guide menu, picker, action wizard, list, manager).
-Screen-reader/accessible-mode support is explicitly NOT a requirement
-going forward (internal staff tool, not public-facing). `go build
-./...`, `go vet ./...`, `go test ./... -race`, and `gofmt -l` (except
-the pre-existing, unrelated `version.go`) are all clean as of the end of
-this session. Nothing is staged or committed -- that's the user's to do
-(there's a large staged diff sitting from this whole session's work,
-untouched).
+STATUS: termlib is fully removed (PLAN.md Phases 20.15-20.16) -- every
+screen is now huh (Menu tier: guide menus/action wizards) or bubbletea
+(internal/tui: Picker/List/Manager tiers), no exceptions, no fallback.
+Since then, a long chrome-consistency + UX-refinement run (Phases
+20.17-20.25, all done, each with its own DESIGN.md addendum and
+DECISIONS.md entry -- read those for full detail, this file only
+summarizes) landed: one shared indigo lipgloss accent across huh and
+tui; a real animated progress spinner; contextual description text on
+every Menu/Picker-tier screen; a full box border on huh fields matching
+tui's box-drawing shape; Backup Archive & Trim's prompts reordered
+(instance/directory/bucket/age-days) and now recall the last-used
+instance/directory per instance (~/.clasm_state, a new app-managed file
+distinct from the hand-edited ~/.clasm config); a screen clear at
+startup; and a filterable bucket picker (with a free-text "Other"
+escape hatch) for Backup Archive & Trim's bucket prompt. `go build
+./...`, `go vet ./...`, `go test ./... -race` are all clean; `gofmt -l`
+is clean except the pre-existing, unrelated `version.go` (a generated
+file). Nothing is staged or committed -- that's the user's to do.
 
-UPDATE, later the same day: the full Menu/Picker/List conversion punch
-list from item 10 below is now completely done (Phases 20.10-20.13),
-plus a Phase 20.14 chrome-consistency pass (see items 11-15 below).
-`termlib` is NOT removed yet -- go.mod still lists it, and ~40 call
-sites (every action wizard: create/launch/terminate/backup flows, etc.,
-plus internal/ui's lower-level helpers) still import it. That's the
-deliberately-deferred next body of work -- see "NEXT UP" below, which
-supersedes item 10's original framing.
-
-DONE TODAY, in order (each is its own PLAN.md phase and DECISIONS.md
-entry -- read those for full detail, this file only summarizes):
+NEXT UP: full-height domain picker (the deferred half of today's first request)
 --------------------------------------------------------------------
 
-1. Phase 20.2 -- `RunS3Menu`'s picker: `ui.PickList` -> `huh.Select`.
-   Pipe-testability for huh accessible mode resolved along the way
-   (`newHuhAccessibleInput`/`lineAtATimeReader`), still valid for the
-   *menu* tier (still huh) -- `bubbletea` components use `teatest`
-   instead (see items 4/6 below).
-2. Phase 20.3 (superseded same day by Phase 20.6) -- a paged,
-   accessible-mode-compatible `internal/ui.PagedTable`. Built, shipped,
-   retired within the day once accessible mode stopped being a
-   requirement. Left in the docs as accurate history, not deleted.
-3. The pivot -- `termlib` removal decided directly with the user (mockup
-   approved before any code, same discipline as everything else this
-   session): DECISIONS.md, "Deprecate termlib...".
-4. Phase 20.5 -- new `internal/tui` package: the file manager's
-   already-pure box-drawing/scroll/style helpers extracted there
-   unchanged, so `internal/filemanager` and everything since shares one
-   implementation.
-5. Phase 20.6 -- `internal/tui.ListViewModel`/`RunListView`: a real
-   bubbletea List-tier component (bordered box, frozen header,
-   scrollable body, real `tea.WindowSizeMsg` sizing, legend bar, inline
-   rendering) replacing Phase 20.3's plain-print `PagedTable`.
-   `ui.DisplayBuckets` now just builds a `ListViewConfig` and hands off.
-   Testing lesson: exact-height content through a live `teatest` Program
-   can lose its top line to the emulated terminal's scrolling --
-   `internal/filemanager`'s tests already sidestep this (direct
-   `Model`-driving for exact-height assertions); followed the same
-   split.
-6. Phase 20.7 -- applied "TUI keybinding conventions" (drafted and
-   approved by the user before implementation) to the one menu converted
-   so far: `q` bound alongside `ctrl+c` on `RunS3Menu`'s `huh.Select`
-   `Quit`; a static `"(q to go back)"` hint printed above the menu (huh's
-   footer can't show a custom entry); "Back to domain picker" removed
-   from `s3MenuItems`; "Show resource lists" relabeled "List S3 Buckets".
-7. The user paused Phase 20.4 (bucket-selection -> `huh.Select`) before
-   any code was written: "I think this UI should feel the same whether I
-   select a bucket, an AMI or an EC2 instance" -- `huh.Select`'s
-   rendering doesn't match the List/Manager tiers' chrome. Led to two
-   more docs-first passes:
-   a. DESIGN.md's taxonomy gained a **Picker** tier (a connector, like
-      guide menus, but for choosing one instance of a fetched resource
-      collection) plus a concrete map of every current
-      resource-selection call site across the app (~25 across Compute/
-      Key Management/S3), each with file:line and status -- S3 buckets
-      the only one converted so far, everything else explicitly
-      "not scheduled" rather than silently left to be rediscovered.
-   b. Phase 20.8 -- `internal/tui.PickerModel`: same chrome as
-      `ListViewModel`, plus `Enter`-to-select and `/`-triggered
-      incremental filter (the user's explicit request, included from
-      the start: "this allows someone to go directly to the thing they
-      want"). Two real findings while writing tests: (i) the content
-      area's height must be pinned to the *unfiltered* row count, or it
-      shrinks/grows while filtering and reproduces the List tier's
-      exact-height rendering hiccup -- fixed by padding to a stable
-      height (also better UX, fzf-style); (ii) two filter tests hit a
-      second, distinct `teatest` gotcha (bubbletea skips retransmitting
-      unchanged lines between consecutive frames) -- fixed by combining
-      assertions into one `WaitFor`, the same workaround
-      `internal/filemanager`'s tests already use.
-8. Phase 20.4 -- bucket-selection in `ConfigureBucketWebsite`
-   (`bucket_website.go`), `ManageBucketLifecyclePolicies`
-   (`bucket_lifecycle.go`), and `DeleteBucket` (`bucket_delete.go`)
-   converted to a shared `pickBucket` helper built on `tui.RunPicker`.
-   Since `RunPicker` runs a real bubbletea Program that can't be driven
-   by a test's pipe input, each function was split into the picker call
-   + an unexported, directly-testable core taking the already-resolved
-   bucket (mirrors the `RunS3Menu`/`runS3Menu` split from Phase 20.2).
-   Every existing test rewritten to call the core directly; each
-   function's own "cancel at bucket pick" test (testing `ui.PickList`'s
-   "0=Cancel" convention, no longer applicable) was retired.
-   `cancelledIsNil` now also recognizes `tui.ErrCancelled`.
-9. Phase 20.9 -- prompted by the user manually trying the S3 menu ("it
-   just took a moment" -- huh rendering on first use): converted the
-   lifecycle rules action menu (Add/Edit/Remove/View rule details,
-   `bucket_lifecycle.go`) from `ui.PickList` to `huh.Select`
-   (`pickLifecycleAction`), matching `RunS3Menu`'s pattern exactly --
-   `q` bound alongside `ctrl+c`, "Back" dropped, a `"(q to go back)"`
-   hint printed. Added a `ctx.Err()` check to this loop (was missing,
-   unlike every sibling menu loop) so tests could terminate via
-   context-cancellation the same way Phase 20.7's tests do. All 15
-   existing tests updated to feed the action menu through a separate
-   `newHuhAccessibleInput` reader, `le` unchanged for everything else in
-   the function.
-10. Full conversion punch list -- the user asked to "review the source
-    code and identify all the places where we want to upgrade to the
-    huh.Select, our Picker and View lists." Surveyed every `ui.PickList`
-    (33) and `ui.Display*` (4) call site directly from source and
-    classified each into Menu/Picker/List as three tables in DESIGN.md's
-    "Picker tier" section (full conversion punch list), each with
-    file:line and a done/not-started status. DECISIONS.md records the
-    classification rule used and two close calls (storage-class
-    selection and region selection classified as Menu, not Picker,
-    since both are fixed/small/not fetched from AWS).
-11. Phase 20.10/20.11 -- worked through the rest of the Menu tier: domain
-    picker, Compute main menu, Key Management menu, both kind pickers
-    (show/export cloud-init, manage tags), the tag Add/Update/Remove
-    action + per-resource tag pickers, bucket-purpose enum, both region
-    pickers, curated instance-type list, both storage-class pickers
-    (guided + generic editor), and the AZ/ENA remediation choices -- all
-    converted to `huh.Select`, all now punch-list "done."
-12. Phase 20.12 -- the rest of the Picker tier: EC2 instance, AMI,
-    subnet, IAM instance profile/role, key pair (both fetched-list call
-    sites), and S3 lifecycle rule (view/edit/remove) all converted to
-    `tui.RunPicker`, same split-into-testable-core pattern as Phase 20.4.
-13. Phase 20.13 -- the List tier's last three: `DisplayInstances`/
-    `DisplayImages`/`DisplayKeyPairs` converted to `tui.RunListView`,
-    mirroring `DisplayBuckets` exactly (pure `*ListViewConfig` builders,
-    thin wrapper functions). `MenuActions`/`KeyMgmtActions` each split
-    `Refresh` into a silent fetch-only version + a new
-    `ShowResourceLists` field (mirrors `S3Actions`' Phase 20.6 split),
-    since `tui.RunListView` blocks on `q` and the old `Refresh` behavior
-    would've forced a `q` press after every single menu action.
-    Along the way, found and fixed a real bug in `tui.reverseVideo`
-    (internal/tui/style.go): it could prematurely end reverse-video
-    styling partway through a row that already embedded its own ANSI
-    reset (e.g. a colored STATE cell landing on the cursor row).
-14. Phase 20.14, part 1 -- user-reported bug right after trying the
-    newly-converted List tier: the box wasn't using the full terminal
-    height, a lot of content scrolled out of view. Root cause: these are
-    inline (non-alt-screen) bubbletea programs, and a box sized to
-    nearly the full terminal height renders wherever the cursor already
-    sits rather than at row 0 -- if that doesn't fit in the remaining
-    rows, the terminal scrolls and bubbletea's redraw bookkeeping goes
-    stale. Fixed by returning `tea.ClearScreen` from `Init()` on all
-    three inline screens (`ListViewModel`, `PickerModel`,
-    `filemanager.Model`). User confirmed: "Scrolling is much improved."
-15. Phase 20.14, part 2 -- same conversation, user asked whether
-    List-tier filtering was still planned (it was, per the keybinding
-    table, but never built). Added it to `ListViewModel`, extracting a
-    shared `filterState` type (`internal/tui/filter.go`) that both
-    `ListViewModel` and `PickerModel` now use, rather than duplicating
-    Picker's existing filter code -- keeps them identical by
-    construction. Also unified both models' `windowHeight()` math onto
-    one shared helper (fixed a minor pre-existing off-by-one in
-    Picker's own chrome arithmetic along the way) and made
-    `ListViewModel`'s header row conditional on `Header != ""`, matching
-    Picker (no behavior change for existing callers, which all supply a
-    header).
+The user's actual request was "clear the screen first and take up the
+full height of the terminal window." Only the clear-screen half was
+implemented (Phase 20.24) -- the domain picker itself is still a
+compact, content-sized huh.Select, not full-height. This was
+deliberately NOT guessed at further, because it's a real architectural
+fork, not an implementation detail:
 
-NEXT UP: huh-vs-bubbletea triage for the termlib removal (Monday)
---------------------------------------------------------------------
+- The Menu tier (huh.Select) has no built-in "occupy the full terminal
+  height" concept the way the Picker/List/Manager tier's bubbletea
+  components do (real tea.WindowSizeMsg-driven sizing, content padded
+  to fill).
+- Making ONLY the root domain picker full-height would look
+  inconsistent with every menu one level deeper (S3/EC2/Key Management
+  submenus), which would stay compact -- the opposite direction from
+  all the chrome-consistency work just finished.
+- The much bigger alternative -- redesigning the entire Menu tier onto
+  a full-height bubbletea component, effectively retiring huh.Select
+  for navigation menus -- hasn't been scoped at all.
 
-The full Menu/Picker/List conversion punch list (item 10) is now
-completely done -- every row in DESIGN.md's three tables is "done."
-`termlib` itself is NOT removed: go.mod still lists it, and ~40 call
-sites remain (every action wizard -- create/launch/terminate/backup
-flows, etc. -- plus internal/ui's lower-level helpers like
-`color.go`/`picklist.go`/`prompt.go`/`display.go`). The user wants to
-first triage that remaining surface -- which call sites are simple
-enough for `huh` (guide-menu/wizard-shaped, no fetched/scrollable data)
-vs. which actually need a `bubbletea` component (anything with a
-scrollable list, live progress, or multi-pane layout) -- before
-converting anything. Do that triage first; don't start converting until
-it's done and reviewed with the user.
+Ask the user directly which of these (or something else entirely) they
+meant by "full height" before writing any code. See DECISIONS.md,
+"Clear the screen at startup," and PLAN.md Phase 20.24's own deferred
+note for what's already been reasoned through.
 
 Also still open:
-- **Manual/interactive verification.** Most `huh`/`bubbletea` UI from
-  this session has only been verified by automated tests, not run by a
-  human at a real terminal -- the one exception is the List/Picker
-  scrolling fix (item 14), which the user did verify interactively.
-  Worth a real pass through the rest (Compute/Key Management menus, the
-  Picker-tier conversions) before calling this UI work fully finished.
-- Whether `object_browser.go`'s existing `huh.Select`-based bucket
-  pre-flight should also move to `PickerModel` for visual consistency
-  with the newly-converted bucket-selection sites -- explicitly left
-  open in DECISIONS.md, not decided.
-- DESIGN.md's original preliminary resource-selection map (written when
-  Phase 20.4 was the only conversion underway) is superseded by the full
-  punch list but was left in place as a historical snapshot, with a note
-  pointing to the authoritative table -- not deleted, in case that
-  bothers anyone later.
+- Manual/interactive verification. Most of this session's chrome/UX
+  work (the full border, description text, the bucket picker's
+  filtering) has only been checked via automated tests and a few
+  throwaway ANSI-output sanity scripts, not run by a human at a real
+  terminal. Worth a real pass through the app before calling any of it
+  fully finished.
+- Whether the recall-history mechanism (~/.clasm_state) should ever be
+  surfaced/editable by the operator (e.g. "forget this instance"), or
+  stay purely automatic -- not raised yet, no need to raise it
+  unprompted.
 
 Other unclaimed threads (lower priority, ask before picking one)
 --------------------------------------------------------------------
 
-- Not verified against real AWS yet via the *formal* test plan --
-  PLAN.md Phase 22 still covers this.
-- Batch delete via `s3:DeleteObjects` (up to 1000 keys/call) instead of
-  the current one-`DeleteObject`-per-key loop in the file manager's
-  Delete/Sync actions: still an open "nice to have" (TODO.md).
-- No `v0.0.1` git tag or GitHub release yet, and the GitHub-side repo
+- PLAN.md Phase 22 (real-AWS testing for Key Management/S3) still not
+  run -- needs the user's own AWS account access.
+- PLAN.md Phase 21 (CloudFront) is explicitly someday/maybe, not on the
+  active roadmap.
+- PLAN.md Phase 16/18's own status headers are stale (no "(done)"
+  marker) even though TODO.md confirms both were actually completed
+  and verified back in Phase 17's retirement pass -- minor doc
+  cleanup, noticed but not fixed.
+- No v0.0.1 git tag or GitHub release yet, and the GitHub-side repo
   rename (caltechlibrary/awstools -> caltechlibrary/clasm) is still the
   user's to do.
+- Batch delete via s3:DeleteObjects (up to 1000 keys/call) instead of
+  the file manager's current one-DeleteObject-per-key loop: still an
+  open "nice to have" (TODO.md).
 - The S3 lifecycle policy ID string "awsops-backup-policy"
-  (`internal/workflow/bucket_lifecycle.go`) is still deliberately
+  (internal/workflow/bucket_lifecycle.go) is still deliberately
   un-renamed -- ask before touching it.
 
 Git state: the user commits, pushes, tags, and handles the GitHub repo
