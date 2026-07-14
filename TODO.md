@@ -1,159 +1,40 @@
 
 # Action items
 
-- [x] UI bug, we should check to make sure aws cli is on remote system before invoking it, that way we can explicitly say it is missing and how to install it -- implemented as `CheckAWSCLIAvailable` (`internal/workflow/backup_cli_check.go`), see DECISIONS.md, "Preflight check: AWS CLI availability before Backup Archive & Trim" (2026-07-02).
+## Bugs 
 
-## UX improvements
+- [ ] Each screen should fill the terminal window consistantly, still a problem in current version (commit a3c07051cf83899ca4b7dd333a55830870f183dc)
+  - I don't think when a new screen is written that we're actually checking the window's height. Many screens clear but then ownly draw in about 1/3 of the window height
+- [ ] The bahavior of the filter and picker filter needs to be uniform, right now some filters treat "q" as quick filter rather than the default huh uses (empty string), the "q" doesn't exit the whole clasm but returns to the prior screen.
+- [ ] The screen for adding, updating, and removing tags is missing a "show tags" menu option and the tags shown at the top of he screen don't update on change
+- [ ] When creating a new EC2 instance the IDMSv2 metadata value should be set to true per AWS Security recommendations
 
-- [x] Backup Archive & Trim's prompt order fixed: instance -> backup
-      directory -> S3 bucket -> age threshold (days) -- see
-      DECISIONS.md, "Reorder Backup Archive & Trim's prompts," and
-      PLAN.md Phase 20.20 (done).
-- [x] Backup Archive & Trim now recalls the last-used instance/
-      directory *per instance*, via a new app-managed `~/.clasm_state`
-      file (`internal/state`), taking priority over the config-file
-      Name-pattern default -- see DECISIONS.md, "Recall Backup Archive
-      & Trim's instance/directory choices per-instance," and PLAN.md
-      Phase 20.21 (done).
-- [x] Every Menu-tier `huh.Select` and Picker-tier `tui.RunPicker`
-      screen now shows contextual description text below its title
-      (huh's own `.Description(...)`; a new `tui.PickerConfig.
-      Description` field for the Picker tier) -- see DECISIONS.md,
-      "Contextual description text on Menu/Picker-tier screens," and
-      PLAN.md Phase 20.22 (done). List-tier's tabular resource listings
-      deliberately excluded.
-- [x] `huh` fields now draw a full four-sided box border
-      (`lipgloss.NormalBorder()`) in the shared accent, matching `tui/
-      box.go`'s chrome shape, not just its color -- see DECISIONS.md,
-      "huh fields get a full box border to match tui's chrome," and
-      PLAN.md Phase 20.23 (done).
-- [x] clasm now clears the terminal at startup, before its first line
-      of output -- see DECISIONS.md, "Clear the screen at startup," and
-      PLAN.md Phase 20.24 (done). The other half of that request --
-      making the startup screen use the terminal's full height -- was
-      deliberately NOT done; see the note in Phase 20.24 for why (the
-      domain picker is a Menu-tier `huh.Select`, which has no
-      "full-height" concept the way Picker/List-tier bubbletea screens
-      do, and only the root menu becoming full-height would be
-      inconsistent with every menu one level deeper). Revisit if this
-      is confirmed to still be wanted.
-- [x] Backup Archive & Trim's S3 bucket prompt is now a filterable pick
-      list of this account's buckets, plus "Other" to type any bucket
-      name directly -- see DECISIONS.md, "Bucket picker for Backup
-      Archive & Trim," and PLAN.md Phase 20.25 (done).
+## Requested features
 
-- [ ] We have "exit", "cancel" (which sometimes is the same", "back to ..." for navigating the heirachy of menus (workflows). This should be more consistant. "cancel" should mean aborting an action not closing a particular menu select an action or workflow. Since the application is mostly a list of things then either a sub list of things or an action I think we should standardize that heirarchy so when you close a nested menu list it just backs you up to the menu you previously were on. We should standardize either on "quit" or "exit" to close a menu when done. I'm OK with standardizing on "quit" but right now we have two many words meaning almost the same thing. When you quit all the menu's you've finally exit the TUI.
+- [ ] A top level menu item for managing tags across resources (EC2, AMI, S3, etc)
+- [ ] My work group uses launch templates instances for EC2 we need to support managing those (list, show a template, add, update and remove)
+- [ ] We need to way to sync a launch template with the updates from a cloud init YAML file
+  - The flow is cloud init yaml -> launch template -> EC2 instance
+- [ ] Support for AWS container registry as a copy level menu item
+- [ ] SSMS supports interactions with docker containers running inside an EC2 instance we need to provide manageability for those docker services
+  - [ ] list docker services inside EC2 instance
+  - [ ] image docker service instances inside EC2 instance saving the image in the AWS private container registry or on S3
 
-  Decided 2026-07-10 (DECISIONS.md, "TUI keybinding conventions"): `q`
-  is the universal back/quit key everywhere; `Esc` is reserved for
-  cancelling an in-progress action, never for closing a menu. Landed
-  across every screen as the Menu/Picker/List punch list and the
-  termlib removal completed (PLAN.md Phases 20.2-20.16, all done).
+## Nice to have
 
-## Termlib Removal (done 2026-07-13)
+- [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
+- [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
+- [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
+- [ ] Retry-on-launch-failure (general case): instead of bouncing back to
+      the main menu on any `RunInstances` error, keep the already-collected
+      params and let the operator re-enter just the field that's likely
+      wrong instead of re-doing the whole launch flow. Granularity not yet
+      decided (just Instance type, or any collected field). NOTE: the
+      instance-type/AZ pre-flight check above already does a scoped version
+      of this (change instance type / pick a different subnet / abort) for
+      that one failure class, pre-flight rather than reactive -- this item
+      is about generalizing to *any* RunInstances failure, not just that one.
 
-- [x] `termlib` removed entirely in favor of `huh` (guide menus, action
-      wizards) and `bubbletea` (lists, managers) exclusively -- see
-      DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
-      Managers" and "Removing termlib: Action Wizards and Output,"
-      DECISIONS.md, "Remove termlib entirely: input via huh, output via
-      io.Writer," and PLAN.md Phases 20.2-20.16 (all done). `github.com/
-      rsdoiel/termlib` is gone from `go.mod`/`go.sum`; `go build ./...`,
-      `go vet ./...`, `go test ./... -race`, `gofmt -l` all clean (except
-      the pre-existing, unrelated `version.go`).
-## Chrome Standardization (done 2026-07-13)
-
-- [x] One shared indigo accent across every screen -- `tui.Theme()`
-      wired into all five `huh.NewForm(...)` call sites,
-      `internal/tui/box.go`'s border/title functions styled to match --
-      see DESIGN.md, "Chrome Standardization: A Shared lipgloss
-      Palette," DECISIONS.md, "Chrome standardization: one shared
-      indigo accent via lipgloss," and PLAN.md Phases 20.17-20.19 (all
-      done).
-- [x] `progress_ticker.go`'s periodic elapsed-time line replaced with a
-      real animated `bubbles/spinner`-based `bubbletea` component,
-      styled with the shared accent, clearing itself on stop.
-- [x] `object_browser.go`'s bare `huh.Select` bucket pre-flight moved
-      onto the shared `pickBucket`/`PickerModel` convention every other
-      bucket-selection call site already used.
-- [ ] Not pursued: `internal/ui`'s color/format helpers (`ansiBold`/
-      `ansiRed`/etc., `padRight`/`truncate`) adopting `lipgloss` instead
-      of local ANSI constants -- these govern the STATE column's
-      semantic data colors (green=running, red=stopped, ...), which
-      DESIGN.md's chrome-standardization addendum explicitly leaves
-      alone as "not decorative chrome" (see DESIGN.md, "Deliberately
-      unchanged").
-
-## Done (Go rewrite — see PLAN.md, DECISIONS.md 2026-07-01)
-
-PLAN.md Phases 0 through 17 are implemented, tested, and verified against
-real AWS as of 2026-07-08 (`go build ./...`, `go vet ./...`,
-`go test ./... -race`, `gofmt -l` all clean; `TEST_PLAN_REAL_AWS.txt`
-fully checked off, 112/112 items).
-
-- [x] Work through `TEST_PLAN_REAL_AWS.txt` against real AWS, both
-      configured regions (us-west-1, us-west-2 -- narrowed from four; see
-      DECISIONS.md, "Narrow configured regions to us-west-1/us-west-2")
-- [x] Phase 16 (PLAN.md): manual test plan fully run, no open gaps
-- [x] Phase 17 (PLAN.md): documentation pass + retire
-      `ec2_ami_manager.bash`/`ami_copy.bash`/`tests/*.bats` -- done
-      2026-07-08, see DECISIONS.md, "Retire ec2_ami_manager.bash,
-      ami_copy.bash, and the Bash test suite"
-- [x] Phase 19 (PLAN.md): Key Management domain (list/create/import/
-      delete key pairs) -- done 2026-07-08, wired into the domain picker
-- [x] Phase 20 (PLAN.md): S3 domain (buckets, static website hosting,
-      directory sync, object browsing, lifecycle policies) -- done and
-      real-AWS verified 2026-07-08, wired into the domain picker. One
-      real bug found and fixed during verification (removing a bucket's
-      last lifecycle rule now correctly calls `DeleteBucketLifecycle`
-      instead of an invalid empty-`Rules` `PutBucketLifecycleConfiguration`
-      -- see DECISIONS.md, "Clear a bucket's lifecycle configuration via
-      DeleteBucketLifecycle, not an empty PutBucketLifecycleConfiguration").
-- [x] Manage Bucket Lifecycle Policies' guided flow now validates locally
-      that a transition's days is strictly less than the rule's
-      expiration days (and vice versa in the generic editor), instead of
-      surfacing AWS's raw rejection -- see `validateLessThan`/
-      `validateGreaterThan` in `internal/workflow/bucket_lifecycle.go`.
-      Closes the gap noted below under "Discussed but not yet designed/
-      implemented" as of 2026-07-08.
-- [x] Manage Bucket Lifecycle Policies' "View rule details" action: pick
-      a rule and see its full expiration/transition/filter configuration
-      without entering the Add/Edit flow; loops back to the action menu
-      instead of exiting the workflow.
-- [x] Delete Bucket: refuses a non-empty bucket (reports the object
-      count) and gates the irreversible `s3:DeleteBucket` call with
-      `ConfirmDestructive` (type the bucket name back).
-- [x] Delete Objects by Prefix: bulk-deletes every object under a key
-      prefix (blank prefix = whole bucket) without needing a local
-      directory to diff against the way Sync does; gated the same way,
-      typing the prefix (or bucket name) back to confirm.
-- [x] `ui.PickList` filter-as-you-type: non-numeric input narrows any
-      picker's list by a case-insensitive label substring match (bucket
-      lists, instance lists, etc.), and the bucket list itself is now
-      returned sorted alphabetically by `inventory.ListBuckets`.
-- [x] PLAN.md Phase 20.1 (DESIGN.md Features 21.2-21.8): the S3 domain's
-      UI/UX pass -- one interactive "Browse & Manage Objects" file
-      manager (`internal/filemanager`, a scoped `bubbletea` `Model`)
-      replacing Sync Local Directory to Bucket, Browse/Manage Objects,
-      and Delete Objects by Prefix. Single-pane (bucket only) or
-      double-pane (bucket + linked local directory); tagging, per-level
-      substring filter, Upload/Download/Delete/Show-metadata actions
-      with a Confirm/ConfirmDestructive/progress overlay, a dedicated
-      Sync action (whole-tree diff against the bucket, reusing the new
-      `internal/s3diff` package's `Compute`/`WalkLocalTree`/
-      `ListAllBucketObjects`/`UploadFile` -- extracted from the retired
-      wizard rather than reimplemented), Find (recursive glob-on-
-      basename search), and a `:`-prefixed command line mirroring every
-      hotkey. `s3:GetObject` added to `S3API` for Download, completing
-      Create/Update/Read/Delete parity. huh added as a dependency for
-      the screen's own bucket-selection pre-flight
-      (`internal/workflow/object_browser.go`) -- every other S3 wizard
-      stays on termlib. Tests use `github.com/charmbracelet/x/exp/
-      teatest` (resolves PLAN.md's open testing question); `go test
-      -race` caught one real bug during development (a background
-      action goroutine mutating pane state directly instead of only
-      sending over its progress channel -- fixed). Not yet verified
-      against real AWS -- see PLAN.md Phase 22.
 
 ## Someday/maybe (not on the active roadmap)
 
@@ -168,60 +49,3 @@ fully checked off, 112/112 items).
   picked back up. Phase 22 (real-AWS testing for Key Management/S3) no
   longer depends on it.
 
-## Postponed to a later version
-
-- UI/UX overhaul, remaining scope: the S3 domain's file manager (see
-  "Done" above) is the only part of `internal/workflow` migrated off
-  termlib so far. `huh`/`bubbletea` adoption elsewhere -- Compute, Key
-  Management, the other ~35 wizard call sites -- is still deliberately
-  deferred; nothing about finishing the S3 domain commits to migrating
-  the rest.
-
-## Discussed but not yet designed/implemented
-
-- [x] Pre-flight sanity check before `RunInstances`: cross-reference the
-      picked AMI's `EnaSupport` against the picked instance type's ENA
-      requirement. Both known failure classes from this session are now
-      implemented: instance-type/Availability-Zone (DECISIONS.md,
-      "Pre-flight check: instance type vs. subnet Availability Zone") and
-      instance-type/AMI-ENA-support (DECISIONS.md, "Pre-flight check:
-      instance type vs. AMI ENA support"). If a third incompatibility
-      class turns up, that's the point to reconsider a shared framework,
-      not before (see either decision's "Rejected alternatives").
-- [ ] Retry-on-launch-failure (general case): instead of bouncing back to
-      the main menu on any `RunInstances` error, keep the already-collected
-      params and let the operator re-enter just the field that's likely
-      wrong instead of re-doing the whole launch flow. Granularity not yet
-      decided (just Instance type, or any collected field). NOTE: the
-      instance-type/AZ pre-flight check above already does a scoped version
-      of this (change instance type / pick a different subnet / abort) for
-      that one failure class, pre-flight rather than reactive -- this item
-      is about generalizing to *any* RunInstances failure, not just that one.
-
-## Nice to have
-
-- [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
-- [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
-- [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
-
-## Superseded (Bash version — retired 2026-07-08, see DECISIONS.md)
-
-Real-world use surfaced three bugs (`eval` quoting crash in the interactive
-picker, a locale-dependent `grep` failure, and a malformed AWS CLI tag
-string that silently prevented AMI creation) that led to the decision to
-retarget to Go rather than keep patching. `ec2_ami_manager.bash`,
-`ami_copy.bash`, `ami_copy_basic_steps.md`, and the BATS suite have now
-been deleted from this repo (see DECISIONS.md, "Retire
-ec2_ami_manager.bash, ami_copy.bash, and the Bash test suite") -- the
-items below are historical record only, not actionable.
-
-- [x] Phase 5b (PLAN.md, Bash version): port ami_copy.bash's volume-size
-      estimate, SSM fstrim step, unbounded creation polling, and
-      Invenio-RDM running-instance guidance into ec2_ami_manager.bash's
-      Phase 5 workflow. Implemented and unit-tested
-      (tests/test_create_ami.bats, 27 tests).
-- [ ] ~~Manually verify ec2_ami_manager.bash's create-AMI workflow against a
-      real EC2 instance~~ — superseded; verification now targets the Go
-      binary (see PLAN.md Phase 16)
-- [ ] ~~Write BATS tests for Phase 6 (AMI removal) and Phase 7 (main
-      menu)~~ — superseded; those workflows get Go tests instead

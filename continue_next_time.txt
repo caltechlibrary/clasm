@@ -1,3 +1,6 @@
+
+We did some bug fixxing this morning (2026-07-14), I've cleaned up the TODO.md to only have in complete items.
+
 clasm — where we left off (2026-07-13, end of the chrome/UX-refinements session)
 ==============================================================================
 
