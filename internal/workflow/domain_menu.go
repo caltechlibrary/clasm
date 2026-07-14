@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
 	"github.com/caltechlibrary/clasm/internal/tui"
@@ -47,25 +48,91 @@ func menuQuitKeyMap() *huh.KeyMap {
 	return keymap
 }
 
+// filteringField is satisfied by every Select field this package builds
+// via pickComparable/pickString/runMenuField's other call sites --
+// huh.Select's own GetFiltering, reporting whether the field is
+// currently accepting filter text ('/' was pressed, Esc/Enter hasn't
+// ended it yet). Used by quitKeyGuard below; a field that doesn't
+// satisfy this (none currently exist among runMenuField's callers) just
+// skips the guard and runs exactly as before.
+type filteringField interface {
+	GetFiltering() bool
+}
+
+// quitKeyGuard wraps a *huh.Form, disabling its own Quit keybinding
+// (ctrl+c and, via menuQuitKeyMap, 'q') for exactly as long as the
+// active field reports it's filtering. Without this, huh.Form.Update
+// checks its top-level Quit binding *before* the keystroke ever reaches
+// the field -- so typing a bucket/option name containing the letter
+// 'q' into a filter (e.g. "sql") aborts the whole form on that letter
+// instead of it becoming filter text (reported directly: typing "sql"
+// into Backup Archive & Trim's bucket-filter picker exited clasm
+// outright, every time, on the 'q'). tui/filter.go's own Picker-tier
+// filterState avoids this same class of bug by checking filtering
+// state before its own quit-key case; huh's Form has no such hook, so
+// this instead reaches into the same *key.Binding WithKeyMap already
+// installed and toggles Enabled() before every keystroke -- key.Matches
+// (bubbles/key) honors a disabled binding, so a disabled Quit simply
+// never matches, and the keystroke falls through to the field like any
+// other character. This also means ctrl+c is swallowed as a no-op while
+// filtering rather than quitting -- matching, not diverging from,
+// tui/filter.go's own documented precedent for the Picker tier.
+type quitKeyGuard struct {
+	*huh.Form
+	setQuitEnabled func(bool)
+	filtering      func() bool
+}
+
+func (g *quitKeyGuard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(tea.KeyMsg); ok {
+		g.setQuitEnabled(!g.filtering())
+	}
+	m, cmd := g.Form.Update(msg)
+	g.Form = m.(*huh.Form)
+	return g, cmd
+}
+
 // runMenuField runs field as a Menu-tier huh.Select (DESIGN.md's full
 // conversion punch list): prints hint via w (huh's own footer can't
 // show a custom "q: ..." entry -- its SelectKeyMap has no quit/back
 // binding to add one to, and KeyBinds() isn't overridable without
-// forking huh), binds 'q' alongside ctrl+c on Quit, and runs it.
-// input/output are nil in production (interactive, real terminal) and
-// supplied by tests for the accessible-mode pipe path. Returns the raw
-// form error, including huh.ErrUserAborted, unmapped -- callers choose
-// how to map it: mapMenuPickerErr for domain-loop menus that back out
-// to ErrBackToDomainPicker, huhCancelledIsNil for one-off workflow
+// forking huh), binds 'q' alongside ctrl+c on Quit, and runs it --
+// through quitKeyGuard for a filterable field in real interactive use,
+// so 'q' typed as filter text doesn't abort the form (see
+// quitKeyGuard's own doc comment). input/output are nil in production
+// (interactive, real terminal) and supplied by tests for the
+// accessible-mode pipe path -- accessible mode has no bubbletea Update
+// loop to guard (it reads whole lines via a plain io.Reader), so it
+// always runs unguarded. Returns the raw form error, including
+// huh.ErrUserAborted, unmapped -- callers choose how to map it:
+// mapMenuPickerErr for domain-loop menus that back out to
+// ErrBackToDomainPicker, huhCancelledIsNil for one-off workflow
 // sub-choices that just cancel the whole workflow cleanly.
 func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, output io.Writer) error {
 	fmt.Fprintln(w, hint)
 
-	form := huh.NewForm(huh.NewGroup(field)).WithKeyMap(menuQuitKeyMap()).WithTheme(tui.Theme())
+	keymap := menuQuitKeyMap()
+	form := huh.NewForm(huh.NewGroup(field)).WithKeyMap(keymap).WithTheme(tui.Theme())
 	if input != nil {
 		form = form.WithAccessible(true).WithInput(input).WithOutput(output)
+		return form.Run()
 	}
-	return form.Run()
+
+	ff, ok := field.(filteringField)
+	if !ok {
+		return form.Run()
+	}
+
+	form.SubmitCmd = tea.Quit
+	form.CancelCmd = tea.Quit
+	guard := &quitKeyGuard{Form: form, setQuitEnabled: keymap.Quit.SetEnabled, filtering: ff.GetFiltering}
+	if _, err := tea.NewProgram(guard).Run(); err != nil {
+		return fmt.Errorf("huh: %w", err)
+	}
+	if guard.Form.State == huh.StateAborted {
+		return huh.ErrUserAborted
+	}
+	return nil
 }
 
 // pickString runs a Menu-tier huh.Select (DESIGN.md's full conversion
@@ -78,6 +145,20 @@ func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, ou
 func pickString(w io.Writer, title, description, hint string, options []string, input io.Reader, output io.Writer) (string, error) {
 	return pickComparable(w, title, description, hint, options, func(s string) string { return s }, input, output)
 }
+
+// maxUnboundedSelectHeight caps a Menu-tier huh.Select's viewport once its
+// option list grows past this many rows. Left at huh's own zero value, a
+// Select sizes itself to fit every option with no scrolling at all (fine
+// for this package's usual fixed, hand-written lists of a handful of
+// entries) -- but promptBackupBucket's list is a live listing of every S3
+// bucket in the account, unbounded, and without a cap a large account's
+// bucket list would render taller than the terminal itself with no way to
+// scroll (unlike every Picker-tier tui.RunPicker screen, which always
+// windows to the terminal height for exactly this reason). Matches huh's
+// own defaultHeight (used when it auto-sizes an OptionsFunc-backed
+// Select), so a capped list looks the same as huh's own convention
+// elsewhere, not a new one.
+const maxUnboundedSelectHeight = 10
 
 // pickComparable runs a Menu-tier huh.Select (DESIGN.md's full
 // conversion punch list) over a fixed list of comparable options,
@@ -98,6 +179,9 @@ func pickComparable[T comparable](w io.Writer, title, description, hint string, 
 		Description(description).
 		Options(opts...).
 		Value(&picked)
+	if len(opts) > maxUnboundedSelectHeight {
+		field = field.Height(maxUnboundedSelectHeight)
+	}
 
 	err := runMenuField(w, hint, field, input, output)
 	return picked, err
