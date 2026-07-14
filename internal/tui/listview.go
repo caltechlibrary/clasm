@@ -110,7 +110,11 @@ func (m *ListViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *ListViewModel) windowHeight() int {
-	return filterableWindowHeight(m.height, m.cfg.Header != "")
+	// List-tier screens don't take a Description (DESIGN.md, "Contextual
+	// description text on Menu/Picker-tier screens" scopes this to
+	// Menu/Picker-tier only -- List-tier's tabular resource listings
+	// aren't "just a pick list").
+	return filterableWindowHeight(m.height, m.cfg.Header != "", false)
 }
 
 func (m *ListViewModel) View() string {

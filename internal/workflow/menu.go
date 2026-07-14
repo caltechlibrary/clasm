@@ -91,6 +91,7 @@ func pickMainMenuItem(w io.Writer, input io.Reader, output io.Writer) (menuItem,
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Choose an option").
+		Description("Manage EC2 instances and AMIs, or archive stale backups to S3.").
 		Options(opts...).
 		Value(&idx)
 

@@ -20,17 +20,35 @@ import (
 // Like pickBucket (Phase 20.4), this drives a real bubbletea Program
 // that can't be pipe-tested -- every caller splits into a thin entry
 // point (calls pickInstance) and a testable core taking the already-
-// resolved instance directly.
-func pickInstance(ctx context.Context, title string, instances []inventory.Instance) (inventory.Instance, error) {
+// resolved instance directly. description is optional contextual text
+// shown below the title ("" for none).
+func pickInstance(ctx context.Context, title, description string, instances []inventory.Instance) (inventory.Instance, error) {
+	return pickInstanceDefaulted(ctx, title, description, instances, "")
+}
+
+// pickInstanceDefaulted is pickInstance plus an optional pre-positioned
+// cursor: if defaultInstanceID matches an instance's InstanceID, the
+// picker's cursor starts on that row instead of the first one -- e.g.
+// Backup Archive & Trim recalling the instance used last time
+// (DECISIONS.md, "Recall Backup Archive & Trim's instance/directory
+// choices per-instance"). defaultInstanceID == "" (no prior choice, or
+// callers that don't need this) behaves exactly like pickInstance.
+func pickInstanceDefaulted(ctx context.Context, title, description string, instances []inventory.Instance, defaultInstanceID string) (inventory.Instance, error) {
 	rows := make([]string, len(instances))
+	initialCursor := 0
 	for i, inst := range instances {
 		rows[i] = instanceLabel(inst)
+		if defaultInstanceID != "" && inst.InstanceID == defaultInstanceID {
+			initialCursor = i
+		}
 	}
 
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
-		Title:        title,
-		Rows:         rows,
-		ColorEnabled: ui.ColorEnabled(),
+		Title:         title,
+		Description:   description,
+		Rows:          rows,
+		ColorEnabled:  ui.ColorEnabled(),
+		InitialCursor: initialCursor,
 	})
 	if err != nil {
 		return inventory.Instance{}, err
@@ -61,7 +79,7 @@ func StartEC2Instance(ctx context.Context, w io.Writer, clients map[string]awscl
 		return nil
 	}
 
-	inst, err := pickInstance(ctx, "Select an instance to start", stopped)
+	inst, err := pickInstance(ctx, "Select an instance to start", "Only stopped instances are listed.", stopped)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -133,7 +151,7 @@ func StopEC2Instance(ctx context.Context, w io.Writer, clients map[string]awscli
 		return nil
 	}
 
-	inst, err := pickInstance(ctx, "Select an instance to stop", running)
+	inst, err := pickInstance(ctx, "Select an instance to stop", "Only running instances are listed.", running)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

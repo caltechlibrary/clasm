@@ -73,6 +73,7 @@ func pickKeyPairChoice(ctx context.Context, title string, choices []keyPairChoic
 	}
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  "This is the SSH key pair used to log into the new instance.",
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})

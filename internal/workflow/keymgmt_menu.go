@@ -66,6 +66,7 @@ func pickKeyMgmtItem(w io.Writer, input io.Reader, output io.Writer) (keyMgmtIte
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Choose an option").
+		Description("Manage SSH key pairs used to launch and access EC2 instances.").
 		Options(opts...).
 		Value(&idx)
 

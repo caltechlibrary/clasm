@@ -120,6 +120,7 @@ func pickS3MenuItem(w io.Writer, input io.Reader, output io.Writer) (s3Item, err
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Choose an option").
+		Description("Manage S3 buckets: create, browse and manage objects, configure static websites, and lifecycle policies.").
 		Options(opts...).
 		Value(&idx)
 

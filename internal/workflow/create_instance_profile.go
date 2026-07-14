@@ -36,6 +36,7 @@ func pickInstanceProfileChoice(ctx context.Context, title string, choices []inst
 	}
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  "The IAM instance profile controls what AWS APIs this instance can call (e.g. reading its own tags via SSM).",
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})
@@ -54,6 +55,7 @@ func pickRole(ctx context.Context, title string, roles []RoleInfo) (RoleInfo, er
 	}
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  "The IAM role this new instance profile will attach -- it must already have a trust policy allowing EC2 to assume it.",
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})

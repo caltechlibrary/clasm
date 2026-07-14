@@ -22,7 +22,7 @@ func CreateInstanceFromCloudInit(ctx context.Context, w io.Writer, ec2Clients ma
 		return cancelledIsNil(w, err)
 	}
 
-	image, err := pickImage(ctx, "Select a base AMI", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
+	image, err := pickImage(ctx, "Select a base AMI", "Includes AMIs owned by this account and official Ubuntu LTS images; the cloud-init YAML you just gave runs on top of whichever you pick.", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

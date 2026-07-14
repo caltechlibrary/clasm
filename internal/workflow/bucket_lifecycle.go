@@ -63,7 +63,7 @@ var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View ru
 // interactively on the real terminal) or supplied by tests to drive it
 // through its accessible-mode pipe path instead.
 func pickLifecycleAction(w io.Writer, input io.Reader, output io.Writer) (string, error) {
-	return pickString(w, "Choose an action", "(q to go back)", lifecycleActions, input, output)
+	return pickString(w, "Choose an action", "Manage this bucket's S3 Lifecycle rules -- expiration and storage-class transition schedules.", "(q to go back)", lifecycleActions, input, output)
 }
 
 func lifecycleRuleLabel(r types.LifecycleRule) string {
@@ -85,6 +85,7 @@ func pickLifecycleRule(ctx context.Context, title string, rules []types.Lifecycl
 	}
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  "Each row shows the rule's ID and the object-key prefix it applies to.",
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})
@@ -289,7 +290,7 @@ func promptGuidedBackupRule(w io.Writer, current types.LifecycleRule, menuInput 
 
 	var storageClass types.TransitionStorageClass
 	if transitionSet {
-		storageClass, err = pickComparable(w, "Select a storage class to transition to", "(q to cancel)", backupStorageClasses, storageClassLabel, menuInput, menuOutput)
+		storageClass, err = pickComparable(w, "Select a storage class to transition to", "Objects older than the threshold above move into this cheaper storage class instead of being deleted.", "(q to cancel)", backupStorageClasses, storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -392,7 +393,7 @@ func promptGenericRule(w io.Writer, current types.LifecycleRule, existingRules [
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
-		class, err := pickComparable(w, "Select a storage class", "(q to cancel)", types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
+		class, err := pickComparable(w, "Select a storage class", "The class matching objects transition into after the number of days you just entered.", "(q to cancel)", types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -566,7 +567,7 @@ func ManageBucketLifecyclePolicies(ctx context.Context, w io.Writer, newS3Client
 		return nil
 	}
 
-	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
+	bucket, err := pickBucket(ctx, "Select a bucket", "Manage expiration and storage-class transition rules on the chosen bucket.", buckets)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

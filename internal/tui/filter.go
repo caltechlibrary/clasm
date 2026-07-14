@@ -125,10 +125,12 @@ func (f *filterState) statusLine() string {
 // body, the legend row, and the bottom border.
 const baseChromeRows = 4
 
-// headerChromeRows/filterChromeRowCount count the extra rows a header
-// line or the filter status line contribute (the line itself plus the
-// divider immediately below it), when present.
+// headerChromeRows/descriptionChromeRows/filterChromeRowCount count the
+// extra rows a header line, a description line, or the filter status
+// line contribute (the line itself plus the divider immediately below
+// it), when present.
 const headerChromeRows = 2
+const descriptionChromeRows = 2
 const filterChromeRowCount = 2
 
 // filterableWindowHeight computes how many body rows fit in the
@@ -136,13 +138,16 @@ const filterChromeRowCount = 2
 // screen, given the real (or default) terminal height. Shared by
 // ListViewModel and PickerModel so their sizing stays identical by
 // construction.
-func filterableWindowHeight(height int, hasHeader bool) int {
+func filterableWindowHeight(height int, hasHeader, hasDescription bool) int {
 	if height <= 0 {
 		height = defaultListViewHeight
 	}
 	chrome := baseChromeRows + filterChromeRowCount
 	if hasHeader {
 		chrome += headerChromeRows
+	}
+	if hasDescription {
+		chrome += descriptionChromeRows
 	}
 	return max(height-chrome, minListViewRows)
 }

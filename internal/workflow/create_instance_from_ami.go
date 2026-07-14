@@ -19,7 +19,7 @@ import (
 // returns the region-specific clients itself, since it also needs them
 // to list key pairs/security groups/subnets.
 func CreateInstanceFromAMI(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) error {
-	image, err := pickImage(ctx, "Select an AMI", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
+	image, err := pickImage(ctx, "Select an AMI", "Includes AMIs owned by this account and official Ubuntu LTS images.", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

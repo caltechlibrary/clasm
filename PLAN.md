@@ -2897,6 +2897,232 @@ nothing to retire or update). Full `go build ./...`, `go vet ./...`,
 
 ---
 
+## Phase 20.20 — Backup Archive & Trim: Reorder Prompts (done)
+
+**Status: implemented and verified 2026-07-13.** Implements
+DECISIONS.md, "Reorder Backup Archive & Trim's prompts."
+
+### Work Items
+
+- [x] `internal/workflow/backup_archive.go`: `backupArchiveAndTrim`'s
+      prompt sequence reordered from instance/directory/age-days/bucket
+      to instance/directory/bucket/age-days -- the S3 bucket prompt
+      (and its immediately-following `BucketRegion`/`newS3Client`/
+      `CheckS3BucketAccess` sequence) now runs directly after the
+      directory prompt, with the age-threshold prompt moved to run last,
+      immediately before the dry-run listing.
+
+**Tests:** every existing `backup_archive_test.go` test's input string
+(four `\n`-joined answers) reordered to match; assertions unchanged.
+
+**Files:** `internal/workflow/{backup_archive.go,backup_archive_test.go}`.
+
+**Dependency:** None.
+
+## Phase 20.21 — Backup Archive & Trim: Recall Instance/Directory (done)
+
+**Status: implemented and verified 2026-07-13.** Implements
+DECISIONS.md, "Recall Backup Archive & Trim's instance/directory
+choices per-instance."
+
+### Work Items
+
+- [x] New `internal/state` package: `State`/`BackupArchiveState`
+      (`LastInstanceID`, `LastDirectoryByInstance map[string]string`),
+      `DefaultPath()` (`~/.clasm_state`), `Load`/`Save` -- mirrors
+      `internal/config`'s own `Load`/`DefaultPath` shape, but as its own
+      app-managed file, not folded into `~/.clasm`.
+- [x] `internal/tui/picker.go`: `PickerConfig` gained `InitialCursor
+      int`; `NewPickerModel` positions `filter.cursor` there when it's
+      in range, falling back to 0 (the pre-existing default) otherwise.
+- [x] `internal/workflow/power_state.go`: `pickInstance` split into
+      `pickInstance` (unchanged callers) and `pickInstanceDefaulted`
+      (takes a `defaultInstanceID string`, resolves it to a row index,
+      passes it as `InitialCursor`).
+- [x] `internal/workflow/backup_archive.go`: new `BackupHistory`
+      struct (`LastInstanceID`, `LastDirectoryByInstance`, `Save func
+      (instanceID, directory string) error`); `BackupArchiveAndTrim`
+      gained a `hist BackupHistory` parameter, passed through to
+      `pickInstanceDefaulted` and to the directory prompt's default
+      (taking priority over `backupDirRules`' Name-pattern match), and
+      `hist.Save` called once both instance and directory are resolved.
+      A `Save` error is reported to `w` as a warning, not returned.
+- [x] `cmd/clasm/main.go`: loads `~/.clasm_state` at startup (import
+      aliased `appstate` -- this file already has a local `state`
+      struct variable, which would otherwise shadow the package name),
+      builds the `Save` closure, wires `workflow.BackupHistory` into
+      the `BackupArchiveAndTrim` action closure.
+
+**Tests:** new `internal/state/state_test.go` (missing-file, malformed-
+YAML, save-then-load round-trip, overwrite, `DefaultPath`); new
+`internal/tui/picker_test.go` cases (`InitialCursor` positions the
+cursor; out-of-range falls back to 0; Enter immediately selects the
+pre-positioned row); new `internal/workflow/backup_archive_test.go`
+cases (recalled directory takes priority over the Name-pattern rule;
+`Save` is called with the right instance/directory; a `Save` error is a
+warning, not fatal).
+
+**Files:** `internal/state/{state.go,state_test.go}` (new),
+`internal/tui/{picker.go,picker_test.go}`, `internal/workflow/
+{power_state.go,backup_archive.go,backup_archive_test.go}`,
+`cmd/clasm/main.go`.
+
+**Dependency:** None.
+
+## Phase 20.22 — Contextual Description Text on Menu/Picker-tier Screens (done)
+
+**Status: implemented and verified 2026-07-13.** Implements
+DECISIONS.md, "Contextual description text on Menu/Picker-tier
+screens."
+
+### Work Items
+
+- [x] `internal/tui/picker.go`: `PickerConfig` gained a `Description
+      string` field, rendered as its own `BoxLine` + `Divider` directly
+      below the top border (mirroring `Header`'s existing shape),
+      above any `Header`/rows.
+- [x] `internal/tui/filter.go`: `filterableWindowHeight` gained a
+      `hasDescription bool` parameter, costing the same two rows a
+      header does when present; `ListViewModel`'s call site passes
+      `false` (List-tier is out of scope -- tabular resource listings
+      aren't "just a pick list").
+- [x] `internal/workflow/domain_menu.go`: `pickString`/`pickComparable`
+      (the shared Menu-tier helpers) gained a `description string`
+      parameter, applied via huh's own `.Description(...)`; all 11
+      call sites across the package updated with real contextual text.
+      The 4 direct `huh.NewSelect` call sites not funneled through
+      these helpers (`pickDomainItem`, `pickMainMenuItem`,
+      `pickKeyMgmtItem`, `pickS3MenuItem`) each gained a
+      `.Description(...)` call directly.
+- [x] Picker-tier functions called from more than one call site with
+      meaningfully different context (`pickImage`, `pickBucket`,
+      `pickInstance`/`pickInstanceDefaulted`) gained a `description
+      string` parameter threaded from their own callers. Picker-tier
+      functions with exactly one caller (`pickInstanceProfileChoice`,
+      `pickRole`, `pickSubnet`, `pickKeyPairChoice`,
+      `pickKeyPairForDeletion`, `pickLifecycleRule`) got a single
+      description written directly into the function.
+
+**Tests:** new `internal/tui/filter_test.go` (description costs two
+rows like a header; height never drops below the floor); new
+`TestPicker_DescriptionRendersBelowTopBorder` in `picker_test.go`. No
+new workflow-level tests -- the description strings are static text
+threaded through already-tested call paths, not new branching logic.
+
+**Files:** `internal/tui/{picker.go,filter.go,filter_test.go,
+picker_test.go,listview.go}`, and every `internal/workflow/*.go` file
+containing a Menu-tier `huh.Select` or one of the 9 Picker-tier
+`tui.PickerConfig` constructor call sites (15 + 9 call sites across
+~20 files).
+
+**Dependency:** None.
+
+## Phase 20.23 — huh Fields: Full Box Border to Match tui's Chrome (done)
+
+**Status: implemented and verified 2026-07-13.** Implements
+DECISIONS.md, "huh fields get a full box border to match tui's chrome."
+
+### Work Items
+
+- [x] `internal/tui/theme.go`: `Theme()`'s `Focused.Base`/`Focused.Card`
+      now call `.Border(lipgloss.NormalBorder())` (matching `box.go`'s
+      own box-drawing characters) instead of inheriting `huh.ThemeBase`'s
+      left-only `ThickBorder`; `Padding(0, 1)` replaces `ThemeBase`'s
+      `PaddingLeft(1)`. `Blurred.Base` still hides its border via
+      `lipgloss.HiddenBorder()`, now over the full four-sided footprint.
+
+**Tests:** verified via a throwaway test rendering `Theme().Focused.
+Base.Render(...)` directly with a forced true-color profile and
+inspecting the raw ANSI output -- confirms a full `┌─┐│ │└─┘` box in
+the shared accent, not huh's default left-bar. Not committed as a
+permanent test (a pure styling value, not branching logic); full
+`go build ./...`, `go vet ./...`, `go test ./... -race` sweep green
+throughout.
+
+**Files:** `internal/tui/theme.go`.
+
+**Dependency:** None.
+
+---
+
+## Phase 20.24 — Clear the Screen at Startup (done)
+
+**Status: implemented and verified 2026-07-13.** Implements
+DECISIONS.md, "Clear the screen at startup." Partially addresses a
+combined request ("clear the screen first and take up the full height
+of the terminal window"); the "full height" half was deliberately not
+implemented here -- see the note below.
+
+### Work Items
+
+- [x] New `internal/ui/clear.go`: `ClearScreen(w io.Writer)`, sending
+      `ansi.EraseEntireScreen` + `ansi.CursorHomePosition` (the same
+      two sequences `tea.ClearScreen` sends internally), from
+      `github.com/charmbracelet/x/ansi` (already an indirect
+      dependency via `bubbletea`, promoted to direct via `go mod
+      tidy`).
+- [x] `cmd/clasm/main.go`: calls `ui.ClearScreen(out)` once, after the
+      `-help`/`-license`/`-version` early exits (which stay
+      script/pipe-friendly) but before any other output, including
+      error paths.
+
+**Not done, deliberately deferred:** making the domain picker (or the
+Menu tier generally) visually fill the terminal's full height. The
+domain picker is a `huh.Select` (Menu tier), which -- unlike the
+Picker/List/Manager tier's bubbletea components -- has no built-in
+concept of "occupy the full window height"; every other Menu-tier
+screen in the app (S3/EC2/Key Management menus) is the same compact,
+content-sized form, so making only the root domain picker full-height
+would be visually inconsistent with every menu one level deeper, the
+opposite of the consistency this session's other chrome work has been
+building toward. Revisit if this turns out to be what "full height"
+specifically meant, once clarified.
+
+**Tests:** `internal/ui/clear_test.go` asserts the exact bytes written
+match `ansi.EraseEntireScreen + ansi.CursorHomePosition`.
+
+**Files:** `internal/ui/{clear.go,clear_test.go}` (new),
+`cmd/clasm/main.go`, `go.mod`/`go.sum`.
+
+**Dependency:** None.
+
+## Phase 20.25 — Bucket Picker for Backup Archive & Trim (done)
+
+**Status: implemented and verified 2026-07-13.** Implements
+DECISIONS.md, "Bucket picker for Backup Archive & Trim."
+
+### Work Items
+
+- [x] `internal/workflow/backup_archive.go`: new `bucketChoice` type
+      (`label`, `name`, `other bool`) and `promptBackupBucket` function
+      -- fetches buckets via `inventory.ListBuckets`, offers them as a
+      filterable `huh.Select` (via the existing `pickComparable`
+      helper, so `'/'` filtering and accessible-mode pipe-testing come
+      for free) plus an "Other (type a bucket name)" entry, falling
+      back entirely to the original free-text `ui.Prompt` when the
+      listing fails or is empty.
+- [x] `backupArchiveAndTrim`'s bucket-resolution line now calls
+      `promptBackupBucket(ctx, w, s3Client, newS3Client, input,
+      output)` instead of a bare `ui.Prompt("S3 bucket", ...)` --  no
+      other signature changes; bucket resolution stays in the same
+      place in the same testable core.
+
+**Tests:** three new cases in `backup_archive_test.go`
+(`TestBackupArchiveAndTrim_BucketPickerOffersKnownBuckets`,
+`..._BucketPickerOtherFallsBackToFreeText`,
+`..._BucketPickerFallsBackToFreeTextOnListError`), each verifying the
+resulting bucket name via the upload command's `s3://<bucket>/...`
+destination. Every pre-existing test in this file continues to pass
+unchanged -- none populate `fakeS3Client.buckets`, so `ListBuckets`
+returns an empty list and they all naturally exercise the free-text
+fallback branch, exactly as before this change.
+
+**Files:** `internal/workflow/{backup_archive.go,backup_archive_test.go}`.
+
+**Dependency:** None.
+
+---
+
 ## Phase 21 — CloudFront Domain
 
 **Status: someday/maybe -- not on the active roadmap, no committed

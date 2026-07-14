@@ -129,7 +129,7 @@ func ManageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 // huh.Selects share one reader/writer pair, read in sequence one line
 // at a time, same as a domain menu's own loop-iteration reads.
 func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, images []inventory.Image, menuInput io.Reader, menuOutput io.Writer) error {
-	kind, err := pickString(w, "Manage tags on", "(q to cancel)", []string{"Instance", "AMI"}, menuInput, menuOutput)
+	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance or an AMI.", "(q to cancel)", []string{"Instance", "AMI"}, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -144,7 +144,7 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 			fmt.Fprintln(w, "No instances found.")
 			return nil
 		}
-		inst, err := pickInstance(ctx, "Select an instance", instances)
+		inst, err := pickInstance(ctx, "Select an instance", "", instances)
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}
@@ -162,7 +162,7 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 			fmt.Fprintln(w, "No AMIs found.")
 			return nil
 		}
-		img, err := pickImage(ctx, "Select an AMI", images)
+		img, err := pickImage(ctx, "Select an AMI", "", images)
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}
@@ -189,7 +189,7 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC2API, resourceID, resourceLabel string, tags map[string]string, menuInput io.Reader, menuOutput io.Writer) error {
 	displayTags(w, resourceLabel, tags)
 
-	action, err := pickString(w, "Choose an action", "(q to cancel)", []string{"Add", "Update", "Remove"}, menuInput, menuOutput)
+	action, err := pickString(w, "Choose an action", "The resource's current tags are listed above.", "(q to cancel)", []string{"Add", "Update", "Remove"}, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -213,7 +213,7 @@ func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC
 			fmt.Fprintln(w, "No existing tags to update.")
 			return nil
 		}
-		params.Key, err = pickString(w, "Select a tag to update", "(q to cancel)", keys, menuInput, menuOutput)
+		params.Key, err = pickString(w, "Select a tag to update", "You'll be prompted for the new value next.", "(q to cancel)", keys, menuInput, menuOutput)
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}
@@ -228,7 +228,7 @@ func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC
 			fmt.Fprintln(w, "No existing tags to remove.")
 			return nil
 		}
-		params.Key, err = pickString(w, "Select a tag to remove", "(q to cancel)", keys, menuInput, menuOutput)
+		params.Key, err = pickString(w, "Select a tag to remove", "This deletes the tag entirely, not just its value.", "(q to cancel)", keys, menuInput, menuOutput)
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}

@@ -31,7 +31,7 @@ func DeleteBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context
 		return nil
 	}
 
-	bucket, err := pickBucket(ctx, "Select a bucket to delete", buckets)
+	bucket, err := pickBucket(ctx, "Select a bucket to delete", "This permanently deletes the bucket and everything in it.", buckets)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

@@ -691,6 +691,37 @@ already use. `confirmLink` (huh.Confirm) and the local-directory
 `huh.Input` in the same function are wizard-shaped, not picker-shaped,
 and stay as `huh` fields.
 
+## UX Refinements: Contextual Text and a Full Box Border (Design Addendum, 2026-07-13)
+
+Two follow-on refinements to the chrome-standardization pass above,
+requested directly after it landed.
+
+**Every Menu/Picker-tier screen gains contextual description text.**
+The domain picker (and every other bare-title screen) explained nothing
+about what each choice meant — an operator new to a screen had only the
+title and the row labels to go on. Every Menu-tier `huh.Select` gains a
+`.Description(...)` (huh's own built-in field, previously unused);
+`tui.PickerConfig` gains a `Description string`, rendered as its own
+line directly below the top border (the same chrome shape `Header`
+already has: the line itself plus a `Divider`), above any `Header`/
+rows. See `DECISIONS.md`, "Contextual description text on Menu/Picker-
+tier screens," for the full call-site inventory and the reasoning
+behind which functions got a threaded parameter versus a single
+description written directly into the function body. List-tier's
+tabular "Show resource lists" displays deliberately don't get this —
+they aren't "just a pick list," and their column headers already carry
+the relevant context.
+
+**huh fields get a full box border, matching tui's chrome shape, not
+just its color.** Phase 20.17 gave `huh` and `tui` the same accent
+color, but `huh.ThemeBase()`'s default is a thick bar down the left
+side of a field only — not the full `┌─┐│ │└─┘` rectangle `tui/box.go`
+draws. `tui.Theme()`'s `Focused.Base`/`Focused.Card` now use
+`lipgloss.NormalBorder()` on all four sides, in the shared accent, with
+balanced padding replacing the old single-side clearance — see
+`DECISIONS.md`, "huh fields get a full box border to match tui's
+chrome."
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)
@@ -1002,15 +1033,29 @@ safety tier as Feature 9 (Remove AMI):
    check: AWS CLI availability before Backup Archive & Trim") — aborts
    fast with a clear, actionable error if the AWS CLI isn't installed,
    before any further prompt or the dry-run list
-2. Prompt for the backup directory — pre-filled from `~/.awsops`'s
-   `backup_directories` (see "Configuration" above) when the picked
-   instance's Name tag matches a configured pattern (e.g. RDM instances
-   default to `/opt/rdm_sql_backups`, other services to their own
-   directory), still editable and never silently accepted; no match
-   leaves it unset, same as before this setting existed — an age
-   threshold in days (no default — always an explicit, deliberate
-   choice), and the S3 bucket — immediately followed by `s3:GetBucketLocation`
-   to discover which region the bucket actually lives in (any region,
+2. Prompt for the backup directory, then the S3 bucket, then the age
+   threshold in days — in that order (see `DECISIONS.md`, "Reorder
+   Backup Archive & Trim's prompts": the threshold reads more naturally
+   once both the source directory and destination bucket are already
+   fixed). The instance picker's cursor and the directory prompt's
+   default both recall what was actually used last time *for this
+   specific instance* (`~/.clasm_state`, an app-managed file distinct
+   from `~/.clasm` — see `DECISIONS.md`, "Recall Backup Archive & Trim's
+   instance/directory choices per-instance"), taking priority over
+   `~/.clasm`'s `backup_directories` Name-pattern match (see
+   "Configuration" above; e.g. RDM instances default to
+   `/opt/rdm_sql_backups`, other services to their own directory) when
+   both exist. Either way the directory stays editable and is never
+   silently accepted; no recalled value and no rule match leaves it
+   unset, same as before either mechanism existed. The age threshold
+   itself has no default — always an explicit, deliberate choice. The S3
+   bucket prompt itself is a filterable pick list of this account's
+   buckets (`'/'` to filter by name), plus an "Other" entry to type any
+   bucket name directly — e.g. one outside this account's own listing
+   (see `DECISIONS.md`, "Bucket picker for Backup Archive & Trim");
+   falls back to a plain free-text prompt if the bucket listing itself
+   can't be fetched. Immediately followed by `s3:GetBucketLocation` to
+   discover which region the bucket actually lives in (any region,
    unrelated to the instance's — see `DECISIONS.md`, "Resolve a bucket's
    actual region before Backup Archive & Trim's access check") and then
    an `s3:HeadBucket` access check, scoped to that region, that aborts

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
@@ -48,14 +50,14 @@ var errUnavailable = errors.New("SSM unavailable")
 func TestBackupArchiveAndTrim_DryRunEmptyResult(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	input := "/opt/rdm_sql_backups\n" + // directory
-		"90\n" + // age threshold (nothing is 90 days old in the fixture)
-		"my-backup-bucket\n" // bucket
+		"my-backup-bucket\n" + // bucket
+		"90\n" // age threshold (nothing is 90 days old in the fixture)
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
 	s3Client := &fakeS3Client{}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,14 +75,14 @@ func TestBackupArchiveAndTrim_PreFillsDirectoryFromMatchingRule(t *testing.T) {
 		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},
 	}
 	input := "\n" + // accept the pre-filled default directory
-		"90\n" + // age threshold (nothing is 90 days old in the fixture)
-		"my-backup-bucket\n" // bucket
+		"my-backup-bucket\n" + // bucket
+		"90\n" // age threshold (nothing is 90 days old in the fixture)
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
 	s3Client := &fakeS3Client{}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, rules, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, rules, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,6 +100,95 @@ func TestBackupArchiveAndTrim_PreFillsDirectoryFromMatchingRule(t *testing.T) {
 	}
 }
 
+func TestBackupArchiveAndTrim_HistoryDirectoryTakesPriorityOverRule(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "rdm-prod-01", Region: "us-east-1"}
+	rules := []config.BackupDirectoryRule{
+		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},
+	}
+	hist := BackupHistory{LastDirectoryByInstance: map[string]string{"i-1": "/opt/actual-last-used"}}
+	input := "\n" + // accept the pre-filled default directory
+		"my-backup-bucket\n" +
+		"90\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
+	s3Client := &fakeS3Client{}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, rules, hist, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Accessible-mode prompts don't echo the default value's text, only
+	// the static label -- the real signal that the recalled directory
+	// (not the Name-pattern rule's) actually got used as the default is
+	// which path the "find" command sent to SSM references, matching
+	// TestBackupArchiveAndTrim_PreFillsDirectoryFromMatchingRule's own
+	// verification shape.
+	var findCmd string
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, "find ") {
+			findCmd = c
+		}
+	}
+	if !strings.Contains(findCmd, "/opt/actual-last-used") {
+		t.Errorf("find command = %q, want it to reference the recalled directory, not the rule's", findCmd)
+	}
+	if strings.Contains(findCmd, "/opt/rdm_sql_backups") {
+		t.Errorf("find command = %q, want the rule's directory NOT used since history takes priority", findCmd)
+	}
+}
+
+func TestBackupArchiveAndTrim_SavesInstanceAndDirectoryAfterDirectoryPrompt(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	var savedInstanceID, savedDirectory string
+	saveCalls := 0
+	hist := BackupHistory{Save: func(instanceID, directory string) error {
+		saveCalls++
+		savedInstanceID, savedDirectory = instanceID, directory
+		return nil
+	}}
+	input := "/opt/rdm_sql_backups\n" +
+		"my-backup-bucket\n" +
+		"90\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
+	s3Client := &fakeS3Client{}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, hist, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if saveCalls != 1 {
+		t.Fatalf("Save called %d times, want 1", saveCalls)
+	}
+	if savedInstanceID != "i-1" || savedDirectory != "/opt/rdm_sql_backups" {
+		t.Errorf("Save(%q, %q), want Save(%q, %q)", savedInstanceID, savedDirectory, "i-1", "/opt/rdm_sql_backups")
+	}
+}
+
+func TestBackupArchiveAndTrim_SaveErrorIsAWarningNotFatal(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	hist := BackupHistory{Save: func(instanceID, directory string) error {
+		return errors.New("disk full")
+	}}
+	input := "/opt/rdm_sql_backups\n" +
+		"my-backup-bucket\n" +
+		"90\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
+	s3Client := &fakeS3Client{}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, hist, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v (a failed history save must not abort the workflow)", err)
+	}
+	if !strings.Contains(buf.String(), "disk full") {
+		t.Errorf("expected the save error to be reported as a warning, got:\n%s", buf.String())
+	}
+}
+
 func TestBackupArchiveAndTrim_NoMatchingRuleLeavesPromptRequired(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newt-machine-test", Region: "us-east-1"}
 	rules := []config.BackupDirectoryRule{
@@ -105,14 +196,14 @@ func TestBackupArchiveAndTrim_NoMatchingRuleLeavesPromptRequired(t *testing.T) {
 	}
 	input := "\n" + // blank -- no default configured, rejected
 		"/opt/newt/backups\n" + // retry, accepted
-		"90\n" +
-		"my-backup-bucket\n"
+		"my-backup-bucket\n" +
+		"90\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
 	s3Client := &fakeS3Client{}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, rules, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, rules, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,14 +221,14 @@ func TestBackupArchiveAndTrim_NoMatchingRuleLeavesPromptRequired(t *testing.T) {
 func TestBackupArchiveAndTrim_AbortsWhenBucketInaccessible(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	input := "/opt/rdm_sql_backups\n" + // directory
-		"90\n" + // age threshold
-		"my-backup-bucket\n" // bucket
+		"my-backup-bucket\n" + // bucket
+		"90\n" // age threshold
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
 	s3Client := &fakeS3Client{headBucketErr: errors.New("Forbidden")}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err == nil {
 		t.Fatal("expected an error when the S3 bucket is inaccessible")
 	}
@@ -153,8 +244,8 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	oldEpoch := nowUnix() - int64(30*24*3600)
 	input := "/opt/rdm_sql_backups\n" +
-		"7\n" +
 		"my-backup-bucket\n" +
+		"7\n" +
 		"i-1\n" // type-to-confirm with the instance ID
 
 	term, le, buf := newPipeEditor(input)
@@ -172,7 +263,7 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 	}
 	s3Client := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576}}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +283,7 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 func TestBackupArchiveAndTrim_UsesBucketRegionScopedS3Client(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	oldEpoch := nowUnix() - int64(30*24*3600)
-	input := "/opt/rdm_sql_backups\n7\nmy-backup-bucket\ni-1\n"
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{
@@ -219,7 +310,7 @@ func TestBackupArchiveAndTrim_UsesBucketRegionScopedS3Client(t *testing.T) {
 		return realClient, nil
 	}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, probeClient, newS3Client, inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, probeClient, newS3Client, inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +331,7 @@ func TestBackupArchiveAndTrim_UsesBucketRegionScopedS3Client(t *testing.T) {
 func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	oldEpoch := nowUnix() - int64(30*24*3600)
-	input := "/opt/rdm_sql_backups\n7\nmy-backup-bucket\nwrong\n"
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\nwrong\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{
@@ -253,7 +344,7 @@ func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 	}
 	s3Client := &fakeS3Client{}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -265,7 +356,7 @@ func TestBackupArchiveAndTrim_TypeToConfirmMismatchCancels(t *testing.T) {
 func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	oldEpoch := nowUnix() - int64(30*24*3600)
-	input := "/opt/rdm_sql_backups\n7\nmy-backup-bucket\ni-1\n"
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{
@@ -286,7 +377,7 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 	// bad.sql.gz is missing from the bucket -- verification fails for it
 	s3Client := &fakeS3Client{objects: map[string]int64{"newauthors/good.sql.gz": 1000}}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -322,7 +413,7 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 func TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-untagged", Name: "", Region: "us-east-1"}
 	oldEpoch := nowUnix() - int64(30*24*3600)
-	input := "/opt/rdm_sql_backups\n7\nmy-backup-bucket\ni-untagged\n"
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-untagged\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{
@@ -339,7 +430,7 @@ func TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix(t *testing.T) {
 	}
 	s3Client := &fakeS3Client{objects: map[string]int64{"i-untagged/old-1.sql.gz": 1048576}}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -354,6 +445,128 @@ func TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix(t *testing.T) {
 	}
 }
 
+func TestBackupArchiveAndTrim_BucketPickerOffersKnownBuckets(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	// directory, bucket-picker choice "2" (zeta-bucket, second in the
+	// alphabetically-sorted list: 1=alpha-bucket, 2=zeta-bucket, 3=Other),
+	// age threshold, type-to-confirm.
+	input := "/opt/rdm_sql_backups\n2\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+	s3Client := &fakeS3Client{
+		buckets: []s3types.Bucket{{Name: aws.String("alpha-bucket")}, {Name: aws.String("zeta-bucket")}},
+		objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var uploadCmd string
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, "aws s3 cp") {
+			uploadCmd = c
+		}
+	}
+	if !strings.Contains(uploadCmd, "s3://zeta-bucket/") {
+		t.Errorf("upload command = %q, want it to reference zeta-bucket (option 2 in the sorted bucket list)", uploadCmd)
+	}
+}
+
+func TestBackupArchiveAndTrim_BucketPickerOtherFallsBackToFreeText(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	// directory, bucket-picker choice "2" (Other -- 1=alpha-bucket,
+	// 2=Other, since only one real bucket is offered), the typed bucket
+	// name, age threshold, type-to-confirm.
+	input := "/opt/rdm_sql_backups\n2\ntyped-bucket-name\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+	s3Client := &fakeS3Client{
+		buckets: []s3types.Bucket{{Name: aws.String("alpha-bucket")}},
+		objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var uploadCmd string
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, "aws s3 cp") {
+			uploadCmd = c
+		}
+	}
+	if !strings.Contains(uploadCmd, "s3://typed-bucket-name/") {
+		t.Errorf("upload command = %q, want it to reference the typed bucket name", uploadCmd)
+	}
+}
+
+func TestBackupArchiveAndTrim_BucketPickerFallsBackToFreeTextOnListError(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	// directory, then the bucket free-text prompt directly (no picker,
+	// since ListBuckets fails), age threshold, type-to-confirm.
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+	s3Client := &fakeS3Client{
+		listBucketsErr: errors.New("access denied"),
+		objects:        map[string]int64{"newauthors/old-1.sql.gz": 1048576},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var uploadCmd string
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, "aws s3 cp") {
+			uploadCmd = c
+		}
+	}
+	if !strings.Contains(uploadCmd, "s3://my-backup-bucket/") {
+		t.Errorf("upload command = %q, want the free-text bucket name used when the bucket list can't be fetched", uploadCmd)
+	}
+}
+
 func TestBackupArchiveAndTrim_AbortsWhenAWSCLIMissing(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	term, le, buf := newPipeEditor("") // nothing should be needed
@@ -361,7 +574,7 @@ func TestBackupArchiveAndTrim_AbortsWhenAWSCLIMissing(t *testing.T) {
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
 	s3Client := &fakeS3Client{}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err == nil {
 		t.Fatal("expected an error when the AWS CLI is missing on the target instance")
 	}
@@ -375,13 +588,13 @@ func TestBackupArchiveAndTrim_AbortsWhenAWSCLIMissing(t *testing.T) {
 
 func TestBackupArchiveAndTrim_SSMUnavailablePropagatesError(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n7\nmy-backup-bucket\n"
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := &fakeSSMClient{sendCommandErr: errUnavailable}
 	s3Client := &fakeS3Client{}
 
-	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err == nil {
 		t.Fatal("expected an error when SSM is unavailable for the initial listing")
 	}
@@ -389,7 +602,7 @@ func TestBackupArchiveAndTrim_SSMUnavailablePropagatesError(t *testing.T) {
 
 func TestBackupArchiveAndTrim_NoInstances(t *testing.T) {
 	term, _, buf := newPipeEditor("")
-	err := BackupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}, &fakeS3Client{}, nil, nil, nil)
+	err := BackupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}, &fakeS3Client{}, nil, nil, nil, BackupHistory{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

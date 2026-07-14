@@ -16,6 +16,7 @@ import (
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/debuglog"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	appstate "github.com/caltechlibrary/clasm/internal/state"
 	"github.com/caltechlibrary/clasm/internal/ui"
 	"github.com/caltechlibrary/clasm/internal/workflow"
 )
@@ -60,6 +61,13 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Clear the terminal before clasm's first line of output, so old
+	// scrollback never lingers behind the app (DECISIONS.md, "Clear the
+	// screen at startup") -- but only for the actual interactive
+	// session, not -help/-license/-version above, which should stay
+	// script/pipe-friendly.
+	ui.ClearScreen(out)
+
 	// Ctrl+C (or SIGTERM) between prompts cancels ctx, which every
 	// workflow's poll loop already selects on; Ctrl+C *during* an active
 	// huh field is instead surfaced as huh.ErrUserAborted (see
@@ -71,6 +79,25 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(eout, "%v\n", err)
 		os.Exit(1)
+	}
+
+	// appState is clasm's own runtime memory (~/.clasm_state, distinct
+	// from cfg's hand-edited ~/.clasm) -- currently only Backup Archive
+	// & Trim's recalled instance/directory (DECISIONS.md, "Recall Backup
+	// Archive & Trim's instance/directory choices per-instance").
+	statePath := appstate.DefaultPath()
+	appState, err := appstate.Load(statePath)
+	if err != nil {
+		fmt.Fprintf(eout, "%v\n", err)
+		os.Exit(1)
+	}
+	saveBackupHistory := func(instanceID, directory string) error {
+		if appState.BackupArchive.LastDirectoryByInstance == nil {
+			appState.BackupArchive.LastDirectoryByInstance = map[string]string{}
+		}
+		appState.BackupArchive.LastInstanceID = instanceID
+		appState.BackupArchive.LastDirectoryByInstance[instanceID] = directory
+		return appstate.Save(statePath, appState)
 	}
 
 	// -debug wraps every AWS client below in a logging decorator that
@@ -263,7 +290,11 @@ func main() {
 			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images)
 		},
 		BackupArchiveAndTrim: func(ctx context.Context) error {
-			return workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories)
+			return workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories, workflow.BackupHistory{
+				LastInstanceID:          appState.BackupArchive.LastInstanceID,
+				LastDirectoryByInstance: appState.BackupArchive.LastDirectoryByInstance,
+				Save:                    saveBackupHistory,
+			})
 		},
 		Refresh:           refresh,
 		ShowResourceLists: showComputeResourceLists,

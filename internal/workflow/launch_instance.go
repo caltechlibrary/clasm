@@ -52,7 +52,7 @@ type LaunchInstanceParams struct {
 // and returns the resolved clients alongside params, instead of just
 // the AMI's picked Region.
 func CollectLaunchInstanceParams(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, iamClient awsclient.IAMAPI, images []inventory.Image) (LaunchInstanceParams, awsclient.EC2API, awsclient.SSMAPI, error) {
-	image, err := pickImage(ctx, "Select an AMI", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
+	image, err := pickImage(ctx, "Select an AMI", "Includes AMIs owned by this account and official Ubuntu LTS images.", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -164,8 +164,9 @@ func imageLabel(img inventory.Image) string {
 // pickInstance (power_state.go) and pickBucket (Phase 20.4), this drives
 // a real bubbletea Program that can't be pipe-tested -- every caller
 // splits into a thin entry point (calls pickImage) and a testable core
-// taking the already-resolved image directly.
-func pickImage(ctx context.Context, title string, images []inventory.Image) (inventory.Image, error) {
+// taking the already-resolved image directly. description is optional
+// contextual text shown below the title ("" for none).
+func pickImage(ctx context.Context, title, description string, images []inventory.Image) (inventory.Image, error) {
 	rows := make([]string, len(images))
 	for i, img := range images {
 		rows[i] = imageLabel(img)
@@ -173,6 +174,7 @@ func pickImage(ctx context.Context, title string, images []inventory.Image) (inv
 
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  description,
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})

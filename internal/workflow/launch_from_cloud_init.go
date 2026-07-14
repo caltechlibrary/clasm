@@ -27,7 +27,7 @@ func CollectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	image, err := pickImage(ctx, "Select a base AMI", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
+	image, err := pickImage(ctx, "Select a base AMI", "Includes AMIs owned by this account and official Ubuntu LTS images; the cloud-init YAML you just gave runs on top of whichever you pick.", imagesWithOfficialUbuntu(ctx, ec2Clients, images))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

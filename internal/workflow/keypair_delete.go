@@ -30,6 +30,7 @@ func pickKeyPairForDeletion(ctx context.Context, title string, keyPairs []invent
 	}
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  "Deleting a key pair still in use by a running instance won't affect that instance, but you'll lose the ability to launch new ones with it.",
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})

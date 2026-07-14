@@ -35,10 +35,23 @@ var titleStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 // the blurred-state styling below is mostly theoretical, but is set to
 // the same conventional shape huh's own themes use (hide the border)
 // for correctness.
+//
+// Focused.Base gets a full four-sided lipgloss.NormalBorder() -- the
+// same ┌─┐│ │└─┘ characters box.go draws -- replacing huh.ThemeBase's
+// default left-only ThickBorder bar, so a huh field and a Picker/List/
+// Manager screen read as the same kind of window, not two different
+// visual languages (DECISIONS.md, "huh fields get a full box border to
+// match tui's chrome"). Padding(0, 1) replaces ThemeBase's PaddingLeft
+// (1) (which existed only to clear that one left bar) with balanced
+// left/right breathing room, matching box.go's BoxLine's own "│
+// content │" convention.
 func Theme() *huh.Theme {
 	t := huh.ThemeBase()
 
-	t.Focused.Base = t.Focused.Base.BorderForeground(accentColor)
+	t.Focused.Base = t.Focused.Base.
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(accentColor).
+		Padding(0, 1)
 	t.Focused.Card = t.Focused.Base
 	t.Focused.Title = t.Focused.Title.Foreground(accentColor).Bold(true)
 	t.Focused.NoteTitle = t.Focused.NoteTitle.Foreground(accentColor).Bold(true)

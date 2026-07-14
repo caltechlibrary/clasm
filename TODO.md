@@ -5,6 +5,43 @@
 
 ## UX improvements
 
+- [x] Backup Archive & Trim's prompt order fixed: instance -> backup
+      directory -> S3 bucket -> age threshold (days) -- see
+      DECISIONS.md, "Reorder Backup Archive & Trim's prompts," and
+      PLAN.md Phase 20.20 (done).
+- [x] Backup Archive & Trim now recalls the last-used instance/
+      directory *per instance*, via a new app-managed `~/.clasm_state`
+      file (`internal/state`), taking priority over the config-file
+      Name-pattern default -- see DECISIONS.md, "Recall Backup Archive
+      & Trim's instance/directory choices per-instance," and PLAN.md
+      Phase 20.21 (done).
+- [x] Every Menu-tier `huh.Select` and Picker-tier `tui.RunPicker`
+      screen now shows contextual description text below its title
+      (huh's own `.Description(...)`; a new `tui.PickerConfig.
+      Description` field for the Picker tier) -- see DECISIONS.md,
+      "Contextual description text on Menu/Picker-tier screens," and
+      PLAN.md Phase 20.22 (done). List-tier's tabular resource listings
+      deliberately excluded.
+- [x] `huh` fields now draw a full four-sided box border
+      (`lipgloss.NormalBorder()`) in the shared accent, matching `tui/
+      box.go`'s chrome shape, not just its color -- see DECISIONS.md,
+      "huh fields get a full box border to match tui's chrome," and
+      PLAN.md Phase 20.23 (done).
+- [x] clasm now clears the terminal at startup, before its first line
+      of output -- see DECISIONS.md, "Clear the screen at startup," and
+      PLAN.md Phase 20.24 (done). The other half of that request --
+      making the startup screen use the terminal's full height -- was
+      deliberately NOT done; see the note in Phase 20.24 for why (the
+      domain picker is a Menu-tier `huh.Select`, which has no
+      "full-height" concept the way Picker/List-tier bubbletea screens
+      do, and only the root menu becoming full-height would be
+      inconsistent with every menu one level deeper). Revisit if this
+      is confirmed to still be wanted.
+- [x] Backup Archive & Trim's S3 bucket prompt is now a filterable pick
+      list of this account's buckets, plus "Other" to type any bucket
+      name directly -- see DECISIONS.md, "Bucket picker for Backup
+      Archive & Trim," and PLAN.md Phase 20.25 (done).
+
 - [ ] We have "exit", "cancel" (which sometimes is the same", "back to ..." for navigating the heirachy of menus (workflows). This should be more consistant. "cancel" should mean aborting an action not closing a particular menu select an action or workflow. Since the application is mostly a list of things then either a sub list of things or an action I think we should standardize that heirarchy so when you close a nested menu list it just backs you up to the menu you previously were on. We should standardize either on "quit" or "exit" to close a menu when done. I'm OK with standardizing on "quit" but right now we have two many words meaning almost the same thing. When you quit all the menu's you've finally exit the TUI.
 
   Decided 2026-07-10 (DECISIONS.md, "TUI keybinding conventions"): `q`

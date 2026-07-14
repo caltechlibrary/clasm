@@ -4,6 +4,271 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-13 — Bucket picker for Backup Archive & Trim
+
+**Context.** Backup Archive & Trim's S3 bucket prompt was pure free
+text -- no memory aid for an operator who has to recall the exact
+bucket name from scratch every run, unlike every other bucket-selection
+call site in the app (`pickBucket`, Phase 20.4), which already offers a
+filterable pick list. Requested directly, with an explicit requirement
+that typing a bucket name (not just picking from a list) must remain
+possible.
+
+**Decision.** New `promptBackupBucket`: fetches this account's S3
+buckets (`inventory.ListBuckets`, the same call `refreshS3` already
+uses) and offers them as a filterable pick list (`'/'` to filter,
+matching every other filterable screen in this app), plus an "Other
+(type a bucket name)" entry that falls through to the original
+free-text prompt. Falls back to the free-text prompt directly (no
+picker at all) if the listing fails or comes back empty -- there's
+nothing more reliable, or for an empty account nothing useful, to offer
+instead (mirrors `promptKeyPairNameOrCreate`'s own precedent for the
+identical reason). Deliberately built as a Menu-tier `huh.Select`
+(via the existing `pickComparable` helper) rather than a Picker-tier
+`tui.RunPicker` (unlike every other bucket-selection call site) --
+`promptBackupBucket` must stay embedded inside `backupArchiveAndTrim`'s
+own pipe-testable prompt sequence (directory, then bucket, then age
+threshold, per "Reorder Backup Archive & Trim's prompts" below), and a
+real bubbletea Program can't be driven by a test's pipe input the way
+`pickBucket`'s callers already accept -- huh's own built-in `'/'`
+filtering (confirmed: same default keybinding as this project's
+Picker/List-tier filter convention) covers the "let me narrow this down
+by typing" need without needing the untestable Picker-tier component at
+all.
+
+**Rationale.** huh.Select's accessible-mode pipe-testing path expects a
+row *number*, not free text, so existing tests (which never populate
+`fakeS3Client.buckets`) naturally exercise the empty-list fallback
+branch unchanged -- zero existing tests needed rewriting. New tests
+cover the populated-list path (picking a known bucket by number),
+the "Other" escape hatch, and the listing-error fallback, each
+asserting on the resulting bucket name via the upload command's
+`s3://<bucket>/...` destination (the same verification technique
+`TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix` already
+established).
+
+**Consequences.** New `bucketChoice` type and `promptBackupBucket`
+function in `internal/workflow/backup_archive.go`; no signature changes
+to `BackupArchiveAndTrim`/`backupArchiveAndTrim` (bucket resolution
+still happens in the same place in the same testable core, just via a
+different prompt function).
+
+---
+
+## 2026-07-13 — Clear the screen at startup
+
+**Context.** clasm printed its first line ("clasm x.x -- authenticated
+as AWS account ...") directly into whatever the terminal already had on
+screen -- old shell history, a previous command's output, etc. --
+unlike a typical full-screen terminal application, which starts from a
+clean slate. Requested directly, alongside a request to have the
+startup screen use the terminal's full height -- addressed here only
+partially; see the note in PLAN.md's corresponding phase entry about
+what was deliberately not changed and why.
+
+**Decision.** New `ui.ClearScreen(w io.Writer)`, sending the same two
+escape sequences bubbletea's own `tea.ClearScreen` command sends
+(`ansi.EraseEntireScreen` + `ansi.CursorHomePosition`, from
+`github.com/charmbracelet/x/ansi` -- already a transitive dependency
+via `bubbletea`, now promoted to direct), rather than a hand-rolled
+escape string. Called once in `main()`, after the `-help`/`-license`/
+`-version` early-exits (which must stay script/pipe-friendly, so they
+must not inject terminal control codes) but before any other output,
+including error paths (config load failures, AWS client construction
+failures, etc.) -- the whole interactive session starts from a clean
+terminal, not just the happy path.
+
+**Rationale.** Reusing bubbletea's own escape sequences (via the
+`x/ansi` package it's already built on) keeps this consistent with how
+every List/Picker/Manager screen already clears itself on `Init()`,
+rather than inventing a second, potentially-different way to clear a
+terminal.
+
+**Consequences.** New `internal/ui/clear.go` (+ test);
+`github.com/charmbracelet/x/ansi` promoted from indirect to direct in
+`go.mod`. `cmd/clasm/main.go` calls `ui.ClearScreen(out)` once, right
+after the flag-based early exits.
+
+---
+
+## 2026-07-13 — huh fields get a full box border to match tui's chrome
+
+**Context.** Phase 20.17 gave `huh` fields and `internal/tui`'s boxes the
+same indigo accent color, but not the same *shape*: `huh.ThemeBase()`'s
+`Focused.Base` draws only a thick bar down the left side of a field
+(`lipgloss.ThickBorder().BorderLeft(true)`), while `tui/box.go` draws a
+full `┌─┐│ │└─┘` rectangle. Matching color without matching shape left
+a Menu-tier `huh.Select` and a Picker/List/Manager screen still reading
+as two different visual languages -- raised when reviewing chrome
+consistency alongside adding contextual description text (below).
+
+**Decision.** `tui.Theme()`'s `Focused.Base`/`Focused.Card` now call
+`.Border(lipgloss.NormalBorder())` (the same box-drawing characters
+`box.go` uses) instead of inheriting `ThemeBase`'s left-only
+`ThickBorder`, still colored in the shared accent. `Padding(0, 1)`
+replaces `ThemeBase`'s `PaddingLeft(1)` (which existed only to clear
+the single left bar) with balanced left/right breathing room, matching
+`box.go`'s `BoxLine`'s own "│ content │" convention. `Blurred.Base`
+still hides its border via `lipgloss.HiddenBorder()`, now reserving the
+same four-sided footprint rather than a one-sided one.
+
+**Rationale.** Every clasm form is a single field in a single group (no
+multi-field forms exist in this codebase -- confirmed when `Theme()`
+was first written), so a full box reads as a small dialog card rather
+than a form-with-a-sidebar-accent -- the same "boxed window" shape a
+List/Picker/Manager screen already has. Verified via a throwaway test
+rendering `Theme().Focused.Base.Render(...)` directly with a forced
+true-color profile and inspecting the raw ANSI output (the same
+technique used to verify Phase 20.17's border styling), rather than
+driving a real interactive terminal.
+
+**Consequences.** No signature changes -- `Theme()`'s return type and
+every call site are unaffected; this is a pure style-value change
+inside the function.
+
+---
+
+## 2026-07-13 — Contextual description text on Menu/Picker-tier screens
+
+**Context.** The domain picker (and every other Menu-tier `huh.Select`
+and Picker-tier `tui.RunPicker` screen) showed only a bare title -- no
+explanation of what the choice means or what happens next. Raised
+alongside the border-matching decision above, as part of the same
+"make the chrome and the screens themselves more consistent and
+informative" pass.
+
+**Decision.** Every Menu-tier `huh.Select` gains a `.Description(...)`
+call (huh's own built-in field, previously unused everywhere in this
+codebase) with one or two sentences of context. `tui.PickerConfig`
+gains a new `Description string` field, rendered as its own line
+(matching `Header`'s existing shape: the line itself plus a `Divider`)
+directly below the top border, above any `Header`/rows;
+`filterableWindowHeight` accounts for its two extra chrome rows the
+same way it already does for `Header`. `pickString`/`pickComparable`
+(the shared Menu-tier helpers) and `pickImage`/`pickBucket`/
+`pickInstance`/`pickInstanceDefaulted` (Picker-tier functions called
+from more than one call site with meaningfully different context) all
+gained a `description string` parameter threaded from their own
+callers; Picker-tier functions with exactly one caller
+(`pickInstanceProfileChoice`, `pickRole`, `pickSubnet`,
+`pickKeyPairChoice`, `pickKeyPairForDeletion`, `pickLifecycleRule`) got
+a single description written directly into the function instead, since
+there was no real per-call-site variation to preserve. List-tier
+screens (`ListViewConfig`/`ListViewModel` -- the tabular "Show resource
+lists" displays) deliberately did NOT get a `Description` field: they
+aren't "just a pick list," and their tabular column headers already
+carry the relevant context.
+
+**Rationale.** huh's `.Description()` is a stable, well-established
+part of its own API -- adding text there is essentially free and
+carries no risk of a rendering bug on our part. The Picker-tier
+`Description` field mirrors `Header`'s existing chrome shape exactly
+(same two-row cost, same position, same `Divider` beneath it), so it
+reuses an already-proven layout instead of inventing a new one.
+Threading a parameter only where callers actually differ (rather than
+everywhere) avoids padding every call site with an unused, always-""
+argument.
+
+**Consequences.** `pickString`, `pickComparable`, `pickImage`,
+`pickBucket`, `pickInstance`, `pickInstanceDefaulted` all gained a
+`description string` parameter -- every call site across
+`internal/workflow` was updated. `internal/tui/filter.go`'s
+`filterableWindowHeight` gained a `hasDescription bool` parameter
+(`ListViewModel`'s call site passes `false` explicitly, since List-tier
+doesn't use this). New `internal/tui/filter_test.go` and additions to
+`picker_test.go` cover the height math and rendering position.
+
+---
+
+## 2026-07-13 — Recall Backup Archive & Trim's instance/directory choices per-instance
+
+**Context.** Backup Archive & Trim always started from a blank slate:
+pick an instance from the full list every time, and (absent a
+`backupDirRules` Name-pattern match) type the backup directory from
+scratch every time -- even for an operator who runs this same
+instance/directory combination repeatedly. Requested directly: recall
+what was used last time as the default for next time.
+
+**Decision.** A new `internal/state` package persists a small
+`~/.clasm_state` YAML file -- deliberately NOT folded into `~/.clasm`
+(config.Config), which is exclusively user-hand-edited today (`Load()`
+only, no `Save()` exists): auto-writing into a file the operator
+maintains by hand risked silently reformatting or stripping their own
+edits. `~/.clasm_state` is exclusively app-managed, safe to delete, and
+never meant for hand-editing. History is keyed per-instance
+(`map[instanceID]directory`), not a single global "last used" value,
+since different instances plausibly back up different directories.
+`internal/workflow.BackupHistory` is the narrow interface `internal/
+workflow` sees (`LastInstanceID`, `LastDirectoryByInstance`, and a
+`Save(instanceID, directory string) error` callback) -- this package
+never imports `internal/state` or knows about YAML/file paths;
+`cmd/clasm/main.go` owns the actual on-disk format and wires the
+callback. The recalled directory takes priority over `backupDirRules`'
+Name-pattern-based default (it reflects what was actually typed for
+this exact instance most recently, not a generic pattern match). The
+instance picker gained a new `tui.PickerConfig.InitialCursor int` field
+(pre-positions the cursor on a specific row instead of always starting
+at 0) so the recalled instance is pre-selected, not just pre-filled as
+text -- `pickInstance`/`pickInstanceDefaulted` (`power_state.go`) split
+so every other caller of `pickInstance` (start/stop/terminate/create-
+AMI/etc.) is unaffected, while Backup Archive & Trim's own call site
+passes `hist.LastInstanceID`.
+
+**Rationale.** Separating "settings" (hand-edited, read-only to the
+app) from "history" (app-managed, disposable) avoids ever surprising an
+operator by rewriting a file they maintain themselves. Per-instance
+keying costs one extra map versus a single string field, for
+meaningfully better behavior once more than one instance is in
+rotation. `Save`'s error is reported to `w` as a warning, not returned
+as fatal -- history is a convenience, not core to the backup itself; a
+disk-write failure here shouldn't abort an otherwise-successful backup
+run.
+
+**Consequences.** `BackupArchiveAndTrim`'s signature gained a
+`hist BackupHistory` parameter (every call site, including all
+existing tests, updated -- the zero value disables all of this,
+matching pre-existing behavior exactly). `tui.PickerConfig` gained
+`InitialCursor`; out-of-range values (including the zero value, when
+there's no prior choice) fall back to row 0, so every other
+`PickerConfig` caller is unaffected. New `internal/state` package (+
+tests) and new tests in `internal/workflow/backup_archive_test.go`
+(history takes priority over the Name-pattern rule; `Save` is called
+with the right instance/directory; a `Save` error is a warning, not
+fatal) and `internal/tui/picker_test.go` (`InitialCursor` positions the
+cursor; out-of-range falls back to 0).
+
+---
+
+## 2026-07-13 — Reorder Backup Archive & Trim's prompts
+
+**Context.** The workflow asked its four questions in an order that
+didn't match how an operator actually thinks about the task: instance,
+backup directory, age threshold (days), S3 bucket -- age threshold sat
+between "where are the files" (instance, directory) and "where are
+they going" (bucket), which reads oddly since the threshold is more
+naturally understood once both endpoints are already known. Requested
+directly, with the exact desired order confirmed: instance, directory,
+bucket, then age threshold.
+
+**Decision.** Moved the S3 bucket prompt (and its immediately-following
+`BucketRegion`/`newS3Client`/`CheckS3BucketAccess` pre-flight sequence)
+to run directly after the backup directory prompt, ahead of the age
+threshold prompt, which now runs last, immediately before the dry-run
+listing.
+
+**Rationale.** "Of the files in that directory, which are old enough to
+move to that bucket" reads as one coherent question once both the
+source directory and destination bucket are already fixed, rather than
+asking "how old" before the destination is even known.
+
+**Consequences.** No parameter or return-type changes -- purely a
+reordering of existing prompt calls within `backupArchiveAndTrim`.
+Every existing test's input string (four `\n`-joined answers in read
+order) was updated to match the new order; assertions were otherwise
+unchanged.
+
+---
+
 ## 2026-07-13 — Chrome standardization: one shared indigo accent via lipgloss
 
 **Context.** With termlib fully removed (below), every screen in clasm

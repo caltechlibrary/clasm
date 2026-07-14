@@ -26,7 +26,7 @@ func BrowseAndManageObjects(ctx context.Context, w io.Writer, newS3Client func(c
 		return errors.New("no buckets found")
 	}
 
-	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
+	bucket, err := pickBucket(ctx, "Select a bucket", "Browse and manage this bucket's objects, optionally linked to a local directory.", buckets)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

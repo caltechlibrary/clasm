@@ -56,7 +56,7 @@ func RemoveAMI(ctx context.Context, w io.Writer, clients map[string]awsclient.EC
 		return nil
 	}
 
-	img, err := pickImage(ctx, "Select an AMI to remove", images)
+	img, err := pickImage(ctx, "Select an AMI to remove", "This permanently deregisters the AMI and deletes its backing snapshots.", images)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

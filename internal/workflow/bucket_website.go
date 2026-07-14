@@ -32,8 +32,9 @@ func bucketLabel(b inventory.Bucket) string {
 // reusing the shared bucketLabel format, and returns the chosen bucket.
 // Callers map tui.ErrCancelled through cancelledIsNil at their own
 // return point, the same convention every other pick-list-shaped call
-// site already uses.
-func pickBucket(ctx context.Context, title string, buckets []inventory.Bucket) (inventory.Bucket, error) {
+// site already uses. description is optional contextual text shown
+// below the title ("" for none).
+func pickBucket(ctx context.Context, title, description string, buckets []inventory.Bucket) (inventory.Bucket, error) {
 	rows := make([]string, len(buckets))
 	for i, b := range buckets {
 		rows[i] = bucketLabel(b)
@@ -41,6 +42,7 @@ func pickBucket(ctx context.Context, title string, buckets []inventory.Bucket) (
 
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
+		Description:  description,
 		Rows:         rows,
 		ColorEnabled: ui.ColorEnabled(),
 	})
@@ -68,7 +70,7 @@ func ConfigureBucketWebsite(ctx context.Context, w io.Writer, newS3Client func(c
 		return nil
 	}
 
-	bucket, err := pickBucket(ctx, "Select a bucket", buckets)
+	bucket, err := pickBucket(ctx, "Select a bucket", "Enables static website hosting and sets an index/error document on the chosen bucket.", buckets)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

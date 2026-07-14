@@ -70,19 +70,23 @@ func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, ou
 
 // pickString runs a Menu-tier huh.Select (DESIGN.md's full conversion
 // punch list) over a fixed list of string options and returns the
-// chosen value, via runMenuField. input/output are nil in production
-// (interactive, real terminal) and supplied by tests for the
-// accessible-mode pipe path.
-func pickString(w io.Writer, title, hint string, options []string, input io.Reader, output io.Writer) (string, error) {
-	return pickComparable(w, title, hint, options, func(s string) string { return s }, input, output)
+// chosen value, via runMenuField. description is optional contextual
+// text shown between the title and the options ("" for none -- DESIGN.
+// md, "Contextual description text on Menu/Picker-tier screens").
+// input/output are nil in production (interactive, real terminal) and
+// supplied by tests for the accessible-mode pipe path.
+func pickString(w io.Writer, title, description, hint string, options []string, input io.Reader, output io.Writer) (string, error) {
+	return pickComparable(w, title, description, hint, options, func(s string) string { return s }, input, output)
 }
 
 // pickComparable runs a Menu-tier huh.Select (DESIGN.md's full
 // conversion punch list) over a fixed list of comparable options,
 // labelling each with label, and returns the chosen value, via
-// runMenuField. input/output are nil in production (interactive, real
-// terminal) and supplied by tests for the accessible-mode pipe path.
-func pickComparable[T comparable](w io.Writer, title, hint string, options []T, label func(T) string, input io.Reader, output io.Writer) (T, error) {
+// runMenuField. description is optional contextual text shown between
+// the title and the options ("" for none). input/output are nil in
+// production (interactive, real terminal) and supplied by tests for the
+// accessible-mode pipe path.
+func pickComparable[T comparable](w io.Writer, title, description, hint string, options []T, label func(T) string, input io.Reader, output io.Writer) (T, error) {
 	opts := make([]huh.Option[T], len(options))
 	for i, o := range options {
 		opts[i] = huh.NewOption(label(o), o)
@@ -91,6 +95,7 @@ func pickComparable[T comparable](w io.Writer, title, hint string, options []T, 
 	var picked T
 	field := huh.NewSelect[T]().
 		Title(title).
+		Description(description).
 		Options(opts...).
 		Value(&picked)
 
@@ -144,6 +149,7 @@ func pickDomainItem(w io.Writer, input io.Reader, output io.Writer) (domainItem,
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Pick a domain").
+		Description("Choose which part of the AWS account to work in -- EC2 instances and AMIs, SSH key pairs, or S3 buckets and static websites.").
 		Options(opts...).
 		Value(&idx)
 

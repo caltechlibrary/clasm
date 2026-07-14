@@ -22,6 +22,13 @@ var ErrCancelled = errors.New("picker cancelled")
 type PickerConfig struct {
 	// Title is the banner text shown in the top border.
 	Title string
+	// Description is optional contextual/explanatory text shown as its
+	// own line directly below the top border, above Header/rows -- the
+	// Picker-tier equivalent of huh.Select's .Description(...) (DESIGN.
+	// md, "Contextual description text on Menu/Picker-tier screens").
+	// "" means no description line (most Picker-tier screens' Title
+	// alone is self-explanatory).
+	Description string
 	// Header is an optional already-rendered column-header line, shown
 	// once, frozen at the top of the scrollable body. "" means no
 	// header row.
@@ -33,6 +40,14 @@ type PickerConfig struct {
 	// ColorEnabled gates cursor-row reverse-video styling (this
 	// project's NO_COLOR/non-TTY convention, internal/ui.ColorEnabled).
 	ColorEnabled bool
+	// InitialCursor positions the cursor on this row index into Rows
+	// when the picker first renders, instead of the first row -- e.g.
+	// pre-selecting the instance used last time (DECISIONS.md, "Recall
+	// Backup Archive & Trim's instance/directory choices per-instance").
+	// Out-of-range values (including the zero value when the caller has
+	// no prior choice to recall) fall back to 0, matching every
+	// existing caller's unchanged behavior.
+	InitialCursor int
 }
 
 // PickerModel is a selectable, filterable List-tier screen's bubbletea
@@ -51,7 +66,11 @@ type PickerModel struct {
 
 // NewPickerModel builds a PickerModel for cfg.
 func NewPickerModel(cfg PickerConfig) *PickerModel {
-	return &PickerModel{cfg: cfg, selected: -1, filter: newFilterState(cfg.Rows)}
+	filter := newFilterState(cfg.Rows)
+	if cfg.InitialCursor > 0 && cfg.InitialCursor < len(cfg.Rows) {
+		filter.cursor = cfg.InitialCursor
+	}
+	return &PickerModel{cfg: cfg, selected: -1, filter: filter}
 }
 
 // RunPicker runs cfg as a scoped bubbletea.Program and blocks until the
@@ -109,7 +128,7 @@ func (m *PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *PickerModel) windowHeight() int {
-	return filterableWindowHeight(m.height, m.cfg.Header != "")
+	return filterableWindowHeight(m.height, m.cfg.Header != "", m.cfg.Description != "")
 }
 
 func (m *PickerModel) View() string {
@@ -137,6 +156,10 @@ func (m *PickerModel) View() string {
 
 	var b strings.Builder
 	b.WriteString(TopBorder(" "+title+" ", inner))
+	if m.cfg.Description != "" {
+		b.WriteString(BoxLine("  "+m.cfg.Description, inner))
+		b.WriteString(Divider(inner))
+	}
 	if m.cfg.Header != "" {
 		b.WriteString(BoxLine("  "+m.cfg.Header, inner))
 		b.WriteString(Divider(inner))

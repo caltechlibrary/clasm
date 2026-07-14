@@ -44,7 +44,7 @@ func TerminateEC2Instance(ctx context.Context, w io.Writer, clients map[string]a
 		return nil
 	}
 
-	inst, err := pickInstance(ctx, "Select an instance to terminate", instances)
+	inst, err := pickInstance(ctx, "Select an instance to terminate", "This permanently terminates the instance; if DeleteOnTermination is set on its volumes, their data is gone too.", instances)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

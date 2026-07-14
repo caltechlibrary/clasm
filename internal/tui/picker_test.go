@@ -50,6 +50,43 @@ func TestPicker_EnterSelectsTheCursorRow(t *testing.T) {
 	}
 }
 
+func TestNewPickerModel_InitialCursorPositionsCursor(t *testing.T) {
+	cfg := testPickerConfig([]string{"alpha", "beta", "gamma"})
+	cfg.InitialCursor = 2
+	m := NewPickerModel(cfg)
+	if m.filter.cursor != 2 {
+		t.Errorf("filter.cursor = %d, want 2 (InitialCursor)", m.filter.cursor)
+	}
+}
+
+func TestNewPickerModel_InitialCursorOutOfRangeFallsBackToZero(t *testing.T) {
+	cfg := testPickerConfig([]string{"alpha", "beta"})
+	cfg.InitialCursor = 5
+	m := NewPickerModel(cfg)
+	if m.filter.cursor != 0 {
+		t.Errorf("filter.cursor = %d, want 0 (out-of-range InitialCursor ignored)", m.filter.cursor)
+	}
+}
+
+func TestPicker_EnterImmediatelySelectsInitialCursorRow(t *testing.T) {
+	cfg := testPickerConfig([]string{"alpha", "beta", "gamma"})
+	cfg.InitialCursor = 2
+	m := NewPickerModel(cfg)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
+
+	waitFor(t, tm, "gamma")
+	tm.Send(typeKey(tea.KeyEnter))
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	final := tm.FinalModel(t).(*PickerModel)
+	if final.cancelled {
+		t.Fatal("expected a selection, got cancelled")
+	}
+	if final.selected != 2 {
+		t.Errorf("selected = %d, want 2 (gamma, the pre-positioned row)", final.selected)
+	}
+}
+
 func TestPicker_QCancelsWithoutSelecting(t *testing.T) {
 	m := NewPickerModel(testPickerConfig([]string{"alpha", "beta"}))
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
@@ -82,6 +119,16 @@ func TestPicker_LegendShowsFilterScrollAndQuit(t *testing.T) {
 	m := NewPickerModel(testPickerConfig([]string{"row1"}))
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
 	waitForAll(t, tm, "scroll", "filter", "Quit")
+	tm.Send(key('q'))
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestPicker_DescriptionRendersBelowTopBorder(t *testing.T) {
+	cfg := testPickerConfig([]string{"row1"})
+	cfg.Description = "Pick which bucket to browse."
+	m := NewPickerModel(cfg)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
+	waitForAll(t, tm, "Pick which bucket to browse.", "row1")
 	tm.Send(key('q'))
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }

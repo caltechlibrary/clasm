@@ -91,7 +91,7 @@ func CreateAMIFromInstance(ctx context.Context, w io.Writer, ec2Clients map[stri
 		return nil
 	}
 
-	inst, err := pickInstance(ctx, "Select an instance to create an AMI from", instances)
+	inst, err := pickInstance(ctx, "Select an instance to create an AMI from", "The instance can be running or stopped; a running instance is briefly rebooted unless you skip that step.", instances)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
