@@ -22,6 +22,7 @@
 
 ## Nice to have
 
+- [ ] Be able to list the CloudFront distribution ID for S3 static websites
 - [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
 - [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
 - [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
