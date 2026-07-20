@@ -183,14 +183,16 @@ func main() {
 	ui.SetColorEnabled(colorEnabled)
 
 	var state struct {
-		instances []inventory.Instance
-		images    []inventory.Image
+		instances       []inventory.Instance
+		images          []inventory.Image
+		launchTemplates []inventory.LaunchTemplate
 	}
-	// refresh only re-fetches instance/AMI data -- it no longer displays
-	// it (DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
-	// Managers"). Displaying is showComputeResourceLists, reachable only
-	// via the Compute menu's explicit "Show resource lists" choice (same
-	// split as refreshS3/showS3ResourceLists below).
+	// refresh only re-fetches instance/AMI/launch-template data -- it no
+	// longer displays it (DESIGN.md, "Terminal UI Architecture: Menus,
+	// Actions, Lists, and Managers"). Displaying is
+	// showComputeResourceLists, reachable only via the Compute menu's
+	// explicit "Show resource lists" choice (same split as
+	// refreshS3/showS3ResourceLists below).
 	refresh := func(ctx context.Context) error {
 		instances, err := inventory.ListInstances(ctx, ec2Clients)
 		if err != nil {
@@ -200,14 +202,21 @@ func main() {
 		if err != nil {
 			return fmt.Errorf("listing AMIs: %w", err)
 		}
-		state.instances, state.images = instances, images
+		launchTemplates, err := inventory.ListLaunchTemplates(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing launch templates: %w", err)
+		}
+		state.instances, state.images, state.launchTemplates = instances, images, launchTemplates
 		return nil
 	}
 	showComputeResourceLists := func(ctx context.Context) error {
 		if err := ui.DisplayInstances(ctx, state.instances); err != nil {
 			return err
 		}
-		return ui.DisplayImages(ctx, state.images)
+		if err := ui.DisplayImages(ctx, state.images); err != nil {
+			return err
+		}
+		return ui.DisplayLaunchTemplates(ctx, state.launchTemplates)
 	}
 
 	var s3State struct {
@@ -295,6 +304,27 @@ func main() {
 				LastDirectoryByInstance: appState.BackupArchive.LastDirectoryByInstance,
 				Save:                    saveBackupHistory,
 			})
+		},
+		ShowLaunchTemplate: func(ctx context.Context) error {
+			return workflow.ShowLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
+		},
+		CreateLaunchTemplateFromCloudInit: func(ctx context.Context) error {
+			return workflow.CreateLaunchTemplateFromCloudInit(ctx, out, ec2Clients, ssmClients, iamClient, state.images)
+		},
+		CreateInstanceFromLaunchTemplate: func(ctx context.Context) error {
+			return workflow.CreateInstanceFromLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
+		},
+		SyncLaunchTemplate: func(ctx context.Context) error {
+			return workflow.SyncLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
+		},
+		PromoteLaunchTemplateVersion: func(ctx context.Context) error {
+			return workflow.PromoteLaunchTemplateVersion(ctx, out, ec2Clients, state.launchTemplates)
+		},
+		DeleteLaunchTemplateVersions: func(ctx context.Context) error {
+			return workflow.DeleteLaunchTemplateVersions(ctx, out, ec2Clients, state.launchTemplates)
+		},
+		DeleteLaunchTemplate: func(ctx context.Context) error {
+			return workflow.DeleteLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
 		},
 		Refresh:           refresh,
 		ShowResourceLists: showComputeResourceLists,

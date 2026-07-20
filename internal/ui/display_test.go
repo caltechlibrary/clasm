@@ -220,3 +220,35 @@ func TestBucketListViewConfig_Populated(t *testing.T) {
 		t.Error("expected a non-empty Title")
 	}
 }
+
+func TestLaunchTemplateListViewConfig_Empty(t *testing.T) {
+	cfg := launchTemplateListViewConfig(nil)
+	if len(cfg.Rows) != 0 {
+		t.Errorf("got %d rows, want 0 for an empty template list", len(cfg.Rows))
+	}
+	if !strings.Contains(cfg.Header, "TEMPLATE ID") || !strings.Contains(cfg.Header, "REGION") {
+		t.Errorf("header = %q, want it to still show column titles even when empty", cfg.Header)
+	}
+}
+
+func TestLaunchTemplateListViewConfig_Populated(t *testing.T) {
+	templates := []inventory.LaunchTemplate{
+		{TemplateID: "lt-1", Name: "rdm-app", DefaultVersion: 2, LatestVersion: 3, Region: "us-east-1", Project: "caltechauthors", Environment: "production"},
+		{TemplateID: "lt-2", Name: "untagged", DefaultVersion: 1, LatestVersion: 1, Region: "us-west-2"},
+	}
+
+	cfg := launchTemplateListViewConfig(templates)
+	if len(cfg.Rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(cfg.Rows))
+	}
+
+	out := cfg.Header + "\n" + strings.Join(cfg.Rows, "\n")
+	for _, want := range []string{"lt-1", "rdm-app", "us-east-1", "caltechauthors", "production", "lt-2", "untagged", "us-west-2", "unknown", "TEMPLATE ID", "DEFAULT", "LATEST", "REGION", "PROJECT", "ENVIRONMENT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if cfg.Title == "" {
+		t.Error("expected a non-empty Title")
+	}
+}

@@ -24,6 +24,12 @@ type fakeEC2Client struct {
 	err          error
 
 	lastDescribeImagesInput *ec2.DescribeImagesInput
+
+	launchTemplates                         []types.LaunchTemplate
+	launchTemplateVersions                  []types.LaunchTemplateVersion
+	describeLaunchTemplatesErr              error
+	describeLaunchTemplateVersionsErr       error
+	lastDescribeLaunchTemplateVersionsInput *ec2.DescribeLaunchTemplateVersionsInput
 }
 
 func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -46,6 +52,21 @@ func (f *fakeEC2Client) DescribeKeyPairs(ctx context.Context, params *ec2.Descri
 		return nil, f.err
 	}
 	return &ec2.DescribeKeyPairsOutput{KeyPairs: f.keyPairs}, nil
+}
+
+func (f *fakeEC2Client) DescribeLaunchTemplates(ctx context.Context, params *ec2.DescribeLaunchTemplatesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplatesOutput, error) {
+	if f.describeLaunchTemplatesErr != nil {
+		return nil, f.describeLaunchTemplatesErr
+	}
+	return &ec2.DescribeLaunchTemplatesOutput{LaunchTemplates: f.launchTemplates}, nil
+}
+
+func (f *fakeEC2Client) DescribeLaunchTemplateVersions(ctx context.Context, params *ec2.DescribeLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplateVersionsOutput, error) {
+	f.lastDescribeLaunchTemplateVersionsInput = params
+	if f.describeLaunchTemplateVersionsErr != nil {
+		return nil, f.describeLaunchTemplateVersionsErr
+	}
+	return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: f.launchTemplateVersions}, nil
 }
 
 func sdkInstance(id, name, state, imageID, project, environment string) types.Instance {

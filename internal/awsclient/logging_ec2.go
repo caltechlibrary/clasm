@@ -159,6 +159,48 @@ func (w *loggingEC2Client) DescribeVolumes(ctx context.Context, params *ec2.Desc
 	})
 }
 
+func (w *loggingEC2Client) CreateLaunchTemplate(ctx context.Context, params *ec2.CreateLaunchTemplateInput, optFns ...func(*ec2.Options)) (*ec2.CreateLaunchTemplateOutput, error) {
+	return logAWSCall(w.dl, "EC2.CreateLaunchTemplate", w.region, params, func() (*ec2.CreateLaunchTemplateOutput, error) {
+		return w.inner.CreateLaunchTemplate(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) CreateLaunchTemplateVersion(ctx context.Context, params *ec2.CreateLaunchTemplateVersionInput, optFns ...func(*ec2.Options)) (*ec2.CreateLaunchTemplateVersionOutput, error) {
+	return logAWSCall(w.dl, "EC2.CreateLaunchTemplateVersion", w.region, params, func() (*ec2.CreateLaunchTemplateVersionOutput, error) {
+		return w.inner.CreateLaunchTemplateVersion(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DescribeLaunchTemplates(ctx context.Context, params *ec2.DescribeLaunchTemplatesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplatesOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeLaunchTemplates", w.region, params, func() (*ec2.DescribeLaunchTemplatesOutput, error) {
+		return w.inner.DescribeLaunchTemplates(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DescribeLaunchTemplateVersions(ctx context.Context, params *ec2.DescribeLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplateVersionsOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeLaunchTemplateVersions", w.region, params, func() (*ec2.DescribeLaunchTemplateVersionsOutput, error) {
+		return w.inner.DescribeLaunchTemplateVersions(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) ModifyLaunchTemplate(ctx context.Context, params *ec2.ModifyLaunchTemplateInput, optFns ...func(*ec2.Options)) (*ec2.ModifyLaunchTemplateOutput, error) {
+	return logAWSCall(w.dl, "EC2.ModifyLaunchTemplate", w.region, params, func() (*ec2.ModifyLaunchTemplateOutput, error) {
+		return w.inner.ModifyLaunchTemplate(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DeleteLaunchTemplate(ctx context.Context, params *ec2.DeleteLaunchTemplateInput, optFns ...func(*ec2.Options)) (*ec2.DeleteLaunchTemplateOutput, error) {
+	return logAWSCall(w.dl, "EC2.DeleteLaunchTemplate", w.region, params, func() (*ec2.DeleteLaunchTemplateOutput, error) {
+		return w.inner.DeleteLaunchTemplate(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DeleteLaunchTemplateVersions(ctx context.Context, params *ec2.DeleteLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DeleteLaunchTemplateVersionsOutput, error) {
+	return logAWSCall(w.dl, "EC2.DeleteLaunchTemplateVersions", w.region, params, func() (*ec2.DeleteLaunchTemplateVersionsOutput, error) {
+		return w.inner.DeleteLaunchTemplateVersions(ctx, params, optFns...)
+	})
+}
+
 // CreateKeyPair does not use the shared logAWSCall helper: its output
 // carries the new key pair's unencrypted private key material, which
 // must never be written to the debug log. The rest of the output is

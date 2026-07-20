@@ -11,12 +11,12 @@ import (
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
-// MenuActions bundles the ten workflow entry points the main menu
+// MenuActions bundles the seventeen workflow entry points the main menu
 // dispatches to, as zero-arg-besides-ctx closures. main.go constructs
 // each closure bound to the live AWS clients and the current instance/
-// AMI listing snapshot; this indirection is what lets menu dispatch
-// itself be tested with fakes, without driving every workflow's full
-// interactive prompt sequence.
+// AMI/launch-template listing snapshot; this indirection is what lets
+// menu dispatch itself be tested with fakes, without driving every
+// workflow's full interactive prompt sequence.
 type MenuActions struct {
 	CreateInstanceFromAMI       func(ctx context.Context) error
 	CreateInstanceFromCloudInit func(ctx context.Context) error
@@ -28,20 +28,31 @@ type MenuActions struct {
 	RemoveAMI                   func(ctx context.Context) error
 	ShowCloudInit               func(ctx context.Context) error
 	BackupArchiveAndTrim        func(ctx context.Context) error
-	// Refresh re-fetches the instance/AMI listings, silently -- no
-	// display. Called once after every successful dispatched action
-	// (DECISIONS.md, "Refresh data after each operation") so instance/AMI-
-	// selection prompts elsewhere stay current, and once on entering the
-	// Compute domain.
+	// Launch-template actions (DESIGN.md, "Launch Templates"): List
+	// Launch Templates has no dedicated field -- it folds into
+	// ShowResourceLists below, alongside instances/AMIs, rather than
+	// being a separate top-level action.
+	ShowLaunchTemplate                func(ctx context.Context) error
+	CreateLaunchTemplateFromCloudInit func(ctx context.Context) error
+	CreateInstanceFromLaunchTemplate  func(ctx context.Context) error
+	SyncLaunchTemplate                func(ctx context.Context) error
+	PromoteLaunchTemplateVersion      func(ctx context.Context) error
+	DeleteLaunchTemplateVersions      func(ctx context.Context) error
+	DeleteLaunchTemplate              func(ctx context.Context) error
+	// Refresh re-fetches the instance/AMI/launch-template listings,
+	// silently -- no display. Called once after every successful
+	// dispatched action (DECISIONS.md, "Refresh data after each
+	// operation") so instance/AMI/template-selection prompts elsewhere
+	// stay current, and once on entering the Compute domain.
 	Refresh func(ctx context.Context) error
-	// ShowResourceLists shows the already-fetched instance/AMI listings in
-	// the shared List-tier component (DESIGN.md, "Terminal UI
-	// Architecture: Menus, Actions, Lists, and Managers"). Called only by
-	// "Show resource lists" -- unlike Refresh, it never runs automatically
-	// after other actions (tui.RunListView blocks on an interactive
-	// bubbletea loop until 'q', so showing it after every action would
-	// force pressing 'q' just to get back to the menu -- see S3Actions'
-	// own Refresh/ShowResourceLists split, Phase 20.6).
+	// ShowResourceLists shows the already-fetched instance/AMI/launch-
+	// template listings in the shared List-tier component (DESIGN.md,
+	// "Terminal UI Architecture: Menus, Actions, Lists, and Managers").
+	// Called only by "Show resource lists" -- unlike Refresh, it never
+	// runs automatically after other actions (tui.RunListView blocks on
+	// an interactive bubbletea loop until 'q', so showing it after every
+	// action would force pressing 'q' just to get back to the menu --
+	// see S3Actions' own Refresh/ShowResourceLists split, Phase 20.6).
 	ShowResourceLists func(ctx context.Context) error
 }
 
@@ -65,6 +76,7 @@ var mainMenuItems = []menuItem{
 	{"Show resource lists", func(a MenuActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
 	{"Create EC2 instance from AMI", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
 	{"Create EC2 instance from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
+	{"Create EC2 instance from launch template", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
 	{"Start EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
 	{"Stop EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
 	{"Terminate EC2 instance", func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
@@ -72,6 +84,12 @@ var mainMenuItems = []menuItem{
 	{"Create AMI from EC2 instance (running or stopped)", func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},
 	{"Remove AMI", func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},
 	{"Show/export cloud-init for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ShowCloudInit(ctx) }},
+	{"Show a launch template", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplate(ctx) }},
+	{"Create launch template from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
+	{"Sync cloud-init YAML to a launch template", func(a MenuActions, ctx context.Context) error { return a.SyncLaunchTemplate(ctx) }},
+	{"Promote a launch template version to default", func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
+	{"Delete launch template version(s)", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
+	{"Delete a launch template", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},
 	{"Archive stale backups to S3 and trim disk space", func(a MenuActions, ctx context.Context) error { return a.BackupArchiveAndTrim(ctx) }},
 }
 
@@ -91,7 +109,7 @@ func pickMainMenuItem(w io.Writer, input io.Reader, output io.Writer) (menuItem,
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Choose an option").
-		Description("Manage EC2 instances and AMIs, or archive stale backups to S3.").
+		Description("Manage EC2 instances, AMIs, and launch templates, or archive stale backups to S3.").
 		Options(opts...).
 		Value(&idx)
 
@@ -102,7 +120,7 @@ func pickMainMenuItem(w io.Writer, input io.Reader, output io.Writer) (menuItem,
 }
 
 // RunMainMenu runs the Compute domain's interactive menu loop (DESIGN.md,
-// "Compute Domain (EC2 & AMI)"): show the 11-option menu, dispatch the
+// "Compute Domain (EC2 & AMI)"): show the 18-option menu, dispatch the
 // chosen action, refresh listings after a successful dispatch, and
 // repeat -- until the picker is aborted ('q'/ctrl+c, reported as
 // ErrBackToDomainPicker), a cancelled ctx (e.g. Ctrl+C delivered as

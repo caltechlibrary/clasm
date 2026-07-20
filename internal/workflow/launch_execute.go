@@ -57,6 +57,11 @@ func Launch(ctx context.Context, client awsclient.EC2API, params LaunchInstanceP
 		MinCount:          aws.Int32(1),
 		MaxCount:          aws.Int32(1),
 		TagSpecifications: []types.TagSpecification{buildTagSpecification(types.ResourceTypeInstance, params.Tags)},
+		// IMDSv2 required, unconditionally -- not an operator choice, per
+		// AWS security recommendations (TODO.md bug; DECISIONS.md, "Launch
+		// templates: build directly from cloud-init YAML, diff-then-new-
+		// version sync, fold in IMDSv2").
+		MetadataOptions: &types.InstanceMetadataOptionsRequest{HttpTokens: types.HttpTokensStateRequired},
 	}
 	if params.UserData != "" {
 		input.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(params.UserData)))

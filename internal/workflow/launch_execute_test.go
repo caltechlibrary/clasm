@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -120,6 +121,122 @@ type fakeEC2Client struct {
 
 	lastDeleteKeyPairInput *ec2.DeleteKeyPairInput
 	deleteKeyPairErr       error
+
+	launchTemplateVersions                  []types.LaunchTemplateVersion
+	describeLaunchTemplateVersionsErr       error
+	lastDescribeLaunchTemplateVersionsInput *ec2.DescribeLaunchTemplateVersionsInput
+
+	lastCreateLaunchTemplateInput *ec2.CreateLaunchTemplateInput
+	createLaunchTemplateErr       error
+	createLaunchTemplateID        string
+
+	lastCreateLaunchTemplateVersionInput *ec2.CreateLaunchTemplateVersionInput
+	createLaunchTemplateVersionErr       error
+	createLaunchTemplateVersionNumber    int64
+
+	lastModifyLaunchTemplateInput *ec2.ModifyLaunchTemplateInput
+	modifyLaunchTemplateErr       error
+
+	lastDeleteLaunchTemplateInput *ec2.DeleteLaunchTemplateInput
+	deleteLaunchTemplateErr       error
+
+	lastDeleteLaunchTemplateVersionsInput *ec2.DeleteLaunchTemplateVersionsInput
+	deleteLaunchTemplateVersionsErr       error
+	// deleteLaunchTemplateVersionsUnsuccessful, if set, is returned as
+	// DeleteLaunchTemplateVersionsOutput's UnsuccessfullyDeleted list --
+	// every other version requested is reported as successfully deleted.
+	deleteLaunchTemplateVersionsUnsuccessful []types.DeleteLaunchTemplateVersionsResponseErrorItem
+}
+
+func (f *fakeEC2Client) DescribeLaunchTemplateVersions(ctx context.Context, params *ec2.DescribeLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplateVersionsOutput, error) {
+	f.lastDescribeLaunchTemplateVersionsInput = params
+	if f.describeLaunchTemplateVersionsErr != nil {
+		return nil, f.describeLaunchTemplateVersionsErr
+	}
+	return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: f.launchTemplateVersions}, nil
+}
+
+func (f *fakeEC2Client) CreateLaunchTemplate(ctx context.Context, params *ec2.CreateLaunchTemplateInput, optFns ...func(*ec2.Options)) (*ec2.CreateLaunchTemplateOutput, error) {
+	f.lastCreateLaunchTemplateInput = params
+	if f.createLaunchTemplateErr != nil {
+		return nil, f.createLaunchTemplateErr
+	}
+	id := f.createLaunchTemplateID
+	if id == "" {
+		id = "lt-fake0123456789"
+	}
+	return &ec2.CreateLaunchTemplateOutput{LaunchTemplate: &types.LaunchTemplate{
+		LaunchTemplateId:     aws.String(id),
+		LaunchTemplateName:   params.LaunchTemplateName,
+		DefaultVersionNumber: aws.Int64(1),
+		LatestVersionNumber:  aws.Int64(1),
+	}}, nil
+}
+
+func (f *fakeEC2Client) CreateLaunchTemplateVersion(ctx context.Context, params *ec2.CreateLaunchTemplateVersionInput, optFns ...func(*ec2.Options)) (*ec2.CreateLaunchTemplateVersionOutput, error) {
+	f.lastCreateLaunchTemplateVersionInput = params
+	if f.createLaunchTemplateVersionErr != nil {
+		return nil, f.createLaunchTemplateVersionErr
+	}
+	n := f.createLaunchTemplateVersionNumber
+	if n == 0 {
+		n = 2
+	}
+	return &ec2.CreateLaunchTemplateVersionOutput{LaunchTemplateVersion: &types.LaunchTemplateVersion{
+		LaunchTemplateId: params.LaunchTemplateId,
+		VersionNumber:    aws.Int64(n),
+	}}, nil
+}
+
+func (f *fakeEC2Client) ModifyLaunchTemplate(ctx context.Context, params *ec2.ModifyLaunchTemplateInput, optFns ...func(*ec2.Options)) (*ec2.ModifyLaunchTemplateOutput, error) {
+	f.lastModifyLaunchTemplateInput = params
+	if f.modifyLaunchTemplateErr != nil {
+		return nil, f.modifyLaunchTemplateErr
+	}
+	return &ec2.ModifyLaunchTemplateOutput{}, nil
+}
+
+func (f *fakeEC2Client) DeleteLaunchTemplate(ctx context.Context, params *ec2.DeleteLaunchTemplateInput, optFns ...func(*ec2.Options)) (*ec2.DeleteLaunchTemplateOutput, error) {
+	f.lastDeleteLaunchTemplateInput = params
+	if f.deleteLaunchTemplateErr != nil {
+		return nil, f.deleteLaunchTemplateErr
+	}
+	return &ec2.DeleteLaunchTemplateOutput{}, nil
+}
+
+func (f *fakeEC2Client) DeleteLaunchTemplateVersions(ctx context.Context, params *ec2.DeleteLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DeleteLaunchTemplateVersionsOutput, error) {
+	f.lastDeleteLaunchTemplateVersionsInput = params
+	if f.deleteLaunchTemplateVersionsErr != nil {
+		return nil, f.deleteLaunchTemplateVersionsErr
+	}
+
+	unsuccessful := map[string]bool{}
+	for _, item := range f.deleteLaunchTemplateVersionsUnsuccessful {
+		unsuccessful[fmt.Sprintf("%d", aws.ToInt64(item.VersionNumber))] = true
+	}
+
+	out := &ec2.DeleteLaunchTemplateVersionsOutput{UnsuccessfullyDeletedLaunchTemplateVersions: f.deleteLaunchTemplateVersionsUnsuccessful}
+	for _, v := range params.Versions {
+		if unsuccessful[v] {
+			continue
+		}
+		out.SuccessfullyDeletedLaunchTemplateVersions = append(out.SuccessfullyDeletedLaunchTemplateVersions, types.DeleteLaunchTemplateVersionsResponseSuccessItem{
+			VersionNumber: aws.Int64(mustParseInt64(v)),
+		})
+	}
+	return out, nil
+}
+
+// mustParseInt64 parses a version-number string for the fake's
+// success-list bookkeeping above -- test-only, so a parse failure
+// (never expected: callers always pass digit strings) panics rather
+// than threading an error through this helper.
+func mustParseInt64(s string) int64 {
+	var n int64
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		panic(err)
+	}
+	return n
 }
 
 func (f *fakeEC2Client) CreateKeyPair(ctx context.Context, params *ec2.CreateKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
@@ -360,6 +477,15 @@ func (f *fakeEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstanc
 }
 
 func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	// A real AWS call fails immediately against an already-canceled/
+	// expired context; this fake must too, or bugs like a
+	// withCallTimeout-scoped context being reused past its own cancel()
+	// (2026-07-20, launch-from-template's WaitUntilRunning call) go
+	// undetected by every test that doesn't explicitly wire up real
+	// timing.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.describeCalls++
 	if f.notFoundForCalls > 0 && f.describeCalls <= f.notFoundForCalls {
 		return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound", Message: "The instance ID '" + params.InstanceIds[0] + "' does not exist"}
@@ -438,6 +564,25 @@ func TestLaunch_Success(t *testing.T) {
 	}
 	if len(in.TagSpecifications[0].Tags) != 3 {
 		t.Errorf("Tags = %+v, want 3 entries", in.TagSpecifications[0].Tags)
+	}
+}
+
+func TestLaunch_SetsIMDSv2Required(t *testing.T) {
+	// Security recommends IMDSv2 (HttpTokens: required) on every new
+	// instance clasm launches -- TODO.md's bug: no MetadataOptions was
+	// set at all, leaving new instances on AWS's own default (optional).
+	fake := &fakeEC2Client{runInstancesID: "i-1"}
+	params := LaunchInstanceParams{ImageID: "ami-1", InstanceType: "t3.micro", KeyName: "k", SecurityGroupIDs: []string{"sg-1"}, SubnetID: "subnet-1"}
+
+	if _, err := Launch(context.Background(), fake, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	in := fake.lastRunInstancesInput
+	if in.MetadataOptions == nil {
+		t.Fatal("MetadataOptions = nil, want HttpTokens: required")
+	}
+	if in.MetadataOptions.HttpTokens != types.HttpTokensStateRequired {
+		t.Errorf("MetadataOptions.HttpTokens = %q, want %q", in.MetadataOptions.HttpTokens, types.HttpTokensStateRequired)
 	}
 }
 

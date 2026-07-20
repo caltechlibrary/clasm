@@ -26,18 +26,25 @@ func failingAction(err error) func(context.Context) error {
 func testMenuActions(refreshCalls *int) MenuActions {
 	noop := func(ctx context.Context) error { return nil }
 	return MenuActions{
-		CreateInstanceFromAMI:       noop,
-		CreateInstanceFromCloudInit: noop,
-		StartEC2Instance:            noop,
-		StopEC2Instance:             noop,
-		TerminateEC2Instance:        noop,
-		ManageTags:                  noop,
-		CreateAMIFromInstance:       noop,
-		RemoveAMI:                   noop,
-		ShowCloudInit:               noop,
-		BackupArchiveAndTrim:        noop,
-		Refresh:                     countingAction(refreshCalls),
-		ShowResourceLists:           noop,
+		CreateInstanceFromAMI:             noop,
+		CreateInstanceFromCloudInit:       noop,
+		StartEC2Instance:                  noop,
+		StopEC2Instance:                   noop,
+		TerminateEC2Instance:              noop,
+		ManageTags:                        noop,
+		CreateAMIFromInstance:             noop,
+		RemoveAMI:                         noop,
+		ShowCloudInit:                     noop,
+		BackupArchiveAndTrim:              noop,
+		ShowLaunchTemplate:                noop,
+		CreateLaunchTemplateFromCloudInit: noop,
+		CreateInstanceFromLaunchTemplate:  noop,
+		SyncLaunchTemplate:                noop,
+		PromoteLaunchTemplateVersion:      noop,
+		DeleteLaunchTemplateVersions:      noop,
+		DeleteLaunchTemplate:              noop,
+		Refresh:                           countingAction(refreshCalls),
+		ShowResourceLists:                 noop,
 	}
 }
 
@@ -57,7 +64,7 @@ func TestRunMainMenu_DispatchesToTheChosenAction(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.StartEC2Instance = cancelingAction(&startCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("4\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -101,7 +108,7 @@ func TestRunMainMenu_RefreshesAfterASuccessfulAction(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.StartEC2Instance = cancelingAction(&startCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("4\n"), buf)
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -175,8 +182,8 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestMainMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(mainMenuItems) != 11 {
-		t.Fatalf("len(mainMenuItems) = %d, want 11 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
+	if len(mainMenuItems) != 18 {
+		t.Fatalf("len(mainMenuItems) = %d, want 18 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
 	}
 	for _, item := range mainMenuItems {
 		if item.action == nil {

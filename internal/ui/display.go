@@ -262,6 +262,47 @@ func bucketListViewConfig(buckets []inventory.Bucket) tui.ListViewConfig {
 	}
 }
 
+// launchTemplateListViewConfig builds a tui.ListViewConfig from
+// templates -- see instanceListViewConfig's doc comment for the
+// extraction rationale.
+func launchTemplateListViewConfig(templates []inventory.LaunchTemplate) tui.ListViewConfig {
+	header := fmt.Sprintf("%s %s %s %s %s %s %s",
+		padRight("TEMPLATE ID", 22),
+		padRight("NAME", 24),
+		padRight("DEFAULT", 8),
+		padRight("LATEST", 8),
+		padRight("REGION", 10),
+		padRight("PROJECT", 16),
+		"ENVIRONMENT")
+
+	rows := make([]string, len(templates))
+	for i, lt := range templates {
+		rows[i] = fmt.Sprintf("%s %s %s %s %s %s %s",
+			padRight(truncate(lt.TemplateID, 22), 22),
+			padRight(truncate(lt.Name, 24), 24),
+			padRight(fmt.Sprintf("%d", lt.DefaultVersion), 8),
+			padRight(fmt.Sprintf("%d", lt.LatestVersion), 8),
+			padRight(lt.Region, 10),
+			padRight(truncate(orUnknown(lt.Project), 16), 16),
+			orUnknown(lt.Environment))
+	}
+
+	return tui.ListViewConfig{
+		Title:        "Launch Templates",
+		Header:       header,
+		Rows:         rows,
+		ColorEnabled: ColorEnabled(),
+	}
+}
+
+// DisplayLaunchTemplates shows launch templates in the shared List-tier
+// component (DESIGN.md, "Launch Templates") -- same reachability
+// convention as DisplayInstances: folded into the Compute domain's
+// "Show resource lists" choice, not a separate top-level action.
+func DisplayLaunchTemplates(ctx context.Context, templates []inventory.LaunchTemplate) error {
+	return tui.RunListView(ctx, launchTemplateListViewConfig(templates))
+}
+
 // DisplayBuckets shows S3 buckets in the shared List-tier component
 // (DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
 // Managers," revising Feature 17: "List Buckets"). Reachable only from

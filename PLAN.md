@@ -3121,6 +3121,183 @@ fallback branch, exactly as before this change.
 
 **Dependency:** None.
 
+## Phase 20.26 — Full-height Menu Tier
+
+**Status: designed 2026-07-20, not yet implemented.** Resolves Phase
+20.24's deferred "full height" request. Implements `DESIGN.md`,
+"Full-height Menu Tier," and `DECISIONS.md`, "Full-height Menu tier via
+live `WindowSizeMsg` tracking, applied at every depth."
+
+### Work Items
+
+- [ ] `internal/workflow/domain_menu.go`: extend `quitKeyGuard` (or a
+      sibling wrapper covering the same `*huh.Form` interface) to
+      intercept `tea.WindowSizeMsg` and call `form.WithHeight(msg.Height
+      - reserved)` on every resize, where `reserved` accounts for
+      `runMenuField`'s own `fmt.Fprintln(w, hint)` line printed outside
+      the form.
+- [ ] `runMenuField`: route both the filtering and non-filtering
+      `huh.Field` paths through the same wrapper, so every Menu-tier
+      `huh.Select` (root domain picker, S3/EC2/Key Management submenus,
+      `pickString`/`pickComparable` call sites) gets full-height sizing
+      uniformly — no per-call-site change needed since `runMenuField` is
+      the shared entry point.
+- [ ] Confirm the reserved-line count against `tui.Theme()`'s actual
+      border/padding plus huh's own `titleFooterHeight`, so the combined
+      output doesn't exceed the terminal height by one line.
+
+**Tests:** exercise `WithHeight` being called with the expected value
+for a given `tea.WindowSizeMsg`, and that content shorter than the
+window still renders a fixed-height box (`lipgloss.Style.Height`
+padding). Accessible-mode (pipe-tested) call sites are unaffected --
+they never construct a `tea.Program`, so this whole path doesn't apply
+to them.
+
+**Files:** `internal/workflow/domain_menu.go` (+ test).
+
+**Dependency:** None.
+
+## Phase 20.27 — Launch Templates (done)
+
+**Status: implemented and unit-tested 2026-07-20** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean; `gofmt -l` clean except
+the pre-existing, unrelated `version.go`); not yet verified against real
+AWS -- see Phase 22. v0.0.2's headline feature, confirmed directly
+2026-07-20 (v0.0.1 is already piloting in production, unreleased -- no
+git tag yet). Folds in the IMDSv2 bug fix (TODO.md, Bugs) as one design/
+implementation pass, since both touch the same `MetadataOptions`
+concept. Implements `DESIGN.md`, "Launch Templates," and `DECISIONS.md`,
+"Launch templates: build directly from cloud-init YAML, diff-then-new-
+version sync, fold in IMDSv2." Deliberately excludes TODO.md's
+tags-screen fix, backup-bucket-default, and top-level cross-resource tag
+management -- those get their own design/decision/plan pass after this
+one lands.
+
+**Effort:** ~24 hours estimated (comparable scope to Phase 20.1: a new
+client surface, seven new interactive workflows, a diff mechanism, plus
+three IMDSv2 call sites)
+**Priority:** High
+**Files:**
+`internal/awsclient/ec2.go`/`logging_ec2.go` (7 new `EC2API` methods +
+logging wrapper),
+`internal/inventory/launch_templates.go` (new -- `LaunchTemplate`
+list-tier type, per-version detail type, `ListLaunchTemplates` +
+version-detail fetch, aggregated across regions like `Image`/
+`Instance`),
+`internal/workflow/show_launch_template.go` (new -- List/Show),
+`internal/workflow/launch_template_create.go` (new -- Create from
+Cloud-Init YAML),
+`internal/workflow/launch_from_template.go` (new -- Create EC2 Instance
+from Launch Template, naming to match the existing
+`launch_from_cloud_init.go` convention),
+`internal/workflow/launch_template_sync.go` (new -- Sync/diff/no-op
+detection),
+`internal/workflow/launch_template_manage.go` (new -- Promote to
+Default, Delete Version(s), Delete Template),
+`internal/workflow/launch_execute.go` (IMDSv2 on plain `RunInstances`),
+`internal/workflow/menu.go` (7 new `mainMenuItems` entries + matching
+`MenuActions` fields),
+`cmd/clasm/main.go` (wiring),
+`go.mod`/`go.sum` (`github.com/aymanbagabas/go-udiff` promoted from
+indirect to direct -- already present transitively via
+`charmbracelet/x/exp/teatest`, used by `internal/filemanager`'s own
+tests, so no new dependency is actually being introduced).
+
+### Work Items
+
+- [x] **EC2 client surface:** add `CreateLaunchTemplate`,
+      `CreateLaunchTemplateVersion`, `DescribeLaunchTemplates`,
+      `DescribeLaunchTemplateVersions`, `ModifyLaunchTemplate`,
+      `DeleteLaunchTemplate`, `DeleteLaunchTemplateVersions` to
+      `EC2API`, mirrored into `logging_ec2.go`.
+- [x] **Data model:** `inventory.LaunchTemplate` (`TemplateID`, `Name`,
+      `DefaultVersion`, `LatestVersion`, `Region`, `Project`,
+      `Environment`) via `DescribeLaunchTemplates`, aggregated across
+      regions concurrently (same shape as `ListImages`/`ListInstances`);
+      a per-version detail type via `DescribeLaunchTemplateVersions`
+      (version number, create date, AMI, instance type, IAM instance
+      profile, security groups, subnet, tags, `MetadataOptions`) --
+      deliberately not the full `RequestLaunchTemplateData` surface.
+- [x] **List Launch Templates:** fold into the existing "Show resource
+      lists" List-tier display as a new resource type, alongside
+      instances/AMIs -- not a separate top-level action.
+- [x] **Show Launch Template:** pick a template, then a version
+      (`$Default` pre-selected), display the curated detail fields
+      above. Flags the template passively (no separate audit action)
+      if `MetadataOptions.HttpTokens != required`.
+- [x] **Create Launch Template from Cloud-Init YAML:** reuse Feature
+      3's file-path prompt (file only, never inline text) plus its
+      AMI/instance-type/subnet/security-group/IAM-profile/tag prompts;
+      `CreateLaunchTemplate` (implicitly creates version 1) with
+      `MetadataOptions` forced to required, unconditionally -- not a
+      prompt.
+- [x] **Create EC2 Instance from Launch Template:** pick a template,
+      then a version -- prompt pre-filled to `$Default` (same
+      recalled-but-overridable shape as Backup Archive & Trim's
+      instance/directory defaults) but editable to an explicit version
+      number or `$Latest`. Collects nothing else; `RunInstances` via
+      `LaunchTemplateSpecification`. A third peer entry alongside
+      Features 2 and 3, not a hybrid of either.
+- [x] **Sync Cloud-Init YAML to a Template:** pick a template + version
+      to compare against, pick a YAML file; decode the version's
+      `UserData` and compare against the file's content. Identical →
+      report "no changes -- nothing to sync," stop, no version created.
+      Different → render a plain-text unified diff via
+      `go-udiff.Unified(oldLabel, newLabel, old, new string) string`,
+      require explicit confirmation, then `CreateLaunchTemplateVersion`.
+      Never auto-promotes the new version to default.
+- [x] **Promote Launch Template Version to Default:**
+      `ModifyLaunchTemplate` with `DefaultVersion` set to the chosen
+      version -- its own explicit action, never a side effect of Sync.
+- [x] **Delete Launch Template Version(s):** prune specific versions
+      (`DeleteLaunchTemplateVersions`) without touching the whole
+      template. Same safety-first shape as Feature 9 (Remove AMI): show
+      what would be deleted, extra warning if tagged
+      `Environment=production`, type-to-confirm. Also reports any
+      per-version failures AWS returns
+      (`UnsuccessfullyDeletedLaunchTemplateVersions`), not just a bare
+      success count.
+- [x] **Delete Launch Template:** whole-template delete
+      (`DeleteLaunchTemplate`), same safety-first shape.
+- [x] **Tagging:** `CreateLaunchTemplate`'s `TagSpecifications` reuses
+      `launch_execute.go`'s existing `buildTagSpecification(types.ResourceTypeLaunchTemplate,
+      tags)` unchanged.
+- [x] **IMDSv2 (closes the TODO.md bug):** `launch_execute.go`'s
+      `RunInstances` call (Features 2 and 3) gains
+      `MetadataOptions: &types.InstanceMetadataOptionsRequest{HttpTokens:
+      types.HttpTokensStateRequired}` -- previously set no
+      `MetadataOptions` at all. Every new template's
+      `RequestLaunchTemplateData.MetadataOptions` gets
+      `types.LaunchTemplateInstanceMetadataOptionsRequest{HttpTokens:
+      types.LaunchTemplateHttpTokensStateRequired}` unconditionally --
+      these are two distinct SDK enum types for the same concept,
+      confirmed by reading `enums.go`, not assumed. Subnet placement in
+      `RequestLaunchTemplateData` has no flat `SubnetId` field (unlike
+      `RunInstancesInput`) -- it must go through one `NetworkInterfaces`
+      entry, and once that's used, security groups must move into that
+      same entry's `Groups` field rather than the top-level
+      `SecurityGroupIds` (AWS's own documented constraint, confirmed by
+      reading the SDK's field comments).
+- [x] `menu.go`/`main.go`: wire the seven new actions into
+      `mainMenuItems`/`MenuActions` (List Launch Templates folds into
+      the existing "Show resource lists" entry instead of adding an
+      eighth).
+
+**Tests:** each new workflow gets an accessible-mode pipe-tested core,
+matching every existing Menu-tier workflow's convention.
+`launch_execute_test.go`'s existing `fakeEC2Client` embeds
+`awsclient.EC2API`, so widening the interface doesn't break any
+existing test; the new launch-template methods get added to that same
+shared fake rather than a second one. Specific cases to cover: Sync's
+identical-content-skips-a-version branch and different-content-shows-
+a-diff-then-creates-a-version branch; the plain-`RunInstances` and
+new-template `MetadataOptions` both come back `required` in the
+captured request; Delete Version(s)/Delete Template's
+`Environment=production` extra-warning gate.
+
+**Dependency:** None (builds on the existing EC2 client/inventory/
+Menu-tier conventions; does not depend on Phase 20.26).
+
 ---
 
 ## Phase 21 — CloudFront Domain

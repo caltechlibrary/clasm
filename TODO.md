@@ -5,15 +5,16 @@
 
 - [ ] Each screen should fill the terminal window consistantly, still a problem in current version (commit a3c07051cf83899ca4b7dd333a55830870f183dc)
   - I don't think when a new screen is written that we're actually checking the window's height. Many screens clear but then ownly draw in about 1/3 of the window height
-- [ ] The bahavior of the filter and picker filter needs to be uniform, right now some filters treat "q" as quick filter rather than the default huh uses (empty string), the "q" doesn't exit the whole clasm but returns to the prior screen.
+- [x] The bahavior of the filter and picker filter needs to be uniform, right now some filters treat "q" as quick filter rather than the default huh uses (empty string), the "q" doesn't exit the whole clasm but returns to the prior screen.
 - [ ] The screen for adding, updating, and removing tags is missing a "show tags" menu option and the tags shown at the top of he screen don't update on change
-- [ ] When creating a new EC2 instance the IDMSv2 metadata value should be set to true per AWS Security recommendations
+- [x] When creating a new EC2 instance the IDMSv2 metadata value should be set to true per AWS Security recommendations
 
 ## Requested features
 
+- [ ] When doing the Archive backups, the S3 target bucket should be saved as a default but I'm not sure how this works with the bucket picker approach we have now. This needs to be explored.
 - [ ] A top level menu item for managing tags across resources (EC2, AMI, S3, etc)
-- [ ] My work group uses launch templates instances for EC2 we need to support managing those (list, show a template, add, update and remove)
-- [ ] We need to way to sync a launch template with the updates from a cloud init YAML file
+- [x] My work group uses launch templates instances for EC2 we need to support managing those (list, show a template, add, update and remove)
+- [x] We need to way to sync a launch template with the updates from a cloud init YAML file
   - The flow is cloud init yaml -> launch template -> EC2 instance
 - [ ] Support for AWS container registry as a copy level menu item
 - [ ] SSMS supports interactions with docker containers running inside an EC2 instance we need to provide manageability for those docker services
@@ -24,7 +25,7 @@
 
 - [ ] Be able to list the CloudFront distribution ID for S3 static websites
 - [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
-- [ ] For actions that take more than a few minutes, a spinner that shows progress would be nice
+- [x] For actions that take more than a few minutes, a spinner that shows progress would be nice
 - [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
 - [ ] Retry-on-launch-failure (general case): instead of bouncing back to
       the main menu on any `RunInstances` error, keep the already-collected
@@ -49,4 +50,17 @@
   design in DESIGN.md/PLAN.md stays valid reference for if this is ever
   picked back up. Phase 22 (real-AWS testing for Key Management/S3) no
   longer depends on it.
+
+- Change EBS storage properties (volume size, type, IOPS, throughput)
+  in a launch template. AWS supports this fully via
+  `RequestLaunchTemplateData.BlockDeviceMappings` -- confirmed against
+  the SDK, 2026-07-20 -- but the current template model deliberately
+  excludes it (DESIGN.md, "Launch Templates," curated field set), and
+  the plain instance-launch wizard (Features 2/3) doesn't set
+  `BlockDeviceMappings` either, so every instance clasm launches today
+  just inherits the source AMI's default EBS config. Anticipated need:
+  launch templates are expected to become the way development EC2
+  instances get spun up, and instance type/CPU/RAM/storage will likely
+  need refining over time based on cost -- not urgent yet, but flagged
+  so it isn't lost.
 

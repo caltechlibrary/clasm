@@ -4,6 +4,177 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-20 — Launch templates: build directly from cloud-init YAML, diff-then-new-version sync, fold in IMDSv2
+
+**Context.** Requested directly (`notes-from-tom.txt`) and confirmed as
+v0.0.2's headline feature, 2026-07-20 -- clasm's Compute domain
+currently has no concept of EC2 launch templates at all, and the
+operator's work group uses them to encapsulate what a running instance
+needs (RDM's software requirements, primarily), evolving that
+definition over time as requirements change. TODO.md separately carried
+an IMDSv2 bug (new instances launched by clasm set no
+`MetadataOptions`, triggering security warnings) that turned out to
+share the exact same AWS concept as the new work.
+
+**Decision.** Build launch templates directly from cloud-init YAML,
+never derived from an existing running instance: `CreateLaunchTemplate`/
+`CreateLaunchTemplateVersion` take a `LaunchTemplateData` struct
+constructed by clasm itself (reusing Feature 3's existing AMI/
+instance-type/subnet/security-group/IAM-profile/tag prompts, with the
+YAML's content as `UserData`), not `GetLaunchTemplateData`'s
+instance-derived path. New template versions are created only after a
+diff: decode the target version's `UserData`, compare against the
+local YAML file, skip entirely if identical ("no changes -- nothing to
+sync"), otherwise show a plain-text unified diff and require explicit
+confirmation before `CreateLaunchTemplateVersion`. Promoting a version
+to `$Default` is always a separate, explicit action
+(`ModifyLaunchTemplate`), never a side effect of syncing. "Create EC2
+Instance from Launch Template" is a third, parallel entry point
+alongside Create-from-AMI and Create-from-Cloud-Init -- not a hybrid
+wizard that also lets the operator override individual template
+fields. IMDSv2 (`HttpTokens: required`) is folded into this same pass:
+enforced unconditionally on every new template and on the existing
+plain `RunInstances` launch paths (closing the pre-existing TODO.md
+bug), and flagged passively (not auto-fixed) on any existing template
+found without it.
+
+**Rationale.**
+- The operator has never used launch templates before and, in an
+  earlier round of this design conversation, initially framed the
+  sync question as "which YAML file is this template tied to" --
+  clarified directly to "is there a mechanism to create a template
+  without an existing instance," confirming the build-from-YAML-
+  directly model rather than a persistent file↔template association
+  clasm would need to track as new state.
+- Diff-before-version avoids the AWS default of tools that always bump
+  a version number regardless of content -- Tom's own framing of "does
+  this actually require a new version" is exactly this no-op check,
+  and it keeps a template's version history meaningful (one version
+  per actual content change) rather than accumulating no-op versions
+  from repeated syncs of unchanged YAML.
+- Explicit promote-to-default (never automatic) matches the operator's
+  own stated expectation: "I can see people experimenting with launch
+  templates during the development process" -- an in-progress sync
+  shouldn't change what a plain "Create from Launch Template" launch
+  picks up by default.
+- Folding IMDSv2 into this pass rather than deferring it with the
+  tags-screen/backup-bucket-default/top-level-tag-management items
+  (also open in TODO.md) is justified narrowly by shared surface area
+  (`MetadataOptions`/`InstanceMetadataOptionsRequest` touches the same
+  `RunInstances`/`RequestLaunchTemplateData` code this phase already
+  changes) -- not a general precedent for bundling unrelated bug fixes
+  into feature work.
+- The plain-text diff (`github.com/aymanbagabas/go-udiff`, already
+  present in `go.sum` as an indirect dependency via
+  `charmbracelet/x/exp/teatest`, used by `internal/filemanager`'s own
+  tests) means no new third-party dependency is actually introduced --
+  only promoted from indirect to direct, the same move Phase 20.24
+  already made for `x/ansi`.
+
+**Rejected alternatives.**
+- *Derive templates from an existing instance's live config*
+  (`GetLaunchTemplateData`) -- doesn't fit the operator's actual flow
+  (YAML authored first, template built from it), and would require an
+  instance to already exist before a template could, backwards from
+  "create a template without an existing EC2 instance."
+- *Always create a new version on sync, no diff check* -- simpler, but
+  produces meaningless version history (every sync bumps a version
+  even with no actual content change) and doesn't answer Tom's own
+  question about whether a sync is even needed.
+- *Auto-promote a new version to default after sync* -- more
+  convenient, but means an unreviewed, possibly-experimental version
+  silently becomes what the next plain launch picks up.
+- *Hybrid "launch from template but override individual fields"
+  wizard* -- an earlier framing in this same design conversation,
+  dropped once the operator clarified the actual ask was a third
+  parallel entry point, matching Create-from-AMI/Create-from-Cloud-
+  Init's existing shape.
+- *A dedicated "audit all templates for IMDSv2" action* -- more
+  visible, but more to build than the operator actually asked for
+  ("recommended for existing templates if missing"); passive flagging
+  on the existing Show/List screens covers that without a new
+  top-level action.
+- *Defer IMDSv2 alongside the tags-screen/backup-bucket-default/
+  top-level-tag-management items* -- considered, since those are also
+  open TODO.md items being deliberately deferred past this phase, but
+  rejected specifically because IMDSv2's `MetadataOptions` surface
+  overlaps directly with code this phase already touches, unlike the
+  other three.
+
+**Consequences.** New `internal/inventory.LaunchTemplate` type and
+per-version detail type; `EC2API` gains 7 methods; six new Compute-menu
+actions; `github.com/aymanbagabas/go-udiff` promoted to a direct
+dependency; `launch_execute.go`'s `RunInstances` call gains
+`MetadataOptions` (previously absent). No change to any existing
+v0.0.1 workflow's behavior otherwise -- v0.0.1 is already piloting in
+production, so this is additive. See `PLAN.md` Phase 20.27.
+
+---
+
+## 2026-07-20 — Full-height Menu tier via live WindowSizeMsg tracking, applied at every depth
+
+**Context.** Phase 20.24 (2026-07-13) cleared the screen at startup but
+deliberately left the "full height" half of that request unimplemented
+-- the domain picker (and every Menu-tier `huh.Select`) stayed a
+compact, content-sized box, pending clarification of what "full
+height" meant for a component with no built-in notion of it. Clarified
+directly, 2026-07-20: the wrapping TUI chrome should carry a real
+terminal height, driving how many rows the `huh.Select` shows; when a
+menu has fewer options than that, the chrome should still indicate the
+full screen rather than shrinking to content.
+
+**Decision.** Use `huh.Select.Height(n)`/`huh.Form.WithHeight(n)`
+directly -- confirmed by reading `huh` v1.0.0's source rather than
+assumed: it already subtracts title/description height before sizing
+the options viewport, and renders through `lipgloss.Style.Height`,
+which pads short content with blank lines to reach `n`. Get `n` by
+intercepting `tea.WindowSizeMsg` live (the same pattern
+`internal/tui/picker.go`/`listview.go` already use for the Picker/List
+tier) rather than a one-shot `x/term.GetSize` read before the form
+starts, so a mid-session terminal resize is picked up the same way it
+already is everywhere else in the app. Apply this at `runMenuField`,
+the single shared entry point every Menu-tier `huh.Select` already
+runs through -- so the root domain picker and every submenu (S3, EC2,
+Key Management) become full-height together, not just the root picker
+alone.
+
+**Rationale.**
+- huh's own `WindowSizeMsg` handling only shrinks a group to fit
+  (`min(neededHeight, msg.Height)`) when `f.height == 0`; it never
+  grows short content to fill unused space, so `WithHeight` must be
+  called explicitly with a real value -- there's no simpler built-in
+  toggle for this.
+- Live tracking via `WindowSizeMsg` reuses an already-proven pattern in
+  this codebase instead of introducing a second, weaker mechanism
+  (`x/term.GetSize`) that would go stale on resize.
+- Fixing this once in `runMenuField` avoids the exact inconsistency
+  Phase 20.24 refused to introduce: only the root picker being
+  full-height while every submenu stayed compact, undoing the
+  chrome-consistency work of Phases 20.17-20.25.
+
+**Rejected alternatives.**
+- *One-shot `x/term.GetSize` before `Run()`* -- simpler, but blind to a
+  terminal resize mid-menu, unlike every other screen in the app.
+- *Full-height only at the root domain picker* -- explicitly the
+  option Phase 20.24 already declined, for the inconsistency reason
+  above.
+- *Redesign the whole Menu tier onto a full-height bubbletea component,
+  retiring `huh.Select` for navigation menus* -- the "bigger
+  alternative" flagged in the 2026-07-14 hand-off as unscoped; not
+  needed now that `huh.Select.Height`/`Form.WithHeight` turned out to
+  already support this directly.
+
+**Consequences.** `runMenuField`'s `quitKeyGuard` wrapper (currently
+used only to guard the Quit keybinding while a field is filtering)
+gains `WindowSizeMsg` interception and is extended to wrap the
+non-filtering `form.Run()` path too, so both paths go through one
+`tea.Model`. The `"(q to go back)"` hint `runMenuField` prints outside
+the form's own box must be accounted for in the reserved-line budget
+passed to `WithHeight`, or combined output overflows the terminal by
+one line. See `PLAN.md` Phase 20.26.
+
+---
+
 ## 2026-07-13 — Bucket picker for Backup Archive & Trim
 
 **Context.** Backup Archive & Trim's S3 bucket prompt was pure free

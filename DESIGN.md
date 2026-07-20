@@ -722,6 +722,280 @@ balanced padding replacing the old single-side clearance — see
 `DECISIONS.md`, "huh fields get a full box border to match tui's
 chrome."
 
+## Full-height Menu Tier (Design Addendum, 2026-07-20)
+
+**Status: designed 2026-07-20.** Resolves the "full height" half of
+Phase 20.24's deferred request (see that phase's own note and
+`continue_next_time.txt`, 2026-07-14 hand-off), which was deliberately
+left unimplemented pending clarification of what "full height" meant
+for the huh-based Menu tier. Clarified directly: the wrapping chrome
+should carry a real terminal height, and every Menu-tier `huh.Select`
+should be told how many rows it has to work with — not just the root
+domain picker.
+
+**Mechanism.** `huh.Select.Height(n)` (and the equivalent
+`huh.Form.WithHeight(n)`, which cascades to every field in a group)
+already does exactly this — confirmed by reading `huh` v1.0.0's source,
+not assumed: `updateViewportHeight` (`field_select.go`) subtracts the
+title/description lines from `n` before sizing the options viewport,
+floored at huh's own `minHeight`; `Select.View()` then renders through
+`lipgloss.Style.Base.Height(s.height)`, and lipgloss's `Style.Height`
+pads short content with blank lines to reach that height. So a 3-item
+menu given `Height(24)` still renders as a 24-line box — the wrapping
+chrome stays full-height even when a menu has far fewer than 24
+options, matching every List/Picker-tier screen's existing behavior.
+
+**Why this isn't automatic today.** Every Menu-tier `huh.Form` already
+receives `tea.WindowSizeMsg` (bubbletea always sends one at startup,
+and again on resize except on Windows) whether it runs via the plain
+`form.Run()` path or `runMenuField`'s `quitKeyGuard`-wrapped
+`tea.NewProgram(guard).Run()` path (filterable fields). But
+`huh.Form.Update`'s own `WindowSizeMsg` handling (`form.go:533-554`)
+only *shrinks* a group to `min(neededHeight, msg.Height)`, and only
+when `f.height == 0` (i.e., nothing has called `WithHeight` yet) — it
+never grows short content to fill unused space. Reaching full height
+requires explicitly calling `WithHeight` with the real terminal height.
+
+**Live tracking, not a one-shot read.** Rather than reading the
+terminal size once via `x/term.GetSize` before constructing the form
+(simple, but blind to a resize mid-menu), the Menu tier intercepts
+`tea.WindowSizeMsg` itself and calls `WithHeight` on every resize — the
+same pattern `internal/tui/picker.go` and `listview.go` already use for
+the Picker/List tier, so the Menu tier gains the identical live-resize
+behavior instead of a second, weaker mechanism. `runMenuField`'s
+existing `quitKeyGuard` wrapper (used today only for the filterable-
+field path, to guard the Quit keybinding while filtering) is the
+natural place to add this interception — it already wraps `*huh.Form`
+in a custom `tea.Model`. The plain `form.Run()` path (used by
+non-filterable Menu-tier selects today) has no such wrapper at all;
+this addendum extends the same wrapper to that path too, so both go
+through one `tea.Model` that both guards the quit key (when filtering)
+and maintains full-height sizing (always), rather than diverging by
+field type.
+
+**Scope: every Menu-tier `huh.Select`, not just the root domain
+picker.** Phase 20.24 explicitly declined to make only the root picker
+full-height, reasoning that it would look inconsistent with every
+Menu-tier screen one level deeper (S3/EC2/Key Management submenus),
+undoing the chrome-consistency work of Phases 20.17-20.25. Since
+`runMenuField` is the single shared entry point every Menu-tier
+`huh.Select` already runs through (`menu.go`, `s3_menu.go`,
+`keymgmt_menu.go`, `domain_menu.go`'s `pickString`/`pickComparable`),
+fixing it there gets every depth for free — no per-call-site change.
+
+**Reserved chrome.** `runMenuField` prints its `"(q to go back)"` hint
+via a plain `fmt.Fprintln(w, hint)` *before* the form runs, outside the
+form's own bordered box — a line of chrome the form's height budget
+doesn't otherwise know about. Whatever height gets passed to
+`WithHeight` must reserve for this hint line (and the box's own
+top/bottom border, already accounted for by `tui.Theme()`'s border
+padding), or the combined output ends up one line taller than the
+terminal.
+
+**Not decided yet:** the exact reserved-line count (depends on how
+`tui.Theme()`'s border/padding interacts with `huh`'s own
+`titleFooterHeight`), and whether `runMenuField`'s non-filtering
+`form.Run()` callers need any interface change to accept the new
+wrapper. Left for the implementation plan, not this addendum.
+
+## Launch Templates (Design Addendum, 2026-07-20)
+
+**Status: designed 2026-07-20, targeted for v0.0.2 alongside the IMDSv2
+fix below.** v0.0.1 is already piloting in production (unreleased --
+no git tag yet, `version.go` still reads 0.0.1 -- but in active use),
+so this is additive: new Compute-domain menu entries and a new EC2
+client surface, no change to any existing v0.0.1 workflow's behavior.
+Directly requested (notes-from-tom.txt) and confirmed as v0.0.2's
+headline feature. Folds in the IMDSv2 bug (TODO.md, Bugs) as one design
+pass, since both touch the same `MetadataOptions` concept. The
+tags-screen fix, backup-bucket-default, and top-level cross-resource
+tag management (TODO.md's other open items) are deliberately **out of
+scope here** -- v0.0.2 material, but their own design pass.
+
+**The operator's actual flow** (clarified directly, not assumed): a
+cloud-init YAML file is authored first; it gets applied to create a
+launch template, which "more fully encapsulates" what a running
+instance needs (RDM's software requirements, primarily). Over time the
+YAML changes (e.g. RDM adds a new dependency) and that change is
+applied as a **new version** of the existing template -- never an
+in-place edit, matching the operator's own framing of "new template
+version" as the upgrade unit. `CreateLaunchTemplate`/
+`CreateLaunchTemplateVersion` fit this directly: both take a
+`LaunchTemplateData`/`RequestLaunchTemplateData` struct (AMI, instance
+type, subnet, security groups, IAM instance profile, tags, `UserData`,
+`MetadataOptions`, ...) constructed directly by the caller -- there is
+no dependency on an existing EC2 instance (that's a different, unused
+API: `GetLaunchTemplateData` *derives* a template from a running
+instance's live config, which is not this flow). So "cloud-init YAML →
+new template" and "cloud-init YAML → new version of an existing
+template" are both just a template-data struct built from the same
+AMI/instance-type/subnet/security-group/IAM-profile/tag prompts
+Feature 3 already collects, with the YAML's content (base64-encoded)
+as `UserData`.
+
+**New EC2 client surface.** `internal/awsclient/ec2.go`'s `EC2API`
+interface (currently ~20 methods, one line per SDK call, no
+per-feature narrowing) gains: `CreateLaunchTemplate`,
+`CreateLaunchTemplateVersion`, `DescribeLaunchTemplates`,
+`DescribeLaunchTemplateVersions`, `ModifyLaunchTemplate` (sets which
+version number `$Default` points to, via its `DefaultVersion *string`
+field), `DeleteLaunchTemplate`, `DeleteLaunchTemplateVersions` --
+mirrored into `logging_ec2.go`'s wrapper, matching how every existing
+EC2 call is already logged.
+
+**Data model.** A new `internal/inventory.LaunchTemplate` (list-tier,
+one row per template, aggregated across regions like `Image`/`Instance`
+already are): `TemplateID`, `Name`, `DefaultVersion`, `LatestVersion`,
+`Region`, `Project`, `Environment` (from `DescribeLaunchTemplates`,
+whose tags come back the same `[]types.Tag` shape `Image`/`Instance`
+already decode). A separate per-version detail type (returned by
+`DescribeLaunchTemplateVersions` for one template) carries the fields
+actually shown/edited: version number, create date, AMI, instance
+type, IAM instance profile, security groups, subnet, tags, and
+`MetadataOptions` (below). Deliberately **not** modeling the rest of
+`RequestLaunchTemplateData`'s much larger surface (block device
+mappings, network interfaces, capacity reservations, CPU options, ...)
+-- out of scope, matching this project's existing preference for a
+curated field set over the full AWS struct (the same restraint
+`Image`/`Instance` already apply).
+
+**Two distinct SDK types for "IMDSv2 required," not one.** AWS uses
+`types.HttpTokensState`/`HttpTokensStateRequired` for a plain
+`RunInstances`/`ModifyInstanceMetadataOptions` call, but a *different*
+type, `types.LaunchTemplateHttpTokensState`/
+`LaunchTemplateHttpTokensStateRequired`, inside a template's
+`LaunchTemplateInstanceMetadataOptionsRequest` -- confirmed by reading
+the SDK's `enums.go`, not assumed. Both get set going forward (see
+"IMDSv2 enforcement" below); implementation needs to use the right one
+in each of the two call sites rather than assuming one type covers
+both.
+
+### New Compute-domain menu entries
+
+Peer entries alongside the existing ones (`menu.go`'s `mainMenuItems`),
+not nested under a new sub-menu -- matching how Create-from-AMI and
+Create-from-Cloud-Init already sit side by side rather than behind a
+"Create" sub-picker:
+
+- **Create EC2 Instance from Launch Template** -- a third way to
+  create an instance, alongside Feature 2 (from AMI) and Feature 3
+  (from cloud-init YAML). Pick a template, then a version: the prompt
+  pre-fills `$Default` (matching Backup Archive & Trim's own
+  recalled-but-overridable default convention, DECISIONS.md "Recall
+  Backup Archive & Trim's instance/directory choices per-instance") but
+  stays editable to an explicit version number or `$Latest` before the
+  launch executes. Collects nothing else -- the template supplies
+  every other launch parameter; this is deliberately not a hybrid
+  "template plus override individual fields" wizard, since that was
+  the earlier design-conversation confusion (A3) the operator
+  explicitly resolved: it's just another way to create an instance,
+  parallel in shape to Features 2 and 3, not a variant of either.
+- **List Launch Templates** -- folds into the existing "Show resource
+  lists" List-tier display as a new resource type, alongside
+  instances/AMIs, not a separate top-level action.
+- **Show Launch Template** -- pick a template, pick a version (default
+  pre-selected), display the curated detail fields above. Modeled on
+  the existing AMI summary display (the same modest field set
+  `Image`/AMI-related screens already show: ID, name, creation
+  date/version, region, tags) plus `MetadataOptions`, shown explicitly
+  because it's the field the IMDSv2 work below cares about. If
+  `HttpTokens` isn't `required`, the display flags it right there
+  (passive -- no separate audit action; the operator asked for
+  "recommended for existing templates if missing," not a dedicated
+  scan).
+- **Create Launch Template from Cloud-Init YAML** -- collects a YAML
+  file path (identical prompt to Feature 3, including reading from a
+  file only, never inline text) plus the same AMI/instance-type/
+  subnet/security-group/IAM-profile/tag prompts Feature 3 already
+  asks, then `CreateLaunchTemplate` (which implicitly creates version
+  1). `MetadataOptions` is set to required unconditionally -- not a
+  prompt, since this is a security default, not an operator choice
+  (mirrors IMDSv2 enforcement below).
+- **Sync Cloud-Init YAML to a Template** -- pick an existing template,
+  pick a YAML file, and:
+  1. Fetch the version to compare against (the version the operator
+     picks -- normally `$Default`), decode its `UserData`.
+  2. Compare the decoded text against the local YAML file's content.
+     If identical, report "no changes -- nothing to sync" and stop; no
+     version is created. This is the no-op detection the operator
+     asked for (A10) -- Tom's own framing of "does this actually
+     require a new version" before bumping one.
+  3. If different, render a plain-text unified diff (A8: start simple)
+     via `github.com/aymanbagabas/go-udiff`'s `Unified(oldLabel,
+     newLabel, old, new string) string` -- already present in
+     `go.sum` as an *indirect* dependency (pulled in transitively via
+     `charmbracelet/x/exp/teatest`, used by `internal/filemanager`'s
+     own tests), so this promotes it from indirect to direct rather
+     than introducing a new one -- the same move Phase 20.24 already
+     made for `x/ansi`.
+  4. Show the diff, require explicit confirmation, then
+     `CreateLaunchTemplateVersion` with the new `UserData`.
+  5. **Never** auto-promotes the new version to default (A9) -- that's
+     always the separate action below. The operator specifically
+     expects to experiment with in-progress template versions during
+     development without accidentally changing what a plain
+     "Create from Launch Template" launch picks up by default.
+- **Promote Launch Template Version to Default** -- `ModifyLaunchTemplate`
+  with `DefaultVersion` set to the chosen version number. Its own
+  explicit action, never a side effect of Sync.
+- **Delete Launch Template Version(s)** -- prune specific stale
+  versions (`DeleteLaunchTemplateVersions`) without touching the whole
+  template -- "so no one accidentally chooses them" (A5), e.g. an
+  abandoned experimental version from mid-development.
+- **Delete Launch Template** -- removes the whole template
+  (`DeleteLaunchTemplate`), for when the software system it was built
+  for is retired entirely. Both deletion actions go through the same
+  safety-first shape Feature 9 (Remove AMI) already established: show
+  what would be deleted, an explicit extra warning if the template (or
+  the version, for a single-version prune) is tagged
+  `Environment=production`, then type-to-confirm.
+
+### Tagging and safety-gate parity (A6)
+
+`types.ResourceTypeLaunchTemplate` exists in the SDK, so
+`CreateLaunchTemplate`'s own `TagSpecifications` field can reuse
+`launch_execute.go`'s existing `buildTagSpecification(resourceType,
+tags)` unchanged -- it already takes a `types.ResourceType` parameter,
+not one hardcoded to instances. The Project/Environment convention
+(Feature 12) and the `Environment=production` confirmation gate
+(Feature 9's pattern) both extend to launch templates exactly as
+described above.
+
+### IMDSv2 enforcement (closes the TODO.md bug, extends to templates)
+
+Three call sites, all going to `required` going forward, none of them
+a prompt (this is a security default, not an operator choice, per the
+operator's own framing: "we want to follow security recommendations by
+default"):
+
+1. **Plain `RunInstances`** (Features 2 and 3, `launch_execute.go`) --
+   currently sets no `MetadataOptions` at all (confirmed by reading
+   `launch_execute.go:51-60` -- the original TODO.md bug). Gains
+   `MetadataOptions: &types.InstanceMetadataOptionsRequest{HttpTokens:
+   types.HttpTokensStateRequired}`.
+2. **Every new launch template** (`CreateLaunchTemplate`) -- its
+   `RequestLaunchTemplateData.MetadataOptions` gets
+   `types.LaunchTemplateInstanceMetadataOptionsRequest{HttpTokens:
+   types.LaunchTemplateHttpTokensStateRequired}` unconditionally.
+3. **Existing templates missing it** -- flagged passively in Show
+   Launch Template / List Launch Templates (above), not auto-fixed --
+   changing an existing template's `MetadataOptions` is a new version,
+   same as any other template change, and shouldn't happen silently
+   behind an operator's back.
+
+### Not decided yet
+
+Left for the implementation plan: the exact curated field list for the
+per-version detail type (beyond the fields named above); whether
+`ModifyLaunchTemplateVersion`'s description-setting capability (a
+per-version free-text label, separate from the `UserData` itself) is
+worth surfacing; and test coverage shape for the diff/no-op-detection
+path (`go-udiff`'s own test suite covers the algorithm itself -- this
+project's tests need to cover the identical-content-skips-a-version
+and different-content-shows-a-diff-then-creates-a-version branches,
+via the same accessible-mode pipe-testing convention every other
+Menu-tier workflow already uses).
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)
