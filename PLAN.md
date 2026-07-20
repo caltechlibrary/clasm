@@ -3389,6 +3389,176 @@ change in this project has needed).
 
 **Dependency:** Phase 20.27.
 
+## Phase 20.29 — Manage Tags: Loop Until 'q', Show Tags Choice
+
+**Status: implemented and unit-tested 2026-07-20** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean; `gofmt -l` clean except
+the pre-existing, unrelated `version.go`); not yet re-verified against
+real AWS. Closes the TODO.md bug: "missing a 'show tags' menu option
+and the tags shown at the top of the screen don't update on change."
+Implements `DECISIONS.md`, "Manage Tags: loop until 'q', always show
+current tags, add a Show tags choice."
+
+### Work Items
+
+- [x] `manageTagsForResource` restructured into a loop (display current
+      tags -> pick an action -> act -> loop) instead of one change then
+      exit. Tags are re-displayed at the top of every iteration from a
+      fresh fetch (a new `fetchTags` closure, built per-kind in
+      `manageTags` and threaded through), not the original snapshot --
+      this is the actual fix for "tags shown don't update on change."
+- [x] "Show tags" added as a fourth action alongside Add/Update/Remove
+      -- deliberately a near no-op (just loops back to the redisplay
+      every iteration already does), present because the operator
+      asked for it by name.
+- [x] Extracted `applyOneTagChange` (collect + confirm + apply one
+      Add/Update/Remove) out of the loop body, so it's directly
+      unit-testable on its own without driving the loop at all.
+- [x] `isCancellation` extracted from `cancelledIsNil`'s existing check
+      and widened to include `io.EOF`, matching `menu.go`'s own
+      `isExitSignal` (which already included it) -- brings two
+      similar-but-inconsistent "did the operator cancel" checks in this
+      package in line with each other.
+- [x] **A real testing gotcha, worth recording for future looping
+      workflows in this package:** huh's own accessible-mode `Select`
+      has no way to signal "the input is exhausted" as an error.
+      Confirmed by reading `internal/accessibility.PromptString` (huh
+      v1.0.0) -- on `scanner.Scan()` returning false (EOF), it silently
+      falls back to the field's default value (here, option 1) and
+      returns nil, it does not propagate `io.EOF`. A first attempt at
+      this loop relied on running out of scripted test input to end it
+      (matching this package's usual `cancelledIsNil` convention) and
+      instead span forever silently re-selecting "Show tags" and
+      reconstructing `huh.Form`s -- confirmed via `go test -timeout` and
+      a goroutine dump, not assumed. Fixed by adding a `ctx.Err()` check
+      at the top of the loop (matching `runMainMenu`'s own convention in
+      `menu.go`) and having tests cancel `ctx` explicitly at the exact
+      point they want the loop to stop -- the same `cancelingAction`
+      pattern `menu_test.go` already uses for `RunMainMenu`'s own loop,
+      adapted here to trigger from a data-fetch closure
+      (`cancelAfterNFetches`) instead of a dispatched menu action.
+
+**Tests:** `TestManageTags_AddOnInstance`/`_UpdateOnAMI`/`_RemoveOnInstance`/
+`_EnvironmentNoteShown`/`_DeclinedConfirmationDoesNotApply`/
+`_NoExistingTagsToUpdate`/`_RejectsBlankTagKeyOnAdd` now call
+`applyOneTagChange` directly (simpler, and sidesteps the EOF gotcha
+entirely since there's no loop involved). `TestManageTags_ShowTagsRedisplaysAndContinues`
+and `TestManageTags_LoopRefreshesTagsAfterChange` exercise the actual
+loop via `manageTagsForResource`, using `cancelAfterNFetches` to end it
+deterministically -- the latter is the actual bug-fix proof: it Adds a
+tag, then immediately Updates it, which only succeeds if the loop
+refreshed tags from AWS in between (via a new `statefulTagsFakeEC2Client`
+that, unlike the shared `fakeEC2Client`, actually tracks tag state
+across `CreateTags`/`DescribeInstances` calls).
+
+**Files:** `internal/workflow/manage_tags.go`,
+`internal/workflow/manage_tags_test.go`.
+
+**Dependency:** None.
+
+---
+
+## Phase 20.30 — Tag Management Domain
+
+**Status: designed 2026-07-20, not yet implemented.** Implements
+`DESIGN.md`, "Tag Management Domain (Design Addendum, 2026-07-20)" and
+`DECISIONS.md`, "Tag Management: a fourth domain, generalizing the
+Manage Tags loop across five resource types." Closes the TODO.md
+requested feature: "A top level menu item for managing tags across
+resources (EC2, AMI, S3, etc)." Depends on Phase 20.29's loop/
+`applyOneTagChange` shape already existing.
+
+**Effort:** Large (comparable to Phase 20.27, Launch Templates -- a new
+domain, five resource-type integrations, a generalized loop, a new
+picker, a new per-type listing).
+
+**Priority:** Requested feature, not a bug fix; no committed deadline.
+
+### Work Items
+
+- [ ] Add a fourth `domainItems`/`DomainActions` entry, "Tag
+      Management" (display name still open -- see DESIGN.md's "Not
+      decided yet" note), alongside Compute/Key Management/S3. Wire a
+      `refresh` for this domain that fetches all five taggable resource
+      types across all regions, matching the other three domains'
+      convention.
+- [ ] Generalize `applyOneTagChange` (currently EC2-only, hardcoded to
+      `ApplyTagChange`'s `CreateTags`/`DeleteTags`) to also take a
+      pluggable *apply* closure alongside the `fetchTags` closure it
+      already takes. Existing Compute-entry-point callers (Phase 20.29)
+      pass the EC2 apply closure; the new Tag Management domain passes
+      either the EC2 closure (Instance/AMI/Launch Template/Key Pair) or
+      a new S3 one (Bucket).
+- [ ] New `pickKeyPair` (Picker tier), matching
+      `pickInstance`/`pickImage`/`pickLaunchTemplate`/`pickBucket`'s
+      existing shape.
+- [ ] Wire launch template and key pair tag editing through the
+      generalized loop -- both use the existing generic EC2
+      `CreateTags`/`DeleteTags` API (same as Instance/AMI already do),
+      so this is new wiring, not new AWS capability. Launch template
+      tags target the template resource's own live tags, not a
+      version's baked-in `TagSpecifications` (that's Sync's concern,
+      Phase 20.27/20.28).
+- [ ] New S3 bucket tag fetch/apply closures implementing transparent
+      read-modify-write: fetch the bucket's full tag set
+      (`GetBucketTagging`), change one entry, `PutBucketTagging` the
+      whole set back. Scoped to add/update/remove only for this phase.
+- [ ] "Show all tags" action: reuse the same resource-type picker, then
+      for the chosen type render a List-tier table of every resource of
+      that type with a flattened "Tags" column showing every key=value
+      pair (not just Project/Environment). For the four EC2-backed
+      types, decode the full tag map from data the existing Describe
+      calls already return (via `tagsToMap`, already used by
+      `fetchInstanceTags`/`fetchImageTags` in `manage_tags.go`) --
+      requires adding a `Tags map[string]string` field to the relevant
+      `internal/inventory` structs (`Instance`, `Image`,
+      `LaunchTemplate`, `KeyPair`), populated for free from the same
+      response already being decoded, no new AWS call. For S3 Bucket,
+      add a dedicated on-demand fetch (one `GetBucketTagging` call per
+      bucket) used only by this action -- deliberately NOT baked into
+      the shared `ListBuckets`, since that would add N extra network
+      calls to every other S3 screen that doesn't need tags.
+      Deliberately five separate type-scoped listings, not one combined
+      table across all five types (see DECISIONS.md rejected
+      alternatives -- no shared row shape, arbitrary tag key sets).
+- [ ] `cmd/clasm/main.go`: wire the new domain's `refresh` and actions
+      into `state`/`MenuActions`-equivalent, matching how Launch
+      Templates were wired in Phase 20.27.
+- [ ] `internal/ui/display.go`: add a List-tier config for the "Show all
+      tags" per-type listing (or reuse/extend existing
+      `*ListViewConfig` values with a Tags column).
+
+### Tests
+
+- Unit tests for the generalized `applyOneTagChange` covering both the
+  EC2 apply closure (regression -- existing Phase 20.29 tests must
+  still pass unchanged) and the new S3 read-modify-write apply closure
+  (Add/Update/Remove against a fake S3 client that tracks
+  `GetBucketTagging`/`PutBucketTagging` state, mirroring
+  `statefulTagsFakeEC2Client`'s approach).
+- `pickKeyPair` Picker-tier test, matching existing picker tests'
+  shape.
+- Launch template and key pair tag editing tests via the generalized
+  loop (Add/Update/Remove/Show tags), reusing Phase 20.29's
+  `cancelAfterNFetches` pattern for loop termination in tests (the
+  huh-EOF gotcha applies here too).
+- "Show all tags" tests per resource type: EC2-backed types assert the
+  full tag map decodes correctly from a Describe response with
+  multiple tags; S3 asserts one `GetBucketTagging` call per bucket and
+  correct flattening into the table.
+
+**Files:** `internal/workflow/domain_menu.go` (or wherever
+`DomainActions`/`domainItems` live), a new
+`internal/workflow/tag_management.go` (domain entry point + resource-
+type picker + "Show all tags"), `internal/workflow/manage_tags.go`
+(generalize `applyOneTagChange`), `internal/workflow/pick_key_pair.go`
+(or added to the existing picker file), `internal/inventory/*.go`
+(add `Tags` fields to `Instance`/`Image`/`LaunchTemplate`/`KeyPair`),
+`internal/ui/display.go`, `cmd/clasm/main.go`, plus corresponding
+`_test.go` files.
+
+**Dependency:** Phase 20.29 (Manage Tags loop/`applyOneTagChange`).
+
 ---
 
 ## Phase 21 — CloudFront Domain

@@ -4,6 +4,192 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-20 — Tag Management: a fourth domain, generalizing the Manage Tags loop across five resource types
+
+**Context.** Requested directly (`notes-from-tom.txt`, TODO.md: "a top
+level menu item for managing tags across resources (EC2, AMI, S3,
+etc)"), explicitly alongside keeping the existing per-resource entry
+points ("continue to support tag management at the point we are
+working with individual resources"). Phase 20.29 (Manage Tags: loop
+until 'q', Show tags choice, refresh-after-change) is unaffected and
+stays scoped to Compute's Instance/AMI entry point.
+
+**Decision.**
+- A fourth `DomainActions`/`domainItems` entry, "Tag Management,"
+  alongside Compute/Key Management/S3 -- not a menu item nested in any
+  one of them, since it's the only screen that needs to reach across
+  all three existing domains' resources. Runs its own `refresh`
+  (fetching all five taggable resource types, across all regions) on
+  every entry, matching the other three domains' convention exactly.
+- **Five resource types in v1:** EC2 Instance, AMI, Launch Template,
+  Key Pair, S3 Bucket -- confirmed against the actual AWS APIs, not
+  assumed: the first four via the generic `ec2:CreateTags`/`DeleteTags`
+  (already working for Instance/AMI; new wiring for Launch
+  Template/Key Pair, though the API itself is identical); S3 Bucket via
+  the different `s3:GetBucketTagging`/`PutBucketTagging` shape.
+- **Launch template tags target the template resource's own tags**
+  (live, no new version needed) -- not the `TagSpecifications` baked
+  into a version's `UserData` for instances launched from it, which is
+  a version-creation concept Sync already covers (Phase 20.27/20.28).
+- **S3 bucket Add/Update/Remove is a transparent read-modify-write**:
+  fetch the bucket's current full tag set (`GetBucketTagging`), change
+  one entry, `PutBucketTagging` the whole set back -- necessary because
+  `PutBucketTagging` replaces the entire set, it has no fine-grained
+  add/remove-one-tag call the way EC2's `CreateTags`/`DeleteTags` do.
+  The operator still experiences "add/update/remove one tag," same as
+  every other resource type; the read-modify-write is invisible.
+  Accepted risk: a concurrent external change to the bucket's tags
+  could be silently overwritten, consistent with this tool not doing
+  concurrency control anywhere else either.
+- **Key pair tags are new ground, not just new wiring**: confirmed
+  `types.KeyPairInfo` has its own `Tags` field and the generic EC2
+  tagging API applies, but clasm has never fetched, displayed, or set a
+  key pair's tags before. Scoped to add/update/remove only for this
+  phase -- extending Key Management's existing "Show resource lists"
+  display with Project/Environment columns (matching Instance/Image's
+  own convention) is a separate, smaller follow-on, not bundled in.
+- **`applyOneTagChange` (Phase 20.29) is generalized to take a
+  pluggable *apply* closure**, alongside the `fetchTags` closure it
+  already takes -- currently hardcoded to `ApplyTagChange`'s EC2-only
+  `CreateTags`/`DeleteTags` calls. The same loop/action-picker/confirm/
+  Show-tags-choice UI then serves all five resource types uniformly;
+  only the fetch/apply closures differ per kind, avoiding a second,
+  parallel tag-editing UI just for S3.
+- **"Show all tags" is scoped to one resource type at a time**, not one
+  combined table across all five: pick a resource type (same picker as
+  editing), then a List-tier table of every resource of that type with
+  a flattened "Tags" column (every key=value pair, not just
+  Project/Environment) -- the same shape as Compute's existing "Show
+  instances/AMIs/launch templates" listings. Deliberately not one table
+  spanning all five types: they don't share a natural row shape, and
+  tag *key sets* vary per resource regardless, so fixed columns don't
+  work either way -- five type-scoped listings read better than one
+  forced-together table. Costs no new AWS call for the four EC2-backed
+  types (their existing list calls already return full tags inline,
+  currently decoded down to Project/Environment only); for S3 it's one
+  `GetBucketTagging` call per bucket, generalizing `bucketPurpose`'s
+  existing single-tag-filtered pattern.
+
+**Rationale.**
+- Reusing Phase 20.29's loop (rather than a new UI) is the direct
+  payoff of having just built it as a standalone, generalizable
+  function -- the alternative (a bespoke S3-tag-editing screen) would
+  duplicate the entire action-picker/confirm/loop shape for no reason.
+- Scoping "Show all tags" per-type sidesteps the cross-API-shape
+  problem entirely (raised directly: "not sure how to do this across
+  the different resource types if they use different API calls") by
+  never needing a single call/response shape that covers all five --
+  each type's own listing uses whatever API that type already needs.
+
+**Rejected alternatives.**
+- *Nest a tag-management menu item inside each existing domain*
+  (Compute gets Instance/AMI/Launch Template, S3 gets Bucket, etc.) --
+  considered opposite the "top level" framing of the actual ask, and
+  would leave no single place that spans everything; also awkward for
+  Key Management, which would need a menu entry for a resource type
+  (buckets) it has nothing to do with.
+- *One combined "all tags, all resource types" table* -- rejected for
+  "Show all tags" specifically: no natural shared row shape, and
+  arbitrary tag key sets make fixed columns unworkable regardless of
+  how many resource types are forced into one table.
+- *A compliance/audit report (which resources are missing tags
+  entirely, or missing Project/Environment specifically)* -- raised as
+  a likely future ask, explicitly deferred (TODO.md, someday/maybe): a
+  different query shape than "Show all tags" (which shows what each
+  resource *has*, not what it lacks), needing its own design pass (does
+  "missing" mean zero tags, or missing the two convention tags
+  specifically?).
+
+**Consequences.** New `domainItems` entry + `TagMgmtActions` (or
+similar) bundle; `applyOneTagChange` gains a pluggable apply closure
+alongside its existing fetch closure; new `pickKeyPair` (Picker tier,
+matching `pickInstance`/`pickImage`/`pickLaunchTemplate`); S3 bucket
+tag read-modify-write helpers; a per-type "Show all tags" List-tier
+listing, decoding full tag maps (`tagsToMap`, already used by
+`fetchInstanceTags`/`fetchImageTags`) rather than the
+Project/Environment-only fields the existing inventory structs
+currently expose. See `PLAN.md` Phase 20.30.
+
+---
+
+## 2026-07-20 — Manage Tags: loop until 'q', always show current tags, add a Show tags choice
+
+**Context.** TODO.md bug, reported directly: Manage Tags is missing a
+"show tags" menu option, and "the tags shown at the top of the screen
+don't update on change." The existing flow displayed tags once, applied
+exactly one Add/Update/Remove, and exited -- so a second look at the
+same resource's tags required leaving and re-entering the whole
+workflow, and there was no way to just look without also being forced
+into picking Add/Update/Remove.
+
+**Decision.** `manageTagsForResource` becomes a loop: display current
+tags (freshly fetched, not the original snapshot) -> pick an action
+(now four: Show tags/Add/Update/Remove) -> act -> loop, until the
+operator cancels. "Show tags" is deliberately close to a no-op (tags
+are already re-shown every iteration) -- it exists because the operator
+asked for it by name, not because the display was otherwise hidden.
+The single-change logic (`applyOneTagChange`) is extracted from the
+loop so it stays directly unit-testable on its own.
+
+**Rationale.**
+- Looping until 'q' matches this codebase's own established convention
+  for action menus (`RunMainMenu`, `RunS3Menu`, `RunKeyMgmtMenu` all
+  loop the same way) rather than introducing a one-off exception for
+  Manage Tags.
+- Re-fetching tags after every change (not reusing the pre-change
+  snapshot) is the actual content of the bug fix -- looping alone
+  wouldn't have helped if the redisplayed data was stale.
+
+**A real, non-obvious finding worth recording.** huh's own
+accessible-mode `Select` (used throughout this package's tests) cannot
+signal "the input pipe is exhausted" as an error. Confirmed by reading
+`internal/accessibility.PromptString` (huh v1.0.0) directly, not
+assumed: on `scanner.Scan()` returning false, it silently falls back to
+the field's default value and returns nil -- the package's own comment
+there says as much ("no way to bubble up errors or signal
+cancellation... but the program is probably not continuing if stdin
+sent EOF"), an assumption that doesn't hold for a *looping* workflow
+re-entering the same accessible-mode prompt more than once. A first
+attempt at this loop relied on that exhaustion to end a test (matching
+this package's usual `cancelledIsNil`/`io.EOF` convention) and instead
+spun forever, silently re-selecting "Show tags" (option 1, the
+resulting default) and reconstructing a `huh.Form` on every iteration --
+caught via `go test -timeout` plus a goroutine dump showing the loop
+"runnable" (CPU-bound in form construction), not blocked on I/O, not
+assumed from reading the code alone.
+
+**Fix for the above:** a `ctx.Err()` check at the top of the loop,
+matching `runMainMenu`'s own convention in `menu.go` -- and, unlike that
+precedent, actually load-bearing here rather than just stylistic
+consistency. Tests cancel `ctx` explicitly at the exact point they want
+the loop to end (`cancelAfterNFetches`, adapting `menu_test.go`'s own
+`cancelingAction` pattern to trigger from a data-fetch closure instead
+of a dispatched menu action), rather than relying on scripted input
+running out.
+
+**Rejected alternatives.**
+- *Keep the one-shot behavior, just refresh tags before displaying them
+  next time the operator re-enters Manage Tags* -- technically closes
+  the letter of the bug (a fresh entry would show current data) but not
+  the spirit of it: the operator's own report describes wanting to see
+  the result without leaving the screen.
+- *Rely on exhausted test input to end the loop* -- the initial
+  approach; abandoned once shown to hang indefinitely rather than
+  error, per the finding above.
+
+**Consequences.** `manageTags` now builds and threads a per-kind
+`fetchTags` closure into `manageTagsForResource`. `isCancellation`
+extracted from `cancelledIsNil`'s existing check and widened to include
+`io.EOF`, matching `isExitSignal`'s (menu.go) already-broader
+definition -- a small, harmless generalization, though not what
+actually fixed the hang (the ctx.Err() check did). New
+`statefulTagsFakeEC2Client` (manage_tags_test.go) -- unlike the shared
+`fakeEC2Client`, it actually tracks tag state across `CreateTags`/
+`DescribeInstances` calls, needed to prove the refresh-after-change
+behavior in a test. See `PLAN.md` Phase 20.29.
+
+---
+
 ## 2026-07-20 — Launch Template version history, scrollable diffs, and split Show resource lists
 
 **Context.** First real-AWS pass over Phase 20.27's launch template

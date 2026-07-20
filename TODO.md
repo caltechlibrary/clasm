@@ -3,10 +3,11 @@
 
 ## Bugs 
 
-- [ ] Each screen should fill the terminal window consistantly, still a problem in current version (commit a3c07051cf83899ca4b7dd333a55830870f183dc)
+- [x] Each screen should fill the terminal window consistantly, still a problem in current version (commit a3c07051cf83899ca4b7dd333a55830870f183dc)
   - I don't think when a new screen is written that we're actually checking the window's height. Many screens clear but then ownly draw in about 1/3 of the window height
+  - Confirmed fixed 2026-07-20 across all four TUI tiers (Menu/Picker/List/Manager) -- see TUI_REFERENCE.md
 - [x] The bahavior of the filter and picker filter needs to be uniform, right now some filters treat "q" as quick filter rather than the default huh uses (empty string), the "q" doesn't exit the whole clasm but returns to the prior screen.
-- [ ] The screen for adding, updating, and removing tags is missing a "show tags" menu option and the tags shown at the top of he screen don't update on change
+- [x] The screen for adding, updating, and removing tags is missing a "show tags" menu option and the tags shown at the top of he screen don't update on change
 - [x] When creating a new EC2 instance the IDMSv2 metadata value should be set to true per AWS Security recommendations
 
 ## Requested features
@@ -63,4 +64,16 @@
   instances get spun up, and instance type/CPU/RAM/storage will likely
   need refining over time based on cost -- not urgent yet, but flagged
   so it isn't lost.
+
+- A compliance/audit-style report across the Tag Management domain's
+  five resource types (EC2 instance, AMI, launch template, key pair, S3
+  bucket): which resources are missing tags entirely (or missing the
+  Project/Environment convention specifically). Raised 2026-07-20
+  during Tag Management's design, expected to come up again later --
+  distinct from "Show all tags" (Phase 20.30, per-resource-type,
+  showing what each resource *has*), this would be a cross-type view
+  answering "what's missing," which is a different query shape and
+  likely needs its own design pass (e.g., does "missing tags" mean zero
+  tags at all, or specifically missing Project/Environment?). Not
+  scoped or started.
 

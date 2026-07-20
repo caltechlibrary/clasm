@@ -137,6 +137,13 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 	var resourceID, resourceLabel string
 	var tags map[string]string
 	var client awsclient.EC2API
+	// fetchTags re-fetches resourceID's current tags -- captured here so
+	// manageTagsForResource's own loop (below) can refresh what it
+	// displays after every change without needing to know whether
+	// resourceID is an instance or an AMI (DECISIONS.md, "Manage Tags:
+	// loop until 'q', always show current tags, add a Show tags
+	// choice").
+	var fetchTags func(ctx context.Context) (map[string]string, error)
 
 	switch kind {
 	case "Instance":
@@ -157,6 +164,9 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 		if err != nil {
 			return err
 		}
+		fetchTags = func(ctx context.Context) (map[string]string, error) {
+			return fetchInstanceTags(ctx, client, resourceID)
+		}
 	case "AMI":
 		if len(images) == 0 {
 			fmt.Fprintln(w, "No AMIs found.")
@@ -175,9 +185,12 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 		if err != nil {
 			return err
 		}
+		fetchTags = func(ctx context.Context) (map[string]string, error) {
+			return fetchImageTags(ctx, client, resourceID)
+		}
 	}
 
-	return manageTagsForResource(ctx, w, client, resourceID, resourceLabel, tags, menuInput, menuOutput)
+	return manageTagsForResource(ctx, w, client, resourceID, resourceLabel, tags, fetchTags, menuInput, menuOutput)
 }
 
 // manageTagsForResource is manageTags' testable core for a single
@@ -186,51 +199,109 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 // full conversion punch list) that can't be driven by a test's pipe
 // input, same limitation as every other Picker-tier conversion this
 // session.
-func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC2API, resourceID, resourceLabel string, tags map[string]string, menuInput io.Reader, menuOutput io.Writer) error {
-	displayTags(w, resourceLabel, tags)
+//
+// Loops until the operator cancels ('q' on the action picker) or ctx
+// is cancelled, rather than applying one change and exiting
+// (DECISIONS.md, "Manage Tags: loop until 'q', always show current
+// tags, add a Show tags choice" -- reported directly: "the tags shown
+// at the top of the screen don't update on change"). Tags are
+// re-displayed at the top of every iteration using the latest fetch,
+// so "Show tags" as its own menu choice is deliberately a no-op beyond
+// looping back to that redisplay -- it exists because the operator
+// asked for it by name, not because the display is otherwise hidden.
+//
+// The ctx.Err() check at the top of the loop matches runMainMenu's own
+// convention (menu.go) -- and, for this function specifically, is
+// necessary, not just consistent: huh's own accessible-mode Select
+// (confirmed by reading internal/accessibility.PromptString) has no way
+// to signal "the input is exhausted" as an error -- on EOF it silently
+// defaults to the first option and returns nil, so a test can't rely on
+// running out of input to end this loop (unlike menu.go's own tests,
+// which don't loop back into a *second* accessible-mode prompt after
+// their one cancelingAction fires). Tests instead cancel ctx explicitly
+// at the point they want the loop to stop, exactly like menu_test.go's
+// cancelingAction already does for RunMainMenu's loop.
+func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC2API, resourceID, resourceLabel string, tags map[string]string, fetchTags func(ctx context.Context) (map[string]string, error), menuInput io.Reader, menuOutput io.Writer) error {
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 
-	action, err := pickString(w, "Choose an action", "The resource's current tags are listed above.", "(q to cancel)", []string{"Add", "Update", "Remove"}, menuInput, menuOutput)
-	if err != nil {
-		return cancelledIsNil(w, err)
+		displayTags(w, resourceLabel, tags)
+
+		action, err := pickString(w, "Choose an action", "The resource's current tags are listed above.", "(q to cancel)", []string{"Show tags", "Add", "Update", "Remove"}, menuInput, menuOutput)
+		if err != nil {
+			return cancelledIsNil(w, err)
+		}
+		if action == "Show tags" {
+			continue
+		}
+
+		changed, err := applyOneTagChange(ctx, w, client, resourceID, resourceLabel, action, tags, menuInput, menuOutput)
+		if err != nil {
+			if isCancellation(err) {
+				fmt.Fprintln(w, "Cancelled.")
+				continue
+			}
+			return err
+		}
+		if !changed {
+			continue
+		}
+
+		tags, err = fetchTags(ctx)
+		if err != nil {
+			return err
+		}
 	}
+}
 
+// applyOneTagChange collects and applies a single Add/Update/Remove,
+// once the operator has already chosen which -- extracted from
+// manageTagsForResource so its own loop (above) can distinguish "the
+// operator cancelled a sub-step" (continue the loop, back to the
+// action picker) from "the change actually happened" (refresh tags)
+// from "nothing to do" (no existing tags, or a declined confirmation --
+// loop with tags unchanged). Returns changed=true only after
+// ApplyTagChange itself succeeds.
+func applyOneTagChange(ctx context.Context, w io.Writer, client awsclient.EC2API, resourceID, resourceLabel, action string, tags map[string]string, menuInput io.Reader, menuOutput io.Writer) (changed bool, err error) {
 	params := TagChangeParams{ResourceID: resourceID}
 	switch action {
 	case "Add":
 		params.Action = "add"
 		params.Key, err = ui.Prompt("New tag key", ui.WithValidator(requireNonEmpty), ui.WithIO(menuInput, menuOutput))
 		if err != nil {
-			return err
+			return false, err
 		}
 		params.Value, err = ui.Prompt("New tag value", ui.WithIO(menuInput, menuOutput))
 		if err != nil {
-			return err
+			return false, err
 		}
 	case "Update":
 		params.Action = "update"
 		keys := sortedKeys(tags)
 		if len(keys) == 0 {
 			fmt.Fprintln(w, "No existing tags to update.")
-			return nil
+			return false, nil
 		}
 		params.Key, err = pickString(w, "Select a tag to update", "You'll be prompted for the new value next.", "(q to cancel)", keys, menuInput, menuOutput)
 		if err != nil {
-			return cancelledIsNil(w, err)
+			return false, err
 		}
 		params.Value, err = ui.Prompt(fmt.Sprintf("New value for %s", params.Key), ui.WithDefault(tags[params.Key]), ui.WithIO(menuInput, menuOutput))
 		if err != nil {
-			return err
+			return false, err
 		}
 	case "Remove":
 		params.Action = "remove"
 		keys := sortedKeys(tags)
 		if len(keys) == 0 {
 			fmt.Fprintln(w, "No existing tags to remove.")
-			return nil
+			return false, nil
 		}
 		params.Key, err = pickString(w, "Select a tag to remove", "This deletes the tag entirely, not just its value.", "(q to cancel)", keys, menuInput, menuOutput)
 		if err != nil {
-			return cancelledIsNil(w, err)
+			return false, err
 		}
 	}
 
@@ -240,26 +311,38 @@ func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC
 
 	ok, err := Confirm(fmt.Sprintf("%s tag %q on %s?", params.Action, params.Key, resourceLabel), WithConfirmIO(menuInput, menuOutput))
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !ok {
 		fmt.Fprintln(w, "Cancelled.")
-		return nil
+		return false, nil
 	}
 
 	if err := ApplyTagChange(ctx, client, params); err != nil {
-		return fmt.Errorf("updating tags on %s: %w", resourceID, err)
+		return false, fmt.Errorf("updating tags on %s: %w", resourceID, err)
 	}
 
 	fmt.Fprintln(w, "Tags updated.")
-	return nil
+	return true, nil
 }
 
-// cancelledIsNil turns a PickList, Picker, or Menu-tier huh.Select
-// cancellation into a clean nil return (printing "Cancelled."), passing
-// any other error through unchanged.
+// isCancellation reports whether err is a PickList, Picker, or
+// Menu-tier huh.Select cancellation -- or io.EOF, matching menu.go's
+// own isExitSignal (accessible-mode tests can't simulate a real 'q'/
+// ctrl+c, so an exhausted pipe input naturally surfaces as EOF; treating
+// it the same as an explicit cancel is what makes a looping workflow
+// like Manage Tags's (below) testable at all, and is also more correct
+// for real interactive use than the previous EOF-less check -- stdin
+// closing unexpectedly is arguably itself a cancel signal).
+func isCancellation(err error) bool {
+	return errors.Is(err, ui.ErrCancelled) || errors.Is(err, tui.ErrCancelled) || errors.Is(err, huh.ErrUserAborted) || errors.Is(err, io.EOF)
+}
+
+// cancelledIsNil turns a cancellation (see isCancellation) into a clean
+// nil return (printing "Cancelled."), passing any other error through
+// unchanged.
 func cancelledIsNil(w io.Writer, err error) error {
-	if errors.Is(err, ui.ErrCancelled) || errors.Is(err, tui.ErrCancelled) || errors.Is(err, huh.ErrUserAborted) {
+	if isCancellation(err) {
 		fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}

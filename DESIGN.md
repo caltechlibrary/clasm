@@ -1030,6 +1030,96 @@ history, scrollable diffs, and split Show resource lists," and
   reach the one wanted felt awkward. S3/Key Management, each with a
   single resource type, were left alone.
 
+## Tag Management Domain (Design Addendum, 2026-07-20)
+
+**Status: designed 2026-07-20.** Requested directly (`notes-from-tom.txt`,
+TODO.md: "a top level menu item for managing tags across resources
+(EC2, AMI, S3, etc)"), explicitly alongside keeping the existing
+per-resource entry points ("continue to support tag management at the
+point we are working with individual resources"). This addendum only
+covers the new cross-resource domain; Phase 20.29's Compute-scoped
+Manage Tags (loop until 'q', Show tags choice, refresh-after-change)
+stays exactly as it is and is unaffected.
+
+**A fourth Domain Picker entry, not a menu item nested in an existing
+domain.** `DomainActions`/`domainItems` (`domain_menu.go`) gain "Tag
+Management" alongside Compute/Key Management/S3 -- the only screen in
+the app that needs to reach across all three existing domains'
+resources in one place, so it doesn't fit inside any single one of
+them (Key Management, for instance, has nothing to do with S3
+buckets). Like the other three domains, entering it runs its own
+`refresh` (fetching all five taggable resource types fresh, across all
+regions) on every entry, independent of whether the operator has
+visited Compute/S3/Key Management yet this session -- matching the
+existing domain convention exactly, not a special case.
+
+**Five taggable resource types, confirmed against the actual AWS APIs
+involved, not assumed:**
+
+| Resource | Tag API | Notes |
+|---|---|---|
+| EC2 Instance | `ec2:CreateTags`/`DeleteTags` | Already working (Manage Tags, Phase 20.29) |
+| AMI | `ec2:CreateTags`/`DeleteTags` | Already working (Manage Tags, Phase 20.29) |
+| Launch Template | `ec2:CreateTags`/`DeleteTags` | New -- targets the *template resource's own* tags, not the `TagSpecifications` baked into a version's `UserData` for instances launched from it (a version-creation concept already covered by Sync, Phase 20.27/20.28) |
+| Key Pair | `ec2:CreateTags`/`DeleteTags` | New ground -- confirmed `types.KeyPairInfo` has its own `Tags` field and the generic EC2 tagging API applies, but clasm has never fetched, displayed, or set a key pair's tags before this |
+| S3 Bucket | `s3:GetBucketTagging`/`PutBucketTagging` | New -- a different API shape from the other four: `PutBucketTagging` replaces the *entire* tag set (confirmed via `bucket_create.go`'s existing, narrower use of it for the fixed "Purpose" tag), so Add/Update/Remove here means a transparent read-modify-write (fetch the current set, change one entry, PUT the whole set back) -- the operator still sees "add/update/remove one tag," same as everywhere else. Accepted risk: a concurrent external change to the bucket's tags could be silently overwritten by the read-modify-write, consistent with this tool not doing concurrency control anywhere else either. |
+
+**Reuses Phase 20.29's loop mechanism, generalized.** `manageTagsForResource`/
+`applyOneTagChange` (Phase 20.29) already take a pluggable `fetchTags`
+closure; this phase further generalizes `applyOneTagChange` to also
+take a pluggable *apply* closure (currently hardcoded to
+`ApplyTagChange`'s EC2-specific `CreateTags`/`DeleteTags` calls), so
+the exact same loop/action-picker/confirm/Show-tags-choice UI serves
+both the four EC2-backed resource kinds and S3 buckets uniformly --
+only the fetch/apply closures differ per kind, not the workflow shape.
+This avoids a second, parallel tag-editing UI just for S3.
+
+**Resource selection reuses existing Picker-tier helpers where they
+already exist** (`pickInstance`, `pickImage`, `pickLaunchTemplate`,
+`pickBucket` -- confirmed all four already exist and are directly
+reusable) **and adds one new one, `pickKeyPair`**, matching the same
+shape.
+
+**Key pair tags are not surfaced in Key Management's existing "Show
+resource lists" display for this phase** -- add/update/remove via the
+new Tag Management domain is the v1 scope; extending
+`inventory.KeyPair` with its own Project/Environment columns (matching
+Instance/Image's own convention) is a separate, smaller follow-on if
+wanted later, not bundled in here.
+
+**"Show all tags," scoped to one resource type at a time -- not one
+combined table across all five.** Raised directly after this addendum
+was first drafted: a way to see every tag on every resource of a type,
+not just edit one resource at a time. Reuses the same resource-type
+picker as editing (Instance/AMI/Launch Template/Key Pair/Bucket), then
+a List-tier table of every resource of that type with a flattened
+"Tags" column (every key=value pair, not just Project/Environment) --
+the same shape as Compute's existing "Show instances/AMIs/launch
+templates" listings, just one more per-type listing with the full tag
+map decoded instead of filtered to the two convention tags. Deliberately
+**not** one table spanning all five types at once: they don't share a
+natural row shape (different ID formats, and critically, tag *key
+sets* vary per resource, so fixed columns don't work regardless --
+you'd end up with one flattened text column either way, at which point
+five separate, type-scoped listings read better than one forced-together
+table). For the four EC2-backed types this needs no new AWS call --
+their existing list calls already return full tags inline, just
+currently decoded down to Project/Environment only
+(`inventory.Instance`/`Image`/`LaunchTemplate`/`KeyPair`); for S3 it
+means one `GetBucketTagging` call per bucket (generalizing
+`bucketPurpose`'s existing single-tag-filtered pattern to return the
+whole tag map, run across every bucket rather than one at a time).
+
+**Someday/maybe, explicitly out of scope for this phase:** a
+compliance/audit-style report across all five resource types showing
+*which resources are missing tags* (entirely, or missing
+Project/Environment specifically) -- a different query shape than
+"Show all tags" (which shows what each resource *has*), raised as
+likely to be asked for later but not scoped now (see TODO.md).
+
+**Not decided yet:** the domain's own name in the picker ("Tag
+Management" assumed above) -- left for the implementation plan.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)
