@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -50,14 +51,16 @@ func TestListLaunchTemplates_AggregatesAcrossRegions(t *testing.T) {
 	sortLaunchTemplates(got)
 
 	want := []LaunchTemplate{
-		{TemplateID: "lt-1", Name: "rdm-app", DefaultVersion: 2, LatestVersion: 3, Region: "us-east-1", Project: "caltechauthors", Environment: "production"},
-		{TemplateID: "lt-2", Name: "rdm-worker", DefaultVersion: 1, LatestVersion: 1, Region: "us-west-2", Project: "caltechdata", Environment: "development"},
+		{TemplateID: "lt-1", Name: "rdm-app", DefaultVersion: 2, LatestVersion: 3, Region: "us-east-1", Project: "caltechauthors", Environment: "production",
+			Tags: map[string]string{"Project": "caltechauthors", "Environment": "production"}},
+		{TemplateID: "lt-2", Name: "rdm-worker", DefaultVersion: 1, LatestVersion: 1, Region: "us-west-2", Project: "caltechdata", Environment: "development",
+			Tags: map[string]string{"Project": "caltechdata", "Environment": "development"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d templates, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -75,6 +78,24 @@ func TestListLaunchTemplates_UntaggedResourceHasEmptyFields(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Project != "" || got[0].Environment != "" {
 		t.Fatalf("got %+v, want empty Project/Environment", got)
+	}
+	if len(got[0].Tags) != 0 {
+		t.Errorf("Tags = %+v, want empty", got[0].Tags)
+	}
+}
+
+func TestLaunchTemplateFromSDK_CarriesFullTagMap(t *testing.T) {
+	lt := launchTemplateFromSDK(types.LaunchTemplate{
+		LaunchTemplateId: aws.String("lt-1"),
+		Tags: []types.Tag{
+			{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+			{Key: aws.String("Team"), Value: aws.String("dld")},
+		},
+	}, "us-east-1")
+
+	want := map[string]string{"Project": "caltechauthors", "Team": "dld"}
+	if !reflect.DeepEqual(lt.Tags, want) {
+		t.Errorf("Tags = %+v, want %+v (a key outside the Name/Project/Environment convention must still appear)", lt.Tags, want)
 	}
 }
 

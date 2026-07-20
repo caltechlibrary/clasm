@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -53,14 +54,16 @@ func TestListImages_AggregatesAcrossRegions(t *testing.T) {
 	sortImages(got)
 
 	want := []Image{
-		{ImageID: "ami-1", Name: "base-ubuntu", CreationDate: "2026-01-15", Region: "us-east-1", Project: "caltechauthors", Environment: "production"},
-		{ImageID: "ami-2", Name: "app-server-v2", CreationDate: "2026-02-20", Region: "us-west-2", Project: "caltechdata", Environment: "development"},
+		{ImageID: "ami-1", Name: "base-ubuntu", CreationDate: "2026-01-15", Region: "us-east-1", Project: "caltechauthors", Environment: "production",
+			Tags: map[string]string{"Name": "base-ubuntu", "Project": "caltechauthors", "Environment": "production"}},
+		{ImageID: "ami-2", Name: "app-server-v2", CreationDate: "2026-02-20", Region: "us-west-2", Project: "caltechdata", Environment: "development",
+			Tags: map[string]string{"Name": "app-server-v2", "Project": "caltechdata", "Environment": "development"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d images, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -127,6 +130,24 @@ func TestListImages_UntaggedResourceHasEmptyFields(t *testing.T) {
 	}
 	if got[0].Project != "" || got[0].Environment != "" {
 		t.Errorf("got %+v, want empty Project/Environment", got[0])
+	}
+	if len(got[0].Tags) != 0 {
+		t.Errorf("Tags = %+v, want empty", got[0].Tags)
+	}
+}
+
+func TestImageFromSDK_CarriesFullTagMap(t *testing.T) {
+	img := imageFromSDK(types.Image{
+		ImageId: aws.String("ami-1"),
+		Tags: []types.Tag{
+			{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+			{Key: aws.String("CostCenter"), Value: aws.String("1234")},
+		},
+	}, "us-east-1")
+
+	want := map[string]string{"Project": "caltechauthors", "CostCenter": "1234"}
+	if !reflect.DeepEqual(img.Tags, want) {
+		t.Errorf("Tags = %+v, want %+v (a key outside the Name/Project/Environment convention must still appear)", img.Tags, want)
 	}
 }
 

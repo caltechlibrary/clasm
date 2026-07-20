@@ -58,6 +58,30 @@ func TestRunDomainPicker_DispatchesToTheChosenDomain(t *testing.T) {
 	}
 }
 
+func TestRunDomainPicker_DispatchesToTagManagement(t *testing.T) {
+	var compute, keyMgmt, s3, tagMgmt int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := DomainActions{
+		Compute:       backToPickerAction(&compute),
+		KeyManagement: backToPickerAction(&keyMgmt),
+		S3:            backToPickerAction(&s3),
+		TagManagement: cancelingBackToPickerAction(&tagMgmt, cancel),
+	}
+
+	menuInput := newHuhAccessibleInput("4\n") // Tag Management
+	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if tagMgmt != 1 {
+		t.Errorf("tagMgmt calls = %d, want 1", tagMgmt)
+	}
+	if compute != 0 || keyMgmt != 0 || s3 != 0 {
+		t.Errorf("expected only Tag Management to be dispatched, got compute=%d keyMgmt=%d s3=%d", compute, keyMgmt, s3)
+	}
+}
+
 func TestRunDomainPicker_BackToDomainPickerReturnsToThePicker(t *testing.T) {
 	var compute int
 	term, buf := newTermOnly()
@@ -141,8 +165,8 @@ func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
 }
 
 func TestDomainItems_NoExitEntry(t *testing.T) {
-	if len(domainItems) != 3 {
-		t.Fatalf("len(domainItems) = %d, want 3 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
+	if len(domainItems) != 4 {
+		t.Fatalf("len(domainItems) = %d, want 4 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
 	}
 	for _, item := range domainItems {
 		if item.action == nil {

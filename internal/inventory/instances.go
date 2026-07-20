@@ -36,6 +36,13 @@ type Instance struct {
 	// any -- used by Key Management's Delete Key Pair to detect dependent
 	// instances (see internal/workflow/keypair_delete.go).
 	KeyName string
+	// Tags is the instance's full tag set (every key=value pair, not just
+	// the Name/Project/Environment convention above), decoded from the
+	// same DescribeInstances response already fetched -- no extra AWS
+	// call. Used by the Tag Management domain's "Show all tags" listing
+	// (DESIGN.md, "Tag Management Domain"). Always non-nil, empty when
+	// untagged.
+	Tags map[string]string
 }
 
 // ListInstances queries ec2:DescribeInstances in each region concurrently,
@@ -111,6 +118,7 @@ func instanceFromSDK(inst types.Instance, region string) Instance {
 		PublicIP:    aws.ToString(inst.PublicIpAddress),
 		PrivateIP:   aws.ToString(inst.PrivateIpAddress),
 		KeyName:     aws.ToString(inst.KeyName),
+		Tags:        tagsToMap(inst.Tags),
 	}
 }
 
@@ -126,4 +134,17 @@ func tagValues(tags []types.Tag) (name, project, environment string) {
 		}
 	}
 	return name, project, environment
+}
+
+// tagsToMap flattens an EC2 resource's full tag set into a map -- used by
+// the Tag Management domain's "Show all tags" listing (DESIGN.md, "Tag
+// Management Domain"), which needs every tag key, not just the Name/
+// Project/Environment convention tagValues extracts above. Always
+// returns a non-nil map, empty when tags is empty.
+func tagsToMap(tags []types.Tag) map[string]string {
+	m := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		m[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+	}
+	return m
 }

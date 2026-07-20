@@ -5,6 +5,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -311,4 +312,77 @@ func DisplayLaunchTemplates(ctx context.Context, templates []inventory.LaunchTem
 // workflow.S3Actions.ShowResourceLists.
 func DisplayBuckets(ctx context.Context, buckets []inventory.Bucket) error {
 	return tui.RunListView(ctx, bucketListViewConfig(buckets))
+}
+
+// TaggedResource is one row for the Tag Management domain's "Show all
+// tags" listing (DESIGN.md, "Tag Management Domain"): ID/Label
+// identify the resource (matching that resource kind's own Picker-tier
+// label), Tags is its full tag set. One shared shape across every
+// resource kind (Instance/AMI/Launch Template/Key Pair, and eventually
+// S3 Bucket) -- deliberately not a combined table spanning every kind
+// at once (DECISIONS.md, "Tag Management: a fourth domain...",
+// rejected alternatives: no shared row shape, and tag key sets vary
+// per resource regardless), just one shared row shape reused per
+// kind-scoped listing.
+type TaggedResource struct {
+	ID    string
+	Label string
+	Tags  map[string]string
+}
+
+// flattenTags renders a tag map as one "key=value, key2=value2" string,
+// sorted by key for stable output -- the TAGS column shows every tag
+// key (DECISIONS.md, "Show all tags" design), not just the Project/
+// Environment convention the other List-tier tables restrict
+// themselves to.
+func flattenTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return "(no tags)"
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, len(keys))
+	for i, k := range keys {
+		pairs[i] = fmt.Sprintf("%s=%s", k, tags[k])
+	}
+	return strings.Join(pairs, ", ")
+}
+
+// tagsListViewConfig builds a tui.ListViewConfig from a flattened list
+// of tagged resources -- title is the resource kind's own display name
+// (e.g. "EC2 Instances -- All Tags"), set by the caller since this
+// function is shared across every kind. See instanceListViewConfig's
+// doc comment for the extraction rationale.
+func tagsListViewConfig(title string, resources []TaggedResource) tui.ListViewConfig {
+	header := fmt.Sprintf("%s %s %s",
+		padRight("ID", 22),
+		padRight("LABEL", 40),
+		"TAGS")
+
+	rows := make([]string, len(resources))
+	for i, r := range resources {
+		rows[i] = fmt.Sprintf("%s %s %s",
+			padRight(truncate(r.ID, 22), 22),
+			padRight(truncate(r.Label, 40), 40),
+			flattenTags(r.Tags))
+	}
+
+	return tui.ListViewConfig{
+		Title:        title,
+		Header:       header,
+		Rows:         rows,
+		ColorEnabled: ColorEnabled(),
+	}
+}
+
+// DisplayAllTags shows every resource of one kind with its full tag set
+// in the shared List-tier component -- the Tag Management domain's
+// "Show all tags" action (DESIGN.md, "Tag Management Domain"),
+// reachable only via that domain's explicit menu choice, same
+// reachability convention as DisplayInstances.
+func DisplayAllTags(ctx context.Context, title string, resources []TaggedResource) error {
+	return tui.RunListView(ctx, tagsListViewConfig(title, resources))
 }

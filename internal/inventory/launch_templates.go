@@ -28,6 +28,12 @@ type LaunchTemplate struct {
 	Region         string
 	Project        string
 	Environment    string
+	// Tags is the template resource's own full tag set -- see
+	// Instance.Tags' doc comment. Distinct from
+	// LaunchTemplateVersionDetail's tag fields, which describe a
+	// version's TagSpecifications (tags applied to instances launched
+	// *from* the template), not the template resource itself.
+	Tags map[string]string
 }
 
 // ListLaunchTemplates queries ec2:DescribeLaunchTemplates in each
@@ -92,6 +98,7 @@ func launchTemplateFromSDK(lt types.LaunchTemplate, region string) LaunchTemplat
 		Region:         region,
 		Project:        project,
 		Environment:    environment,
+		Tags:           tagsToMap(lt.Tags),
 	}
 }
 

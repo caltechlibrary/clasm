@@ -27,6 +27,8 @@ type Image struct {
 	// check (see internal/workflow/instance_type_ena_check.go). False
 	// when the SDK doesn't report a value, matching AWS's own default.
 	EnaSupport bool
+	// Tags is the AMI's full tag set -- see Instance.Tags' doc comment.
+	Tags map[string]string
 }
 
 // ListImages queries ec2:DescribeImages (scoped to Owners: [self]) in
@@ -95,5 +97,6 @@ func imageFromSDK(img types.Image, region string) Image {
 		Project:      project,
 		Environment:  environment,
 		EnaSupport:   aws.ToBool(img.EnaSupport),
+		Tags:         tagsToMap(img.Tags),
 	}
 }

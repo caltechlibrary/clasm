@@ -122,6 +122,13 @@ type fakeEC2Client struct {
 	lastDeleteKeyPairInput *ec2.DeleteKeyPairInput
 	deleteKeyPairErr       error
 
+	// launchTemplates backs DescribeLaunchTemplates -- the template
+	// resource's own listing/tags, distinct from launchTemplateVersions
+	// below (a specific version's LaunchTemplateData). Used by
+	// fetchLaunchTemplateTags (manage_tags.go).
+	launchTemplates                         []types.LaunchTemplate
+	describeLaunchTemplatesErr              error
+	lastDescribeLaunchTemplatesInput        *ec2.DescribeLaunchTemplatesInput
 	launchTemplateVersions                  []types.LaunchTemplateVersion
 	describeLaunchTemplateVersionsErr       error
 	lastDescribeLaunchTemplateVersionsInput *ec2.DescribeLaunchTemplateVersionsInput
@@ -154,6 +161,14 @@ type fakeEC2Client struct {
 	// DeleteLaunchTemplateVersionsOutput's UnsuccessfullyDeleted list --
 	// every other version requested is reported as successfully deleted.
 	deleteLaunchTemplateVersionsUnsuccessful []types.DeleteLaunchTemplateVersionsResponseErrorItem
+}
+
+func (f *fakeEC2Client) DescribeLaunchTemplates(ctx context.Context, params *ec2.DescribeLaunchTemplatesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplatesOutput, error) {
+	f.lastDescribeLaunchTemplatesInput = params
+	if f.describeLaunchTemplatesErr != nil {
+		return nil, f.describeLaunchTemplatesErr
+	}
+	return &ec2.DescribeLaunchTemplatesOutput{LaunchTemplates: f.launchTemplates}, nil
 }
 
 func (f *fakeEC2Client) DescribeLaunchTemplateVersions(ctx context.Context, params *ec2.DescribeLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplateVersionsOutput, error) {

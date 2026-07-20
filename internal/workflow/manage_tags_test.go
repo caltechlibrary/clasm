@@ -136,6 +136,58 @@ func TestFetchImageTags(t *testing.T) {
 	}
 }
 
+func TestFetchLaunchTemplateTags(t *testing.T) {
+	fake := &fakeEC2Client{launchTemplates: []types.LaunchTemplate{
+		{
+			LaunchTemplateId: aws.String("lt-1"),
+			Tags: []types.Tag{
+				{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+			},
+		},
+	}}
+	got, err := fetchLaunchTemplateTags(context.Background(), fake, "lt-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["Project"] != "caltechauthors" {
+		t.Errorf("got %+v, want Project=caltechauthors", got)
+	}
+}
+
+func TestFetchLaunchTemplateTags_NotFound(t *testing.T) {
+	fake := &fakeEC2Client{launchTemplates: nil}
+	_, err := fetchLaunchTemplateTags(context.Background(), fake, "lt-missing")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestFetchKeyPairTags(t *testing.T) {
+	fake := &fakeEC2Client{keyPairs: []types.KeyPairInfo{
+		{
+			KeyPairId: aws.String("key-1"),
+			Tags: []types.Tag{
+				{Key: aws.String("Owner"), Value: aws.String("dld")},
+			},
+		},
+	}}
+	got, err := fetchKeyPairTags(context.Background(), fake, "key-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["Owner"] != "dld" {
+		t.Errorf("got %+v, want Owner=dld", got)
+	}
+}
+
+func TestFetchKeyPairTags_NotFound(t *testing.T) {
+	fake := &fakeEC2Client{keyPairs: nil}
+	_, err := fetchKeyPairTags(context.Background(), fake, "key-missing")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 // The Add/Update/Remove action menu, the select-a-tag pickers, and
 // every other prompt in this function (key/value input, confirms) now
 // share one accessible-mode reader, read in sequence one line at a time

@@ -272,6 +272,39 @@ func main() {
 		return ui.DisplayKeyPairs(ctx, keyMgmtState.keyPairs)
 	}
 
+	var tagMgmtState struct {
+		instances       []inventory.Instance
+		images          []inventory.Image
+		launchTemplates []inventory.LaunchTemplate
+		keyPairs        []inventory.KeyPair
+	}
+	// refreshTagMgmt independently re-fetches all four EC2-backed
+	// resource types the Tag Management domain currently covers (S3
+	// Bucket to follow, PLAN.md Phase 20.30's remaining work) -- not
+	// reused from state/keyMgmtState, since an operator may reach this
+	// domain before visiting Compute or Key Management in this run (see
+	// refreshKeyMgmt's own comment for the same reasoning).
+	refreshTagMgmt := func(ctx context.Context) error {
+		instances, err := inventory.ListInstances(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing instances: %w", err)
+		}
+		images, err := inventory.ListImages(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing AMIs: %w", err)
+		}
+		launchTemplates, err := inventory.ListLaunchTemplates(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing launch templates: %w", err)
+		}
+		keyPairs, err := inventory.ListKeyPairs(ctx, ec2Clients)
+		if err != nil {
+			return fmt.Errorf("listing key pairs: %w", err)
+		}
+		tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs = instances, images, launchTemplates, keyPairs
+		return nil
+	}
+
 	actions := workflow.MenuActions{
 		CreateInstanceFromAMI: func(ctx context.Context) error {
 			return workflow.CreateInstanceFromAMI(ctx, out, ec2Clients, ssmClients, iamClient, state.images)
@@ -368,6 +401,16 @@ func main() {
 		ShowResourceLists: showKeyMgmtResourceLists,
 	}
 
+	tagMgmtActions := workflow.TagMgmtActions{
+		ManageTags: func(ctx context.Context) error {
+			return workflow.ManageResourceTags(ctx, out, ec2Clients, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs)
+		},
+		ShowAllTags: func(ctx context.Context) error {
+			return workflow.ShowAllTags(ctx, out, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs)
+		},
+		Refresh: refreshTagMgmt,
+	}
+
 	domains := workflow.DomainActions{
 		Compute: func(ctx context.Context) error {
 			// Fetch and display the Compute listing on every entry into
@@ -396,6 +439,12 @@ func main() {
 				return err
 			}
 			return workflow.RunS3Menu(ctx, out, s3Actions)
+		},
+		TagManagement: func(ctx context.Context) error {
+			if err := refreshTagMgmt(ctx); err != nil {
+				return err
+			}
+			return workflow.RunTagMgmtMenu(ctx, out, tagMgmtActions)
 		},
 	}
 

@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -42,16 +43,31 @@ func TestListKeyPairs_AggregatesAcrossRegions(t *testing.T) {
 	sortKeyPairs(got)
 
 	want := []KeyPair{
-		{KeyName: "my-laptop-key", KeyPairID: "key-1", KeyFingerprint: "aa:bb:cc", KeyType: "ed25519", Region: "us-east-1"},
-		{KeyName: "team-shared-key", KeyPairID: "key-2", KeyFingerprint: "dd:ee:ff", KeyType: "rsa", Region: "us-west-2"},
+		{KeyName: "my-laptop-key", KeyPairID: "key-1", KeyFingerprint: "aa:bb:cc", KeyType: "ed25519", Region: "us-east-1", Tags: map[string]string{}},
+		{KeyName: "team-shared-key", KeyPairID: "key-2", KeyFingerprint: "dd:ee:ff", KeyType: "rsa", Region: "us-west-2", Tags: map[string]string{}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d key pairs, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestKeyPairFromSDK_CarriesFullTagMap(t *testing.T) {
+	kp := keyPairFromSDK(types.KeyPairInfo{
+		KeyName: aws.String("my-laptop-key"),
+		Tags: []types.Tag{
+			{Key: aws.String("Owner"), Value: aws.String("rsdoiel")},
+			{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+		},
+	}, "us-east-1")
+
+	want := map[string]string{"Owner": "rsdoiel", "Project": "caltechauthors"}
+	if !reflect.DeepEqual(kp.Tags, want) {
+		t.Errorf("Tags = %+v, want %+v", kp.Tags, want)
 	}
 }
 

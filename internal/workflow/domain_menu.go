@@ -238,6 +238,12 @@ type DomainActions struct {
 	Compute       func(ctx context.Context) error
 	KeyManagement func(ctx context.Context) error
 	S3            func(ctx context.Context) error
+	// TagManagement is the fourth domain (DESIGN.md, "Tag Management
+	// Domain"; DECISIONS.md, "Tag Management: a fourth domain..."):
+	// manage or list tags across resource kinds from one place, distinct
+	// from Compute's/Key Management's own narrower, resource-scoped tag
+	// entry points.
+	TagManagement func(ctx context.Context) error
 }
 
 // domainItem pairs a domain-picker label with the DomainActions field it
@@ -258,6 +264,7 @@ var domainItems = []domainItem{
 	{"Compute (EC2 & AMI)", func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
 	{"Key Management", func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
 	{"S3 (Buckets & Static Websites)", func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
+	{"Tag Management", func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
 }
 
 // pickDomainItem runs the domain picker's huh.Select and returns the
@@ -276,7 +283,7 @@ func pickDomainItem(w io.Writer, input io.Reader, output io.Writer) (domainItem,
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Pick a domain").
-		Description("Choose which part of the AWS account to work in -- EC2 instances and AMIs, SSH key pairs, or S3 buckets and static websites.").
+		Description("Choose which part of the AWS account to work in -- EC2 instances and AMIs, SSH key pairs, S3 buckets and static websites, or tags across all of them.").
 		Options(opts...).
 		Value(&idx)
 

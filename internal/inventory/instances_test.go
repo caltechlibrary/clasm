@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -109,14 +110,16 @@ func TestListInstances_AggregatesAcrossRegions(t *testing.T) {
 	sortInstances(got)
 
 	want := []Instance{
-		{InstanceID: "i-1", Name: "web", State: "running", ImageID: "ami-1", Region: "us-east-1", Project: "caltechauthors", Environment: "production"},
-		{InstanceID: "i-2", Name: "db", State: "stopped", ImageID: "ami-2", Region: "us-west-2", Project: "caltechdata", Environment: "development"},
+		{InstanceID: "i-1", Name: "web", State: "running", ImageID: "ami-1", Region: "us-east-1", Project: "caltechauthors", Environment: "production",
+			Tags: map[string]string{"Name": "web", "Project": "caltechauthors", "Environment": "production"}},
+		{InstanceID: "i-2", Name: "db", State: "stopped", ImageID: "ami-2", Region: "us-west-2", Project: "caltechdata", Environment: "development",
+			Tags: map[string]string{"Name": "db", "Project": "caltechdata", "Environment": "development"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d instances, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -169,6 +172,26 @@ func TestListInstances_UntaggedResourceHasEmptyFields(t *testing.T) {
 	}
 	if got[0].Name != "" || got[0].Project != "" || got[0].Environment != "" {
 		t.Errorf("got %+v, want empty Name/Project/Environment", got[0])
+	}
+	if len(got[0].Tags) != 0 {
+		t.Errorf("Tags = %+v, want empty", got[0].Tags)
+	}
+}
+
+func TestInstanceFromSDK_CarriesFullTagMap(t *testing.T) {
+	inst := instanceFromSDK(types.Instance{
+		InstanceId: aws.String("i-1"),
+		State:      &types.InstanceState{Name: types.InstanceStateNameRunning},
+		Tags: []types.Tag{
+			{Key: aws.String("Name"), Value: aws.String("web")},
+			{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+			{Key: aws.String("Owner"), Value: aws.String("ops-team")},
+		},
+	}, "us-east-1")
+
+	want := map[string]string{"Name": "web", "Project": "caltechauthors", "Owner": "ops-team"}
+	if !reflect.DeepEqual(inst.Tags, want) {
+		t.Errorf("Tags = %+v, want %+v (a key outside the Name/Project/Environment convention must still appear)", inst.Tags, want)
 	}
 }
 

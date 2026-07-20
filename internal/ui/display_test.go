@@ -252,3 +252,53 @@ func TestLaunchTemplateListViewConfig_Populated(t *testing.T) {
 		t.Error("expected a non-empty Title")
 	}
 }
+
+func TestFlattenTags_Empty(t *testing.T) {
+	if got := flattenTags(nil); got != "(no tags)" {
+		t.Errorf("flattenTags(nil) = %q, want %q", got, "(no tags)")
+	}
+	if got := flattenTags(map[string]string{}); got != "(no tags)" {
+		t.Errorf("flattenTags(empty map) = %q, want %q", got, "(no tags)")
+	}
+}
+
+func TestFlattenTags_SortedByKey(t *testing.T) {
+	tags := map[string]string{"Project": "caltechauthors", "Environment": "production", "Owner": "dld"}
+	got := flattenTags(tags)
+	want := "Environment=production, Owner=dld, Project=caltechauthors"
+	if got != want {
+		t.Errorf("flattenTags(%+v) = %q, want %q", tags, got, want)
+	}
+}
+
+func TestTagsListViewConfig_Empty(t *testing.T) {
+	cfg := tagsListViewConfig("EC2 Instances -- All Tags", nil)
+	if len(cfg.Rows) != 0 {
+		t.Errorf("got %d rows, want 0 for an empty resource list", len(cfg.Rows))
+	}
+	if !strings.Contains(cfg.Header, "ID") || !strings.Contains(cfg.Header, "TAGS") {
+		t.Errorf("header = %q, want it to still show column titles even when empty", cfg.Header)
+	}
+	if cfg.Title != "EC2 Instances -- All Tags" {
+		t.Errorf("Title = %q, want the caller-supplied title", cfg.Title)
+	}
+}
+
+func TestTagsListViewConfig_Populated(t *testing.T) {
+	resources := []TaggedResource{
+		{ID: "i-abc123", Label: "i-abc123 - web (us-east-1)", Tags: map[string]string{"Name": "web", "Project": "caltechauthors"}},
+		{ID: "i-def456", Label: "i-def456 - db (us-east-1)", Tags: nil},
+	}
+
+	cfg := tagsListViewConfig("EC2 Instances -- All Tags", resources)
+	if len(cfg.Rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(cfg.Rows))
+	}
+
+	out := cfg.Header + "\n" + strings.Join(cfg.Rows, "\n")
+	for _, want := range []string{"i-abc123", "web", "Name=web", "Project=caltechauthors", "i-def456", "(no tags)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}

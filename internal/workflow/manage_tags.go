@@ -78,6 +78,39 @@ func fetchImageTags(ctx context.Context, client awsclient.EC2API, imageID string
 	return tagsToMap(out.Images[0].Tags), nil
 }
 
+// fetchLaunchTemplateTags fetches the template resource's own live tags
+// (ec2:DescribeLaunchTemplates), not a version's TagSpecifications --
+// see DECISIONS.md, "Tag Management: a fourth domain..." ("Launch
+// template tags target the template resource's own tags").
+func fetchLaunchTemplateTags(ctx context.Context, client awsclient.EC2API, templateID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{LaunchTemplateIds: []string{templateID}})
+	if err != nil {
+		return nil, err
+	}
+	if len(out.LaunchTemplates) == 0 {
+		return nil, fmt.Errorf("launch template %s not found", templateID)
+	}
+	return tagsToMap(out.LaunchTemplates[0].Tags), nil
+}
+
+// fetchKeyPairTags fetches a key pair's current tags, keyed by
+// KeyPairId -- ec2:CreateTags/DeleteTags (ApplyTagChange) address a key
+// pair by its resource ID, not its KeyName, so this must match.
+func fetchKeyPairTags(ctx context.Context, client awsclient.EC2API, keyPairID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeKeyPairs(ctx, &ec2.DescribeKeyPairsInput{KeyPairIds: []string{keyPairID}})
+	if err != nil {
+		return nil, err
+	}
+	if len(out.KeyPairs) == 0 {
+		return nil, fmt.Errorf("key pair %s not found", keyPairID)
+	}
+	return tagsToMap(out.KeyPairs[0].Tags), nil
+}
+
 func tagsToMap(tags []types.Tag) map[string]string {
 	m := make(map[string]string, len(tags))
 	for _, tag := range tags {

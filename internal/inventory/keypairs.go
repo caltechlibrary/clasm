@@ -20,6 +20,11 @@ type KeyPair struct {
 	KeyFingerprint string
 	KeyType        string
 	Region         string
+	// Tags is the key pair's full tag set -- see Instance.Tags' doc
+	// comment. Key pairs have no Project/Environment convention fields
+	// (never previously tagged/displayed by clasm), so this is the only
+	// tag data exposed on KeyPair.
+	Tags map[string]string
 }
 
 // ListKeyPairs queries ec2:DescribeKeyPairs in each region concurrently
@@ -75,5 +80,6 @@ func keyPairFromSDK(kp types.KeyPairInfo, region string) KeyPair {
 		KeyFingerprint: aws.ToString(kp.KeyFingerprint),
 		KeyType:        string(kp.KeyType),
 		Region:         region,
+		Tags:           tagsToMap(kp.Tags),
 	}
 }
