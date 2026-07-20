@@ -31,6 +31,2748 @@ interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
 <hr />
 <h2
+id="generalize-applyonetagchange-for-s3s-read-modify-write-tag-semantics">2026-07-20
+— Generalize applyOneTagChange for S3’s read-modify-write tag
+semantics</h2>
+<p><strong>Context.</strong> With the four EC2-backed kinds of Tag
+Management done and confirmed against real AWS, S3 Bucket was the one
+remaining kind (see DECISIONS.md, “Tag Management: a fourth domain…”,
+which anticipated this exact generalization but deliberately deferred it
+until a real second apply-shape existed – PLAN.md Phase 20.30’s “Design
+note”). <code>s3:PutBucketTagging</code> replaces a bucket’s
+<em>entire</em> tag set and has no fine-grained add/remove-one-tag call
+the way EC2’s <code>CreateTags</code>/<code>DeleteTags</code> do, so S3
+needed a genuinely different apply path, not just new fetch/wiring like
+Launch Template/Key Pair did.</p>
+<p><strong>Decision.</strong>
+<code>applyOneTagChange</code>/<code>manageTagsForResource</code>
+(<code>manage_tags.go</code>) now take a <code>tagApplyFunc</code>
+(<code>func(ctx context.Context, params TagChangeParams) error</code>)
+instead of a hardcoded <code>awsclient.EC2API</code> client. Every
+existing call site (Compute’s <code>manageTags</code>, and
+<code>manageResourceTags</code>‘s four EC2-backed cases) builds
+<code>func(ctx, params) error { return ApplyTagChange(ctx, client, params) }</code>
+once, at the point <code>client</code> is already resolved –
+mechanically identical behavior, just the client wrapped in a closure
+instead of passed raw. New <code>internal/workflow/bucket_tags.go</code>
+adds the S3 side: <code>fetchBucketTags</code> (a full-tag-set
+<code>GetBucketTagging</code>, treating <code>NoSuchTagSet</code> as
+empty, same convention as <code>bucketPurpose</code>) and
+<code>applyBucketTagChange</code> (the S3 <code>tagApplyFunc</code>) –
+fetch current tags, apply the one collected Add/Update/Remove locally,
+then write the whole set back. If that leaves zero tags (removing the
+bucket’s last one), it calls the newly-added
+<code>s3:DeleteBucketTagging</code> instead of
+<code>PutBucketTagging</code> with an empty <code>TagSet</code> –
+proactively matching <code>ManageBucketLifecyclePolicies</code>’ own
+<code>DeleteBucketLifecycle</code> precedent for the same “replace the
+whole set” operation shape (real-AWS verification there found
+<code>PutBucketLifecycleConfiguration</code> rejects an empty
+<code>Rules</code> list client-side). Checked (not assumed) whether the
+same applies to <code>PutBucketTaggingInput</code>: the SDK’s generated
+<code>validateOpPutBucketTaggingInput</code>/<code>validateTagging</code>
+only require <code>TagSet</code> to be non-nil, not non-empty, so an
+empty-but-non-nil <code>PutBucketTagging</code> call might in fact
+succeed client-side (and possibly server-side too) –
+<code>DeleteBucketTagging</code> was still chosen out of caution,
+matching the established precedent, since this hasn’t been confirmed
+against real AWS either way yet.</p>
+<p><strong>Rationale.</strong> Generalizing only when a real second
+apply-shape appeared (S3) rather than up front (when the EC2-backed
+slice was built) avoided speculative complexity in Phase 20.30’s first
+slice – every EC2-backed call site needed no behavior change at all,
+just a closure wrapper, confirming the deferral was the right call.
+Rejecting <code>PutBucketTagging</code> with an empty set (in favor of
+<code>DeleteBucketTagging</code>) even though the client-side validator
+would accept it errs toward the same caution the lifecycle-rules case
+already established, rather than assuming AWS’s server-side behavior
+matches what the client-side SDK validator merely permits.</p>
+<p><strong>Rejected alternatives.</strong> - <em>A second, parallel
+tag-editing workflow just for S3</em> – rejected: would duplicate
+<code>manageTagsForResource</code>’s entire loop/action-picker/
+confirm/Show-tags shape for no reason, the exact outcome the
+pluggable-apply-closure generalization was designed to avoid. - <em>Skip
+<code>DeleteBucketTagging</code> and always call
+<code>PutBucketTagging</code>, since the client-side validator accepts
+an empty <code>TagSet</code></em> – rejected: client-side acceptance
+doesn’t confirm server-side acceptance, and the lifecycle-rules case
+already showed AWS can reject an empty “whole set” write that the SDK
+itself doesn’t block locally; safer to match that precedent than assume
+this operation differs, pending real-AWS confirmation.</p>
+<p><strong>Consequences.</strong> <code>manage_tags_test.go</code>
+gained a small <code>ec2Apply(client)</code> test helper so existing
+direct calls to
+<code>applyOneTagChange</code>/<code>manageTagsForResource</code> keep
+working unchanged. New <code>statefulTagsFakeS3Client</code>
+(<code>bucket_tags_test.go</code>, mirroring
+<code>statefulTagsFakeEC2Client</code>) proves the S3 read-modify-write
+round trip and the <code>DeleteBucketTagging</code>-on-empty branch
+specifically. <code>awsclient.S3API</code> gained
+<code>DeleteBucketTagging</code> (+ logging wrapper + shared
+<code>fakeS3Client</code> method). See PLAN.md Phase 20.30, “Work Items
+(S3 Bucket)”.</p>
+<hr />
+<h2
+id="manage-tags-embed-current-tags-in-the-action-selects-own-description-not-just-a-separate-print-above-it">2026-07-20
+— Manage Tags: embed current tags in the action Select’s own
+Description, not just a separate print above it</h2>
+<p><strong>Context.</strong> Found via real-terminal testing of the new
+Tag Management domain (Phase 20.30): confirmed Add/Update/Remove all
+worked correctly for both launch templates and instances, but choosing
+“Show tags” from the action menu appeared to do nothing – the screen
+looked unchanged. Confirmed directly with the operator (not assumed):
+the screen, not the underlying data, was the problem.</p>
+<p><strong>Decision.</strong> <code>manageTagsForResource</code>‘s loop
+(Phase 20.29) already re-displays current tags via a plain
+<code>displayTags(w, ...)</code> print at the top of every iteration,
+immediately followed by the “Choose an action” huh.Select. Root cause:
+that Select is a Menu-tier field, pinned to the full terminal height on
+every render (DESIGN.md, “Full-height Menu Tier”, Phase 20.26) – so the
+instant it renders, it fills the entire visible terminal and scrolls
+whatever was printed just before it (here, displayTags’ output) out of
+view. The data was always current; the <em>screen</em> just never showed
+it by the time the operator could read it. Fixed by adding
+<code>actionMenuDescription(label, tags)</code> and passing it as the
+Select’s own <code>Description</code> – embedding the same tag listing
+inside the full-height chrome that’s guaranteed to be on screen, instead
+of relying on separately-scrolled-away plain output.
+<code>displayTags</code> itself is kept alongside it, unchanged:
+huh.Select’s accessible-mode <code>RunAccessible</code> only ever prints
+a field’s Title and options, never its Description (confirmed by reading
+huh v1.0.0’s <code>field_select.go</code>), so every existing
+accessible-mode test asserting tag content in output still depends on
+<code>displayTags</code>’ plain print and needed no changes.</p>
+<p><strong>Rationale.</strong> This is the same class of bug the
+Full-height Menu Tier work (Phase 20.26) already flagged as a risk in
+principle – a full-height render can silently evict whatever was on
+screen just before it – but this specific instance wasn’t caught until
+real interactive use, since <code>manage_tags_test.go</code>’s coverage
+only asserts buffer <em>content</em>, not what remains visibly on screen
+after a full-height render. No other Menu-tier call site in this package
+prints data immediately before a full-height Select the way this one
+does, so this fix is scoped to <code>manageTagsForResource</code> rather
+than a broader change to
+<code>runMenuField</code>/<code>quitKeyGuard</code>.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Shrink the action
+Select below full terminal height so the printed tags stay visible above
+it</em> – rejected: reverses Phase 20.26’s own full-height decision for
+one call site, reintroducing the inconsistent-compact-submenu problem
+that phase deliberately fixed. - <em>Remove “Show tags” as a menu
+choice, since the loop already redisplays tags on every iteration
+regardless</em> – rejected: the redisplay-on-every-iteration behavior is
+exactly what was invisible; removing the choice wouldn’t fix the
+underlying visibility bug for the post-Add/Update/Remove redisplay
+either.</p>
+<p><strong>Consequences.</strong> <code>actionMenuDescription</code>
+(<code>manage_tags.go</code>), tested directly
+(<code>TestActionMenuDescription_ListsCurrentTags</code>/<code>_NoTags</code>).
+Applies uniformly to both Compute’s “Manage tags for an instance or AMI”
+(Phase 20.29) and Tag Management’s “Manage tags” (Phase 20.30), since
+both call the same <code>manageTagsForResource</code>.</p>
+<hr />
+<h2
+id="tag-management-a-fourth-domain-generalizing-the-manage-tags-loop-across-five-resource-types">2026-07-20
+— Tag Management: a fourth domain, generalizing the Manage Tags loop
+across five resource types</h2>
+<p><strong>Context.</strong> Requested directly
+(<code>notes-from-tom.txt</code>, TODO.md: “a top level menu item for
+managing tags across resources (EC2, AMI, S3, etc)”), explicitly
+alongside keeping the existing per-resource entry points (“continue to
+support tag management at the point we are working with individual
+resources”). Phase 20.29 (Manage Tags: loop until ‘q’, Show tags choice,
+refresh-after-change) is unaffected and stays scoped to Compute’s
+Instance/AMI entry point.</p>
+<p><strong>Decision.</strong> - A fourth
+<code>DomainActions</code>/<code>domainItems</code> entry, “Tag
+Management,” alongside Compute/Key Management/S3 – not a menu item
+nested in any one of them, since it’s the only screen that needs to
+reach across all three existing domains’ resources. Runs its own
+<code>refresh</code> (fetching all five taggable resource types, across
+all regions) on every entry, matching the other three domains’
+convention exactly. - <strong>Five resource types in v1:</strong> EC2
+Instance, AMI, Launch Template, Key Pair, S3 Bucket – confirmed against
+the actual AWS APIs, not assumed: the first four via the generic
+<code>ec2:CreateTags</code>/<code>DeleteTags</code> (already working for
+Instance/AMI; new wiring for Launch Template/Key Pair, though the API
+itself is identical); S3 Bucket via the different
+<code>s3:GetBucketTagging</code>/<code>PutBucketTagging</code> shape. -
+<strong>Launch template tags target the template resource’s own
+tags</strong> (live, no new version needed) – not the
+<code>TagSpecifications</code> baked into a version’s
+<code>UserData</code> for instances launched from it, which is a
+version-creation concept Sync already covers (Phase 20.27/20.28). -
+<strong>S3 bucket Add/Update/Remove is a transparent
+read-modify-write</strong>: fetch the bucket’s current full tag set
+(<code>GetBucketTagging</code>), change one entry,
+<code>PutBucketTagging</code> the whole set back – necessary because
+<code>PutBucketTagging</code> replaces the entire set, it has no
+fine-grained add/remove-one-tag call the way EC2’s
+<code>CreateTags</code>/<code>DeleteTags</code> do. The operator still
+experiences “add/update/remove one tag,” same as every other resource
+type; the read-modify-write is invisible. Accepted risk: a concurrent
+external change to the bucket’s tags could be silently overwritten,
+consistent with this tool not doing concurrency control anywhere else
+either. - <strong>Key pair tags are new ground, not just new
+wiring</strong>: confirmed <code>types.KeyPairInfo</code> has its own
+<code>Tags</code> field and the generic EC2 tagging API applies, but
+clasm has never fetched, displayed, or set a key pair’s tags before.
+Scoped to add/update/remove only for this phase – extending Key
+Management’s existing “Show resource lists” display with
+Project/Environment columns (matching Instance/Image’s own convention)
+is a separate, smaller follow-on, not bundled in. -
+<strong><code>applyOneTagChange</code> (Phase 20.29) is generalized to
+take a pluggable <em>apply</em> closure</strong>, alongside the
+<code>fetchTags</code> closure it already takes – currently hardcoded to
+<code>ApplyTagChange</code>’s EC2-only
+<code>CreateTags</code>/<code>DeleteTags</code> calls. The same
+loop/action-picker/confirm/ Show-tags-choice UI then serves all five
+resource types uniformly; only the fetch/apply closures differ per kind,
+avoiding a second, parallel tag-editing UI just for S3. - <strong>“Show
+all tags” is scoped to one resource type at a time</strong>, not one
+combined table across all five: pick a resource type (same picker as
+editing), then a List-tier table of every resource of that type with a
+flattened “Tags” column (every key=value pair, not just
+Project/Environment) – the same shape as Compute’s existing “Show
+instances/AMIs/launch templates” listings. Deliberately not one table
+spanning all five types: they don’t share a natural row shape, and tag
+<em>key sets</em> vary per resource regardless, so fixed columns don’t
+work either way – five type-scoped listings read better than one
+forced-together table. Costs no new AWS call for the four EC2-backed
+types (their existing list calls already return full tags inline,
+currently decoded down to Project/Environment only); for S3 it’s one
+<code>GetBucketTagging</code> call per bucket, generalizing
+<code>bucketPurpose</code>’s existing single-tag-filtered pattern.</p>
+<p><strong>Rationale.</strong> - Reusing Phase 20.29’s loop (rather than
+a new UI) is the direct payoff of having just built it as a standalone,
+generalizable function – the alternative (a bespoke S3-tag-editing
+screen) would duplicate the entire action-picker/confirm/loop shape for
+no reason. - Scoping “Show all tags” per-type sidesteps the
+cross-API-shape problem entirely (raised directly: “not sure how to do
+this across the different resource types if they use different API
+calls”) by never needing a single call/response shape that covers all
+five – each type’s own listing uses whatever API that type already
+needs.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Nest a tag-management
+menu item inside each existing domain</em> (Compute gets
+Instance/AMI/Launch Template, S3 gets Bucket, etc.) – considered
+opposite the “top level” framing of the actual ask, and would leave no
+single place that spans everything; also awkward for Key Management,
+which would need a menu entry for a resource type (buckets) it has
+nothing to do with. - <em>One combined “all tags, all resource types”
+table</em> – rejected for “Show all tags” specifically: no natural
+shared row shape, and arbitrary tag key sets make fixed columns
+unworkable regardless of how many resource types are forced into one
+table. - <em>A compliance/audit report (which resources are missing tags
+entirely, or missing Project/Environment specifically)</em> – raised as
+a likely future ask, explicitly deferred (TODO.md, someday/maybe): a
+different query shape than “Show all tags” (which shows what each
+resource <em>has</em>, not what it lacks), needing its own design pass
+(does “missing” mean zero tags, or missing the two convention tags
+specifically?).</p>
+<p><strong>Consequences.</strong> New <code>domainItems</code> entry +
+<code>TagMgmtActions</code> (or similar) bundle;
+<code>applyOneTagChange</code> gains a pluggable apply closure alongside
+its existing fetch closure; new <code>pickKeyPair</code> (Picker tier,
+matching
+<code>pickInstance</code>/<code>pickImage</code>/<code>pickLaunchTemplate</code>);
+S3 bucket tag read-modify-write helpers; a per-type “Show all tags”
+List-tier listing, decoding full tag maps (<code>tagsToMap</code>,
+already used by
+<code>fetchInstanceTags</code>/<code>fetchImageTags</code>) rather than
+the Project/Environment-only fields the existing inventory structs
+currently expose. See <code>PLAN.md</code> Phase 20.30.</p>
+<hr />
+<h2
+id="manage-tags-loop-until-q-always-show-current-tags-add-a-show-tags-choice">2026-07-20
+— Manage Tags: loop until ‘q’, always show current tags, add a Show tags
+choice</h2>
+<p><strong>Context.</strong> TODO.md bug, reported directly: Manage Tags
+is missing a “show tags” menu option, and “the tags shown at the top of
+the screen don’t update on change.” The existing flow displayed tags
+once, applied exactly one Add/Update/Remove, and exited – so a second
+look at the same resource’s tags required leaving and re-entering the
+whole workflow, and there was no way to just look without also being
+forced into picking Add/Update/Remove.</p>
+<p><strong>Decision.</strong> <code>manageTagsForResource</code> becomes
+a loop: display current tags (freshly fetched, not the original
+snapshot) -&gt; pick an action (now four: Show tags/Add/Update/Remove)
+-&gt; act -&gt; loop, until the operator cancels. “Show tags” is
+deliberately close to a no-op (tags are already re-shown every
+iteration) – it exists because the operator asked for it by name, not
+because the display was otherwise hidden. The single-change logic
+(<code>applyOneTagChange</code>) is extracted from the loop so it stays
+directly unit-testable on its own.</p>
+<p><strong>Rationale.</strong> - Looping until ‘q’ matches this
+codebase’s own established convention for action menus
+(<code>RunMainMenu</code>, <code>RunS3Menu</code>,
+<code>RunKeyMgmtMenu</code> all loop the same way) rather than
+introducing a one-off exception for Manage Tags. - Re-fetching tags
+after every change (not reusing the pre-change snapshot) is the actual
+content of the bug fix – looping alone wouldn’t have helped if the
+redisplayed data was stale.</p>
+<p><strong>A real, non-obvious finding worth recording.</strong> huh’s
+own accessible-mode <code>Select</code> (used throughout this package’s
+tests) cannot signal “the input pipe is exhausted” as an error.
+Confirmed by reading <code>internal/accessibility.PromptString</code>
+(huh v1.0.0) directly, not assumed: on <code>scanner.Scan()</code>
+returning false, it silently falls back to the field’s default value and
+returns nil – the package’s own comment there says as much (“no way to
+bubble up errors or signal cancellation… but the program is probably not
+continuing if stdin sent EOF”), an assumption that doesn’t hold for a
+<em>looping</em> workflow re-entering the same accessible-mode prompt
+more than once. A first attempt at this loop relied on that exhaustion
+to end a test (matching this package’s usual
+<code>cancelledIsNil</code>/<code>io.EOF</code> convention) and instead
+spun forever, silently re-selecting “Show tags” (option 1, the resulting
+default) and reconstructing a <code>huh.Form</code> on every iteration –
+caught via <code>go test -timeout</code> plus a goroutine dump showing
+the loop “runnable” (CPU-bound in form construction), not blocked on
+I/O, not assumed from reading the code alone.</p>
+<p><strong>Fix for the above:</strong> a <code>ctx.Err()</code> check at
+the top of the loop, matching <code>runMainMenu</code>’s own convention
+in <code>menu.go</code> – and, unlike that precedent, actually
+load-bearing here rather than just stylistic consistency. Tests cancel
+<code>ctx</code> explicitly at the exact point they want the loop to end
+(<code>cancelAfterNFetches</code>, adapting <code>menu_test.go</code>’s
+own <code>cancelingAction</code> pattern to trigger from a data-fetch
+closure instead of a dispatched menu action), rather than relying on
+scripted input running out.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep the one-shot
+behavior, just refresh tags before displaying them next time the
+operator re-enters Manage Tags</em> – technically closes the letter of
+the bug (a fresh entry would show current data) but not the spirit of
+it: the operator’s own report describes wanting to see the result
+without leaving the screen. - <em>Rely on exhausted test input to end
+the loop</em> – the initial approach; abandoned once shown to hang
+indefinitely rather than error, per the finding above.</p>
+<p><strong>Consequences.</strong> <code>manageTags</code> now builds and
+threads a per-kind <code>fetchTags</code> closure into
+<code>manageTagsForResource</code>. <code>isCancellation</code>
+extracted from <code>cancelledIsNil</code>’s existing check and widened
+to include <code>io.EOF</code>, matching <code>isExitSignal</code>’s
+(menu.go) already-broader definition – a small, harmless generalization,
+though not what actually fixed the hang (the ctx.Err() check did). New
+<code>statefulTagsFakeEC2Client</code> (manage_tags_test.go) – unlike
+the shared <code>fakeEC2Client</code>, it actually tracks tag state
+across <code>CreateTags</code>/ <code>DescribeInstances</code> calls,
+needed to prove the refresh-after-change behavior in a test. See
+<code>PLAN.md</code> Phase 20.29.</p>
+<hr />
+<h2
+id="launch-template-version-history-scrollable-diffs-and-split-show-resource-lists">2026-07-20
+— Launch Template version history, scrollable diffs, and split Show
+resource lists</h2>
+<p><strong>Context.</strong> First real-AWS pass over Phase 20.27’s
+launch template support surfaced three UX gaps, all from actual use
+rather than design review: (1) Show Launch Template only reports
+“there’s another version,” not what changed in it; (2) Sync’s
+confirmation diff is a raw <code>fmt.Fprintln</code> dump that can
+scroll off screen with no way to page back through it; (3) Compute’s
+“Show resource lists” pages through Instances -&gt; AMIs -&gt; Launch
+Templates as one combined flow, which felt awkward when the operator
+only wanted one of the three.</p>
+<p><strong>Decision.</strong> - Show Launch Template gains a sub-choice
+after picking a template: show one version’s detail (existing behavior),
+list every version (number/creation time/default flag, via new
+<code>inventory.ListLaunchTemplateVersions</code>), or diff any two
+versions’ decoded cloud-init content (reusing Sync’s own diff mechanism,
+read-only – never creates a version). - Both Sync’s diff and the new
+version-diff render through the shared List-tier component
+(<code>tui.RunListView</code>) in real interactive use, via new
+<code>displayRows</code>/<code>displayDiff</code> helpers – scrollable,
+consistent chrome with every other resource listing in the app, rather
+than a second, purpose-built diff viewer. Accessible/test mode (no real
+bubbletea loop available) falls back to the same plain dump Sync already
+printed, so no existing test needed rewriting. - Compute’s single “Show
+resource lists” becomes three menu entries: “Show instances,” “Show
+AMIs,” “Show launch templates.” S3 and Key Management are deliberately
+left alone – each has exactly one resource type, so there’s no
+paging-through-others problem to fix there.</p>
+<p><strong>Rationale.</strong> - Listing versions and diffing two of
+them are different questions (“what versions exist” vs. “what changed”)
+– collapsing them into one action would either overload a single screen
+or force the operator through a diff they didn’t ask for just to see a
+version list. - Reusing the List-tier component for diffs (rather than a
+bespoke viewer) keeps the diff-in-a-scrollable-box mechanism identical
+everywhere it’s needed (Sync’s confirmation step and Show’s
+version-diff), and matches this project’s general preference for reusing
+existing chrome over inventing new UI per feature. - Splitting Show
+resource lists only where the reported problem actually exists
+(Compute’s three resource types) avoids restructuring S3/Key Management
+for a problem they don’t have.</p>
+<p><strong>Rejected alternatives.</strong> - <em>A single “list versions
+with diff” screen</em> – combines two distinct questions into one, and
+would need to diff by default or require an extra step to opt out,
+neither of which is simpler than two separate choices. - <em>A dedicated
+diff viewer component</em> (syntax-aware, side-by-side) – more capable,
+more to build than this need calls for; the List-tier’s existing
+scroll/filter chrome is sufficient for plain-text unified diffs. -
+<em>Keep Show resource lists combined, let <code>q</code> advance
+instead of exit</em> – considered as a lighter-touch fix, but three
+separate, directly reachable menu entries is more discoverable than a
+“press q to see the next one” convention the operator would have to
+learn.</p>
+<p><strong>Consequences.</strong> New
+<code>inventory.ListLaunchTemplateVersions</code> +
+<code>LaunchTemplateVersionSummary</code>;
+<code>show_launch_template.go</code> restructured around a
+template-level sub-menu (existing tests updated for the new leading
+choice-prompt); <code>MenuActions.ShowResourceLists</code> replaced by
+<code>ShowInstances</code>/<code>ShowAMIs</code>/<code>ShowLaunchTemplates</code>;
+<code>mainMenuItems</code> grows from 18 to 20, requiring the same
+hardcoded-index maintenance in <code>menu_test.go</code> every prior
+menu-ordering change in this project has needed. See
+<code>PLAN.md</code> Phase 20.28.</p>
+<hr />
+<h2 id="accept-v-prefixed-launch-template-versions">2026-07-20 — Accept
+“v”-prefixed launch template versions</h2>
+<p><strong>Context.</strong> Found via the debug log from the operator’s
+first real-AWS pass over Phase 20.27
+(<code>clasm-debug-20260720-132204.jsonl</code>): typing <code>v1</code>
+at a version prompt – a natural thing to type, since
+<code>launchTemplateLabel</code>’s own display format is “default v2” –
+caused a hard AWS rejection at two call sites:
+<code>DescribeLaunchTemplateVersions</code> (“Invalid launch template
+version: either ‘<span
+class="math inline"><em>D</em><em>e</em><em>f</em><em>a</em><em>u</em><em>l</em><em>t</em><sup>′</sup>,<sup>′</sup></span>Latest’,
+or a numeric version are allowed”) and <code>ModifyLaunchTemplate</code>
+(“A launch template version must be specified…”). The latter is why
+Promote appeared to silently do nothing – it had actually failed
+outright, not succeeded-without- refreshing as first suspected.</p>
+<p><strong>Decision.</strong> New
+<code>normalizeVersionSelector(s string) string</code> strips a leading
+<code>v</code>/<code>V</code> from a plain version number
+(<code>"v1"</code> -&gt; <code>"1"</code>) before it reaches any AWS
+call. <code>"$Default"</code>/<code>"$Latest"</code> and anything not of
+the exact form <code>v&lt;digits&gt;</code> pass through unchanged.
+Applied at all four places a version selector is entered: the shared
+<code>promptLaunchTemplateVersion</code>/<code>promptLaunchTemplateVersionLabeled</code>
+(Show, Create-from-template, Sync’s compare-against version, Show’s two
+version-diff prompts), Promote’s version prompt, and Delete Version(s)’s
+comma-separated list.</p>
+<p><strong>Rationale.</strong> - The mismatch is self-inflicted: this
+project’s own display convention (“v2”, “v3” in
+<code>launchTemplateLabel</code>) primes the operator to type what they
+see elsewhere in the same tool, and AWS’s API has no tolerance for that
+format at all – normalizing at the boundary is more correct than asking
+every operator to remember an AWS-vs-clasm formatting distinction. - A
+single shared normalization function, applied everywhere a version
+selector is entered, avoids fixing the same bug three more times as new
+version-entry points get added later.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Change
+<code>launchTemplateLabel</code>’s display format instead</em> (drop the
+“v” prefix) – fixes the display/input mismatch from the other direction,
+but “v2”/“v3” is a reasonable, common way to label versions for a human
+reader; normalizing the input is less invasive than changing an
+already-shipped display convention. - <em>Validate and reject
+<code>"v1"</code> with a clear error message, re-prompt</em> –
+considered, but silently accepting the obviously-intended value is
+friendlier than making the operator retype it correctly, and there’s no
+ambiguity in what <code>v&lt;digits&gt;</code> means.</p>
+<p><strong>Consequences.</strong>
+<code>internal/workflow/show_launch_template.go</code> gains
+<code>normalizeVersionSelector</code>;
+<code>launch_template_manage.go</code>’s Promote and Delete Version(s)
+prompts both call it. Test-first: reproduced the exact <code>"v1"</code>
+-&gt; AWS-rejects-it failure before fixing it. See <code>PLAN.md</code>
+Phase 20.28.</p>
+<hr />
+<h2
+id="launch-templates-build-directly-from-cloud-init-yaml-diff-then-new-version-sync-fold-in-imdsv2">2026-07-20
+— Launch templates: build directly from cloud-init YAML,
+diff-then-new-version sync, fold in IMDSv2</h2>
+<p><strong>Context.</strong> Requested directly
+(<code>notes-from-tom.txt</code>) and confirmed as v0.0.2’s headline
+feature, 2026-07-20 – clasm’s Compute domain currently has no concept of
+EC2 launch templates at all, and the operator’s work group uses them to
+encapsulate what a running instance needs (RDM’s software requirements,
+primarily), evolving that definition over time as requirements change.
+TODO.md separately carried an IMDSv2 bug (new instances launched by
+clasm set no <code>MetadataOptions</code>, triggering security warnings)
+that turned out to share the exact same AWS concept as the new work.</p>
+<p><strong>Decision.</strong> Build launch templates directly from
+cloud-init YAML, never derived from an existing running instance:
+<code>CreateLaunchTemplate</code>/
+<code>CreateLaunchTemplateVersion</code> take a
+<code>LaunchTemplateData</code> struct constructed by clasm itself
+(reusing Feature 3’s existing AMI/
+instance-type/subnet/security-group/IAM-profile/tag prompts, with the
+YAML’s content as <code>UserData</code>), not
+<code>GetLaunchTemplateData</code>’s instance-derived path. New template
+versions are created only after a diff: decode the target version’s
+<code>UserData</code>, compare against the local YAML file, skip
+entirely if identical (“no changes – nothing to sync”), otherwise show a
+plain-text unified diff and require explicit confirmation before
+<code>CreateLaunchTemplateVersion</code>. Promoting a version to
+<code>$Default</code> is always a separate, explicit action
+(<code>ModifyLaunchTemplate</code>), never a side effect of syncing.
+“Create EC2 Instance from Launch Template” is a third, parallel entry
+point alongside Create-from-AMI and Create-from-Cloud-Init – not a
+hybrid wizard that also lets the operator override individual template
+fields. IMDSv2 (<code>HttpTokens: required</code>) is folded into this
+same pass: enforced unconditionally on every new template and on the
+existing plain <code>RunInstances</code> launch paths (closing the
+pre-existing TODO.md bug), and flagged passively (not auto-fixed) on any
+existing template found without it.</p>
+<p><strong>Rationale.</strong> - The operator has never used launch
+templates before and, in an earlier round of this design conversation,
+initially framed the sync question as “which YAML file is this template
+tied to” – clarified directly to “is there a mechanism to create a
+template without an existing instance,” confirming the build-from-YAML-
+directly model rather than a persistent file↔︎template association clasm
+would need to track as new state. - Diff-before-version avoids the AWS
+default of tools that always bump a version number regardless of content
+– Tom’s own framing of “does this actually require a new version” is
+exactly this no-op check, and it keeps a template’s version history
+meaningful (one version per actual content change) rather than
+accumulating no-op versions from repeated syncs of unchanged YAML. -
+Explicit promote-to-default (never automatic) matches the operator’s own
+stated expectation: “I can see people experimenting with launch
+templates during the development process” – an in-progress sync
+shouldn’t change what a plain “Create from Launch Template” launch picks
+up by default. - Folding IMDSv2 into this pass rather than deferring it
+with the tags-screen/backup-bucket-default/top-level-tag-management
+items (also open in TODO.md) is justified narrowly by shared surface
+area
+(<code>MetadataOptions</code>/<code>InstanceMetadataOptionsRequest</code>
+touches the same
+<code>RunInstances</code>/<code>RequestLaunchTemplateData</code> code
+this phase already changes) – not a general precedent for bundling
+unrelated bug fixes into feature work. - The plain-text diff
+(<code>github.com/aymanbagabas/go-udiff</code>, already present in
+<code>go.sum</code> as an indirect dependency via
+<code>charmbracelet/x/exp/teatest</code>, used by
+<code>internal/filemanager</code>’s own tests) means no new third-party
+dependency is actually introduced – only promoted from indirect to
+direct, the same move Phase 20.24 already made for
+<code>x/ansi</code>.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Derive templates from
+an existing instance’s live config</em>
+(<code>GetLaunchTemplateData</code>) – doesn’t fit the operator’s actual
+flow (YAML authored first, template built from it), and would require an
+instance to already exist before a template could, backwards from
+“create a template without an existing EC2 instance.” - <em>Always
+create a new version on sync, no diff check</em> – simpler, but produces
+meaningless version history (every sync bumps a version even with no
+actual content change) and doesn’t answer Tom’s own question about
+whether a sync is even needed. - <em>Auto-promote a new version to
+default after sync</em> – more convenient, but means an unreviewed,
+possibly-experimental version silently becomes what the next plain
+launch picks up. - <em>Hybrid “launch from template but override
+individual fields” wizard</em> – an earlier framing in this same design
+conversation, dropped once the operator clarified the actual ask was a
+third parallel entry point, matching Create-from-AMI/Create-from-Cloud-
+Init’s existing shape. - <em>A dedicated “audit all templates for
+IMDSv2” action</em> – more visible, but more to build than the operator
+actually asked for (“recommended for existing templates if missing”);
+passive flagging on the existing Show/List screens covers that without a
+new top-level action. - <em>Defer IMDSv2 alongside the
+tags-screen/backup-bucket-default/ top-level-tag-management items</em> –
+considered, since those are also open TODO.md items being deliberately
+deferred past this phase, but rejected specifically because IMDSv2’s
+<code>MetadataOptions</code> surface overlaps directly with code this
+phase already touches, unlike the other three.</p>
+<p><strong>Consequences.</strong> New
+<code>internal/inventory.LaunchTemplate</code> type and per-version
+detail type; <code>EC2API</code> gains 7 methods; six new Compute-menu
+actions; <code>github.com/aymanbagabas/go-udiff</code> promoted to a
+direct dependency; <code>launch_execute.go</code>’s
+<code>RunInstances</code> call gains <code>MetadataOptions</code>
+(previously absent). No change to any existing v0.0.1 workflow’s
+behavior otherwise – v0.0.1 is already piloting in production, so this
+is additive. See <code>PLAN.md</code> Phase 20.27.</p>
+<hr />
+<h2
+id="full-height-menu-tier-via-live-windowsizemsg-tracking-applied-at-every-depth">2026-07-20
+— Full-height Menu tier via live WindowSizeMsg tracking, applied at
+every depth</h2>
+<p><strong>Context.</strong> Phase 20.24 (2026-07-13) cleared the screen
+at startup but deliberately left the “full height” half of that request
+unimplemented – the domain picker (and every Menu-tier
+<code>huh.Select</code>) stayed a compact, content-sized box, pending
+clarification of what “full height” meant for a component with no
+built-in notion of it. Clarified directly, 2026-07-20: the wrapping TUI
+chrome should carry a real terminal height, driving how many rows the
+<code>huh.Select</code> shows; when a menu has fewer options than that,
+the chrome should still indicate the full screen rather than shrinking
+to content.</p>
+<p><strong>Decision.</strong> Use
+<code>huh.Select.Height(n)</code>/<code>huh.Form.WithHeight(n)</code>
+directly – confirmed by reading <code>huh</code> v1.0.0’s source rather
+than assumed: it already subtracts title/description height before
+sizing the options viewport, and renders through
+<code>lipgloss.Style.Height</code>, which pads short content with blank
+lines to reach <code>n</code>. Get <code>n</code> by intercepting
+<code>tea.WindowSizeMsg</code> live (the same pattern
+<code>internal/tui/picker.go</code>/<code>listview.go</code> already use
+for the Picker/List tier) rather than a one-shot
+<code>x/term.GetSize</code> read before the form starts, so a
+mid-session terminal resize is picked up the same way it already is
+everywhere else in the app. Apply this at <code>runMenuField</code>, the
+single shared entry point every Menu-tier <code>huh.Select</code>
+already runs through – so the root domain picker and every submenu (S3,
+EC2, Key Management) become full-height together, not just the root
+picker alone.</p>
+<p><strong>Rationale.</strong> - huh’s own <code>WindowSizeMsg</code>
+handling only shrinks a group to fit
+(<code>min(neededHeight, msg.Height)</code>) when
+<code>f.height == 0</code>; it never grows short content to fill unused
+space, so <code>WithHeight</code> must be called explicitly with a real
+value – there’s no simpler built-in toggle for this. - Live tracking via
+<code>WindowSizeMsg</code> reuses an already-proven pattern in this
+codebase instead of introducing a second, weaker mechanism
+(<code>x/term.GetSize</code>) that would go stale on resize. - Fixing
+this once in <code>runMenuField</code> avoids the exact inconsistency
+Phase 20.24 refused to introduce: only the root picker being full-height
+while every submenu stayed compact, undoing the chrome-consistency work
+of Phases 20.17-20.25.</p>
+<p><strong>Rejected alternatives.</strong> - <em>One-shot
+<code>x/term.GetSize</code> before <code>Run()</code></em> – simpler,
+but blind to a terminal resize mid-menu, unlike every other screen in
+the app. - <em>Full-height only at the root domain picker</em> –
+explicitly the option Phase 20.24 already declined, for the
+inconsistency reason above. - <em>Redesign the whole Menu tier onto a
+full-height bubbletea component, retiring <code>huh.Select</code> for
+navigation menus</em> – the “bigger alternative” flagged in the
+2026-07-14 hand-off as unscoped; not needed now that
+<code>huh.Select.Height</code>/<code>Form.WithHeight</code> turned out
+to already support this directly.</p>
+<p><strong>Consequences.</strong> <code>runMenuField</code>’s
+<code>quitKeyGuard</code> wrapper (currently used only to guard the Quit
+keybinding while a field is filtering) gains <code>WindowSizeMsg</code>
+interception and is extended to wrap the non-filtering
+<code>form.Run()</code> path too, so both paths go through one
+<code>tea.Model</code>. The <code>"(q to go back)"</code> hint
+<code>runMenuField</code> prints outside the form’s own box must be
+accounted for in the reserved-line budget passed to
+<code>WithHeight</code>, or combined output overflows the terminal by
+one line. See <code>PLAN.md</code> Phase 20.26.</p>
+<hr />
+<h2 id="bucket-picker-for-backup-archive-trim">2026-07-13 — Bucket
+picker for Backup Archive &amp; Trim</h2>
+<p><strong>Context.</strong> Backup Archive &amp; Trim’s S3 bucket
+prompt was pure free text – no memory aid for an operator who has to
+recall the exact bucket name from scratch every run, unlike every other
+bucket-selection call site in the app (<code>pickBucket</code>, Phase
+20.4), which already offers a filterable pick list. Requested directly,
+with an explicit requirement that typing a bucket name (not just picking
+from a list) must remain possible.</p>
+<p><strong>Decision.</strong> New <code>promptBackupBucket</code>:
+fetches this account’s S3 buckets (<code>inventory.ListBuckets</code>,
+the same call <code>refreshS3</code> already uses) and offers them as a
+filterable pick list (<code>'/'</code> to filter, matching every other
+filterable screen in this app), plus an “Other (type a bucket name)”
+entry that falls through to the original free-text prompt. Falls back to
+the free-text prompt directly (no picker at all) if the listing fails or
+comes back empty – there’s nothing more reliable, or for an empty
+account nothing useful, to offer instead (mirrors
+<code>promptKeyPairNameOrCreate</code>’s own precedent for the identical
+reason). Deliberately built as a Menu-tier <code>huh.Select</code> (via
+the existing <code>pickComparable</code> helper) rather than a
+Picker-tier <code>tui.RunPicker</code> (unlike every other
+bucket-selection call site) – <code>promptBackupBucket</code> must stay
+embedded inside <code>backupArchiveAndTrim</code>’s own pipe-testable
+prompt sequence (directory, then bucket, then age threshold, per
+“Reorder Backup Archive &amp; Trim’s prompts” below), and a real
+bubbletea Program can’t be driven by a test’s pipe input the way
+<code>pickBucket</code>’s callers already accept – huh’s own built-in
+<code>'/'</code> filtering (confirmed: same default keybinding as this
+project’s Picker/List-tier filter convention) covers the “let me narrow
+this down by typing” need without needing the untestable Picker-tier
+component at all.</p>
+<p><strong>Rationale.</strong> huh.Select’s accessible-mode pipe-testing
+path expects a row <em>number</em>, not free text, so existing tests
+(which never populate <code>fakeS3Client.buckets</code>) naturally
+exercise the empty-list fallback branch unchanged – zero existing tests
+needed rewriting. New tests cover the populated-list path (picking a
+known bucket by number), the “Other” escape hatch, and the listing-error
+fallback, each asserting on the resulting bucket name via the upload
+command’s <code>s3://&lt;bucket&gt;/...</code> destination (the same
+verification technique
+<code>TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix</code>
+already established).</p>
+<p><strong>Consequences.</strong> New <code>bucketChoice</code> type and
+<code>promptBackupBucket</code> function in
+<code>internal/workflow/backup_archive.go</code>; no signature changes
+to <code>BackupArchiveAndTrim</code>/<code>backupArchiveAndTrim</code>
+(bucket resolution still happens in the same place in the same testable
+core, just via a different prompt function).</p>
+<hr />
+<h2 id="clear-the-screen-at-startup">2026-07-13 — Clear the screen at
+startup</h2>
+<p><strong>Context.</strong> clasm printed its first line (“clasm x.x –
+authenticated as AWS account …”) directly into whatever the terminal
+already had on screen – old shell history, a previous command’s output,
+etc. – unlike a typical full-screen terminal application, which starts
+from a clean slate. Requested directly, alongside a request to have the
+startup screen use the terminal’s full height – addressed here only
+partially; see the note in PLAN.md’s corresponding phase entry about
+what was deliberately not changed and why.</p>
+<p><strong>Decision.</strong> New
+<code>ui.ClearScreen(w io.Writer)</code>, sending the same two escape
+sequences bubbletea’s own <code>tea.ClearScreen</code> command sends
+(<code>ansi.EraseEntireScreen</code> +
+<code>ansi.CursorHomePosition</code>, from
+<code>github.com/charmbracelet/x/ansi</code> – already a transitive
+dependency via <code>bubbletea</code>, now promoted to direct), rather
+than a hand-rolled escape string. Called once in <code>main()</code>,
+after the <code>-help</code>/<code>-license</code>/
+<code>-version</code> early-exits (which must stay script/pipe-friendly,
+so they must not inject terminal control codes) but before any other
+output, including error paths (config load failures, AWS client
+construction failures, etc.) – the whole interactive session starts from
+a clean terminal, not just the happy path.</p>
+<p><strong>Rationale.</strong> Reusing bubbletea’s own escape sequences
+(via the <code>x/ansi</code> package it’s already built on) keeps this
+consistent with how every List/Picker/Manager screen already clears
+itself on <code>Init()</code>, rather than inventing a second,
+potentially-different way to clear a terminal.</p>
+<p><strong>Consequences.</strong> New <code>internal/ui/clear.go</code>
+(+ test); <code>github.com/charmbracelet/x/ansi</code> promoted from
+indirect to direct in <code>go.mod</code>.
+<code>cmd/clasm/main.go</code> calls <code>ui.ClearScreen(out)</code>
+once, right after the flag-based early exits.</p>
+<hr />
+<h2
+id="huh-fields-get-a-full-box-border-to-match-tuis-chrome">2026-07-13 —
+huh fields get a full box border to match tui’s chrome</h2>
+<p><strong>Context.</strong> Phase 20.17 gave <code>huh</code> fields
+and <code>internal/tui</code>’s boxes the same indigo accent color, but
+not the same <em>shape</em>: <code>huh.ThemeBase()</code>’s
+<code>Focused.Base</code> draws only a thick bar down the left side of a
+field (<code>lipgloss.ThickBorder().BorderLeft(true)</code>), while
+<code>tui/box.go</code> draws a full <code>┌─┐│ │└─┘</code> rectangle.
+Matching color without matching shape left a Menu-tier
+<code>huh.Select</code> and a Picker/List/Manager screen still reading
+as two different visual languages – raised when reviewing chrome
+consistency alongside adding contextual description text (below).</p>
+<p><strong>Decision.</strong> <code>tui.Theme()</code>’s
+<code>Focused.Base</code>/<code>Focused.Card</code> now call
+<code>.Border(lipgloss.NormalBorder())</code> (the same box-drawing
+characters <code>box.go</code> uses) instead of inheriting
+<code>ThemeBase</code>’s left-only <code>ThickBorder</code>, still
+colored in the shared accent. <code>Padding(0, 1)</code> replaces
+<code>ThemeBase</code>’s <code>PaddingLeft(1)</code> (which existed only
+to clear the single left bar) with balanced left/right breathing room,
+matching <code>box.go</code>’s <code>BoxLine</code>’s own “│ content │”
+convention. <code>Blurred.Base</code> still hides its border via
+<code>lipgloss.HiddenBorder()</code>, now reserving the same four-sided
+footprint rather than a one-sided one.</p>
+<p><strong>Rationale.</strong> Every clasm form is a single field in a
+single group (no multi-field forms exist in this codebase – confirmed
+when <code>Theme()</code> was first written), so a full box reads as a
+small dialog card rather than a form-with-a-sidebar-accent – the same
+“boxed window” shape a List/Picker/Manager screen already has. Verified
+via a throwaway test rendering
+<code>Theme().Focused.Base.Render(...)</code> directly with a forced
+true-color profile and inspecting the raw ANSI output (the same
+technique used to verify Phase 20.17’s border styling), rather than
+driving a real interactive terminal.</p>
+<p><strong>Consequences.</strong> No signature changes –
+<code>Theme()</code>’s return type and every call site are unaffected;
+this is a pure style-value change inside the function.</p>
+<hr />
+<h2
+id="contextual-description-text-on-menupicker-tier-screens">2026-07-13 —
+Contextual description text on Menu/Picker-tier screens</h2>
+<p><strong>Context.</strong> The domain picker (and every other
+Menu-tier <code>huh.Select</code> and Picker-tier
+<code>tui.RunPicker</code> screen) showed only a bare title – no
+explanation of what the choice means or what happens next. Raised
+alongside the border-matching decision above, as part of the same “make
+the chrome and the screens themselves more consistent and informative”
+pass.</p>
+<p><strong>Decision.</strong> Every Menu-tier <code>huh.Select</code>
+gains a <code>.Description(...)</code> call (huh’s own built-in field,
+previously unused everywhere in this codebase) with one or two sentences
+of context. <code>tui.PickerConfig</code> gains a new
+<code>Description string</code> field, rendered as its own line
+(matching <code>Header</code>’s existing shape: the line itself plus a
+<code>Divider</code>) directly below the top border, above any
+<code>Header</code>/rows; <code>filterableWindowHeight</code> accounts
+for its two extra chrome rows the same way it already does for
+<code>Header</code>. <code>pickString</code>/<code>pickComparable</code>
+(the shared Menu-tier helpers) and
+<code>pickImage</code>/<code>pickBucket</code>/
+<code>pickInstance</code>/<code>pickInstanceDefaulted</code>
+(Picker-tier functions called from more than one call site with
+meaningfully different context) all gained a
+<code>description string</code> parameter threaded from their own
+callers; Picker-tier functions with exactly one caller
+(<code>pickInstanceProfileChoice</code>, <code>pickRole</code>,
+<code>pickSubnet</code>, <code>pickKeyPairChoice</code>,
+<code>pickKeyPairForDeletion</code>, <code>pickLifecycleRule</code>) got
+a single description written directly into the function instead, since
+there was no real per-call-site variation to preserve. List-tier screens
+(<code>ListViewConfig</code>/<code>ListViewModel</code> – the tabular
+“Show resource lists” displays) deliberately did NOT get a
+<code>Description</code> field: they aren’t “just a pick list,” and
+their tabular column headers already carry the relevant context.</p>
+<p><strong>Rationale.</strong> huh’s <code>.Description()</code> is a
+stable, well-established part of its own API – adding text there is
+essentially free and carries no risk of a rendering bug on our part. The
+Picker-tier <code>Description</code> field mirrors <code>Header</code>’s
+existing chrome shape exactly (same two-row cost, same position, same
+<code>Divider</code> beneath it), so it reuses an already-proven layout
+instead of inventing a new one. Threading a parameter only where callers
+actually differ (rather than everywhere) avoids padding every call site
+with an unused, always-“” argument.</p>
+<p><strong>Consequences.</strong> <code>pickString</code>,
+<code>pickComparable</code>, <code>pickImage</code>,
+<code>pickBucket</code>, <code>pickInstance</code>,
+<code>pickInstanceDefaulted</code> all gained a
+<code>description string</code> parameter – every call site across
+<code>internal/workflow</code> was updated.
+<code>internal/tui/filter.go</code>’s
+<code>filterableWindowHeight</code> gained a
+<code>hasDescription bool</code> parameter (<code>ListViewModel</code>’s
+call site passes <code>false</code> explicitly, since List-tier doesn’t
+use this). New <code>internal/tui/filter_test.go</code> and additions to
+<code>picker_test.go</code> cover the height math and rendering
+position.</p>
+<hr />
+<h2
+id="recall-backup-archive-trims-instancedirectory-choices-per-instance">2026-07-13
+— Recall Backup Archive &amp; Trim’s instance/directory choices
+per-instance</h2>
+<p><strong>Context.</strong> Backup Archive &amp; Trim always started
+from a blank slate: pick an instance from the full list every time, and
+(absent a <code>backupDirRules</code> Name-pattern match) type the
+backup directory from scratch every time – even for an operator who runs
+this same instance/directory combination repeatedly. Requested directly:
+recall what was used last time as the default for next time.</p>
+<p><strong>Decision.</strong> A new <code>internal/state</code> package
+persists a small <code>~/.clasm_state</code> YAML file – deliberately
+NOT folded into <code>~/.clasm</code> (config.Config), which is
+exclusively user-hand-edited today (<code>Load()</code> only, no
+<code>Save()</code> exists): auto-writing into a file the operator
+maintains by hand risked silently reformatting or stripping their own
+edits. <code>~/.clasm_state</code> is exclusively app-managed, safe to
+delete, and never meant for hand-editing. History is keyed per-instance
+(<code>map[instanceID]directory</code>), not a single global “last used”
+value, since different instances plausibly back up different
+directories. <code>internal/workflow.BackupHistory</code> is the narrow
+interface <code>internal/ workflow</code> sees
+(<code>LastInstanceID</code>, <code>LastDirectoryByInstance</code>, and
+a <code>Save(instanceID, directory string) error</code> callback) – this
+package never imports <code>internal/state</code> or knows about
+YAML/file paths; <code>cmd/clasm/main.go</code> owns the actual on-disk
+format and wires the callback. The recalled directory takes priority
+over <code>backupDirRules</code>’ Name-pattern-based default (it
+reflects what was actually typed for this exact instance most recently,
+not a generic pattern match). The instance picker gained a new
+<code>tui.PickerConfig.InitialCursor int</code> field (pre-positions the
+cursor on a specific row instead of always starting at 0) so the
+recalled instance is pre-selected, not just pre-filled as text –
+<code>pickInstance</code>/<code>pickInstanceDefaulted</code>
+(<code>power_state.go</code>) split so every other caller of
+<code>pickInstance</code> (start/stop/terminate/create- AMI/etc.) is
+unaffected, while Backup Archive &amp; Trim’s own call site passes
+<code>hist.LastInstanceID</code>.</p>
+<p><strong>Rationale.</strong> Separating “settings” (hand-edited,
+read-only to the app) from “history” (app-managed, disposable) avoids
+ever surprising an operator by rewriting a file they maintain
+themselves. Per-instance keying costs one extra map versus a single
+string field, for meaningfully better behavior once more than one
+instance is in rotation. <code>Save</code>’s error is reported to
+<code>w</code> as a warning, not returned as fatal – history is a
+convenience, not core to the backup itself; a disk-write failure here
+shouldn’t abort an otherwise-successful backup run.</p>
+<p><strong>Consequences.</strong> <code>BackupArchiveAndTrim</code>’s
+signature gained a <code>hist BackupHistory</code> parameter (every call
+site, including all existing tests, updated – the zero value disables
+all of this, matching pre-existing behavior exactly).
+<code>tui.PickerConfig</code> gained <code>InitialCursor</code>;
+out-of-range values (including the zero value, when there’s no prior
+choice) fall back to row 0, so every other <code>PickerConfig</code>
+caller is unaffected. New <code>internal/state</code> package (+ tests)
+and new tests in <code>internal/workflow/backup_archive_test.go</code>
+(history takes priority over the Name-pattern rule; <code>Save</code> is
+called with the right instance/directory; a <code>Save</code> error is a
+warning, not fatal) and <code>internal/tui/picker_test.go</code>
+(<code>InitialCursor</code> positions the cursor; out-of-range falls
+back to 0).</p>
+<hr />
+<h2 id="reorder-backup-archive-trims-prompts">2026-07-13 — Reorder
+Backup Archive &amp; Trim’s prompts</h2>
+<p><strong>Context.</strong> The workflow asked its four questions in an
+order that didn’t match how an operator actually thinks about the task:
+instance, backup directory, age threshold (days), S3 bucket – age
+threshold sat between “where are the files” (instance, directory) and
+“where are they going” (bucket), which reads oddly since the threshold
+is more naturally understood once both endpoints are already known.
+Requested directly, with the exact desired order confirmed: instance,
+directory, bucket, then age threshold.</p>
+<p><strong>Decision.</strong> Moved the S3 bucket prompt (and its
+immediately-following
+<code>BucketRegion</code>/<code>newS3Client</code>/<code>CheckS3BucketAccess</code>
+pre-flight sequence) to run directly after the backup directory prompt,
+ahead of the age threshold prompt, which now runs last, immediately
+before the dry-run listing.</p>
+<p><strong>Rationale.</strong> “Of the files in that directory, which
+are old enough to move to that bucket” reads as one coherent question
+once both the source directory and destination bucket are already fixed,
+rather than asking “how old” before the destination is even known.</p>
+<p><strong>Consequences.</strong> No parameter or return-type changes –
+purely a reordering of existing prompt calls within
+<code>backupArchiveAndTrim</code>. Every existing test’s input string
+(four <code>\n</code>-joined answers in read order) was updated to match
+the new order; assertions were otherwise unchanged.</p>
+<hr />
+<h2
+id="chrome-standardization-one-shared-indigo-accent-via-lipgloss">2026-07-13
+— Chrome standardization: one shared indigo accent via lipgloss</h2>
+<p><strong>Context.</strong> With termlib fully removed (below), every
+screen in clasm is either a <code>huh</code> field or a
+<code>bubbletea</code> component, but they render as two unrelated
+visual languages: <code>huh</code>’s default <code>ThemeCharm</code> is
+a colorful indigo/fuchsia/cream card with a thick colored border;
+<code>internal/tui</code>’s List/Picker/Manager chrome is plain,
+uncolored ASCII box-drawing. The user asked to standardize chrome as the
+next pass after termlib removal, once it was clear the two tiers had
+never been visually reconciled.</p>
+<p><strong>Decision.</strong> Adopt a single shared accent color — the
+adaptive indigo <code>ThemeCharm</code> already uses
+(<code>#5A56E0</code> light / <code>#7571F9</code> dark) — applied two
+ways: a new <code>tui.Theme() *huh.Theme</code> (built from
+<code>huh.ThemeBase()</code>, adding only the indigo accent to focused
+titles/borders/selection, omitting <code>ThemeCharm</code>’s
+fuchsia/cream/green/red extras) wired into every
+<code>huh.NewForm(...)</code> call site (traced: exactly five in the
+whole app); and the same indigo + bold applied to
+<code>internal/tui/box.go</code>’s shared border/title-rendering
+functions, which <code>ListViewModel</code>, <code>PickerModel</code>,
+and <code>internal/filemanager</code> all call directly — one change
+re-skins all three tiers. Cursor-row reverse-video and instance-state
+green/red/yellow are left alone (selection/data semantics, not
+branding). Also folded into this pass:
+<code>progress_ticker. go</code>’s printed line becomes a real
+<code>bubbles/spinner</code>-based component (explicitly deferred out of
+the termlib removal for exactly this reason), and
+<code>object_browser.go</code>’s one remaining bare
+<code>huh.Select</code> bucket picker moves onto the shared
+<code>pickBucket</code>/<code>PickerModel</code> — the only
+bucket-selection call site that hadn’t already converted in Phase
+20.4.</p>
+<p><strong>Rationale.</strong> - Reusing <code>ThemeCharm</code>’s own
+indigo (rather than inventing a new color) keeps continuity with what’s
+already been on screen since Phase 20.2, and it’s already adaptive to
+light/dark terminal backgrounds — no new color-theory work needed. - A
+single accent, not <code>ThemeCharm</code>’s full five-color set,
+matches an internal ops tool’s understated register better than a
+colorful consumer-CLI look (DESIGN.md’s own framing throughout:
+“internal tool for Library staff… not public-facing”). -
+<code>internal/tui/box.go</code> is the one place style changes apply to
+every tier at once, confirmed by checking that
+<code>internal/filemanager</code> calls the exact same exported
+functions <code>ListViewModel</code>/<code>PickerModel</code> call
+internally — no per-tier copy to keep in sync. - <code>lipgloss</code>
+needs no new NO_COLOR/non-TTY plumbing — it already detects both via
+<code>termenv</code> and no-ops its own ANSI codes, so this doesn’t
+duplicate or conflict with the existing manual
+<code>ui.ColorEnabled()</code> gate (which stays scoped to the STATE
+column it already governs). - <code>bubbles/spinner</code> and
+<code>lipgloss</code> are not new dependencies in substance:
+<code>bubbles</code> is already a direct dependency (its
+<code>key</code> sub-package is used throughout the Menu tier), and
+<code>lipgloss</code> is already an indirect one via
+<code>huh</code>/<code>bubbletea</code> — this is drawing on the charm
+ecosystem this project already standardized on, not introducing a new
+library.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Restyle
+<code>huh</code> to match <code>tui</code>’s plain/monochrome look</em>
+— considered and explicitly not chosen (asked directly): would mean
+fighting <code>huh</code>’s own default rendering to strip color back
+out, rather than giving the plainer tier a real style. Bringing
+<code>tui</code> up to meet <code>huh</code> reuses more of what’s
+already proven on screen. - <em>Adopt <code>ThemeCharm</code> verbatim,
+no custom theme</em> — rejected: its fuchsia/cream/green/red extras
+elsewhere in the theme would still leave <code>tui</code>’s boxes with
+no equivalent color to match against for everything but the accent; a
+custom subset theme is barely more work and gives <code>tui</code> one
+clear color to mirror.</p>
+<p><strong>Consequences.</strong> - A new <code>internal/tui</code> file
+defines the shared <code>huh.Theme</code> and the lipgloss styles
+<code>box.go</code> uses — <code>internal/tui</code> gains a
+<code>huh</code> import it didn’t previously need (still no import
+cycle: <code>tui</code> imports nothing from <code>ui</code> or
+<code>workflow</code>). - Five <code>huh.NewForm(...)</code> call sites
+gain <code>.WithTheme(tui.Theme())</code>. -
+<code>progress_ticker.go</code>’s public shape
+(<code>startProgressTicker</code>) is replaced by a
+<code>bubbletea</code>-based equivalent; callers
+(<code>create_ami_   from_instance.go</code>,
+<code>show_cloud_init.go</code>, <code>backup_archive.go</code>) update
+to the new call shape. Its <code>interval time.Duration</code> parameter
+is dropped rather than carried over: under the old
+<code>fmt.Fprintf</code>-per- tick design it meant “how often a new
+status line prints” (all three callers passed the same
+<code>30*time.Second</code>); under a real animated spinner that value
+would mean “how often the glyph advances,” and 30s is far too slow to
+read as an animation, so keeping the argument would leave it dead or
+silently wrong everywhere it’s called. A package constant,
+<code>DefaultSpinnerInterval = 120*time.Millisecond</code>, replaces it.
+- <code>object_browser.go</code> drops its bespoke
+<code>selectBucket</code> construction in favor of
+<code>pickBucket</code>; <code>huhCancelledIsNil</code> stays in use for
+<code>confirmLink</code>/the local-directory <code>huh.Input</code> in
+the same function.</p>
+<hr />
+<h2
+id="remove-termlib-entirely-input-via-huh-output-via-io.writer">2026-07-13
+— Remove termlib entirely: input via huh, output via io.Writer</h2>
+<p><strong>Context.</strong> The Menu/Picker/List tier conversion (Phase
+20.2-20.14) is done, but <code>termlib</code> itself is still in
+<code>go.mod</code> with ~44 files importing it — every action wizard’s
+free-text/confirm prompts, plus <code>internal/ui</code>’s lower-level
+helpers (<code>color.go</code>/<code>display.go</code>/
+<code>picklist.go</code>/<code>prompt.go</code>) and
+<code>internal/workflow/confirm.go</code>. Per DESIGN.md’s “Not decided
+yet” note, the plan for this remaining surface was deliberately left
+open (“may evolve as we work through the transition”). Before converting
+anything, we audited every remaining <code>termlib</code> symbol’s
+actual call sites (not just its imports) to find out exactly what needs
+replacing — see DESIGN.md, “Removing termlib: Action Wizards and
+Output,” for the full table.</p>
+<p><strong>Decision.</strong> Remove <code>termlib</code> from
+<code>go.mod</code> entirely. Its two real roles split cleanly: 1.
+<strong>Interactive input</strong> (<code>ui.Prompt</code>,
+<code>Confirm</code>, <code>ConfirmDestructive</code>, built on
+<code>termlib.LineEditor.Prompt</code>) → rebuilt on
+<code>huh.Input</code>/ <code>huh.Confirm</code>, using the same
+split-into-testable-core pattern already established for the Menu tier.
+2. <strong>Plain status/error output</strong>
+(<code>termlib.Terminal.Printf</code>/<code>Println</code>/
+<code>Refresh</code>, used for things like “Exiting.”, error text after
+a failed action, the progress ticker’s periodic elapsed-time line) → a
+plain <code>io.Writer</code>, since none of these call sites use
+anything <code>termlib.Terminal</code> offers beyond buffered printing,
+and the buffering itself (<code>Refresh</code>) is unneeded for
+straight-line sequential text.</p>
+<p>Two adjacent, smaller pieces: - <code>internal/ui.PickList</code> and
+its test are deleted outright — dead code, every real call site was
+already converted in the Menu/Picker/List punch list; only comments
+still mention it. -
+<code>termlib.PadRight</code>/<code>Truncate</code>/<code>Bold</code>/<code>Reset</code>/<code>Green</code>/<code>Red</code>/<code>Yellow</code>
+(column formatting + ANSI constants, used only in
+<code>internal/ui</code>) and <code>termlib.FormatDuration</code> (used
+only in <code>progress_ticker.go</code>) are reimplemented locally —
+each is small (10-20 lines) and has no other caller once traced.</p>
+<p><strong>Rationale.</strong> - The surface audit found that of
+<code>termlib.Terminal</code>’s and <code>LineEditor</code>’s full APIs,
+only <code>Printf</code>/<code>Println</code>/<code>Refresh</code> and
+<code>Prompt</code> are ever called anywhere in this codebase — history,
+tab completion, <code>$EDITOR</code> composition, multi-line input,
+cursor movement, and color state are all unused. Replacing termlib with
+huh (for input) and a bare <code>io.Writer</code> (for output) removes a
+dependency without losing any feature this codebase actually exercises.
+- Matches the project’s already-stated direction (DESIGN.md, “Terminal
+UI Architecture,” 2026-07-10): “<code>termlib</code> … is being removed
+entirely before 0.0.2 in favor of <code>huh</code> and
+<code>bubbletea</code> exclusively.” This decision is the concrete plan
+for the one part of that statement that hadn’t been scoped yet — the
+action-wizard/output call sites. - Keeping this pass scoped to
+<em>removal</em> (not restyling) matches the user’s own explicit split:
+migrate off termlib first, standardize chrome (color libraries, spinner
+components, etc.) as a separate, later pass. Two considered pieces were
+deliberately kept mechanical rather than upgraded here: - The progress
+ticker (<code>progress_ticker.go</code>) is the one place with a
+plausible case for a real <code>bubbletea</code> spinner component
+instead of a periodic printed line. Decided to keep it a plain
+<code>io.Writer</code> for this pass and defer any spinner to the
+chrome-improvement pass. - <code>internal/ui</code>’s color/format
+helpers could adopt <code>lipgloss</code> (already a transitive
+dependency via <code>huh</code>/<code>bubbletea</code>) instead of local
+ANSI constants. Decided to keep local constants for this pass and defer
+a <code>lipgloss</code> migration to the chrome-improvement pass, so
+this removal doesn’t grow a second, unrelated goal.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep termlib for
+LineEditor’s readline features, drop only Terminal</em> — rejected
+because those features (history, completion, <code>$EDITOR</code>) are
+entirely unused; keeping the dependency around for capabilities nothing
+calls has no benefit. - <em>Introduce a thin backwards-compatible
+<code>Terminal</code>/<code>LineEditor</code> shim inside clasm
+itself</em> — rejected as an unnecessary compatibility layer for a
+one-time internal refactor with no external consumers of these types. -
+<em>Convert file-by-file, keeping termlib in go.mod until the last call
+site is gone</em> — the Menu/Picker/List tiers could do this because
+each call site’s own picker/menu was independently swappable without
+touching its caller’s signature. Here, <code>t</code>/<code>le</code>
+are threaded through nearly every <code>internal/workflow</code>
+function’s signature, so Go’s whole-module compilation means this has to
+land as one coordinated change (ordered into PLAN.md Phase 20.15/20.16),
+not 40 independent single-file diffs.</p>
+<p><strong>Consequences.</strong> - <code>le *termlib.LineEditor</code>
+disappears from every function signature in the codebase — it was never
+called directly outside <code>ui.Prompt</code>, <code>ui.PickList</code>
+(deleted), and <code>Confirm</code>/<code>ConfirmDestructive</code>. -
+<code>t *termlib.Terminal</code> becomes <code>io.Writer</code> wherever
+a function prints status/error text directly; drops out of the ~9 files
+where it was pure pass-through with no direct use. - Every test that
+constructs <code>termlib.New(&amp;buf)</code> to capture output is
+rewritten to use the <code>bytes.Buffer</code> directly as an
+<code>io.Writer</code>, or to drive the new huh-based prompt/confirm
+cores via the established accessible-mode pipe pattern. -
+<code>go.mod</code>’s <code>github.com/rsdoiel/termlib</code> entry is
+removed once the last call site is converted.</p>
+<hr />
+<h2
+id="give-listview-the-same-filter-as-picker-via-a-shared-filterstate">2026-07-10
+— Give ListView the same filter as Picker, via a shared filterState</h2>
+<p><strong>Context.</strong> Right after confirming the
+<code>tea.ClearScreen</code> scrolling fix (“Scrolling is much
+improved”), the user asked whether List-tier filtering was still
+planned, recalling an earlier discussion. Checking DESIGN.md confirmed
+it: the keybinding conventions table has listed <code>/</code> = Filter
+for “Menus, pickers, lists, managers” since Phase 20.8, but
+<code>ListViewModel</code> (<code>internal/tui/listview.go</code>) had
+no filter code at all – a real, previously-documented gap, not a
+misremembering.</p>
+<p><strong>Decision.</strong> Add filtering to
+<code>ListViewModel</code>, matching <code>PickerModel</code> exactly
+(case-insensitive substring match, <code>/</code> to start typing,
+<code>Enter</code> commits, <code>Esc</code> clears, content-height
+pinned to the unfiltered row count while typing). Rather than copy
+<code>PickerModel</code>’s filter fields and methods a second time,
+extract them into a shared <code>filterState</code> type
+(<code>internal/tui/filter.go</code>) that both models embed:
+<code>visible []int</code>, <code>cursor int</code>,
+<code>filtering bool</code>, <code>filter string</code>, plus
+<code>apply</code>, <code>moveCursor</code>, <code>handleIdleKey</code>,
+<code>handleFilterKey</code>, <code>statusLine</code>. Each model’s
+<code>Update</code> still owns its own quit/select semantics (List just
+quits on <code>q</code>; Picker also selects on <code>Enter</code>) and
+delegates everything else to the shared type.</p>
+<p>While unifying the two models’ box-height math to accommodate the new
+filter status line, also folded in <code>PickerModel</code>‘s existing
+(optional) header handling into <code>ListViewModel</code> (previously
+always rendered, even blank) and replaced both models’ separate
+<code>windowHeight()</code> bodies with one shared
+<code>filterableWindowHeight(height, hasHeader bool)</code> helper –
+which also fixed a minor pre-existing off-by-one in
+<code>PickerModel</code>’s own chrome arithmetic (it subtracted a flat,
+imprecise <code>-1</code> for the filter line instead of counting the
+filter line’s own divider row).</p>
+<p><strong>Rejected alternative.</strong> Duplicate Picker’s filter
+implementation directly into <code>ListViewModel</code>. Rejected
+because the user’s stated goal across this whole follow-up (“we want to
+have the chrome more consistent”) is exactly what a second hand-copy
+would undermine – consistency by convention (two implementations that
+happen to match today) drifts the moment either one is touched later. A
+shared type keeps them identical by construction.</p>
+<p><strong>Consequences.</strong> <code>ListViewModel</code> and
+<code>PickerModel</code> are now guaranteed to filter, scroll, and size
+identically; any future filter change lands in one place.
+<code>internal/tui/listview_test.go</code> gained direct mirrors of
+<code>picker_test.go</code>’s filter tests (minus selection, which List
+doesn’t have). No behavior change for any existing
+<code>ListView</code>/<code>Picker</code> caller: all currently supply a
+non-empty <code>Header</code>, so the now-conditional header line
+renders exactly as before.</p>
+<h2
+id="clear-the-screen-on-entry-for-every-inline-bubbletea-screen">2026-07-10
+— Clear the screen on entry for every inline bubbletea screen</h2>
+<p><strong>Context.</strong> After the List tier’s conversion (Phase
+20.13), the user reported that the List view “doesn’t take advantage of
+the window height so a significant number of lines aren’t visible much
+of the time,” and separately wanted “the chrome more consistent” across
+screens so switching between them isn’t jarring. Follow-up narrowed the
+first report to: the box <em>does</em> size to the real terminal height,
+but paging scrolls content out of view – and the desired consistency is
+Picker/ListView/file-manager behaving identically to each other, not
+adopting <code>tea.WithAltScreen()</code> (which <code>huh</code>, used
+for every Menu-tier prompt, has no equivalent for at all – adopting
+alt-screen for only some screens would make transitions <em>more</em>
+jarring, not less).</p>
+<p><strong>Root cause.</strong> <code>windowHeight()</code> in each of
+<code>ListViewModel</code>/ <code>PickerModel</code>/filemanager’s
+<code>Model</code> sizes its box to (terminal height − a small fixed
+chrome overhead) – nearly the <em>entire</em> terminal. None of the
+three clear the screen on entry (DESIGN.md’s own note: “Renders inline,
+no <code>tea.WithAltScreen</code>, matching every other screen in
+clasm”), so each one starts rendering wherever the cursor already sits –
+e.g. below a previous menu’s prints. If that near-full-height box
+doesn’t fit in the rows remaining below the cursor, the terminal scrolls
+to accommodate it, and bubbletea’s redraw-in-place bookkeeping (how many
+lines to move the cursor up by, to redraw the same frame in place) goes
+stale relative to what the terminal actually did – pushing the top of
+the box (title, header, and however many rows above the scroll point)
+out of the visible viewport. This is exactly the “significant number of
+lines aren’t visible much of the time” report: not a sizing bug, a
+scroll-desync bug, and it gets worse the fuller the terminal already is
+when the screen launches.</p>
+<p><strong>Decision.</strong> Every inline bubbletea screen
+(<code>ListViewModel.Init</code>, <code>PickerModel.Init</code>,
+filemanager’s <code>Model.Init</code>) now returns
+<code>tea.ClearScreen</code> (bubbletea’s own built-in command for
+exactly this situation – its doc comment: “can be used to move the
+cursor to the top left of the screen and clear visual clutter when the
+alt screen is not in use”) as (part of) its initial command,
+guaranteeing every one of these screens always starts rendering from row
+0. This makes the already-correct <code>windowHeight</code> sizing
+reliable (the box always fits, since there’s nothing above the cursor to
+compete for terminal rows with it) and, as a side effect, gives
+Picker/ListView/file-manager one more point of behavioral consistency:
+each always wipes whatever was on screen and starts crisp, rather than
+accumulating underneath the previous screen’s leftover output.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Shrink
+<code>windowHeight</code> to leave a safety margin below whatever’s
+already on screen</em> – rejected: there’s no reliable way to know how
+many rows are already “used” above the cursor (that would require
+querying the terminal’s actual cursor position, which bubbletea doesn’t
+expose), so any fixed margin is either too conservative (wastes screen
+space the user explicitly wants used) or still breaks in a sufficiently
+full terminal. - <em>Switch Picker/ListView/file-manager to
+<code>tea.WithAltScreen()</code></em> – rejected per the user’s own
+stated preference: <code>huh</code> (every Menu-tier prompt) has no
+alt-screen equivalent, so only some screens taking over the full
+terminal while others render inline beside whatever’s already there
+would be a <em>new</em> inconsistency, not a fix for the existing
+one.</p>
+<p><strong>Consequences.</strong> <code>tea.ClearScreen</code> clears
+the primary screen buffer, not the alternate one – it doesn’t touch
+terminal scrollback the way real alt-screen entry/exit does, so this is
+fully compatible with the existing “inline, no alt-screen” design
+decision; it complements it rather than reversing it. No test changes
+were needed – every existing
+<code>teatest</code>/direct-<code>Model</code>-driven test already
+drains whatever <code>Init()</code>/<code>Update()</code> commands are
+queued, including the new <code>tea.ClearScreen</code>, without
+asserting on <code>Init()</code> returning <code>nil</code>.</p>
+<hr />
+<h2
+id="full-conversion-punch-list-every-picklistdisplay-call-site-classified-by-target-tier">2026-07-10
+— Full conversion punch list: every PickList/Display* call site
+classified by target tier</h2>
+<p><strong>Context.</strong> After Phase 20.9 (lifecycle action menu →
+<code>huh.Select</code>), the user asked to “review the source code and
+identify all the places where we want to upgrade to the huh.Select, our
+Picker and View lists” — a comprehensive punch list to work through
+quickly, extending the Picker-only map from the previous decision entry
+to also cover Menu (<code>huh.Select</code>) and List
+(<code>tui.ListView</code>) targets.</p>
+<p><strong>Decision.</strong> Surveyed every <code>ui.PickList</code>
+call site (33 total) and every <code>ui.Display*</code> function (4
+total) directly from source, classified each into Menu / Picker / List,
+and recorded the full result in DESIGN.md’s “Picker tier” section as
+three tables (one per target tier) with file:line references and a
+done/not-started status column. Classification rule applied
+consistently: fixed, small, compile-time- known option sets
+(domain/action menus, curated instance-type lists, storage-class enums,
+kind pickers) → Menu; fetched, potentially long, variable-length AWS
+resource collections → Picker; read-only resource displays → List.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Classify storage-class
+selection (<code>bucket_lifecycle.go:296,399</code>) as Picker, since
+it’s technically a list of AWS-defined values</em> — rejected: both
+lists are fixed and known at compile time (one curated to 4, one the
+full but still static <code>TransitionStorageClass</code> enum), not
+fetched from AWS at runtime, and short enough that scrolling/filtering
+wouldn’t help — matching the Menu tier’s definition, not the Picker
+tier’s. - <em>Classify region selection
+(<code>bucket_create.go:26</code>, <code>keymgmt_common.go:25</code>) as
+Picker</em> — rejected for the same reason: these are this team’s own
+configured region list (typically 2 entries), not a fetched AWS resource
+collection.</p>
+<p><strong>Consequences.</strong> No code changed by this decision —
+it’s a planning artifact. Nothing beyond what’s already marked “done” in
+the three tables is scheduled; each conversion still gets picked up and
+scoped individually, per this project’s established incremental
+discipline (TODO.md, “Termlib Removal (before 0.0.2)”).</p>
+<hr />
+<h2
+id="add-a-picker-tier-resource-selection-gets-its-own-internaltui-component-not-huh.select">2026-07-10
+— Add a Picker tier: resource selection gets its own internal/tui
+component, not huh.Select</h2>
+<p><strong>Context.</strong> Starting Phase 20.4 (converting the three
+S3 bucket-selection call sites from <code>ui.PickList</code> to
+<code>huh.Select</code>, reusing <code>object_browser.go</code>’s
+existing <code>runFieldWithHelp</code>/<code>huhCancelledIsNil</code>
+pattern) the user stopped this before any code was written: “I think
+this UI should feel the same whether I select a bucket, an AMI or an EC2
+instance.” A real gap in the prior day’s taxonomy:
+<code>huh.Select</code>’s own rendering looks nothing like the
+bordered-box/legend-bar chrome the List and Manager tiers just adopted
+(DESIGN.md, “Terminal UI Architecture”), so converting bucket-selection
+to <code>huh.Select</code> would have made the S3 domain show two
+different visual languages depending on whether a screen displays a
+resource or selects one — precisely the inconsistency the whole
+termlib-deprecation effort exists to avoid.</p>
+<p><strong>Decision.</strong> New <code>internal/tui.PickerModel</code>:
+reuses <code>ListViewModel</code>’s exact chrome
+(<code>TopBorder</code>/<code>BoxLine</code>/<code>Divider</code>/<code>ScrollWindow</code>/<code>StyleRow</code>/
+<code>BottomBorder</code>) but adds selection (<code>Enter</code>
+chooses the row under the cursor and returns it;
+<code>q</code>/<code>ctrl+c</code> cancels) and, per the user’s explicit
+request, incremental filtering from the start (“this allows someone to
+go directly to the thing they want if they know the name or part of the
+name”) — <code>/</code> enters filter-typing mode (matching the
+keybinding table and <code>huh.Select</code>’s own default, not an
+always-on type-ahead that would collide with
+<code>j</code>/<code>k</code> navigation), narrows by case-insensitive
+substring match, <code>Esc</code> clears it. Works on pre-rendered rows,
+returns an index (not a typed value) so <code>internal/tui</code>
+doesn’t need generics — the same pattern <code>pickS3MenuItem</code>
+already uses for <code>s3MenuItems</code>.</p>
+<p>Per the user’s request, DESIGN.md’s taxonomy now includes a concrete
+map: every current <code>ui.PickList</code> call site that selects one
+instance of a fetched resource (bucket, EC2 instance, AMI, key pair,
+subnet, region, role, lifecycle rule, storage class — ~25 call sites
+across Compute, Key Management, and S3), each with its file:line and
+status. S3 buckets are the pilot (Phase 20.4, converting now);
+everything else is explicitly listed as not-yet-scheduled rather than
+silently left for someone to rediscover later. Guide-menu-shaped choices
+(small, fixed option sets — domain/action menus, Instance-vs-AMI kind
+pickers, the tag action menu, remediation choices) are explicitly
+excluded from this map; they stay on
+<code>PickList</code>/<code>huh.Select</code> since they’re not
+selecting an instance of a resource collection.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Convert
+bucket-selection to <code>huh.Select</code> as originally planned</em> —
+works functionally, but reintroduces the exact visual inconsistency this
+session’s termlib-deprecation work exists to eliminate; huh’s
+<code>Select</code> field can’t be restyled to match
+<code>internal/tui</code>’s chrome without forking huh. - <em>A
+<code>Selectable bool</code> flag on <code>ListViewModel</code> instead
+of a separate <code>PickerModel</code></em> — would avoid a second
+component, but conflates two different interaction models (pure
+read-only browsing vs. choose-and- return) in one type, against this
+project’s established preference for small, purpose-built components
+(the same reasoning that already kept the List tier separate from
+<code>filemanager.Model</code>). - <em>Defer filtering, add it later if
+a list turns out to need it</em> — this session’s own default instinct
+(matching how <code>ListViewModel</code> itself shipped without
+filtering, since bucket counts are usually small) — overridden here
+because the user asked for it explicitly and gave a concrete rationale
+(typing a known name/substring beats scrolling through a long AMI or
+instance list), not a hypothetical future need.</p>
+<p><strong>Consequences.</strong> Phase 20.4 is retargeted:
+bucket-selection converts to <code>tui.RunPicker</code>, not
+<code>huh.Select</code>. New PLAN.md Phase 20.8 builds
+<code>PickerModel</code> itself (a dependency of Phase 20.4).
+<code>object_browser.go</code>’s existing <code>huh.Select</code>-based
+bucket pre-flight is unaffected by this decision for now — revisiting it
+to also use <code>PickerModel</code> is a separate, not-yet-scoped
+question, not implied automatically by this one.</p>
+<p><strong>Implemented 2026-07-10, same session</strong> (PLAN.md Phase
+20.8): <code>PickerModel</code> built test-first. Two things worth
+keeping on record: (1) filtering must pin the rendered content area to
+the <em>unfiltered</em> row count, not however many rows currently
+match, or the box’s height shrinks/grows while typing a filter and
+reproduces the same inline- rendering hiccup the List tier already found
+for exact/changing frame heights — confirmed by an actually-failing
+test, fixed by padding to a stable height (also better UX,
+<code>fzf</code>-style). (2) Two filter tests hit a second, distinct
+<code>teatest</code> gotcha already documented in this codebase
+(bubbletea skips retransmitting unchanged lines between consecutive
+frames, so checking the same text across two separate
+<code>WaitFor</code> calls can race) — fixed the same way
+<code>internal/filemanager</code>’s tests already do: combine assertions
+into one <code>WaitFor</code>.</p>
+<p>Phase 20.4 (bucket selection) also implemented, same session: each of
+the three call sites (<code>ConfigureBucketWebsite</code>,
+<code>ManageBucketLifecycle Policies</code>, <code>DeleteBucket</code>)
+now calls a shared <code>pickBucket</code> helper, then delegates to an
+unexported, directly-testable core taking the resolved bucket.
+<code>cancelledIsNil</code> recognizes <code>tui.ErrCancelled</code>
+alongside <code>ui.ErrCancelled</code>. Full detail: PLAN.md Phase
+20.4.</p>
+<hr />
+<h2
+id="deprecate-termlib-standardize-on-huhbubbletea-before-0.0.2-drop-screen-readeraccessible-mode-as-a-tui-requirement">2026-07-10
+— Deprecate termlib; standardize on huh/bubbletea before 0.0.2; drop
+screen-reader/accessible-mode as a TUI requirement</h2>
+<p><strong>Context.</strong> Working through the S3 menu’s huh.Select
+conversion and the paged bucket-list display (both same-day, below)
+surfaced a values question worth having directly rather than deciding by
+accretion: what is clasm actually <em>for</em>, and what does that imply
+about its UI? The user’s framing: clasm exists to give this team a fluid
+alternative to AWS’s own web console (which they find bad and getting
+worse) and to one-off Bash scripts — but that alternative only works if
+colleagues can learn it in one sitting, which requires every screen to
+look and behave like the same tool rather than a collection of
+differently-styled prompts. Reviewing
+<code>internal/filemanager/view.go</code> directly (not just recalling
+its design) found that its box-drawing/legend/scrolling code is already
+pure functions with no dependency on <code>filemanager.Model</code>, and
+that <code>'q'</code> already means quit there
+(<code>case "ctrl+c", "q": m.quitting = true; return m, tea.Quit</code>)
+and it already renders inline (no <code>tea.WithAltScreen</code>) —
+meaning the “consistent chrome, consistent keys” goal is mostly already
+<em>in</em> the codebase, just not applied project-wide. Separately,
+<code>termlib.Terminal.UpdateTerminalSize</code> was found to hardcode
+<code>os.Stdout.Fd()</code> regardless of what writer a
+<code>Terminal</code> was actually constructed with — a real defect for
+anything wanting genuine terminal-height-aware sizing, and a concrete
+symptom of <code>termlib</code> being a poorer fit than
+<code>bubbletea</code>’s own <code>tea.WindowSizeMsg</code> (sent to
+<code>Update</code> once at start and again on every resize) for where
+this tool is headed.</p>
+<p><strong>Decision.</strong> <code>termlib</code> is removed entirely
+before 0.0.2. All TUI surfaces converge on <code>huh</code> (guide
+menus, action wizards) and <code>bubbletea</code> (lists, managers)
+exclusively — see “Terminal UI architecture” and “TUI keybinding
+conventions” below for what that looks like concretely.
+Screen-reader/non-TTY accessible rendering is explicitly
+<strong>not</strong> a requirement for clasm’s TUI going forward: it’s
+an internal tool for Library staff managing AWS resources, not
+public-facing, distinct from this workspace’s Frontend Guidelines A11y
+requirement for browser-side Web Components (unaffected by this
+decision). In an ideal world the user would like the whole application
+to be screen-reader friendly, but set that aside as not a hard
+requirement once it was clear it was in real tension with the
+visual-consistency goal above.</p>
+<p><strong>This explicitly supersedes</strong> (left in place as
+accurate history, not deleted or rewritten): - “0.0.1 scope: ship on
+termlib as-is; postpone CloudFront and the UI/UX overhaul”
+(2026-06-30/07-09 era) — huh is no longer merely “the leading candidate
+for the next release”; it and bubbletea are now the committed direction,
+with a <code>termlib</code> removal target (before 0.0.2), not an open
+evaluation. - “huh fields are pipe-testable via
+WithAccessible(true).WithInput/ WithOutput” (2026-07-10, earlier the
+same day) — remains factually correct (the mechanics were verified
+against real huh source) but is no longer load-bearing for design
+decisions, since accessible-mode compatibility is no longer a goal.
+Testing anything built as a real <code>bubbletea</code> component going
+forward uses <code>teatest</code> instead (already proven against
+<code>internal/filemanager</code>’s <code>Model</code> in Phase 20.1),
+not huh’s accessible-mode pipe pattern. - “Decouple the S3 menu from
+resource-list display; add a generic paged table to internal/ui”
+(2026-07-10, earlier the same day) —
+<code>internal/ui.PagedTable</code>/<code>DisplayBuckets</code>,
+implemented and shipped earlier today, are retired in favor of a
+<code>bubbletea</code>-based List-tier component (see “Terminal UI
+architecture” below) less than a day after landing. The design was
+correct given its stated constraint (stay accessible); the constraint
+itself is what changed.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep termlib for simple
+prompts, use huh/bubbletea only for more complex screens</em> — rejected
+because a mixed system is exactly the “memorize different command
+sequences per screen” problem the user is trying to avoid; partial
+consistency isn’t the goal, whole-tool consistency is. - <em>Fix
+termlib’s <code>os.Stdout</code>-hardcoding bug and keep using it</em> —
+rejected: <code>termlib</code> is the user’s own separate project
+(<code>~/Laboratory/termlib</code>), and fixing that one defect wouldn’t
+address the deeper mismatch (a blocking-prompt library isn’t the right
+foundation for a genuinely chrome-consistent, live-resizing bordered
+UI). <code>termlib</code> served its purpose already — see Consequences.
+- <em>Keep accessible-mode support as a stretch goal</em> — rejected per
+the user directly: nice-to-have in an ideal world, not required for an
+internal staff tool, and in real tension with the visual-consistency
+goal that matters more here.</p>
+<p><strong>Consequences.</strong> <code>termlib</code> is credited with
+having answered three real design questions this project needed answered
+before committing to a final UI approach: how to organize an
+AWS-management menu system that’s intuitive without deep AWS knowledge;
+how to make individual actions (create a bucket, update a policy) quick
+and easy; and how to keep workflows structured for future automation of
+repetitive tasks (see “Structure workflows for future record/replay
+(‘Recorded Scripts’)”, 2026-07-01 — unaffected by this decision; that
+design was already UI-toolkit-agnostic by construction, via the
+params-struct/execute split). Having answered those, it’s no longer
+needed. The remaining ~40 <code>termlib</code>-based call sites are not
+converted all at once — see “Terminal UI architecture”’s “Not decided
+yet” for pacing.</p>
+<hr />
+<h2
+id="terminal-ui-architecture-menu-actionlistmanager-taxonomy-shared-internaltui-chrome-package">2026-07-10
+— Terminal UI architecture: menu → action/list/manager taxonomy; shared
+internal/tui chrome package</h2>
+<p><strong>Context.</strong> Direct follow-on to the decision above:
+once <code>huh</code>/ <code>bubbletea</code> are the committed
+direction, what’s the concrete shape of “every screen looks and behaves
+like the same tool”? Full design: DESIGN.md, “Terminal UI Architecture:
+Menus, Actions, Lists, and Managers.”</p>
+<p><strong>Decision.</strong> - Every navigation path resolves to one of
+three destinations reached through a menu that is never itself a
+destination: <strong>guide menu</strong> (<code>huh.Select</code>
+today), <strong>action wizard</strong> (a short prompt sequence that
+gathers parameters and executes one thing), <strong>list</strong> (a
+read-only scrollable resource display), or <strong>manager</strong> (a
+persistent stateful screen, e.g. the S3 object manager). - New
+<code>internal/tui</code> package: the file manager’s already-pure
+box-drawing/scroll/style helpers (<code>topBorder</code>,
+<code>bottomBorder</code>, <code>divider</code>,
+<code>splitDivider</code>, <code>mergeDivider</code>,
+<code>boxLine</code>, <code>boxRow2</code>, <code>padOrTruncate</code>,
+<code>runeLen</code>, <code>stripANSI</code>,
+<code>truncateVisible</code>, <code>scrollWindow</code>,
+<code>styleRow</code>) move there unchanged, and
+<code>internal/filemanager</code> imports them instead of keeping its
+own copy. <code>internal/ui</code> stays in place for as long as
+termlib-based call sites remain, shrinking over the course of the
+termlib removal rather than being replaced in one step. - New List-tier
+component in <code>internal/tui</code>, replacing
+<code>internal/ui.PagedTable</code>/<code>DisplayBuckets</code>: single
+bordered box, frozen header row, scrollable body via the shared
+<code>scrollWindow</code> logic, sized to the real terminal via
+<code>tea.WindowSizeMsg</code>, a legend bar, rendered inline (no
+alt-screen). Quitting returns to the menu it was opened from (for S3
+buckets, the S3 menu — not <code>ErrBackToDomainPicker</code>, which is
+one level further up).</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep chrome duplicated
+per screen</em> — the drift risk this whole decision exists to avoid;
+one implementation shared via <code>internal/tui</code> instead of
+<code>internal/filemanager</code> and a new List component each
+maintaining their own box-drawing. - <em>Build the List tier as a
+variant of <code>filemanager.Model</code></em> — rejected: that
+<code>Model</code> carries file-manager-specific state (panes, tagging,
+sync, linked local directories) that’s the wrong shape for a plain
+read-only list; a dedicated, smaller <code>internal/tui</code> component
+matches this project’s existing preference for small, purpose-built
+pieces over one component doing everything (same reasoning as keeping
+<code>Confirm</code>/<code>ConfirmDestructive</code> separate from
+<code>PickList</code>).</p>
+<p><strong>Consequences.</strong> <code>internal/filemanager</code> is
+refactored to import <code>internal/tui</code>’s helpers with no
+behavior change (its existing <code>teatest</code>-based test suite
+should continue to pass unmodified — a regression there would mean the
+extraction wasn’t actually behavior- preserving).
+<code>internal/ui.DisplayBuckets</code>/<code>PagedTable</code> and
+their tests are retired.</p>
+<hr />
+<h2
+id="tui-keybinding-conventions-qback-everywhere-arrowsj-k-navigate-enterselect-esc-cancels-only-an-in-progress-step-persistent-legend-bar">2026-07-10
+— TUI keybinding conventions: q=back everywhere, arrows/j-k navigate,
+Enter=select, Esc cancels only an in-progress step, persistent legend
+bar</h2>
+<p><strong>Context.</strong> Direct follow-on to the two decisions
+above: a concrete, approved keybinding table so “consistent commands
+throughout the application” means something specific enough to implement
+and test against, not just a stated goal. Drafted, then approved by the
+user with no corrections.</p>
+<p><strong>Decision.</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Key</th>
+<th scope="col">Action</th>
+<th scope="col">Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>q</code></td>
+<td>Back to the parent screen</td>
+<td>Everywhere</td>
+</tr>
+<tr>
+<td><code>↑</code>/<code>↓</code>, <code>k</code>/<code>j</code></td>
+<td>Navigate / scroll</td>
+<td>Menus, lists, managers</td>
+</tr>
+<tr>
+<td><code>Enter</code></td>
+<td>Select / confirm / submit</td>
+<td>Menus, lists, wizards</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>Cancel the <em>in-progress</em> action only — never closes a
+screen</td>
+<td>Wizards, in-progress input</td>
+</tr>
+<tr>
+<td><code>/</code></td>
+<td>Filter</td>
+<td>Menus, lists, managers</td>
+</tr>
+<tr>
+<td>Legend bar</td>
+<td>Always visible at the bottom of every screen, showing that screen’s
+actual keys</td>
+<td>Every screen</td>
+</tr>
+</tbody>
+</table>
+<p>Mostly formalizes precedent already in the codebase rather than
+inventing new bindings: <code>'q'</code>/<code>ctrl+c</code> already
+quit the file manager; huh’s own <code>Select</code> default keymap
+already binds <code>↑/k</code>, <code>↓/j</code>, and <code>/</code> for
+filter; <code>Esc</code>-cancels-not-closes matches the earlier “quit
+vs. cancel” wording note (TODO.md, “UX improvements,” 2026-07-09). The
+one place this can’t be applied uniformly: <code>huh.Select</code>’s own
+footer is built solely from the focused field’s <code>KeyBinds()</code>
+(<code>SelectKeyMap</code> has no quit/back entry, and
+<code>KeyBinds()</code> isn’t overridable without forking huh), so menus
+get <code>q</code> bound at the <code>Form</code> level
+(<code>Form.WithKeyMap</code>, <code>KeyMap.Quit</code> gains
+<code>"q"</code> alongside <code>"ctrl+c"</code>) plus a
+separately-printed static hint line above the menu, rather than a real
+legend-bar entry. List and manager tiers, which own their full
+rendering, show <code>q</code> in an actual legend bar.</p>
+<p><strong>Consequences.</strong> <code>RunS3Menu</code>’s
+<code>huh.Select</code> gains <code>q</code> as an additional
+<code>Quit</code> trigger, resolving through the already-existing
+<code>mapS3MenuPickerErr</code>/<code>ErrUserAborted</code>→<code>ErrBackToDomainPicker</code>
+path — no new dispatch logic. “Back to domain picker” is removed from
+<code>s3MenuItems</code> (redundant with <code>q</code>); the
+<code>choice.action == nil</code> branch in <code>runS3Menu</code>
+becomes dead code and is removed with it. “Show resource lists” is
+relabeled “List S3 Buckets” (clearer, and matches what it actually does
+once it’s a dedicated List-tier screen rather than a Refresh-and-print
+action) — label only, not the underlying
+<code>S3Actions.ShowResourceLists</code> Go identifier, kept as-is since
+renaming it carries no user-facing benefit and only adds diff noise.</p>
+<p><strong>Implemented 2026-07-10, same session</strong> (PLAN.md Phase
+20.7): exactly as scoped above. huh’s own footer still can’t show
+<code>q</code> (confirmed against source, as expected), so a static
+<code>"(q to go back)"</code> hint is printed via the existing
+<code>t.Println</code>/<code>t.Refresh()</code> before each menu
+redisplay. Tests exercising “one action dispatch, then the loop ends”
+were rewritten around a <code>context.WithCancel</code> +
+cancel-from-within-the- test-action-closure pattern, since there’s no
+longer a “Back to domain picker” menu choice to select and accessible
+mode can’t simulate the <code>q</code>/ctrl+c abort that replaces it
+(matching <code>mapS3MenuPickerErr</code>’s already-documented
+limitation).
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. The <code>q</code>-binding’s actual effect (does pressing
+<code>q</code> really abort the <code>Select</code>) can only be
+confirmed by real interactive use — noted, not yet done, same class of
+gap as this session’s other <code>huh</code>/<code>bubbletea</code>
+work.</p>
+<hr />
+<h2
+id="decouple-the-s3-menu-from-resource-list-display-add-a-generic-paged-table-to-internalui">2026-07-10
+— Decouple the S3 menu from resource-list display; add a generic paged
+table to internal/ui</h2>
+<p><strong>Context.</strong> Following the <code>RunS3Menu</code>
+huh.Select conversion (below), the user pointed out a UX problem exposed
+by that same code path: every successful S3 menu action triggers
+<code>actions.Refresh(ctx)</code>, and <code>refreshS3</code>
+(<code>cmd/clasm/main.go</code>) both re-fetches bucket data and prints
+the <em>entire</em> bucket table (<code>ui.DisplayBuckets</code>) every
+time — so the S3 menu redisplay is cluttered with a resource list after
+every action, not just when “Show resource lists” is chosen, and that
+table has no pagination at all (unlike <code>ui.PickList</code>’s
+existing 50-item paging), so it would print unboundedly for a large
+bucket count. Requested fix: the S3 menu should show only the menu;
+“Show resource lists” becomes its own dedicated, paged display with the
+column titles visible on every page, and
+<code>n</code>ext/<code>p</code>revious/<code>q</code>uit navigation
+(<code>q</code> returns to the S3 menu). A mockup was drawn up and
+approved before any code was written, per this project’s
+design-before-code process for non-trivial changes.</p>
+<p><strong>Decision.</strong> Full design recorded in DESIGN.md, “S3
+Resource List Display — Paged, Accessible-Compatible” (2026-07-10), and
+PLAN.md Phase 20.3. Key points carried here for the decision record: -
+Split “refresh” into re-fetching data (unchanged, still happens after
+every action) versus <em>displaying</em> it (now only on explicit “Show
+resource lists”). - New generic <code>internal/ui</code> component
+(<code>PagedTable</code>, PLAN.md Phase 20.3), not a bucket-specific
+one: takes a banner-format callback and pre-rendered header/row strings,
+owns only windowing, chrome, and
+<code>n</code>/<code>p</code>/<code>q</code> input.
+<code>DisplayBuckets</code>’s existing
+<code>PadRight</code>/<code>Truncate</code> column formatting is reused
+to build the strings passed in. Deliberately generic <strong>so
+Compute/Key Management’s own resource listings can reuse the same
+mechanism later</strong>, if/when those menus are migrated — not part of
+this piece of work, but designed not to preclude it, per the user’s own
+framing (“we’ll reuse this UI approach as needed migrating to huh for
+other parts of clasm”). - Stays fully accessible: sequential printing
+only (banner, header, page of rows, command prompt, read one line,
+repeat or return) — no cursor repositioning, so behavior is identical
+over a real TTY, <code>TERM=dumb</code>, or a piped input/output pair in
+tests. Note this mechanism doesn’t involve <code>huh</code> at all –
+it’s the same plain <code>termlib</code>/<code>LineEditor.Prompt</code>
+style <code>PickList</code> already uses; paging a resource list and
+“migrating to huh” are orthogonal concerns here.</p>
+<p><strong>Rejected alternatives.</strong> See DESIGN.md’s addendum for
+the full list (unpaginated-with-scrollback, a
+<code>huh</code>/<code>bubbletea</code>-style redraw-in-place viewport,
+and reusing <code>PickList</code> directly) — each rejected for the
+reasons recorded there; not repeated here to avoid drift between the two
+documents.</p>
+<p><strong>Consequences.</strong> <code>ui.DisplayBuckets</code> is
+replaced by a <code>PagedTable</code> call site (its signature changed:
+now takes <code>le</code> and returns <code>error</code>, its only call
+site updated); <code>refreshS3</code> splits into a silent-refresh half
+and a separate <code>showS3ResourceLists</code> closure;
+<code>s3MenuItems</code>’ “Show resource lists” entry calls a new
+<code>S3Actions.ShowResourceLists</code> field instead of
+<code>Refresh</code>. Compute/Key Management’s current unpaginated
+<code>DisplayInstances</code>/<code>DisplayImages</code>/<code>DisplayKeyPairs</code>
+are explicitly unchanged — ask before extending this pattern to
+them.</p>
+<p><strong>Implemented 2026-07-10, same session, test-first</strong>
+(PLAN.md Phase 20.3): <code>internal/ui/paged_table_test.go</code> was
+written and run against a stub before <code>paged_table.go</code>
+existed, then <code>PagedTable</code> was implemented to make it pass;
+<code>display_test.go</code>’s two <code>DisplayBuckets</code> tests
+were updated for the new signature plus a new pagination test; a real
+test gap was caught and closed along the way — no existing
+<code>s3_menu_test.go</code> case exercised choosing “Show resource
+lists” (menu item 1) at all, before or after this change, so a
+<code>TestRunS3Menu_ShowResourceListsDispatchesToItsOwnAction</code> was
+added. <code>go build</code>, <code>go vet</code>, and
+<code>go test ./... -race</code> all clean.</p>
+<hr />
+<h2
+id="huh-fields-are-pipe-testable-via-withaccessibletrue.withinputwithoutput">2026-07-10
+— huh fields are pipe-testable via
+WithAccessible(true).WithInput/WithOutput</h2>
+<p><strong>Context.</strong>
+<code>internal/workflow/object_browser.go</code> (the only existing huh
+usage) has zero test coverage. huh’s real interactive
+<code>Field.Run()</code>/ <code>Form.Run()</code> isn’t pipe-testable
+the way <code>termlib</code>’s <code>newPipeEditor</code> pattern is
+(see <code>confirm_test.go</code>). The prior session confirmed huh’s
+accessible-mode text format from source but left untried whether
+<code>huh.NewForm(...).WithAccessible(true).WithInput(r).WithOutput(&amp;buf). Run()</code>
+– forcing accessible mode explicitly rather than relying on
+<code>TERM=dumb</code> auto-detection – gives a clean, reliable
+pipe-testable path. This had to resolve before converting
+<code>RunS3Menu</code> and the three bucket-selection call sites (the
+next piece of work) to more untested huh code.</p>
+<p><strong>Decision.</strong> Yes – confirmed by direct experiment (a
+scratch test file, written, run, and deleted this session;
+<code>go test</code>/<code>go vet</code> clean throughout).
+<code>huh.NewForm(huh.NewGroup(field...)).WithAccessible(true). WithInput(r).WithOutput(&amp;buf).Run()</code>
+drives <code>Select</code>, <code>Confirm</code>, and multi-field groups
+correctly from a plain <code>io.Reader</code>/<code>io.Writer</code>
+pair, with no terminal or <code>bubbletea</code> program involved –
+<code>Form.RunWithContext</code> branches straight to
+<code>Form.runAccessible</code>, which calls each field’s own
+<code>RunAccessible</code> in turn. This is the pattern to use for the
+S3-menu/bucket-selection conversions and retroactively for
+<code>object_browser.go</code> – <strong>with one correction to this
+same session’s earlier finding</strong>, below.</p>
+<p>Confirmed behavioral details worth keeping in mind writing those
+tests: - <strong>Correction, found while implementing the
+<code>RunS3Menu</code> conversion:</strong> <code>r</code> must NOT be a
+<code>strings.NewReader</code>-style reader that returns everything it
+has in one <code>Read</code> call.
+<code>accessibility.PromptString</code> builds a brand-new
+<code>bufio.Scanner</code> on every single <code>RunAccessible</code>
+call (there’s no persistent, reused scanner the way
+<code>termlib</code>’s <code>LineEditor</code> has one for its whole
+lifetime) – so if the <em>first</em> field’s <code>Read</code> call
+greedily returns every remaining byte (as
+<code>strings.Reader.Read</code> does when its buffer is smaller than
+the request), that Scanner buffers and then discards everything past the
+first newline when it returns, silently starving every field after it –
+both across two separate <code>Form.Run()</code> calls in a loop (as
+<code>RunS3Menu</code> makes, once per menu redisplay) and within a
+single multi-field <code>Form</code> (as
+<code>object_browser.go</code>’s three-field pre-flight makes). This was
+NOT caught by this session’s first three experiments, because each one’s
+second/third field happened to assert a value that coincided with that
+field’s own zero-input default – a false-positive risk worth flagging on
+its own. Confirmed the actual bug with a repro using a
+<em>non-default</em> expected second value, and confirmed the fix: use a
+reader that returns at most one newline-terminated line per
+<code>Read</code> call (matching how a real terminal in canonical mode
+delivers input, one <code>Read</code> per Enter keypress) – implemented
+as <code>lineAtATimeReader</code>/<code>newHuhAccessibleInput</code> in
+<code>internal/workflow/huh_accessible_test.go</code>, reusable across
+every huh call site’s tests. Use <code>newHuhAccessibleInput(s)</code>,
+never <code>strings.NewReader(s)</code>, when feeding more than one
+field/prompt through this pattern. - <code>Select.RunAccessible</code>
+reprompts on out-of-range input, writing
+<code>"Invalid: must be a number between %d and %d"</code> before
+re-asking – same reprompt-until-valid shape as
+<code>newPipeEditor</code>’s <code>Confirm</code> tests. - A
+<code>Select</code> field backed by a pointer <code>Value(&amp;v)</code>
+accessor has an implicit default (its initially-selected option,
+normally index 0), which <code>PromptInt</code> returns on a blank line
+– so premature EOF is not the same as “no value set”; it silently
+resolves to that default rather than erroring. Confirmed via
+<code>accessibility.PromptString</code>’s own comment:
+<code>"no way to bubble up errors or signal cancellation ... but   the program is probably not continuing if stdin sent EOF"</code>.
+Test input must supply one complete line per field; don’t rely on EOF as
+an error signal, and don’t assert a value that coincides with this
+default (see the correction above – it masks real bugs). -
+<code>Form.runAccessible</code> discards each field’s own
+<code>RunAccessible</code> error return
+(<code>_ = field.WithAccessible(true).RunAccessible(w, r)</code>) –
+harmless in practice since each field’s own <code>RunAccessible</code>
+already loops internally until it gets a valid value, so it only returns
+once successful. - <code>huh.ErrUserAborted</code> (the normal-mode
+Ctrl-C/Esc signal that <code>huhCancelledIsNil</code> maps to a clean
+return) has no accessible-mode equivalent – there is no keyboard to
+interrupt a plain <code>io.Reader</code>/<code>io.Writer</code> pair, so
+cancellation-path tests for huh-backed menus need a different signal
+than “user aborted” if one is needed at all (see “Convert RunS3Menu to
+huh.Select” below for how this was handled: unit-test the abort-mapping
+as a standalone pure function instead of through the pipe path).</p>
+<p><strong>Rejected alternatives.</strong> - <em>Rely on
+<code>TERM=dumb</code> auto-detection instead of explicit
+<code>WithAccessible(true)</code></em> – works too (<code>NewForm</code>
+sets it automatically when <code>TERM=dumb</code>), but requires
+mutating the test process’s environment
+(<code>t.Setenv("TERM", "dumb")</code>), which is less explicit and
+risks leaking into unrelated parallel tests; calling
+<code>WithAccessible(true)</code> directly is scoped to the one
+<code>*Form</code> under test. - <em>Test only via
+<code>Field.RunAccessible</code> directly, skip <code>Form</code></em> –
+considered, since <code>Field.RunAccessible</code> is itself public and
+no longer just an internal implementation detail
+(<code>WithAccessible</code> is now deprecated in its favor per the huh
+v1.0.0 source). Rejected for the <em>multi-field</em> menu/pre-flight
+tests specifically, since <code>RunS3Menu</code>’s conversion and
+<code>object_browser.go</code>’s existing pre-flight both group multiple
+fields in one <code>huh.Group</code>, and <code>Form</code> is what
+sequences them in production code – testing through <code>Form</code>
+keeps the test closer to the real call path.</p>
+<p><strong>Consequences.</strong> Unblocks converting
+<code>RunS3Menu</code> (<code>internal/workflow/s3_menu.go</code>) and
+the three <code>ui.PickList</code> bucket-selection call sites
+(<code>bucket_website.go</code>/<code>bucket_lifecycle.go</code>/<code>bucket_delete.go</code>)
+to <code>huh.Select</code> with test coverage from the start, and
+backfilling <code>object_browser.go</code>’s existing zero coverage
+using the same pattern. No production code changed by this decision –
+it’s a testing-approach resolution only.</p>
+<hr />
+<h2
+id="convert-runs3menu-to-huh.select-select-by-index-not-by-s3item">2026-07-10
+— Convert RunS3Menu to huh.Select; select by index, not by s3Item</h2>
+<p><strong>Context.</strong> <code>continue_next_time.txt</code>’s
+next-up item, now unblocked by the pipe-testability resolution above:
+convert <code>RunS3Menu</code>
+(<code>internal/workflow/s3_menu.go</code>), the S3 domain’s 7-item
+action picker, from <code>ui.PickList</code> to <code>huh.Select</code>.
+Two problems came up that the prior session’s scoping didn’t
+anticipate:</p>
+<ol type="1">
+<li><code>huh.Select[T]</code> requires <code>T comparable</code>
+(<code>Option[T comparable]</code>, confirmed from source), but
+<code>s3Item</code> holds an
+<code>action func(S3Actions, context.Context) error</code> field – funcs
+aren’t comparable, so <code>huh.Select[s3Item]</code> doesn’t
+compile.</li>
+<li>Converting the picker changes what “cancel/abort the menu” does.
+<code>ui.PickList</code>’s dedicated “0) Cancel” numbered option
+returned <code>ui.ErrCancelled</code>, which <code>isExitSignal</code>
+recognizes – so pressing 0 exited the whole program.
+<code>huh.Select</code> has no such numbered-cancel convention; its only
+cancellation signal is <code>huh.ErrUserAborted</code> (Ctrl-C/Esc),
+which <code>isExitSignal</code> does NOT recognize, so left unhandled it
+would propagate out of <code>RunS3Menu</code> entirely and still exit
+the whole program – not the behavior the prior session asked for
+(“change this so aborting the newly-huh-converted top-level S3 menu
+returns <code>ErrBackToDomainPicker</code> instead”).</li>
+</ol>
+<p><strong>Decision.</strong> - Select by <code>int</code> (index into
+<code>s3MenuItems</code>), not by <code>s3Item</code>:
+<code>pickS3MenuItem</code> builds <code>huh.Option[int]</code> from
+each item’s label and its index, runs the <code>Select</code>, then
+looks up <code>s3MenuItems[idx]</code> after. Sidesteps the
+comparability constraint without changing <code>s3Item</code>‘s shape
+(still holds a <code>func</code>, used everywhere else in this file). -
+<code>RunS3Menu</code>’s exported signature is unchanged
+(<code>ctx, t, le, actions</code>), matching
+<code>RunMainMenu</code>/<code>RunKeyMgmtMenu</code>’s shape – it now
+delegates to an unexported
+<code>runS3Menu(ctx, t, actions,   menuInput, menuOutput)</code>.
+<code>le</code> is accepted but unused (huh doesn’t read through it); a
+doc comment says so explicitly rather than leaving a reader to wonder if
+that’s a bug. <code>menuInput</code>/<code>menuOutput</code> are nil in
+production (the picker runs interactively via
+<code>pickS3MenuItem</code>’s bare <code>form.Run()</code>, same as
+<code>object_browser.go</code>’s existing call sites) and are supplied
+by tests to drive the exact same <code>huh.Select</code> through the
+accessible-mode pipe path instead – keeping the tested path identical to
+the production path, not a parallel fake. -
+<code>huh.ErrUserAborted</code> from the picker maps to
+<code>ErrBackToDomainPicker</code> via a new pure function,
+<code>mapS3MenuPickerErr</code>, rather than an inline check – because
+accessible mode (the only path integration tests can drive; see the
+pipe-testability entry above) has no way to produce
+<code>huh.ErrUserAborted</code> at all, this mapping can only be covered
+by calling the pure function directly with a synthetic error, not by
+driving <code>runS3Menu</code> end-to-end. Said so explicitly (this
+note) rather than shipping the mapping uncovered. -
+<code>s3_menu_test.go</code>’s old
+<code>TestRunS3Menu_CleanExitOnCancelledPickList</code> (input
+<code>"0\n"</code>, asserting a clean whole-program exit) tested a
+<code>PickList</code>-specific affordance that no longer exists and
+asserted the <em>old</em>, now-deliberately-changed behavior – removed
+rather than kept as a skipped/misleading test. Its replacement is
+<code>TestMapS3MenuPickerErr</code>. - Every other
+<code>s3_menu_test.go</code> case kept its exact input strings
+(<code>"2\n7\n"</code>, <code>"3\n7\n"</code>, etc.) –
+<code>huh.Select</code>’s accessible-mode 1-indexed numbering happens to
+match <code>s3MenuItems</code>’ order exactly, no renumbering needed.
+They now call <code>runS3Menu</code> directly (unexported) instead of
+<code>RunS3Menu</code>, with a <code>newTermOnly()</code> helper in
+place of <code>newPipeEditor</code> (no <code>LineEditor</code>/pipe
+needed for <code>t</code> now that the picker doesn’t read through it)
+and <code>newHuhAccessibleInput</code> in place of raw strings for the
+menu’s input.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep
+<code>isExitSignal</code>’s current “abort exits the whole program”
+behavior, defer the wording fix to a later pass</em> – rejected because
+the prior session scoped the abort-behavior change as part of this same
+piece of work, not a separate one (this repo’s own task list keeps the
+label-wording pass, e.g. “quit” vs. “cancel” text, separate, but the
+<em>behavior</em> change was explicitly bundled here). - <em>Give
+<code>s3Item</code> an <code>Equal</code> method or make
+<code>action</code> a comparable reference (e.g. an int action-code)
+instead of switching to index-based selection</em> – more invasive
+(every existing <code>s3MenuItems</code> literal and every call site
+that pattern-matches on <code>choice.action == nil</code> for “Back to
+domain picker” would need to change); index-based selection achieves the
+same result by touching only <code>pickS3MenuItem</code>. - <em>Drop the
+now-unused <code>le</code> parameter from <code>RunS3Menu</code></em> –
+would ripple into <code>main.go</code>’s one call site for no functional
+benefit, and would make <code>RunS3Menu</code>’s signature diverge from
+<code>RunMainMenu</code>/ <code>RunKeyMgmtMenu</code>’s while those two
+remain on <code>termlib</code>. Deferred until (if ever) all three
+domain loops are off <code>termlib</code>’s <code>PickList</code>.</p>
+<p><strong>Consequences.</strong> <code>internal/ui</code>
+(<code>PickList</code>, <code>ErrCancelled</code>) is untouched and
+still used by <code>RunMainMenu</code>/<code>RunKeyMgmtMenu</code>/
+<code>RunDomainPicker</code> – this conversion is scoped to the S3 menu
+only, per the prior session’s explicit “don’t let this expand” note.
+<code>go build</code>, <code>go vet</code>, and
+<code>go test ./... -race</code> are clean. Next up, unstarted: the
+three bucket-selection call sites
+(<code>bucket_website.go</code>/<code>bucket_lifecycle.go</code>/<code>bucket_delete.go</code>),
+which select <code>inventory.Bucket</code> values (already comparable,
+no func fields) so shouldn’t need the same index-based workaround.</p>
+<hr />
+<h2
+id="fix-stale-find-results-after-a-refresh-name-single-targets-in-confirm-prompts-add-an-explicit-manual-refresh">2026-07-09
+— Fix stale Find results after a refresh; name single targets in confirm
+prompts; add an explicit manual refresh</h2>
+<p><strong>Context.</strong> Real-bucket testing
+(<code>test-clasm</code>) surfaced three more gaps in the same session:
+after tagging and deleting some <code>.jsonl</code> objects located via
+Find, the listing didn’t reflect the deletion until some later, unclear
+point; the delete confirm for a single object only said “1 object(s),”
+not which one; and there was no direct answer to “how do I get the
+window to update.”</p>
+<p><strong>Root cause 1 (stale Find results).</strong>
+<code>pane.visible()</code> returns <code>pane.find.results</code> – a
+point-in-time flat snapshot – whenever a Find is active, completely
+bypassing <code>pane.entries</code> regardless of how recently
+<code>entries</code> was refetched. The post-delete refresh
+(<code>refreshAfterAction</code>) correctly reloaded
+<code>p.entries</code>, but the screen kept showing the old Find
+snapshot until the operator manually pressed Esc to exit Find. Fixed in
+the <code>listLoadedMsg</code> handler (<code>model.go</code>): a
+successfully-applied (non-stale) listing for a pane now always clears
+that pane’s <code>find</code> too, since a fresh full-level listing
+supersedes any earlier Find snapshot. Safe to do unconditionally: the
+only loads that ever reach a pane while its <code>find</code> is still
+set are post-action refreshes (ordinary navigation already clears
+<code>find</code> via <code>pane.enter</code>), so there’s no legitimate
+case where a landing reload should leave a stale Find view in place.</p>
+<p><strong>Root cause 2 (single-target confirms didn’t name the
+target).</strong> Download/Upload/Delete/Sync’s confirm prompts all read
+“N object(s)”/ “N file(s),” even for exactly one item – a regression
+relative to Feature 21’s original single-object delete wizard, which did
+name the object (<code>"Delete %s from %s?"</code>). Added
+<code>describeTargets</code>/<code>describeKeys</code>
+(actions.go/sync.go): a single item’s key/path is named directly;
+multiple items still get a count. Applied to all four confirm prompts
+(Download, Upload, Delete, Sync’s two stages) for consistency, not just
+the one the operator specifically flagged.</p>
+<p><strong>Decision – explicit manual refresh.</strong> Even with root
+cause 1 fixed, added <code>r</code> / <code>:refresh</code> (reloads the
+focused pane’s current level, clearing any active Find first) as a
+direct, always-available answer to “how do I get the window to update” –
+covers any future staleness class this fix didn’t anticipate, and covers
+the legitimate case of something changing the bucket from outside this
+session entirely (the AWS console, another terminal).</p>
+<p><strong>Also clarified in this exchange, no code change
+needed:</strong> switching between one-pane and two-pane views is
+<code>l</code> – prompts to link a directory (opens double-pane) when
+unlinked, or goes straight to the unlink confirm (collapses to
+single-pane) when already linked. The hotkey legend now says “l Link
+(2-pane)” / “l Unlink (1-pane)” instead of just “l Link”/“l Unlink” to
+make the pane-count effect explicit.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Prune only the deleted
+keys out of <code>find.results</code> instead of clearing
+<code>find</code> entirely</em> – considered (would preserve the rest of
+the Find context); rejected for now as more moving parts than the bug
+warranted – reopening the same search
+(<code>F</code>/<code>:find</code>) after a refresh is one keystroke,
+and the general “any landing reload clears find” rule is simpler to
+reason about and correct for every action, not just Delete.</p>
+<p><strong>Consequences.</strong> <code>model.go</code>’s
+<code>listLoadedMsg</code> handler, <code>actions.go</code>
+(<code>describeTargets</code>, Download/Upload/Delete confirm titles,
+<code>r</code> hotkey, <code>refreshFocused</code>),
+<code>commandline.go</code> (<code>:refresh</code>),
+<code>sync.go</code> (<code>describeKeys</code>, both confirm titles),
+and <code>view.go</code> (legend wording) all changed. New tests:
+<code>TestModel_Delete_FromFindResultsRefreshesDisplay</code>,
+<code>TestModel_Refresh_HotkeyReloadsFocusedPane</code>,
+<code>TestModel_Refresh_ColonCommand</code>. Existing
+Download/Upload/Sync confirm- title assertions updated to match the new
+single-item phrasing. All tests pass; <code>go test -race ./...</code>
+clean.</p>
+<hr />
+<h2
+id="add-per-call-aws-timeouts-to-the-file-manager-add-a-direct-unlink-to-single-pane-action">2026-07-09
+— Add per-call AWS timeouts to the file manager; add a direct
+unlink-to-single-pane action</h2>
+<p><strong>Context.</strong> The file manager “appeared hung” after
+uploading a batch of files to a real bucket. Investigated live: attached
+Delve (non-destructively – inspected goroutine stacks, then fully
+detached, leaving the process running and untouched) to the running
+process rather than guessing. Found, at that moment, a genuinely
+in-flight <code>s3:PutObject</code> HTTP request – not a deadlock in
+this project’s own code. By a second snapshot ~10 seconds later that
+request had completed normally and the whole program was sitting in
+bubbletea’s ordinary idle event loop. The operator confirmed pressing a
+key brought the screen back – it had finished the batch and was showing
+the progress overlay’s “(press any key to continue)” state (DESIGN.md
+21.4’s never-auto-dismiss rule), not actually stuck.</p>
+<p><strong>Decision 1 – add per-call timeouts anyway.</strong> Even
+though this specific instance wasn’t a true hang, the investigation
+surfaced a real gap: every direct AWS call in
+<code>internal/filemanager</code>/<code>internal/s3diff</code> used the
+caller’s own long-lived context with no per-call deadline, unlike
+<code>internal/workflow</code>’s established
+<code>withCallTimeout</code> (30s) convention
+(<code>call_timeout.go</code>) used throughout the EC2/AMI/Key
+Management domains. A <em>genuinely</em> stalled connection (not just a
+slow- but-progressing one) would hang the calling goroutine forever,
+with no recovery short of killing the whole program. Added
+<code>s3diff.WithCallTimeout</code> (30s, for lightweight
+metadata/listing/delete calls) and
+<code>s3diff.WithTransferTimeout</code> (5 min, for Upload/Download’s
+actual data-transfer calls, since transfer time scales with object size
+and connection speed, not just request/response latency) – duplicated
+from <code>internal/workflow</code>’s pattern rather than imported, for
+the same import-cycle reason <code>internal/s3diff</code> itself exists
+(see the earlier “Extract internal/s3diff…” entry). Applied at every
+direct
+<code>ListObjectsV2</code>/<code>HeadObject</code>/<code>GetObject</code>/<code>PutObject</code>/<code>DeleteObject</code>
+call site in both packages. <code>downloadOne</code>’s timeout has to
+span the whole download (GetObject call + the later <code>io.Copy</code>
+of its response body), not just the initial call, since the response
+body read is governed by the same request context. While here, replaced
+<code>actions.go</code>’s <code>uploadOne</code> (a near-duplicate of
+<code>s3diff.UploadFile</code> that was missing Content-Type inference)
+with a direct call to <code>s3diff.UploadFile</code> – one less
+duplicate implementation, and the Upload action now gets correct
+Content-Type headers Sync’s Upload already had.</p>
+<p><strong>Decision 2 – direct unlink action.</strong> Separately
+reported: “I need a way to go from two panels back to displaying only
+the S3 bucket.” The <code>l</code> hotkey’s existing unlink path (open
+<code>:link &lt;path&gt;</code> pre-filled, clear it, submit empty) was
+reachable but not discoverable as <em>the</em> way back. <code>l</code>
+while linked (or <code>:unlink</code>) now goes straight to a Confirm
+(“Unlink <code>&lt;path&gt;</code> and return to single-pane view?”);
+accepting applies instantly (<code>applyLink("")</code>) since unlinking
+is a state change, not a background operation – it never touches
+<code>beginAction</code>/ <code>overlayProgress</code>.
+<code>:link</code> (with an explicit empty argument) still unlinks too,
+unchanged, so nothing that depended on the old path breaks.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Use the same 30s
+timeout for Upload/Download as everything else</em> – rejected; a large
+file’s legitimate transfer time can easily exceed 30s on a slow
+connection, and the goal is recovering from a stalled connection, not
+penalizing a slow-but-working one. - <em>Make
+DefaultCallTimeout/TransferCallTimeout const, matching workflow’s own
+const</em> – rejected; kept as <code>var</code> specifically so tests
+can shrink them and prove the recovery behavior without an actual
+30-second (or 5-minute) wait.</p>
+<p><strong>Consequences.</strong> <code>internal/s3diff.go</code> gained
+<code>WithCallTimeout</code>/ <code>WithTransferTimeout</code> (+ tests
+proving a stalled fake connection recovers via timeout rather than
+hanging). <code>internal/filemanager/{listing,actions,sync}.go</code>
+apply them at every AWS call site; <code>uploadOne</code> is gone,
+replaced by <code>s3diff.UploadFile</code>.
+<code>internal/filemanager/{commandline,actions}.go</code> gained
+<code>startUnlinkConfirm</code>/<code>actionUnlink</code> and the
+<code>:unlink</code> command; the hotkey legend now reads “l Unlink”
+once linked. New tests:
+<code>TestModel_Unlink_LHotkeyGoesStraightToConfirm</code>,
+<code>TestModel_Unlink_DeclineStaysLinked</code>,
+<code>TestModel_Unlink_ColonCommand</code>. All pre-existing tests pass
+unchanged; <code>go test -race ./...</code> clean.</p>
+<hr />
+<h2
+id="give-filter-the-same--anchored-pattern-convention-as-find">2026-07-09
+— Give Filter the same “/”-anchored pattern convention as Find</h2>
+<p><strong>Context.</strong> Typing <code>/index.html</code> into the
+current-level Filter (<code>f</code>) had no visible effect: Filter is
+(correctly) a plain substring match, so the literal text
+<code>/index.html</code> – including the slash – was compared against
+basenames like <code>index.html</code>, which never contains a
+<code>/</code> and so never matched. The operator’s expectation,
+reasonably, was that the <code>/</code>-anchor convention just added to
+Find (the previous 2026-07-09 entry) would mean the same thing here too,
+since both features are typed the same way (a pattern following a
+<code>/</code>) and are listed next to each other in the hotkey
+legend.</p>
+<p><strong>Decision.</strong> A filter starting with <code>/</code> is
+now matched via <code>globMatch</code>’s anchored form – reusing the
+exact function Find already uses, not a second implementation – instead
+of plain substring <code>Contains</code>. Since Filter only ever
+operates on one already-fetched level (not a recursive path), this
+collapses to an exact/glob match of the current level’s basenames:
+<code>/index.html</code> matches only a file named exactly that, not
+<code>myindex.html5</code> (which a plain substring filter for
+<code>index.html</code> would have matched too). Filter without a
+leading <code>/</code> keeps its original substring behavior
+unchanged.</p>
+<p><strong>On the spinner:</strong> confirmed with the operator that
+Filter correctly shows no spinner – it’s a synchronous, instant
+operation over already- loaded rows, unlike Find’s recursive scan, so
+there’s nothing to animate. Not a bug; Find’s spinner (previous entry)
+already covers the one operation here that can genuinely take a
+while.</p>
+<p><strong>Consequences.</strong> <code>pane.visible()</code> branches
+on a leading <code>/</code> before falling back to substring matching.
+New test:
+<code>TestPane_Visible_AnchoredFilterMatchesExactBasenameOnly</code>
+(<code>pane_test.go</code>). All pre-existing tests, including
+<code>TestModel_Filter_NarrowsCurrentLevel</code> (the original
+substring case), pass unchanged.</p>
+<hr />
+<h2
+id="add-a-loading-spinner-and-an-anchored-find-pattern-fix-a-spinnersynchronous-test-drain-interaction">2026-07-09
+— Add a loading spinner and an anchored Find pattern; fix a
+spinner/synchronous-test-drain interaction</h2>
+<p><strong>Context.</strong> Two more requests after trying the file
+manager against a real bucket: Find and directory listings can take a
+real, noticeable amount of time with no feedback that anything is
+happening (looks frozen); and there was no way to search for a
+root-level file (e.g. <code>index.html</code>) without also matching
+every same-named file in subdirectories.</p>
+<p><strong>Decision 1 – loading spinner.</strong> Added
+<code>github.com/charmbracelet/ bubbles/spinner</code> (already a
+transitive dependency via huh; now direct). A pane’s header shows an
+animated glyph + “Loading…” while its listing is being (re)fetched
+(<code>Model.loadingRemote</code>/<code>loadingLocal</code>); Find’s
+status row shows the same glyph while a search hasn’t finished
+(<code>pane.find.done</code>). The spinner only ticks while
+<code>Model.isBusy()</code> is true:
+<code>loadRemoteCmd</code>/<code>loadLocalCmd</code>/<code>runFind</code>
+each batch in a fresh <code>spinner.Tick</code> to (re)start the
+animation, and the <code>spinner.TickMsg</code> handler drops its own
+re-tick <code>Cmd</code> once nothing is busy, rather than ticking
+forever. This was a real functional requirement, not just efficiency: a
+bubbletea <code>Model</code> driven synchronously (no real
+<code>tea.Program</code>, no real timers – see this project’s own test
+pattern, <code>drainCmd</code>) would never terminate against a
+perpetually-ticking spinner.</p>
+<p><strong>Decision 1’s follow-on bug and fix.</strong> Even with the
+isBusy() gate, <code>drainCmd</code>-based tests hung. Root cause:
+<code>Init()</code>’s returned <code>tea.Batch</code> nests one
+sub-batch per pane
+(<code>loadRemoteCmd</code>/<code>loadLocalCmd</code>, each itself now
+<code>tea.Batch(fetch, tick)</code>), and <code>drainCmd</code> drains
+one batch branch all the way through before moving to the next – so
+while draining the remote pane’s branch, <code>loadingLocal</code>
+(already set the moment <code>Init()</code> <em>constructed</em> the
+local branch’s Cmd, before either branch actually ran) hadn’t been
+cleared yet, since that happens in the <em>other</em>, not-yet-visited
+branch. <code>isBusy()</code> therefore saw stale state for the entire
+depth of the first branch, and kept chasing tick -&gt; tick -&gt; tick
+forever. A real <code>tea.Program</code> doesn’t have this problem: it
+runs every in-flight <code>Cmd</code> concurrently, so by the time a
+real spinner tick fires (tens of milliseconds later), the sibling pane’s
+load has typically already resolved. Fixed at the test-helper level, not
+in production code (the production isBusy()-gating is correct for real
+concurrent execution): <code>drainCmd</code> now processes a
+<code>spinner.TickMsg</code> once (so <code>Update</code>’s bookkeeping
+runs) but never chases the <code>Cmd</code> it returns – ticks are
+purely cosmetic and don’t affect anything a test asserts on.</p>
+<p><strong>Decision 2 – anchored Find pattern.</strong> A pattern
+starting with <code>/</code> is now matched against an entry’s
+<em>full</em> path (relative to the search’s starting point) instead of
+just its basename – <code>/index.html</code> matches only a root-level
+<code>index.html</code>, <code>/sub/index.html</code> matches only that
+exact nested one, <code>/*.html</code> matches only root-level
+<code>.html</code> files (<code>filepath.Match</code>’s <code>*</code>
+still doesn’t cross <code>/</code>). Implemented as one branch in
+<code>globMatch</code>, since both the local and S3 recursive listings
+(<code>listLocalRecursive</code>/<code>listS3Recursive</code>) already
+carry each entry’s full relative path in <code>entry.name</code> – no
+new traversal or data needed, just a different match target.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Always tick the
+spinner, never stop</em> – the original 2026-07-09 UX pass’s approach;
+rejected once it surfaced the synchronous-test-drain hang above, and it
+wastes idle redraws in real usage too for no benefit. - <em>Fix the hang
+by having Update clear loadingLocal/loadingRemote eagerly at Init() time
+instead of when their fetch actually starts</em> – rejected; the flags
+exist specifically to reflect whether a fetch is genuinely in flight,
+and weakening that to work around a test-only ordering artifact would
+make the flags lie in the one case (a slow-loading pane) they’re
+supposed to represent correctly. - <em>Require the anchor to be a full
+path with no wildcards (exact match only)</em> – rejected; reusing plain
+<code>filepath.Match</code> on the full path costs nothing extra and
+lets <code>/*.html</code>-style single-level globs work too, consistent
+with the unanchored form already supporting globs.</p>
+<p><strong>Consequences.</strong>
+<code>internal/filemanager/model.go</code> gained
+<code>spin spinner.Model</code>,
+<code>loadingRemote</code>/<code>loadingLocal</code>,
+<code>setLoading</code>/ <code>isLoading</code>/<code>isBusy</code>;
+<code>view.go</code>’s <code>paneRows</code> takes
+<code>loading bool, spin string</code>; <code>listing.go</code>’s
+<code>globMatch</code> gained the anchored branch. <code>go.mod</code>
+moved <code>github.com/charmbracelet/bubbles</code> from indirect to
+direct. New tests: <code>box_test.go</code> (loading/spinner indicator
+presence), <code>entry_test.go</code>/<code>model_test.go</code>
+(anchored pattern, unit and end-to-end).
+<code>testhelpers_test.go</code>’s <code>drainCmd</code> no longer
+chases <code>spinner.TickMsg</code> chains. All pre-existing tests pass
+unchanged; <code>go test -race ./...</code> clean.</p>
+<hr />
+<h2
+id="fix-two-real-bucket-navigation-bugs-and-add-a-scrolling-window-to-the-file-managers-pane-listings">2026-07-09
+— Fix two real-bucket navigation bugs and add a scrolling window to the
+file manager’s pane listings</h2>
+<p><strong>Context.</strong> Trying the file manager against a real
+bucket (<code>s3://thesis.caltech.edu</code>) surfaced two more real
+bugs beyond the previous UX pass: the object listing had no way to
+scroll down to reach an entry past the first screenful (specifically,
+<code>opensearch.xml</code>), and navigating back up out of a
+drilled-into subdirectory didn’t reliably reach the root.</p>
+<p><strong>Root cause 1 (no pagination/scrolling).</strong>
+<code>View()</code> never bounded pane listings to the terminal height
+at all – every visible entry became a box row, unconditionally. A
+bucket-root listing longer than one screenful pushed the status line,
+command line, and hotkey legend off the bottom of the terminal, with
+nothing to bring them back into view; worse, an entry past the first
+screenful (<code>opensearch.xml</code>, sorting after many
+<code>file-*</code>-style keys) was simply never rendered at all, with
+no scroll key or indicator suggesting more existed. Fixed by adding
+<code>paneItemWindowHeight</code> (derives a row budget from
+<code>m.height</code> minus a fixed chrome-row count) and
+<code>scrollWindow</code> (keeps the cursor inside a windowHeight-tall
+viewport, centering when there’s room) – the listing now scrolls with
+the existing Up/Down keys, with a “[a-b of n]” indicator on the pane
+header once it doesn’t all fit. Overlay progress logs
+(Upload/Download/Delete/Sync against many objects) get the same
+treatment, tail-windowed rather than cursor-centered, since a log’s
+natural reading position is its most recent lines.</p>
+<p><strong>Root cause 2 (broken “back to root” navigation) – two
+distinct bugs, both in prefix/path handling:</strong> -
+<code>parentOf</code> (now <code>parentOfS3Prefix</code> for the remote
+side) stripped the trailing slash from a nested S3 prefix’s parent
+(<code>"logs/sub/"</code> -&gt; <code>"logs"</code> instead of
+<code>"logs/"</code>). The next <code>s3:ListObjectsV2</code> call then
+used a bare string-prefix match instead of a directory-boundary one,
+silently hiding every bucket-root object that didn’t happen to start
+with the literal string <code>"logs"</code> – so “go up a level” landed
+on a corrupted, mostly-empty intermediate view instead of the actual
+parent directory. - The local pane conflated two different path
+representations: <code>pane.prefix</code> is documented (and used by
+<code>loadLocalCmd</code> via <code>joinKey(root, prefix)</code>) as
+<strong>root-relative</strong>, but entering a local subdirectory
+assigned the entry’s <strong>absolute</strong> filesystem path directly
+to <code>prefix</code>. One level deep this went unnoticed; a second
+level built a doubled, malformed path
+(<code>root + "/" + absolute-path-that-already-contains-root</code>),
+breaking navigation (including back to the linked root) beyond the first
+subdirectory.</p>
+<p>Fixed with
+<code>pane.toPrefix</code>/<code>pane.parentPrefixOf</code>, which
+convert an entry’s identity (<code>entry.key</code> – already
+bucket-relative for the remote side, an absolute path for the local
+side, per <code>entry</code>’s own doc comment) into the <em>pane’s</em>
+prefix representation before it’s assigned to <code>pane.prefix</code>,
+instead of assuming the two were always the same shape.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Persist a per-pane
+scroll offset in the Model, updated on every cursor move</em> –
+considered; rejected in favor of computing the window as a pure function
+of <code>(cursor, total, windowHeight)</code> on every
+<code>View()</code> call. Simpler (no extra mutable state to keep in
+sync with cursor movement, filtering, or directory changes) and just as
+correct, since the window only ever depends on where the cursor
+currently is. - <em>Give the local pane its own absolute-path-based
+prefix format instead of converting to root-relative</em> – rejected;
+<code>pane.label()</code> and every action that reconstructs a full path
+via <code>joinKey(root, prefix)</code> depend on <code>prefix</code>
+being root-relative, and changing that contract everywhere would be a
+much larger change than fixing the one place
+(<code>navigateEnterOrJump</code>) that violated it.</p>
+<p><strong>Consequences.</strong>
+<code>internal/filemanager/entry.go</code>’s <code>parentOf</code> is
+split into <code>parentOfLocal</code> (unchanged logic, correct for the
+local side’s no-trailing-slash convention) and
+<code>parentOfS3Prefix</code> (new, trailing- slash-preserving).
+<code>pane.go</code> gained
+<code>toPrefix</code>/<code>parentPrefixOf</code>; <code>up()</code> is
+now side-aware. <code>view.go</code> gained the scroll-window machinery.
+New tests: <code>scroll_test.go</code> (scroll-window bounds, a 500-item
+listing staying bounded to the terminal height, an entry past the first
+screenful becoming reachable), <code>navigation_test.go</code> (both
+navigation bugs, reproduced against the pre-fix code by hand-tracing the
+exact failure before writing the fix). All pre-existing tests pass
+unchanged.</p>
+<hr />
+<h2
+id="fix-three-post-implementation-ux-gaps-in-the-file-manager-and-its-huh-pre-flight">2026-07-09
+— Fix three post-implementation UX gaps in the file manager and its huh
+pre-flight</h2>
+<p><strong>Context.</strong> The user tried the file manager after Phase
+20.1 shipped and reported three real gaps against DESIGN.md: (1) the
+bucket-picker pre-flight (huh) gave no indication of what keys/actions
+were available; (2) the file manager’s pane rows gave no clear visual
+indication of which row the cursor was on or which rows were tagged; (3)
+the screen’s chrome didn’t match DESIGN.md 21.4’s bordered-box mockup –
+it used plain dashed-line separators instead.</p>
+<p><strong>Root cause 1 (huh help footer missing).</strong>
+<code>huh.Field.Run()</code> (called by <code>object_browser.go</code>
+for the bucket <code>Select</code>, the link <code>Confirm</code>, and
+the directory <code>Input</code>) is a shortcut for
+<code>huh.Run(field)</code>, which is itself
+<code>NewForm(NewGroup(field)).WithShowHelp(false).Run()</code> – it
+explicitly disables the help footer. Fixed by adding
+<code>runFieldWithHelp(field)</code> (a one-line
+<code>NewForm(NewGroup(field)).Run()</code>, leaving
+<code>Group</code>’s default <code>showHelp: true</code> in effect) and
+calling it in place of <code>field.Run()</code> at all three call
+sites.</p>
+<p><strong>Root cause 2 (no selection indicator).</strong> The pane rows
+only had a single leading <code>&gt;</code>/<code>*</code> character
+with no color or emphasis – easy to miss, especially in a wide terminal.
+Added reverse-video on the cursor row and bold on tagged rows
+(<code>view.go</code>’s <code>styleRow</code>), gated by the same
+NO_COLOR/non-TTY convention <code>internal/ui.ColorEnabled</code>
+already establishes elsewhere in this codebase
+(<code>Model.colorEnabled</code>, computed once at <code>New()</code>) –
+falls back to the plain <code>&gt;</code>/<code>*</code> markers alone
+when color is disabled or stdout isn’t a terminal.</p>
+<p><strong>Root cause 3 (chrome didn’t match the mockup).</strong> The
+screen was never actually built to render DESIGN.md 21.4’s bordered-box
+mockup – it used <code>strings.Repeat("-", 78)</code> separator lines
+instead of the mockup’s <code>┌─┬┐├┼┤└┴┘│</code> box-drawing chrome.
+Rewrote <code>view.go</code> to render one continuous bordered box: a
+title bar (<code>┌ clasm — S3 File Manager — ... ┐</code>), a
+<code>┬</code>/<code>┴</code> divider splitting the pane area in
+double-pane mode, and <code>├─┤</code> rules between the status
+line/command line/hotkey legend, sized to the real terminal width
+(<code>tea.WindowSizeMsg</code>, falling back to a fixed default before
+the first one arrives). Content within each box row is padded/truncated
+to a rune-accurate visible width, correctly accounting for the invisible
+ANSI escapes the reverse-video/bold styling (root cause 2) adds –
+verified with a dedicated test asserting every rendered line between the
+outer borders has equal visible width.</p>
+<p><strong>Also fixed while verifying this visually:</strong>
+<code>joinKey(root, "")</code> (used by <code>pane.label()</code>) was
+appending a spurious trailing slash at a linked directory’s root
+(“LOCAL: /path/on/disk/” instead of “LOCAL: /path/on/disk”) – an empty
+<code>name</code> now returns <code>parent</code> unchanged. Caught by
+rendering the Model directly (bypassing a running
+<code>tea.Program</code>) via a small <code>drainCmd</code> test helper
+that synchronously executes a <code>tea.Cmd</code> chain – worth keeping
+as a pattern for visually inspecting the <code>Model</code> without
+needing a real terminal.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Use
+<code>lipgloss.Border</code> per section instead of hand-rolled
+box-drawing</em> – considered; rejected for this pass because lipgloss
+draws a complete border around each styled box independently, which
+produces doubled seams where sections touch (the mockup shows one
+continuous outer border with internal
+<code>├─┤</code>/<code>┬</code>/<code>┴</code> junctions) unless
+composed much more carefully than the plain string-building approach
+used here. - <em>Leave selection color-gating unconditional (always emit
+ANSI)</em> – considered, since reverse/bold are text decorations rather
+than colors and the NO_COLOR spec is about colors specifically; rejected
+for consistency with this codebase’s own existing (stricter)
+interpretation in <code>internal/ui.Highlight</code>, which already
+gates its own bold usage the same way.</p>
+<p><strong>Consequences.</strong>
+<code>internal/workflow/object_browser.go</code> gained
+<code>runFieldWithHelp</code>. <code>internal/filemanager/view.go</code>
+was substantially rewritten (box-drawing helpers, ANSI-aware width
+math); <code>entry.go</code>’s <code>joinKey</code> got a one-line fix.
+New tests: <code>box_test.go</code> (padding/ truncation/alignment
+invariants under ANSI styling, the <code>joinKey</code>/
+<code>label()</code> fix, a whole-view row-width consistency check) and
+a <code>styleRow</code> NO_COLOR-gating test. All pre-existing
+<code>internal/filemanager</code> tests pass unchanged.</p>
+<hr />
+<h2
+id="extract-internals3diff-add-a-dedicated-sync-action-to-the-file-manager-use-xexpteatest-for-model-tests">2026-07-09
+— Extract <code>internal/s3diff</code>; add a dedicated Sync action to
+the file manager; use <code>x/exp/teatest</code> for <code>Model</code>
+tests</h2>
+<p><strong>Context.</strong> Implementing PLAN.md Phase 20.1 (this
+file’s earlier 2026-07-09 entries designed it) surfaced three
+implementation-time decisions the design pass didn’t fully settle.</p>
+<p><strong>Decision 1 — <code>internal/s3diff</code> package.</strong>
+The plan’s file list said <code>bucket_sync.go</code>’s diff/walk/list
+helpers (<code>diffSync</code>, <code>walkLocalTree</code>,
+<code>listAllBucketObjects</code>, <code>contentTypeFor</code>) would
+stay in <code>internal/workflow</code>, “reused, not rewritten,” by the
+new screen. That doesn’t fit Go’s import rules once
+<code>internal/workflow/object_browser.go</code> needs to call into
+<code>internal/filemanager</code> to launch the screen:
+<code>filemanager</code> can’t import back into <code>workflow</code>
+without a cycle. Moved these helpers into a new, lower-level
+<code>internal/s3diff</code> package that both
+<code>internal/workflow</code> (implicitly, via retirement – see
+Decision 3) and <code>internal/filemanager</code> depend on, preserving
+genuine code reuse (same functions, not duplicated) without a cycle.</p>
+<p><strong>Decision 2 — a dedicated Sync action, not just manual
+tag-and-act.</strong> The file manager as first built (single-pane, then
+double-pane with manual per-directory tag-and-Upload/Download) covered
+Feature 21’s old single-object case and the old bulk-delete-by-prefix
+case, but not Feature 20’s automatic whole-tree diff (compute
+upload/delete candidates by comparing an entire local directory against
+the entire bucket, dry run, two-stage confirm). Flagged to the user as a
+real gap against this file’s own 2026-07-09 “Design the S3 object
+management UI/UX pass” entry (Decision 2 there: “Sync’s
+directory-mirroring workflow is kept as a first-class, directly
+reachable capability”). The user chose to build it properly rather than
+ship with manual tag-and-act as the only path. Added a
+<code>S</code>/<code>:sync</code> action (DESIGN.md 21.6) reusing
+<code>internal/s3diff.Compute</code>/<code>WalkLocalTree</code>/<code>ListAllBucketObjects</code>
+against the <em>entire</em> linked directory and <em>entire</em> bucket
+(not scoped to either pane’s current navigated position) — matching the
+retired wizard’s own semantics exactly, gated by the same never-bundled
+upload-then-delete two-stage confirm (Security Consideration #11).</p>
+<p><strong>Decision 3 — retire <code>bucket_sync.go</code>’s wizard, not
+just
+<code>bucket_browse.go</code>/<code>bucket_delete_objects.go</code>.</strong>
+PLAN.md’s work items only named the latter two for retirement. Once Sync
+became a directly reachable file-manager action (Decision 2) with real
+parity, keeping <code>SyncDirectoryToBucket</code> around as dead,
+unreachable code (no menu entry dispatches to it any more) would violate
+this project’s own practice of deleting confirmed-unused code rather
+than leaving stale copies (<code>CLAUDE.md</code>). Deleted
+<code>bucket_sync.go</code> and <code>bucket_sync_test.go</code>
+outright; their diff logic lives on in <code>internal/s3diff</code>
+(Decision 1), tested there instead.</p>
+<p><strong>Decision 4 — <code>x/exp/teatest</code> resolves PLAN.md’s
+open testing question.</strong> Confirmed real and usable by pulling it
+into the module
+(<code>go get github.com/charmbracelet/x/exp/teatest</code>) and driving
+the <code>Model</code> through it, per this project’s standing
+evaluation discipline. <code>teatest.NewTestModel</code> runs the
+<code>Model</code> as an actual <code>bubbletea.Program</code> against
+an in-memory terminal; <code>.Send</code> injects <code>tea.Msg</code>s
+(key presses); <code>teatest.WaitFor</code> polls the rendered output
+for a substring. One caveat worth recording: bubbletea’s renderer only
+retransmits screen lines that changed since the previous frame, so two
+sequential <code>WaitFor</code> calls checking <em>different</em>
+substrings can race if both substrings were already present in one
+earlier, since-drained frame — check multiple substrings in a single
+<code>WaitFor</code> condition (or assert on a status line’s derived
+text) rather than assuming later calls see everything still on screen.
+<code>go test -race</code> also caught one genuine concurrency bug this
+pattern makes visible that a non-race-checked manual test would have
+missed: <code>runDelete</code>’s background goroutine called
+<code>pane.clearTags()</code> directly (a Model mutation) instead of
+only sending text over its progress channel, racing with the render
+loop’s concurrent read of the same map. Fixed by moving that mutation
+into the overlay-dismiss key handler, which runs on
+<code>Update</code>’s single goroutine — the general rule going forward
+for this <code>Model</code>: background goroutines started by an action
+may only ever send <code>progressLine</code> values over a channel,
+never touch <code>Model</code>/<code>pane</code> fields directly.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Duplicate the diff
+helpers in <code>internal/filemanager</code> instead of extracting a
+shared package</em> — considered, given the plan’s literal wording
+implied <code>bucket_sync.go</code> would stay put; rejected once it
+became clear that would mean two copies of the same key+size diff logic
+drifting apart over time, against this project’s stated preference for
+simplicity over duplication. - <em>Ship without a dedicated Sync action,
+relying on manual tag-everything-then-Upload</em> — genuinely workable
+and was the default path until the user was asked; rejected because it
+silently drops the auto-diff (only-changed-files) behavior the original
+wizard had, and doesn’t literally satisfy the earlier Decision 2
+commitment. - <em>Write <code>Model</code> tests by manually driving
+<code>Update</code>/executing returned <code>tea.Cmd</code>s
+synchronously, skipping <code>teatest</code> entirely</em> — considered
+when <code>teatest</code>’s output-diffing first produced two
+flaky-looking failures; rejected once the actual cause (draining +
+unchanged-line suppression, not a fundamentally unreliable tool) was
+root-caused – <code>teatest</code> works well once that behavior is
+understood and tests assert accordingly.</p>
+<p><strong>Consequences.</strong> <code>internal/s3diff</code> is new,
+with its own tests (<code>s3diff_test.go</code>).
+<code>internal/workflow/bucket_sync.go</code>/
+<code>bucket_sync_test.go</code> are deleted.
+<code>internal/filemanager</code> gained
+<code>sync.go</code>/<code>sync_test.go</code> and a
+<code>S</code>/<code>:sync</code> hotkey/command. PLAN.md Phase 20.1’s
+file list and work-item checkboxes, and DESIGN.md’s 21.6 section, are
+updated to match what was actually built.</p>
+<hr />
+<h2
+id="demote-cloudfront-to-somedaymaybe-decouple-phase-22s-real-aws-testing-from-it">2026-07-09
+— Demote CloudFront to someday/maybe; decouple Phase 22’s real-AWS
+testing from it</h2>
+<p><strong>Context.</strong> The 2026-07-09 “0.0.1 scope” decision
+(below) postponed CloudFront (PLAN.md Phase 21, DESIGN.md Features
+22-25) “to a later version” – phrasing that still implied it was queued
+up as a reasonably near-term next step, just after 0.0.1. With the S3
+object management UI/UX pass now actively designed and planned (this
+file, above; PLAN.md Phase 20.1), it’s clear CloudFront isn’t close to
+being picked up next – the user doesn’t expect to get to it soon.</p>
+<p><strong>Decision.</strong> Recharacterize CloudFront as
+someday/maybe: not on the active roadmap, no committed timeline, weaker
+than “postponed to a later version” implied. The design (DESIGN.md
+Features 22-25, PLAN.md Phase 21) stays intact as valid reference –
+nothing is deleted, only the status framing changes. Phase 22 (“Real-AWS
+Testing”) is split so it no longer depends on Phase 21: it now covers
+only Key Management and S3, and CloudFront’s own real-AWS verification
+moves into Phase 21’s own scope, to happen whenever that phase is
+eventually picked up rather than gating Phase 22’s completion on a
+someday/maybe item.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Leave Phase 22
+depending on Phase 21</em> – rejected; it would mean Key Management and
+S3 (both actively shipped in 0.0.1) can never be marked
+verified-complete until an indefinitely-postponed domain is built, which
+misrepresents how settled those two domains actually are. - <em>Delete
+the CloudFront design entirely rather than demote it</em> – rejected;
+the design and plan are still valid reference and cost nothing to keep,
+per this project’s existing practice for postponed work (see the
+original CloudFront postponement decision below).</p>
+<p><strong>Consequences.</strong> PLAN.md Phase 21’s status line, its
+Priority Order table row, and Phase 22’s title/scope/dependency are
+updated. DESIGN.md’s CloudFront Domain section gets the same
+someday/maybe note Features 20 and 21 (S3) already carry for their own
+supersession. TODO.md’s “Postponed to a later version” section is split
+into a new “Someday/ maybe” section (CloudFront) and the existing
+postponed section (the UI/UX overhaul, which is no longer purely “not
+started” now that Phase 20.1 exists).</p>
+<hr />
+<h2
+id="design-the-s3-object-management-uiux-pass-one-interactive-file-manager-not-three-separate-wizards">2026-07-09
+— Design the S3 object management UI/UX pass: one interactive file
+manager, not three separate wizards</h2>
+<p><strong>Context.</strong> The “0.0.1 scope” decision below deferred
+the UI/UX pass entirely, flagging <code>huh</code> as the leading
+candidate but starting no work. This entry begins that work: the S3
+domain had grown three independent, object-touching workflows shipped in
+Phase 20 – Sync Local Directory to Bucket (Feature 20), Browse/Manage
+Objects (Feature 21, single-object only), and an ad-hoc bulk
+delete-by-prefix case – each with its own selection model (auto-diff,
+single-pick, whole-prefix-only) and none supporting multi-select. Read
+(download) was never implemented at all (Phase 20: “object content is
+never downloaded, only <code>HeadObject</code> metadata”).</p>
+<p><strong>Decision 1.</strong> Replace all three with one interactive
+file manager screen (DESIGN.md Features 21.2-21.8), single-pane (bucket
+only) or double-pane (bucket + linked local directory) depending on
+whether a local directory is linked. Tagging one item and acting on it
+covers Feature 21’s old single-object case; tagging many covers the old
+bulk-delete-by-prefix case; both live in the same screen instead of
+three parallel implementations of “filter, pick, act.”</p>
+<p><strong>Decision 2.</strong> Sync’s directory-mirroring workflow is
+kept as a first-class, directly reachable capability – the
+double-pane/linked mode – rather than dissolved into a generic
+action-first “pick an action, then pick candidates” flow. Upload
+candidates only make sense as a diff against a local directory (there’s
+no way to compute “what should I upload” from the bucket side alone), so
+Sync’s shape is inherently different from Download/Delete’s “browse and
+pick” shape, and it’s common enough usage that it deserves a direct
+path, not a detour through an action menu.</p>
+<p><strong>Decision 3.</strong> Add Read (Download) to the CRUD scope
+now: <code>s3:GetObject</code> is added to <code>S3API</code>,
+completing Create/Update (Upload) / Read (Download) / Delete parity.
+Previously deferred in Phase 20 (“<code>GetObject</code> isn’t needed
+since object content is never downloaded”).</p>
+<p><strong>Rejected alternatives.</strong> - <em>Keep the three existing
+wizards, add multi-select to each independently</em> – rejected;
+perpetuates three separate selection/filter/confirm implementations that
+would need to be kept in sync by hand as the UI evolves further. -
+<em>Fold Sync into the generic batch flow as an “Upload” action
+alongside Download/Delete</em> – rejected (see Decision 2); there’s no
+bucket-side way to build an upload candidate set, and burying a common,
+direct workflow behind an action-first menu makes it harder to reach,
+not easier. - <em>Defer Download again, scope this pass to Upload/Delete
+UX only</em> – rejected; CRUD parity was worth completing given the
+interactive screen already has to support tagging and acting on bucket
+objects generically, and the added cost (one interface method, one
+action handler) is small next to the rest of this phase.</p>
+<p><strong>Consequences.</strong> DESIGN.md Features 20 and 21 are
+marked superseded (design-only, not yet implemented) by new Features
+21.2-21.8; their existing text is otherwise untouched and still
+describes what 0.0.1 actually ships. See <code>PLAN.md</code> Phase
+20.1.</p>
+<hr />
+<h2
+id="use-a-scoped-bubbletea-screen-for-the-file-managers-double-pane-mode-every-other-s3-wizard-stays-on-huh">2026-07-09
+— Use a scoped bubbletea screen for the file manager’s double-pane mode;
+every other S3 wizard stays on huh</h2>
+<p><strong>Context.</strong> The “0.0.1 scope” decision below evaluated
+<code>bubbletea</code> against <code>huh</code> and chose
+<code>huh</code> as the leading candidate specifically because its
+fields are blocking/synchronous, a close match to <code>termlib</code>’s
+<code>Prompt</code>/<code>PickList</code>/<code>Confirm</code> shape,
+while <code>bubbletea</code>’s Elm-architecture message loop would mean
+rewriting every one of <code>internal/workflow</code>’s ~40 wizards into
+explicit state machines. Designing the file manager’s double-pane mode
+(local directory + bucket, live tag-and-move between them) surfaced a
+case that evaluation didn’t anticipate: two simultaneously-visible,
+independently-navigable listings with cross-pane actions is a genuinely
+stateful, continuously-redrawing UI – not a sequence of blocking
+prompts, no matter how the prompts are composed.</p>
+<p><strong>Decision.</strong> Build the file manager’s screen (both
+single- and double-pane modes, since they share one <code>Model</code>)
+directly on <code>bubbletea</code> as one scoped, bounded component.
+Everything else in the S3 domain – Create Bucket, Configure Static
+Website Hosting, Manage Bucket Lifecycle Policies, Delete Bucket, and
+this same screen’s own bucket-selection pre-flight – stays on
+<code>huh</code>’s blocking fields, per the original evaluation.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Approximate the linked
+mode as a <code>huh</code>-only reviewed batch</em> (three sequential
+filtered-multiselect phases: upload pass, download pass, delete pass,
+each pre-checked from a diff) – genuinely buildable within the existing
+huh-only architecture and seriously considered; rejected once a live,
+navigable dual-pane experience was preferred over a review-then-execute
+approximation of one. - <em>Adopt <code>bubbletea</code> project-wide
+now, since <code>huh</code> already pulls it in</em> – rejected again;
+the rewrite cost the original evaluation identified (~40 wizards’
+control flow) doesn’t shrink just because one new screen needs
+<code>bubbletea</code> directly – it only means this one screen’s
+incremental dependency cost is zero, not that a wider migration is now
+free.</p>
+<p><strong>Consequences.</strong> No new dependency weight versus
+adopting <code>huh</code> at all – <code>huh</code> already pulls in
+<code>bubbletea</code>, <code>bubbles</code>, and <code>lipgloss</code>
+transitively. This is the only place in the S3 domain design that needs
+a custom <code>bubbletea</code> <code>Model</code>; DESIGN.md 21.8 has
+the detail. Test strategy for this <code>Model</code> is an open
+question (<code>PLAN.md</code> Phase 20.1) – the project’s existing
+pipe-based test pattern doesn’t directly apply to an
+<code>Update</code>/<code>View</code> loop.</p>
+<hr />
+<h2
+id="file-manager-panes-navigate-independently-not-synced-to-a-shared-relative-path">2026-07-09
+— File manager panes navigate independently, not synced to a shared
+relative path</h2>
+<p><strong>Context.</strong> Double-pane mode could either lock both
+panes to the same relative subfolder (so every listing is inherently a
+live diff, reinforcing “these two trees should match”) or let each side
+browse anywhere independently, like a traditional dual-pane file manager
+(Midnight Commander, WinSCP).</p>
+<p><strong>Decision.</strong> Independent navigation. Tagging happens in
+whichever pane has focus; an action’s destination is the other pane’s
+current position, not a shared path both panes must already agree
+on.</p>
+<p><strong>Rejected alternatives.</strong> <em>Synced navigation</em>
+(both panes always mirror the same subfolder, every row annotated with
+an upload/download/in-sync/conflict badge) – rejected; it’s a better fit
+for “reconcile these two trees” specifically, but forecloses the more
+general dual-pane use case (e.g. uploading from one local folder into an
+unrelated bucket prefix that doesn’t mirror it), and conflicts with the
+tag-in-focused-pane/act-on-other-pane convention already decided, which
+assumes the destination is wherever that pane happens to be pointed.</p>
+<p><strong>Consequences.</strong> Diff-style badges
+(upload/download/in-sync) are not a core mechanic of ordinary browsing –
+they only apply within Sync’s own directory-mirroring workflow
+(DESIGN.md Feature 20, reachable through this same screen), not to
+double-pane browsing in general.</p>
+<hr />
+<h2
+id="file-manager-command-area-single-letter-hotkeys-plus-a-colon-command-line-both-always-active-no-function-keys">2026-07-09
+— File manager command area: single-letter hotkeys plus a colon command
+line, both always active; no function keys</h2>
+<p><strong>Context.</strong> Traditional dual-pane managers (Midnight
+Commander) drive their command area with function keys (F5 copy, F6
+move, F8 delete). Function-key mappings are unreliable across terminal
+emulators, multiplexers, and SSH sessions in practice – a real
+operational concern for a tool meant for wider library/archive use, not
+just this team’s own terminal setup.</p>
+<p><strong>Decision.</strong> Use single-letter mnemonic hotkeys
+(<code>u</code> Upload, <code>d</code> Download, <code>x</code> Delete,
+<code>f</code> Filter, <code>F</code> Find, <code>l</code> Link,
+<code>Tab</code> switch pane, <code>Space</code> tag, <code>q</code>
+quit) instead of function keys, and add a <code>:</code>-prefixed
+command line as a fully independent second path to every action
+(<code>:upload</code>, <code>:delete</code>,
+<code>:find &lt;pattern&gt;</code>). Both drive the same underlying
+action dispatch – neither is a fallback for the other.</p>
+<p><strong>Rejected alternatives.</strong> <em>Function-key legend bar
+only</em> (the mc/WinSCP convention, originally the leading option) –
+rejected once the terminal-remapping risk was raised; letter keys plus a
+typed-command path removes the dependency on F-key passthrough working
+correctly at all. <em>Hotkeys only, no command line</em> – rejected; a
+typed path is strictly more robust across terminal configurations and
+costs little extra to support given both dispatch to the same
+handlers.</p>
+<p><strong>Consequences.</strong> Every action needs a name (verb) as
+well as a key binding, since the command line and hotkey bar must both
+resolve to the same dispatch table – a small but real constraint on how
+actions get implemented (<code>PLAN.md</code> Phase 20.1).</p>
+<hr />
+<h2
+id="supersede-phase-20s-whole-bucket-key-prefix-filter-with-per-directory-level-delimiter-based-listing-and-a-substring-filter">2026-07-09
+— Supersede Phase 20’s whole-bucket key-prefix filter with
+per-directory-level (Delimiter-based) listing and a substring
+filter</h2>
+<p><strong>Context.</strong> The 2026-07-08 “Phase 20 (S3 domain) scope
+decisions” entry (below) added a key-prefix filter to Browse/Manage
+Objects specifically because a single real bucket (e.g.
+<code>sql-backups.library.caltech.edu</code>) can hold many objects
+across many per-instance prefixes, and listing everything
+unconditionally doesn’t scale to this team’s actual usage. That filter
+works against one flat, whole-prefix listing (<code>ListObjectsV2</code>
+scoped to whatever prefix the operator typed once, upfront). The file
+manager instead browses hierarchically, one directory level at a time
+(DESIGN.md 21.5) – a different listing shape that changes what
+“filtering” should mean and what it costs.</p>
+<p><strong>Decision.</strong> List one directory level per call via
+<code>ListObjectsV2</code> with <code>Delimiter=/</code>
+(<code>CommonPrefixes</code> for folders, <code>Contents</code> for
+files). Filtering (<code>f</code> / <code>/</code>) narrows the current
+level’s already- fetched rows by substring match – cheap, since “current
+level” is never the whole bucket regardless of how the tree is shaped
+below it.</p>
+<p><strong>Rejected alternatives.</strong> <em>Keep Feature 21’s
+original flat, whole-prefix listing plus its upfront prefix prompt</em>
+– rejected; it doesn’t support hierarchical drill-down/breadcrumb
+navigation at all, which the file manager’s browsing model depends on.
+<em>Add a client-side substring/glob filter on top of a flat
+whole-bucket listing</em> – considered and rejected earlier in this same
+design pass, before per-level Delimiter-based listing was decided,
+specifically because it would mean fetching a potentially large flat
+listing before any filtering could narrow it; per-level listing removes
+that cost by construction, which is why the filter approach could be
+revisited and approved here.</p>
+<p><strong>Consequences.</strong> Feature 21’s original “Filter by key
+prefix (blank for all)” prompt is retired along with the rest of Feature
+21’s standalone wizard (see “Design the S3 object management UI/UX
+pass,” above) once Phase 20.1 ships.</p>
+<hr />
+<h2
+id="file-manager-find-recursive-glob-on-basename-search-not-full-path-glob-or-regex">2026-07-09
+— File manager Find: recursive glob-on-basename search, not full-path
+glob or regex</h2>
+<p><strong>Context.</strong> The file manager needed a way to search
+recursively across a directory/bucket subtree by name pattern
+(e.g. <code>*.go</code>, or <code>\.git</code> to find git repository
+directories) – a different operation from the per-level substring filter
+(<code>f</code>), which only ever looks at what’s already listed at the
+current level.</p>
+<p><strong>Decision.</strong> Match a shell glob pattern (Go stdlib
+<code>path/filepath.Match</code> semantics, including
+backslash-escaping) against each entry’s basename, evaluated recursively
+at every depth below the focused pane’s current position – the same
+behavior as <code>find &lt;dir&gt; -name '&lt;pattern&gt;'</code>. Both
+motivating examples (<code>*.go</code>, <code>\.git</code>) already work
+under this exact semantics with no further feature needed.</p>
+<p><strong>Rejected alternatives.</strong> <em>Regex pattern
+support</em> – no concrete case surfaced that a shell glob can’t already
+express; not built, revisit if one comes up. <em>Full-path glob matching
+(e.g. <code>**</code>-style patterns spanning directory separators)</em>
+– unnecessary given per-basename matching during a recursive walk
+already satisfies both stated examples and matches
+<code>find -name</code>’s well-understood behavior; adding path-spanning
+glob syntax would be new complexity solving a problem that hasn’t come
+up. <em>Search from the tree root always</em> – rejected in favor of
+starting from the focused pane’s current position, matching
+<code>find</code>’s own convention and avoiding an unbounded scan when
+the operator only meant to search what they’re currently looking at.</p>
+<p><strong>Consequences.</strong> S3-side Find pays the cost of a full
+recursive <code>ListObjectsV2</code> (no <code>Delimiter</code>) under
+the current prefix when invoked – the same cost Feature 20 (Sync) and
+the old delete-by-prefix case already paid, just now on-demand and
+user-triggered rather than automatic every time the workflow runs. Needs
+a cancellable, live progress indicator for large subtrees (DESIGN.md
+21.7, <code>PLAN.md</code> Phase 20.1).</p>
+<hr />
+<h2
 id="scope-ship-on-termlib-as-is-postpone-cloudfront-and-the-uiux-overhaul">2026-07-09
 — 0.0.1 scope: ship on termlib as-is; postpone CloudFront and the UI/UX
 overhaul</h2>

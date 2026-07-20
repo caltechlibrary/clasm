@@ -255,6 +255,1329 @@ start”), printed in bold <em>before</em> the numbered list it introduces
 visible immediately, without reading through the list first. See
 DECISIONS.md, “Highlight PickList’s prompt header when color is
 enabled”.</p>
+<h2
+id="terminal-ui-architecture-menus-actions-lists-and-managers-design-addendum-2026-07-10">Terminal
+UI Architecture: Menus, Actions, Lists, and Managers (Design Addendum,
+2026-07-10)</h2>
+<p><strong>Status: designed 2026-07-10, implementation starting with the
+S3 domain.</strong> Supersedes “S3 Resource List Display — Paged,
+Accessible- Compatible” above
+(<code>internal/ui.PagedTable</code>/<code>DisplayBuckets</code> are
+retired, not extended) and the 0.0.1-era framing of huh as merely “the
+leading candidate for the next release” (DECISIONS.md, “0.0.1 scope:
+ship on termlib as-is…”). Full rationale and rejected alternatives:
+DECISIONS.md, “Deprecate termlib; standardize on huh/bubbletea before
+0.0.2.”</p>
+<p><strong>Motivation.</strong> clasm exists to replace ad hoc AWS
+Console clicking and one-off Bash scripts with something a whole team
+can use fluidly, without each person memorizing a different command
+sequence per screen – otherwise it offers no real advantage over writing
+Bash against the AWS CLI directly. That only works if every screen,
+however different its purpose, looks and behaves like part of the same
+tool. <code>termlib</code> (a stepping-stone library used to figure out
+the menu/action shape this tool needed, not the destination) is being
+removed entirely before 0.0.2 in favor of standardizing on
+<code>huh</code> and <code>bubbletea</code> exclusively.</p>
+<p><strong>Taxonomy.</strong> Every navigation path in clasm passes
+through one or more <em>connectors</em> (never a destination themselves)
+to reach one of three <em>destinations</em>:</p>
+<p>Connectors: - <strong>Guide menu</strong> — a <code>huh.Select</code>
+today (works well, simple to teach), or a small <code>bubbletea</code>
+screen later if a menu ever needs more than a flat pick-one, over a
+small, fixed set of options (e.g. the S3 domain’s 6 actions). Routes the
+operator toward a destination below. - <strong>Picker</strong> — chooses
+<em>one instance</em> of a fetched, variable-length resource collection
+(a specific S3 bucket, EC2 instance, AMI, key pair, …) to feed into an
+action wizard or manager. Distinct from a guide menu because the option
+list is dynamic and can be long enough to need scrolling/filtering, not
+a small fixed menu. See “Picker tier” below.</p>
+<p>Destinations: - <strong>Action wizard</strong> — a short prompt
+sequence (huh fields, or termlib prompts as they’re migrated off) that
+gathers parameters and executes one thing (Create Bucket, Delete Bucket,
+…). - <strong>List</strong> — a read-only, scrollable display of a
+resource collection (S3 buckets, EC2 instances, AMIs, key pairs). Was
+<code>internal/ui.PagedTable</code> (plain sequential prints); becomes a
+<code>bubbletea</code> component (below) so it shares real chrome with
+the manager tier instead of approximating it with static text. -
+<strong>Manager</strong> — a persistent, stateful <code>bubbletea</code>
+screen for ongoing interactive work against a resource. The S3 object
+manager (<code>internal/filemanager</code>) is the only one today.</p>
+<p><strong>Shared chrome: <code>internal/tui</code>.</strong> The file
+manager’s box-drawing/ legend/scrolling code
+(<code>internal/filemanager/view.go</code>) is already implemented as
+pure functions with no dependency on <code>filemanager.Model</code> —
+<code>topBorder</code>, <code>bottomBorder</code>, <code>divider</code>,
+<code>splitDivider</code>, <code>mergeDivider</code>,
+<code>boxLine</code>, <code>boxRow2</code>, <code>padOrTruncate</code>,
+<code>runeLen</code>, <code>stripANSI</code>,
+<code>truncateVisible</code>, <code>scrollWindow</code>,
+<code>styleRow</code>. These move, unchanged, into a new
+<code>internal/tui</code> package, and <code>internal/filemanager</code>
+imports them instead of keeping its own copy — one implementation, not
+two that can drift apart. <code>internal/ui</code>
+(<code>PickList</code>,
+<code>DisplayInstances</code>/<code>Images</code>/<code>KeyPairs</code>,
+<code>Confirm</code>, color helpers) stays in place for as long as
+termlib-based call sites remain; it shrinks over the course of the
+termlib removal rather than being replaced in one step.</p>
+<p><strong>List tier: a new <code>internal/tui</code>
+component.</strong> Replaces
+<code>internal/ui.PagedTable</code>/<code>DisplayBuckets</code>. A
+single bordered box (no split panes), a frozen header row, a scrollable
+body reusing the same cursor-centered <code>scrollWindow</code> logic
+the file manager’s panes use, sized to the real terminal via
+<code>tea.WindowSizeMsg</code> (not a fixed or
+computed-from-<code>termlib</code> page size —
+<code>tea.WindowSizeMsg</code> is sent to <code>Update</code> once when
+the program starts and again on every resize, except on Windows, which
+has no <code>SIGWINCH</code>; an initial size still arrives there, just
+no live updates), a legend bar at the bottom, rendered inline (no
+<code>tea.WithAltScreen</code>, matching every other screen in this
+app). Quitting (<code>q</code>) returns to the menu it was opened from —
+for “List S3 Buckets” that’s the S3 menu, not
+<code>ErrBackToDomainPicker</code> (which backs out of the whole S3
+domain, one level further up).</p>
+<p><strong>Picker tier: a new <code>internal/tui</code>
+component.</strong> The user’s own framing: “this UI should feel the
+same whether I select a bucket, an AMI or an EC2 instance” – resource
+<em>selection</em> is exactly the kind of screen <code>huh.Select</code>
+would otherwise handle, but <code>huh.Select</code>’s own rendering is
+visually distinct from the bordered-box/legend-bar chrome the List and
+Manager tiers use, which would make the S3 domain alone show two
+different visual languages depending on whether a screen shows a
+resource or picks one. <code>internal/tui.PickerModel</code> reuses the
+exact same chrome as <code>ListViewModel</code>
+(<code>TopBorder</code>/<code>BoxLine</code>/<code>Divider</code>/<code>ScrollWindow</code>/
+<code>StyleRow</code>/<code>BottomBorder</code>) – same box, same scroll
+behavior – but adds selection: <code>Enter</code> chooses the row under
+the cursor and returns it, <code>q</code>/<code>ctrl+c</code> cancels. A
+dedicated <code>PickerModel</code> rather than a
+<code>Selectable bool</code> flag on <code>ListViewModel</code>,
+matching this project’s existing preference for small, purpose-built
+components over one component doing everything (the same reasoning
+already used to keep the List tier itself separate from
+<code>filemanager.Model</code>).</p>
+<p>Like <code>ListViewModel</code>, <code>PickerModel</code> works on
+pre-rendered rows and returns an <em>index</em>, not a typed value, so
+<code>internal/tui</code> doesn’t need Go generics – each caller maps
+the chosen index back into its own typed slice
+(<code>buckets[idx]</code>, <code>instances[idx]</code>, …), the same
+pattern <code>pickS3MenuItem</code> already uses for
+<code>s3MenuItems</code>.</p>
+<p><strong>Filtering, included from the start</strong> (the user’s own
+request: “this allows someone to go directly to the thing they want if
+they know the name or part of the name”): <code>/</code> enters
+filter-typing mode (matching the keybinding table below, and
+<code>huh.Select</code>’s own default <code>/</code> binding – not an
+always-on type-ahead, since <code>j</code>/<code>k</code> must stay
+unambiguous navigation keys), narrows visible rows by case-insensitive
+substring match against each row’s rendered text, <code>Enter</code>
+commits and keeps navigating the narrowed list, <code>Esc</code> clears
+it – the same shape as <code>internal/filemanager</code>’s pane filter
+and <code>ui.PickList</code>’s own existing substring-filter convention
+(<code>filterByLabel</code>), just applied to a real chrome-consistent
+box instead of a plain numbered list or huh’s default field styling.</p>
+<p><strong>The map: every current resource-selection call site.</strong>
+<code>internal/ui.PickList</code> is used in ~40 places today; most are
+guide-menu-shaped (a small, fixed set of actions – “Choose an option,”
+“Add/Update/Remove,” Instance-vs- AMI kind pickers) and are NOT Picker
+candidates, they stay as menu-tier
+<code>PickList</code>/<code>huh.Select</code>. The ones below select
+<em>one instance of a fetched resource collection</em> and are the
+Picker tier’s actual scope, listed here as the “clear map of specific
+instances using the common model” the user asked for – S3 buckets are
+the pilot (Phase 20.4); everything else is deliberately not scheduled
+yet (see “Not decided yet” below), listed so the eventual conversions
+have a concrete checklist to work from rather than needing to be
+rediscovered later:</p>
+<p>This was the original, preliminary map, written when Phase 20.4 was
+the only conversion underway. It’s superseded by the “Full conversion
+punch list” immediately below, which is the one kept current – statuses
+here are left as a historical snapshot except for the terminal state
+(every row below is now done); see the fuller table for the actual phase
+each one landed in and, where it differs, which tier it was actually
+reclassified into (e.g. “Storage class (transition)” and “Instance type
+(curated list)” turned out to be small fixed option sets and became Menu
+tier, not Picker tier).</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Resource</th>
+<th scope="col">Domain</th>
+<th scope="col">Current call site(s)</th>
+<th scope="col">Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S3 bucket</td>
+<td>S3</td>
+<td><code>bucket_website.go:43</code>,
+<code>bucket_lifecycle.go:530</code>,
+<code>bucket_delete.go:31</code></td>
+<td><strong>done, Phase 20.4</strong></td>
+</tr>
+<tr>
+<td>S3 lifecycle rule</td>
+<td>S3</td>
+<td><code>bucket_lifecycle.go:107,447,491</code></td>
+<td><strong>done, Phase 20.12 (Picker tier)</strong></td>
+</tr>
+<tr>
+<td>Storage class (transition)</td>
+<td>S3</td>
+<td><code>bucket_lifecycle.go:261,364</code></td>
+<td><strong>done, Phase 20.11 (reclassified: Menu tier)</strong></td>
+</tr>
+<tr>
+<td>EC2 instance</td>
+<td>Compute</td>
+<td><code>backup_archive.go:77</code>,
+<code>create_ami_from_instance.go:94</code>,
+<code>show_cloud_init.go:35</code>, <code>power_state.go:42,113</code>,
+<code>terminate_instance.go:50</code>,
+<code>manage_tags.go:135</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>AMI</td>
+<td>Compute</td>
+<td><code>launch_from_cloud_init.go:31</code>,
+<code>launch_instance.go:55</code>, <code>show_cloud_init.go:60</code>,
+<code>manage_tags.go:154</code>, <code>remove_ami.go:61</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>Subnet</td>
+<td>Compute</td>
+<td><code>launch_prompts.go:43</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>Instance type (curated list)</td>
+<td>Compute</td>
+<td><code>launch_prompts.go:169</code></td>
+<td><strong>done, Phase 20.11 (reclassified: Menu tier)</strong></td>
+</tr>
+<tr>
+<td>IAM instance profile / role</td>
+<td>Compute</td>
+<td><code>create_instance_profile.go:71,106</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>Region</td>
+<td>S3, Key Management</td>
+<td><code>bucket_create.go:26</code>,
+<code>keymgmt_common.go:25</code></td>
+<td><strong>done, Phase 20.11 (reclassified: Menu tier)</strong></td>
+</tr>
+<tr>
+<td>Key pair</td>
+<td>Key Management</td>
+<td><code>create_key_pair.go:94</code>,
+<code>keypair_delete.go:47</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Full conversion punch list (2026-07-10).</strong> The map
+above covers only Picker candidates. Per the user’s request for “a clear
+map of specific instances using the common model” spanning all three
+targets, here is every current
+<code>ui.PickList</code>/<code>ui.Display*</code> call site in the
+codebase, classified by which tier it converts to. Nothing here is
+scheduled beyond what’s already marked done — this is a checklist to
+work from, not a committed roadmap (see “Not decided yet” below).</p>
+<p><em>Menu tier (→ <code>huh.Select</code>, small fixed option sets —
+not fetched, not long enough to need scrolling/filtering):</em></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Menu</th>
+<th scope="col">Call site(s)</th>
+<th scope="col">Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S3 domain menu</td>
+<td><code>s3_menu.go</code> (<code>pickS3MenuItem</code>)</td>
+<td><strong>done, Phase 20.2/20.7</strong></td>
+</tr>
+<tr>
+<td>Lifecycle rule action (Add/Edit/Remove/View)</td>
+<td><code>bucket_lifecycle.go</code>
+(<code>pickLifecycleAction</code>)</td>
+<td><strong>done, Phase 20.9</strong></td>
+</tr>
+<tr>
+<td>Domain picker</td>
+<td><code>domain_menu.go:60</code></td>
+<td><strong>done, Phase 20.10</strong></td>
+</tr>
+<tr>
+<td>Compute main menu</td>
+<td><code>menu.go:85</code></td>
+<td><strong>done, Phase 20.10</strong></td>
+</tr>
+<tr>
+<td>Key Management menu</td>
+<td><code>keymgmt_menu.go:59</code></td>
+<td><strong>done, Phase 20.10</strong></td>
+</tr>
+<tr>
+<td>Instance-vs-AMI kind (show/export cloud-init)</td>
+<td><code>show_cloud_init.go:22</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Instance-vs-AMI kind (manage tags)</td>
+<td><code>manage_tags.go:119</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Tag Add/Update/Remove action</td>
+<td><code>manage_tags.go:171</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Select a tag to update/remove (small, in-memory, per-resource)</td>
+<td><code>manage_tags.go:196,212</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Bucket-purpose enum (Website/Backup/Internal)</td>
+<td><code>bucket_create.go:71</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Region (configured list, S3)</td>
+<td><code>bucket_create.go:26</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Region (configured list, Key Management)</td>
+<td><code>keymgmt_common.go:25</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Instance type (curated static list + “Other”)</td>
+<td><code>launch_prompts.go:169</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Storage class, guided backup flow (curated 4)</td>
+<td><code>bucket_lifecycle.go:296</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>Storage class, generic editor (full enum)</td>
+<td><code>bucket_lifecycle.go:399</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>AZ-incompatibility remediation choice</td>
+<td><code>instance_type_az_check.go:144</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+<tr>
+<td>ENA-incompatibility remediation choice</td>
+<td><code>instance_type_ena_check.go:66</code></td>
+<td><strong>done, Phase 20.11</strong></td>
+</tr>
+</tbody>
+</table>
+<p><em>Picker tier (→ <code>tui.Picker</code>, fetched/variable-length
+resource collections):</em></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Resource</th>
+<th scope="col">Call site(s)</th>
+<th scope="col">Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S3 bucket</td>
+<td><code>bucket_website.go</code>/<code>bucket_lifecycle.go</code>/<code>bucket_delete.go</code>
+(<code>pickBucket</code>)</td>
+<td><strong>done, Phase 20.4</strong></td>
+</tr>
+<tr>
+<td>EC2 instance</td>
+<td><code>backup_archive.go:77</code>,
+<code>create_ami_from_instance.go:94</code>,
+<code>show_cloud_init.go:35</code>, <code>power_state.go:42,113</code>,
+<code>terminate_instance.go:50</code>,
+<code>manage_tags.go:135</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>AMI</td>
+<td><code>launch_from_cloud_init.go:31</code>,
+<code>launch_instance.go:55</code>, <code>show_cloud_init.go:60</code>,
+<code>manage_tags.go:154</code>, <code>remove_ami.go:61</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>Subnet</td>
+<td><code>launch_prompts.go:43</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>IAM instance profile (fetched, + none/create-new)</td>
+<td><code>create_instance_profile.go:71</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>IAM role (fetched, to attach)</td>
+<td><code>create_instance_profile.go:106</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>Key pair (fetched, + create-new)</td>
+<td><code>create_key_pair.go:94</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>Key pair (fetched, to delete)</td>
+<td><code>keypair_delete.go:47</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+<tr>
+<td>S3 lifecycle rule (view/edit/remove)</td>
+<td><code>bucket_lifecycle.go:142,482,526</code></td>
+<td><strong>done, Phase 20.12</strong></td>
+</tr>
+</tbody>
+</table>
+<p><em>List tier (→ <code>tui.ListView</code>, read-only resource
+displays — the <code>ui.Display*</code> family):</em></p>
+<table>
+<thead>
+<tr>
+<th scope="col">Listing</th>
+<th scope="col">Function</th>
+<th scope="col">Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S3 buckets</td>
+<td><code>ui.DisplayBuckets</code></td>
+<td><strong>done, Phase 20.6</strong></td>
+</tr>
+<tr>
+<td>EC2 instances</td>
+<td><code>ui.DisplayInstances</code></td>
+<td><strong>done, Phase 20.13</strong></td>
+</tr>
+<tr>
+<td>AMIs</td>
+<td><code>ui.DisplayImages</code></td>
+<td><strong>done, Phase 20.13</strong></td>
+</tr>
+<tr>
+<td>Key pairs</td>
+<td><code>ui.DisplayKeyPairs</code></td>
+<td><strong>done, Phase 20.13</strong></td>
+</tr>
+</tbody>
+</table>
+<p><code>ListViewModel</code> gained the same <code>/</code>-filter
+behavior as <code>PickerModel</code> (Phase 20.14) – see “Filtering,
+included from the start” above, which was written for Picker but always
+intended for both per the keybinding table below; the two models now
+share a <code>filterState</code> helper
+(<code>internal/tui/filter.go</code>) rather than each keeping its own
+copy.</p>
+<p><strong>Keybinding conventions</strong> (DECISIONS.md, “TUI
+keybinding conventions”):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Key</th>
+<th scope="col">Action</th>
+<th scope="col">Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>q</code></td>
+<td>Back to the parent screen</td>
+<td>Everywhere</td>
+</tr>
+<tr>
+<td><code>↑</code>/<code>↓</code>, <code>k</code>/<code>j</code></td>
+<td>Navigate / scroll</td>
+<td>Menus, pickers, lists, managers</td>
+</tr>
+<tr>
+<td><code>Enter</code></td>
+<td>Select / confirm / submit</td>
+<td>Menus, pickers, lists, wizards</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>Cancel the <em>in-progress</em> action only — never closes a
+screen</td>
+<td>Wizards, in-progress input</td>
+</tr>
+<tr>
+<td><code>/</code></td>
+<td>Filter</td>
+<td>Menus, pickers, lists, managers</td>
+</tr>
+<tr>
+<td>Legend bar</td>
+<td>Always visible at the bottom of every screen, showing that screen’s
+actual keys</td>
+<td>Every screen</td>
+</tr>
+</tbody>
+</table>
+<p>Menus (still <code>huh.Select</code> for now) can’t show a custom
+footer entry: huh’s help line is built solely from the focused field’s
+own <code>KeyBinds()</code>, and <code>SelectKeyMap</code> has no
+quit/back entry to add one to without forking huh. <code>q</code> is
+bound at the <code>Form</code> level instead
+(<code>Form.WithKeyMap</code>, adding <code>"q"</code> alongside the
+default <code>"ctrl+c"</code> on <code>KeyMap.Quit</code>), which
+already resolves to the same <code>huh.ErrUserAborted</code> path
+<code>RunS3Menu</code>’s <code>mapS3MenuPickerErr</code> maps to
+<code>ErrBackToDomainPicker</code> — no new dispatch logic needed. Since
+that won’t appear in huh’s own footer, a short static hint line is
+printed above the menu instead (e.g. “(q to go back)”), fully within
+this project’s own control. Picker, list, and manager tiers, which fully
+own their rendering, show <code>q</code> in a real legend bar
+instead.</p>
+<p><strong>Accessibility.</strong> Screen-reader/non-TTY accessible
+rendering is not a requirement for clasm going forward — it’s an
+internal tool for Library staff managing AWS resources, not
+public-facing (distinct from the Frontend Guidelines’ A11y requirement
+for browser-side Web Components elsewhere in this workspace, which this
+doesn’t affect). The prior session’s huh-accessible-mode
+pipe-testability investigation (DECISIONS.md, 2026-07-10, “huh fields
+are pipe-testable…”) remains factually accurate but is no longer
+load-bearing for design decisions; testing shifts to
+<code>teatest</code> (already proven against
+<code>internal/filemanager</code>’s <code>Model</code>) for anything
+built as a real <code>bubbletea</code> component.</p>
+<p><strong>Superseded 2026-07-13</strong> by “Removing termlib: Action
+Wizards and Output” immediately below, which is now the committed plan
+for exactly this remaining work.</p>
+<h2
+id="removing-termlib-action-wizards-and-output-design-addendum-2026-07-13">Removing
+termlib: Action Wizards and Output (Design Addendum, 2026-07-13)</h2>
+<p><strong>Status: designed 2026-07-13, not yet implemented.</strong>
+Closes out the “Not decided yet” paragraph above by giving the remaining
+~40 <code>termlib</code> call sites (every action wizard, plus
+<code>internal/ui</code>’s lower-level helpers) a committed conversion
+plan, per DECISIONS.md, “Remove termlib entirely: input via huh, output
+via <code>io.Writer</code>.” Menu/Picker/List tiers are unaffected —
+they’re already fully converted (Phase 20.2-20.14).</p>
+<p><strong>Surface audit.</strong> Every remaining <code>termlib</code>
+symbol was traced to its actual call sites (not just its imports) across
+the ~44 files that still reference it:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Symbol</th>
+<th scope="col">Refs</th>
+<th scope="col">Actual usage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>termlib.Terminal</code></td>
+<td>109</td>
+<td>Only
+<code>.Printf</code>/<code>.Println</code>/<code>.Refresh()</code> are
+ever called anywhere in this codebase — no cursor movement, no color
+state (<code>Move</code>/<code>Clear</code>/<code>SetFgColor</code>/etc.
+are unused). It’s used purely as a buffered <code>io.Writer</code>.</td>
+</tr>
+<tr>
+<td><code>termlib.LineEditor</code></td>
+<td>83</td>
+<td>Only <code>.Prompt()</code> is ever called. History
+(<code>AppendHistory</code>/<code>SetHistory</code>/<code>History</code>),
+tab-completion (<code>Completer</code>), <code>$EDITOR</code>
+composition, and multi-line input (Ctrl+J) are all unused — no call site
+needs anything beyond single-line text entry with Ctrl+C/Ctrl+D
+handling.</td>
+</tr>
+<tr>
+<td><code>termlib.PadRight</code> / <code>Truncate</code></td>
+<td>40 / 12</td>
+<td>Column formatting, <code>internal/ui/display.go</code> only.</td>
+</tr>
+<tr>
+<td><code>termlib.Bold</code> / <code>Reset</code> / <code>Green</code>
+/ <code>Red</code> / <code>Yellow</code></td>
+<td>4 / 5 / 2 / 1 / 1</td>
+<td>ANSI constants, <code>internal/ui/color.go</code>
+(<code>Highlight</code>) and <code>display.go</code>
+(<code>stateColor</code>) only.</td>
+</tr>
+<tr>
+<td><code>termlib.FormatDuration</code></td>
+<td>2</td>
+<td>10-line <code>m:ss</code>/<code>h:mm:ss</code> formatter,
+<code>progress_ticker.go</code> and
+<code>create_ami_from_instance.go</code>.</td>
+</tr>
+<tr>
+<td><code>termlib.New</code> / <code>NewLineEditor</code></td>
+<td>6 / 3</td>
+<td>Constructors — <code>cmd/clasm/main.go</code> and tests only.</td>
+</tr>
+<tr>
+<td><code>termlib.ErrInterrupted</code></td>
+<td>4</td>
+<td>Ctrl+C sentinel from <code>LineEditor.Prompt</code>, checked in
+<code>isExitSignal</code>/<code>mapMenuPickerErr</code>-style error
+mapping.</td>
+</tr>
+</tbody>
+</table>
+<p>Only three files call <code>le.Prompt()</code> directly:
+<code>internal/ui/prompt.go</code> (<code>Prompt</code>),
+<code>internal/ui/picklist.go</code> (<code>PickList</code> — see
+below), and <code>internal/workflow/confirm.go</code>
+(<code>Confirm</code>/<code>ConfirmDestructive</code>). Every other file
+that imports <code>termlib</code> merely threads
+<code>t</code>/<code>le</code> through its own signature to reach one of
+these three, or to call <code>t.Println</code>/ <code>t.Printf</code>
+directly for status/error text. This means
+<code>le *termlib.LineEditor</code> disappears from every signature in
+the codebase once these three functions are rebuilt — there is no other
+direct caller to migrate.</p>
+<p><strong><code>internal/ui.PickList</code> is dead code.</strong>
+Every real call site was already converted to
+<code>huh.Select</code>/<code>tui.Picker</code> in the Phase 20.2-20.13
+punch list; only comments still reference it
+(<code>internal/tui/picker.go</code>, <code>object_browser.go</code>,
+<code>s3_menu.go</code>). <code>internal/ui/picklist.go</code> and
+<code>picklist_test.go</code> are deleted outright, not migrated.</p>
+<p><strong>Mapping: termlib construct → replacement.</strong></p>
+<ul>
+<li><strong><code>ui.Prompt</code></strong> (free-text input, optional
+default + validator; ~30 call sites) → rebuilt on
+<code>huh.NewInput()</code>, following the same split-into-testable-core
+pattern already used for every Menu/Picker conversion (Phase 20.2 etc.):
+a thin public wrapper plus an
+<code>input io.Reader, output io.Writer</code>-accepting core that tests
+drive via huh’s accessible-mode pipe path.
+<code>WithDefault</code>/<code>WithValidator</code> map to
+<code>huh.Input.Value(&amp;s)</code> with a default pre-fill and
+<code>.Validate(func(string) error)</code> — huh already re-prompts on a
+validator error without any surrounding loop needed.</li>
+<li><strong><code>Confirm</code></strong> (y/n, re-prompt on
+unrecognized input) → <code>huh.NewConfirm()</code>. The
+re-prompt-on-bad-input loop disappears entirely: a toggle can’t produce
+unrecognized input.</li>
+<li><strong><code>ConfirmDestructive</code></strong> (type-to-confirm,
+single attempt, mismatch cancels rather than re-prompting) →
+<code>huh.NewInput()</code> with <em>no</em> validator (a validator
+would make huh re-prompt until correct, changing the single-attempt
+semantics); the exact-match check runs after the field returns, same as
+today. The instructional text currently printed via
+<code>t.Printf</code> before the prompt becomes the field’s
+<code>.Description()</code>.</li>
+<li><strong>Plain status/error output</strong>
+(<code>t.Println</code>/<code>t.Printf</code> for things like
+“Exiting.”, “Error: %s”, the progress ticker’s periodic elapsed-time
+line, <code>loadUserData</code>’s “looks like an existing file” note) →
+the <code>*termlib.Terminal</code> parameter becomes a plain
+<code>io.Writer</code>; <code>t.Println</code>/ <code>t.Printf</code>
+become <code>fmt.Fprintln</code>/<code>fmt.Fprintf</code>;
+<code>t.Refresh()</code> calls are deleted outright (nothing buffers
+anymore, so there’s nothing to flush). In the ~9 files where
+<code>t</code>/<code>le</code> were pure pass-through (never called
+directly, only forwarded to a callee), the parameter is dropped or
+renamed to <code>w io.Writer</code> depending on whether that file’s own
+callees still need one.</li>
+<li><strong><code>progress_ticker.go</code></strong> — mechanical parity
+only: <code>*termlib.Terminal</code> → <code>io.Writer</code>,
+<code>termlib.FormatDuration</code> → a local reimplementation (same
+<code>m:ss</code>/<code>h:mm:ss</code> rounding). No new bubbletea
+spinner component in this pass — explicitly deferred to a later
+chrome-improvement pass (see TODO.md) rather than mixed into a pure
+removal.</li>
+<li><strong><code>termlib.Bold</code>/<code>Reset</code>/<code>Green</code>/<code>Red</code>/<code>Yellow</code>,
+<code>PadRight</code>/<code>Truncate</code></strong> → reimplemented
+locally in <code>internal/ui</code> as the same small set of ANSI
+constants and rune-aware pad/truncate helpers actually used (~20 lines
+total). No new dependency (e.g. <code>lipgloss</code>) introduced in
+this pass — deferred to the later chrome-standardization pass so this
+removal stays scoped to “delete termlib,” not “restyle everything.”</li>
+<li><strong><code>termlib.ErrInterrupted</code></strong> → once every
+input path runs through huh, Ctrl+C during input surfaces as
+<code>huh.ErrUserAborted</code>, which the Menu-tier conversions already
+map (<code>mapMenuPickerErr</code>, <code>huhCancelledIsNil</code>).
+Each remaining <code>errors.Is(err, termlib.ErrInterrupted)</code> check
+is replaced with the equivalent <code>huh.ErrUserAborted</code> check at
+its call site, not a blanket rename — some of these sites may find the
+check is already redundant once the underlying prompt is gone.</li>
+<li><strong><code>cmd/clasm/main.go</code></strong> —
+<code>termlib.New(out)</code>/<code>termlib.NewLineEditor(...)</code>
+construction is deleted; <code>os.Stdout</code> is passed directly
+wherever an <code>io.Writer</code> is still needed.</li>
+</ul>
+<p><strong>Sequencing.</strong> Unlike the Menu/Picker/List conversions
+(each independent, one call site at a time), this refactor changes a
+type threaded through nearly every <code>internal/workflow</code>
+function signature — Go requires the whole module to compile together,
+so it can’t ship as 40 independent single-file changes. See PLAN.md
+Phase 20.15 (foundational helpers) and 20.16 (mechanical propagation,
+domain by domain) for the ordered work breakdown.</p>
+<h2
+id="chrome-standardization-a-shared-lipgloss-palette-design-addendum-2026-07-13">Chrome
+Standardization: A Shared lipgloss Palette (Design Addendum,
+2026-07-13)</h2>
+<p><strong>Status: designed 2026-07-13, not yet implemented.</strong>
+With termlib gone (Phase 20.15/20.16), every screen in clasm is now
+either a <code>huh</code> field or a <code>bubbletea</code> component —
+but they don’t yet look like one system. <code>huh</code>’s default
+theme (<code>ThemeCharm</code>) renders a colorful indigo/fuchsia/ cream
+card with a thick colored left border; <code>internal/tui</code>’s List/
+Picker/Manager chrome (<code>box.go</code>/<code>style.go</code>) is
+plain ASCII box-drawing with no color at all beyond the cursor row’s
+reverse-video and the instance-state column’s green/red/yellow. An
+operator moving from a Menu-tier <code>huh.Select</code> into a Picker
+or List sees two unrelated visual languages depending on which tier they
+happen to be in, not a deliberate design.</p>
+<p><strong>A single shared accent, not a repaint.</strong> Rather than
+inventing a new palette, this reuses the one color <code>huh</code>’s
+own default theme already established and has been on screen since Phase
+20.2: the adaptive indigo <code>ThemeCharm</code> uses for focused
+titles/borders (<code>#5A56E0</code> light / <code>#7571F9</code> dark —
+already light/dark-terminal-aware via
+<code>lipgloss.AdaptiveColor</code>). Two pieces:</p>
+<ol type="1">
+<li><strong><code>tui.Theme() *huh.Theme</code></strong> — built from
+<code>huh.ThemeBase()</code> (structural styling only: spacing,
+borders-as-shapes, no color) with <em>only</em> the indigo accent
+applied to focused titles, borders, and the selected-option marker (bold
++ indigo, mirroring exactly what <code>ThemeCharm</code> already does
+for those same elements) — deliberately omitting
+<code>ThemeCharm</code>’s fuchsia highlight, cream backgrounds, and
+green/red confirm-button colors. A single accent suits an internal ops
+tool better than a five-color rainbow; this is a restrained subset of
+<code>ThemeCharm</code>, not a new invention.</li>
+<li><strong><code>internal/tui/box.go</code>’s border/title
+rendering</strong> (<code>TopBorder</code>, <code>BottomBorder</code>,
+<code>Divider</code>, <code>SplitDivider</code>,
+<code>MergeDivider</code>) styled with the same indigo + bold via
+<code>lipgloss.NewStyle()</code>. Because <code>ListViewModel</code>,
+<code>PickerModel</code>, <em>and</em> <code>internal/filemanager</code>
+(the one Manager-tier screen) all call these same shared functions
+directly (confirmed: no per-tier copies survived the Phase 20.5
+extraction), styling them once re-skins all three tiers in a single
+change.</li>
+</ol>
+<p><strong>Deliberately unchanged:</strong> - <strong>Cursor-row
+selection</strong> stays reverse-video (<code>style.go</code>’s
+<code>StyleRow</code>) — the existing mc/ranger/WinSCP-style convention
+is already correct and unrelated to color branding. -
+<strong>Instance-state colors</strong> (green=running,
+red=stopped/terminated, yellow=pending/stopping,
+<code>internal/ui/display.go</code>’s <code>stateColor</code>) stay
+as-is — semantic data indicators, not decorative chrome. -
+<strong>NO_COLOR/non-TTY handling</strong> needs no new plumbing:
+<code>lipgloss</code> already detects both automatically (via
+<code>termenv</code>, checking the output file descriptor and the
+<code>NO_COLOR</code> env var) and no-ops its own ANSI codes accordingly
+— the existing manual <code>ui.ColorEnabled()</code> gate stays scoped
+to the STATE column it already governs, unrelated to this addendum’s
+border/title styling.</p>
+<p><strong>Every <code>huh.NewForm(...)</code> call site gets
+<code>.WithTheme(tui.Theme())</code>.</strong> Traced directly (not
+estimated): there are exactly five constructors in the whole app —
+<code>internal/ui/prompt.go</code> (<code>Prompt</code>),
+<code>internal/workflow/ confirm.go</code> (<code>Confirm</code>,
+<code>ConfirmDestructive</code>),
+<code>internal/workflow/ domain_menu.go</code>
+(<code>runMenuField</code>, the Menu tier’s shared entry point), and
+<code>internal/workflow/object_browser.go</code>
+(<code>runFieldWithHelp</code>). Every other
+<code>huh.Select</code>/<code>huh.Input</code>/<code>huh.Confirm</code>
+in the app already funnels through one of these, a direct consequence of
+the shared-helper pattern established across Phase 20.2-20.16 — so five
+edits cover the entire app’s <code>huh</code> surface.</p>
+<p><strong>Progress ticker becomes a real spinner.</strong>
+<code>internal/workflow/ progress_ticker.go</code>’s periodic
+<code>"  ... waiting for AMI (elapsed 1:23)"</code> printed line is the
+one place in the app that isn’t a <code>huh</code> field or a
+<code>bubbletea</code> component — deferred out of the termlib-removal
+pass specifically to avoid mixing “remove termlib” with “improve chrome”
+(DECISIONS.md, “Remove termlib entirely…”). It becomes a small
+<code>bubbletea</code> component using
+<code>github.com/charmbracelet/bubbles/spinner</code> (already a direct
+dependency — <code>bubbles</code> is the same charm-ecosystem package
+<code>key</code> already comes from), styled with the same indigo
+accent, running inline for the duration of the wait and clearing itself
+when the operation completes.</p>
+<p><strong><code>object_browser.go</code>’s bucket pre-flight moves onto
+<code>PickerModel</code>.</strong> Resolves the one item DESIGN.md’s
+“Terminal UI Architecture” section left explicitly undecided:
+<code>BrowseAndManageObjects</code>’s <code>selectBucket</code> (a bare
+<code>huh.Select</code> over buckets) is the only bucket-selection call
+site in the app that isn’t already on
+<code>pickBucket</code>/<code>tui.RunPicker</code> (every other one
+converted in Phase 20.4). Replacing it makes bucket selection look
+identical everywhere, and lets this one call site drop its own bespoke
+<code>huhCancelledIsNil</code>-for-bucket-selection path in favor of the
+same <code>cancelledIsNil</code> convention <code>pickBucket</code>’s
+other callers already use. <code>confirmLink</code> (huh.Confirm) and
+the local-directory <code>huh.Input</code> in the same function are
+wizard-shaped, not picker-shaped, and stay as <code>huh</code>
+fields.</p>
+<h2
+id="ux-refinements-contextual-text-and-a-full-box-border-design-addendum-2026-07-13">UX
+Refinements: Contextual Text and a Full Box Border (Design Addendum,
+2026-07-13)</h2>
+<p>Two follow-on refinements to the chrome-standardization pass above,
+requested directly after it landed.</p>
+<p><strong>Every Menu/Picker-tier screen gains contextual description
+text.</strong> The domain picker (and every other bare-title screen)
+explained nothing about what each choice meant — an operator new to a
+screen had only the title and the row labels to go on. Every Menu-tier
+<code>huh.Select</code> gains a <code>.Description(...)</code> (huh’s
+own built-in field, previously unused); <code>tui.PickerConfig</code>
+gains a <code>Description string</code>, rendered as its own line
+directly below the top border (the same chrome shape <code>Header</code>
+already has: the line itself plus a <code>Divider</code>), above any
+<code>Header</code>/ rows. See <code>DECISIONS.md</code>, “Contextual
+description text on Menu/Picker- tier screens,” for the full call-site
+inventory and the reasoning behind which functions got a threaded
+parameter versus a single description written directly into the function
+body. List-tier’s tabular “Show resource lists” displays deliberately
+don’t get this — they aren’t “just a pick list,” and their column
+headers already carry the relevant context.</p>
+<p><strong>huh fields get a full box border, matching tui’s chrome
+shape, not just its color.</strong> Phase 20.17 gave <code>huh</code>
+and <code>tui</code> the same accent color, but
+<code>huh.ThemeBase()</code>’s default is a thick bar down the left side
+of a field only — not the full <code>┌─┐│ │└─┘</code> rectangle
+<code>tui/box.go</code> draws. <code>tui.Theme()</code>’s
+<code>Focused.Base</code>/<code>Focused.Card</code> now use
+<code>lipgloss.NormalBorder()</code> on all four sides, in the shared
+accent, with balanced padding replacing the old single-side clearance —
+see <code>DECISIONS.md</code>, “huh fields get a full box border to
+match tui’s chrome.”</p>
+<h2 id="full-height-menu-tier-design-addendum-2026-07-20">Full-height
+Menu Tier (Design Addendum, 2026-07-20)</h2>
+<p><strong>Status: designed 2026-07-20.</strong> Resolves the “full
+height” half of Phase 20.24’s deferred request (see that phase’s own
+note and <code>continue_next_time.txt</code>, 2026-07-14 hand-off),
+which was deliberately left unimplemented pending clarification of what
+“full height” meant for the huh-based Menu tier. Clarified directly: the
+wrapping chrome should carry a real terminal height, and every Menu-tier
+<code>huh.Select</code> should be told how many rows it has to work with
+— not just the root domain picker.</p>
+<p><strong>Mechanism.</strong> <code>huh.Select.Height(n)</code> (and
+the equivalent <code>huh.Form.WithHeight(n)</code>, which cascades to
+every field in a group) already does exactly this — confirmed by reading
+<code>huh</code> v1.0.0’s source, not assumed:
+<code>updateViewportHeight</code> (<code>field_select.go</code>)
+subtracts the title/description lines from <code>n</code> before sizing
+the options viewport, floored at huh’s own <code>minHeight</code>;
+<code>Select.View()</code> then renders through
+<code>lipgloss.Style.Base.Height(s.height)</code>, and lipgloss’s
+<code>Style.Height</code> pads short content with blank lines to reach
+that height. So a 3-item menu given <code>Height(24)</code> still
+renders as a 24-line box — the wrapping chrome stays full-height even
+when a menu has far fewer than 24 options, matching every
+List/Picker-tier screen’s existing behavior.</p>
+<p><strong>Why this isn’t automatic today.</strong> Every Menu-tier
+<code>huh.Form</code> already receives <code>tea.WindowSizeMsg</code>
+(bubbletea always sends one at startup, and again on resize except on
+Windows) whether it runs via the plain <code>form.Run()</code> path or
+<code>runMenuField</code>’s <code>quitKeyGuard</code>-wrapped
+<code>tea.NewProgram(guard).Run()</code> path (filterable fields). But
+<code>huh.Form.Update</code>’s own <code>WindowSizeMsg</code> handling
+(<code>form.go:533-554</code>) only <em>shrinks</em> a group to
+<code>min(neededHeight, msg.Height)</code>, and only when
+<code>f.height == 0</code> (i.e., nothing has called
+<code>WithHeight</code> yet) — it never grows short content to fill
+unused space. Reaching full height requires explicitly calling
+<code>WithHeight</code> with the real terminal height.</p>
+<p><strong>Live tracking, not a one-shot read.</strong> Rather than
+reading the terminal size once via <code>x/term.GetSize</code> before
+constructing the form (simple, but blind to a resize mid-menu), the Menu
+tier intercepts <code>tea.WindowSizeMsg</code> itself and calls
+<code>WithHeight</code> on every resize — the same pattern
+<code>internal/tui/picker.go</code> and <code>listview.go</code> already
+use for the Picker/List tier, so the Menu tier gains the identical
+live-resize behavior instead of a second, weaker mechanism.
+<code>runMenuField</code>’s existing <code>quitKeyGuard</code> wrapper
+(used today only for the filterable- field path, to guard the Quit
+keybinding while filtering) is the natural place to add this
+interception — it already wraps <code>*huh.Form</code> in a custom
+<code>tea.Model</code>. The plain <code>form.Run()</code> path (used by
+non-filterable Menu-tier selects today) has no such wrapper at all; this
+addendum extends the same wrapper to that path too, so both go through
+one <code>tea.Model</code> that both guards the quit key (when
+filtering) and maintains full-height sizing (always), rather than
+diverging by field type.</p>
+<p><strong>Scope: every Menu-tier <code>huh.Select</code>, not just the
+root domain picker.</strong> Phase 20.24 explicitly declined to make
+only the root picker full-height, reasoning that it would look
+inconsistent with every Menu-tier screen one level deeper (S3/EC2/Key
+Management submenus), undoing the chrome-consistency work of Phases
+20.17-20.25. Since <code>runMenuField</code> is the single shared entry
+point every Menu-tier <code>huh.Select</code> already runs through
+(<code>menu.go</code>, <code>s3_menu.go</code>,
+<code>keymgmt_menu.go</code>, <code>domain_menu.go</code>’s
+<code>pickString</code>/<code>pickComparable</code>), fixing it there
+gets every depth for free — no per-call-site change.</p>
+<p><strong>Reserved chrome.</strong> <code>runMenuField</code> prints
+its <code>"(q to go back)"</code> hint via a plain
+<code>fmt.Fprintln(w, hint)</code> <em>before</em> the form runs,
+outside the form’s own bordered box — a line of chrome the form’s height
+budget doesn’t otherwise know about. Whatever height gets passed to
+<code>WithHeight</code> must reserve for this hint line (and the box’s
+own top/bottom border, already accounted for by
+<code>tui.Theme()</code>’s border padding), or the combined output ends
+up one line taller than the terminal.</p>
+<p><strong>Resolved during implementation (2026-07-20; see PLAN.md Phase
+20.26):</strong> the reserved-line count is <strong>2</strong>, not 1 as
+first assumed here – confirmed empirically by rendering a real form (the
+actual <code>tui.Theme()</code>, not a stand-in) at a known
+<code>WithHeight</code> and counting the output. One line is the hint;
+the second is <code>huh.Form</code>’s own trailing help/keybindings
+footer, which renders <em>below</em> whatever height
+<code>WithHeight(n)</code> was given (a form asked for height
+<code>n</code> renders <code>n+1</code> lines total) – not something
+this addendum had accounted for. <code>tui.Theme()</code>’s
+border/padding turned out not to change the count at all.
+<code>runMenuField</code>’s non-filtering <code>form.Run()</code> path
+was folded into the same <code>quitKeyGuard</code>-wrapped path rather
+than left as a second mechanism – in practice every current call site
+already builds a <code>*huh.Select</code> (which satisfies
+<code>filteringField</code>), so that path was already dead code, but
+unifying it means a future non-Select field costs nothing extra.</p>
+<h2 id="launch-templates-design-addendum-2026-07-20">Launch Templates
+(Design Addendum, 2026-07-20)</h2>
+<p><strong>Status: designed 2026-07-20, targeted for v0.0.2 alongside
+the IMDSv2 fix below.</strong> v0.0.1 is already piloting in production
+(unreleased – no git tag yet, <code>version.go</code> still reads 0.0.1
+– but in active use), so this is additive: new Compute-domain menu
+entries and a new EC2 client surface, no change to any existing v0.0.1
+workflow’s behavior. Directly requested (notes-from-tom.txt) and
+confirmed as v0.0.2’s headline feature. Folds in the IMDSv2 bug
+(TODO.md, Bugs) as one design pass, since both touch the same
+<code>MetadataOptions</code> concept. The tags-screen fix,
+backup-bucket-default, and top-level cross-resource tag management
+(TODO.md’s other open items) are deliberately <strong>out of scope
+here</strong> – v0.0.2 material, but their own design pass.</p>
+<p><strong>The operator’s actual flow</strong> (clarified directly, not
+assumed): a cloud-init YAML file is authored first; it gets applied to
+create a launch template, which “more fully encapsulates” what a running
+instance needs (RDM’s software requirements, primarily). Over time the
+YAML changes (e.g. RDM adds a new dependency) and that change is applied
+as a <strong>new version</strong> of the existing template – never an
+in-place edit, matching the operator’s own framing of “new template
+version” as the upgrade unit. <code>CreateLaunchTemplate</code>/
+<code>CreateLaunchTemplateVersion</code> fit this directly: both take a
+<code>LaunchTemplateData</code>/<code>RequestLaunchTemplateData</code>
+struct (AMI, instance type, subnet, security groups, IAM instance
+profile, tags, <code>UserData</code>, <code>MetadataOptions</code>, …)
+constructed directly by the caller – there is no dependency on an
+existing EC2 instance (that’s a different, unused API:
+<code>GetLaunchTemplateData</code> <em>derives</em> a template from a
+running instance’s live config, which is not this flow). So “cloud-init
+YAML → new template” and “cloud-init YAML → new version of an existing
+template” are both just a template-data struct built from the same
+AMI/instance-type/subnet/security-group/IAM-profile/tag prompts Feature
+3 already collects, with the YAML’s content (base64-encoded) as
+<code>UserData</code>.</p>
+<p><strong>New EC2 client surface.</strong>
+<code>internal/awsclient/ec2.go</code>’s <code>EC2API</code> interface
+(currently ~20 methods, one line per SDK call, no per-feature narrowing)
+gains: <code>CreateLaunchTemplate</code>,
+<code>CreateLaunchTemplateVersion</code>,
+<code>DescribeLaunchTemplates</code>,
+<code>DescribeLaunchTemplateVersions</code>,
+<code>ModifyLaunchTemplate</code> (sets which version number
+<code>$Default</code> points to, via its
+<code>DefaultVersion *string</code> field),
+<code>DeleteLaunchTemplate</code>,
+<code>DeleteLaunchTemplateVersions</code> – mirrored into
+<code>logging_ec2.go</code>’s wrapper, matching how every existing EC2
+call is already logged.</p>
+<p><strong>Data model.</strong> A new
+<code>internal/inventory.LaunchTemplate</code> (list-tier, one row per
+template, aggregated across regions like
+<code>Image</code>/<code>Instance</code> already are):
+<code>TemplateID</code>, <code>Name</code>, <code>DefaultVersion</code>,
+<code>LatestVersion</code>, <code>Region</code>, <code>Project</code>,
+<code>Environment</code> (from <code>DescribeLaunchTemplates</code>,
+whose tags come back the same <code>[]types.Tag</code> shape
+<code>Image</code>/<code>Instance</code> already decode). A separate
+per-version detail type (returned by
+<code>DescribeLaunchTemplateVersions</code> for one template) carries
+the fields actually shown/edited: version number, create date, AMI,
+instance type, IAM instance profile, security groups, subnet, tags, and
+<code>MetadataOptions</code> (below). Deliberately <strong>not</strong>
+modeling the rest of <code>RequestLaunchTemplateData</code>’s much
+larger surface (block device mappings, network interfaces, capacity
+reservations, CPU options, …) – out of scope, matching this project’s
+existing preference for a curated field set over the full AWS struct
+(the same restraint <code>Image</code>/<code>Instance</code> already
+apply).</p>
+<p><strong>Two distinct SDK types for “IMDSv2 required,” not
+one.</strong> AWS uses
+<code>types.HttpTokensState</code>/<code>HttpTokensStateRequired</code>
+for a plain
+<code>RunInstances</code>/<code>ModifyInstanceMetadataOptions</code>
+call, but a <em>different</em> type,
+<code>types.LaunchTemplateHttpTokensState</code>/
+<code>LaunchTemplateHttpTokensStateRequired</code>, inside a template’s
+<code>LaunchTemplateInstanceMetadataOptionsRequest</code> – confirmed by
+reading the SDK’s <code>enums.go</code>, not assumed. Both get set going
+forward (see “IMDSv2 enforcement” below); implementation needs to use
+the right one in each of the two call sites rather than assuming one
+type covers both.</p>
+<h3 id="new-compute-domain-menu-entries">New Compute-domain menu
+entries</h3>
+<p>Peer entries alongside the existing ones (<code>menu.go</code>’s
+<code>mainMenuItems</code>), not nested under a new sub-menu – matching
+how Create-from-AMI and Create-from-Cloud-Init already sit side by side
+rather than behind a “Create” sub-picker:</p>
+<ul>
+<li><strong>Create EC2 Instance from Launch Template</strong> – a third
+way to create an instance, alongside Feature 2 (from AMI) and Feature 3
+(from cloud-init YAML). Pick a template, then a version: the prompt
+pre-fills <code>$Default</code> (matching Backup Archive &amp; Trim’s
+own recalled-but-overridable default convention, DECISIONS.md “Recall
+Backup Archive &amp; Trim’s instance/directory choices per-instance”)
+but stays editable to an explicit version number or <code>$Latest</code>
+before the launch executes. Collects nothing else – the template
+supplies every other launch parameter; this is deliberately not a hybrid
+“template plus override individual fields” wizard, since that was the
+earlier design-conversation confusion (A3) the operator explicitly
+resolved: it’s just another way to create an instance, parallel in shape
+to Features 2 and 3, not a variant of either.</li>
+<li><strong>List Launch Templates</strong> – folds into the existing
+“Show resource lists” List-tier display as a new resource type,
+alongside instances/AMIs, not a separate top-level action.</li>
+<li><strong>Show Launch Template</strong> – pick a template, pick a
+version (default pre-selected), display the curated detail fields above.
+Modeled on the existing AMI summary display (the same modest field set
+<code>Image</code>/AMI-related screens already show: ID, name, creation
+date/version, region, tags) plus <code>MetadataOptions</code>, shown
+explicitly because it’s the field the IMDSv2 work below cares about. If
+<code>HttpTokens</code> isn’t <code>required</code>, the display flags
+it right there (passive – no separate audit action; the operator asked
+for “recommended for existing templates if missing,” not a dedicated
+scan).</li>
+<li><strong>Create Launch Template from Cloud-Init YAML</strong> –
+collects a YAML file path (identical prompt to Feature 3, including
+reading from a file only, never inline text) plus the same
+AMI/instance-type/ subnet/security-group/IAM-profile/tag prompts Feature
+3 already asks, then <code>CreateLaunchTemplate</code> (which implicitly
+creates version 1). <code>MetadataOptions</code> is set to required
+unconditionally – not a prompt, since this is a security default, not an
+operator choice (mirrors IMDSv2 enforcement below).</li>
+<li><strong>Sync Cloud-Init YAML to a Template</strong> – pick an
+existing template, pick a YAML file, and:
+<ol type="1">
+<li>Fetch the version to compare against (the version the operator picks
+– normally <code>$Default</code>), decode its
+<code>UserData</code>.</li>
+<li>Compare the decoded text against the local YAML file’s content. If
+identical, report “no changes – nothing to sync” and stop; no version is
+created. This is the no-op detection the operator asked for (A10) –
+Tom’s own framing of “does this actually require a new version” before
+bumping one.</li>
+<li>If different, render a plain-text unified diff (A8: start simple)
+via <code>github.com/aymanbagabas/go-udiff</code>’s
+<code>Unified(oldLabel, newLabel, old, new string) string</code> –
+already present in <code>go.sum</code> as an <em>indirect</em>
+dependency (pulled in transitively via
+<code>charmbracelet/x/exp/teatest</code>, used by
+<code>internal/filemanager</code>’s own tests), so this promotes it from
+indirect to direct rather than introducing a new one – the same move
+Phase 20.24 already made for <code>x/ansi</code>.</li>
+<li>Show the diff, require explicit confirmation, then
+<code>CreateLaunchTemplateVersion</code> with the new
+<code>UserData</code>.</li>
+<li><strong>Never</strong> auto-promotes the new version to default (A9)
+– that’s always the separate action below. The operator specifically
+expects to experiment with in-progress template versions during
+development without accidentally changing what a plain “Create from
+Launch Template” launch picks up by default.</li>
+</ol></li>
+<li><strong>Promote Launch Template Version to Default</strong> –
+<code>ModifyLaunchTemplate</code> with <code>DefaultVersion</code> set
+to the chosen version number. Its own explicit action, never a side
+effect of Sync.</li>
+<li><strong>Delete Launch Template Version(s)</strong> – prune specific
+stale versions (<code>DeleteLaunchTemplateVersions</code>) without
+touching the whole template – “so no one accidentally chooses them”
+(A5), e.g. an abandoned experimental version from mid-development.</li>
+<li><strong>Delete Launch Template</strong> – removes the whole template
+(<code>DeleteLaunchTemplate</code>), for when the software system it was
+built for is retired entirely. Both deletion actions go through the same
+safety-first shape Feature 9 (Remove AMI) already established: show what
+would be deleted, an explicit extra warning if the template (or the
+version, for a single-version prune) is tagged
+<code>Environment=production</code>, then type-to-confirm.</li>
+</ul>
+<h3 id="tagging-and-safety-gate-parity-a6">Tagging and safety-gate
+parity (A6)</h3>
+<p><code>types.ResourceTypeLaunchTemplate</code> exists in the SDK, so
+<code>CreateLaunchTemplate</code>’s own <code>TagSpecifications</code>
+field can reuse <code>launch_execute.go</code>’s existing
+<code>buildTagSpecification(resourceType, tags)</code> unchanged – it
+already takes a <code>types.ResourceType</code> parameter, not one
+hardcoded to instances. The Project/Environment convention (Feature 12)
+and the <code>Environment=production</code> confirmation gate (Feature
+9’s pattern) both extend to launch templates exactly as described
+above.</p>
+<h3
+id="imdsv2-enforcement-closes-the-todo.md-bug-extends-to-templates">IMDSv2
+enforcement (closes the TODO.md bug, extends to templates)</h3>
+<p>Three call sites, all going to <code>required</code> going forward,
+none of them a prompt (this is a security default, not an operator
+choice, per the operator’s own framing: “we want to follow security
+recommendations by default”):</p>
+<ol type="1">
+<li><strong>Plain <code>RunInstances</code></strong> (Features 2 and 3,
+<code>launch_execute.go</code>) – currently sets no
+<code>MetadataOptions</code> at all (confirmed by reading
+<code>launch_execute.go:51-60</code> – the original TODO.md bug). Gains
+<code>MetadataOptions: &amp;types.InstanceMetadataOptionsRequest{HttpTokens: types.HttpTokensStateRequired}</code>.</li>
+<li><strong>Every new launch template</strong>
+(<code>CreateLaunchTemplate</code>) – its
+<code>RequestLaunchTemplateData.MetadataOptions</code> gets
+<code>types.LaunchTemplateInstanceMetadataOptionsRequest{HttpTokens: types.LaunchTemplateHttpTokensStateRequired}</code>
+unconditionally.</li>
+<li><strong>Existing templates missing it</strong> – flagged passively
+in Show Launch Template / List Launch Templates (above), not auto-fixed
+– changing an existing template’s <code>MetadataOptions</code> is a new
+version, same as any other template change, and shouldn’t happen
+silently behind an operator’s back.</li>
+</ol>
+<h3 id="not-decided-yet">Not decided yet</h3>
+<p>Left for the implementation plan: the exact curated field list for
+the per-version detail type (beyond the fields named above); whether
+<code>ModifyLaunchTemplateVersion</code>’s description-setting
+capability (a per-version free-text label, separate from the
+<code>UserData</code> itself) is worth surfacing; and test coverage
+shape for the diff/no-op-detection path (<code>go-udiff</code>’s own
+test suite covers the algorithm itself – this project’s tests need to
+cover the identical-content-skips-a-version and
+different-content-shows-a-diff-then-creates-a-version branches, via the
+same accessible-mode pipe-testing convention every other Menu-tier
+workflow already uses).</p>
+<h3 id="real-usage-follow-ups-2026-07-20">Real-usage follow-ups
+(2026-07-20)</h3>
+<p>The first real-AWS pass over this feature (create a template, launch
+from it, sync, promote, list, delete) surfaced one bug and three UX
+gaps, all addressed the same day – see <code>DECISIONS.md</code>,
+“Accept <code>v</code>-prefixed launch template versions” and “Launch
+Template version history, scrollable diffs, and split Show resource
+lists,” and <code>PLAN.md</code> Phase 20.28:</p>
+<ul>
+<li>AWS rejects a <code>"v"</code>-prefixed version number outright;
+this project’s own display convention
+(<code>launchTemplateLabel</code>’s “default v2”) made typing one a
+near-certainty. Fixed at the input boundary
+(<code>normalizeVersionSelector</code>), not by changing the display
+format.</li>
+<li>Show Launch Template gained “list all versions” and “diff two
+versions” alongside its original single-version detail view – “there’s
+another version” alone wasn’t enough to know what changed.</li>
+<li>Sync’s confirmation diff (and the new version-diff) render through
+the shared List-tier component instead of a raw, potentially- off-screen
+text dump.</li>
+<li>Compute’s “Show resource lists” split into three menu entries (Show
+instances/AMIs/launch templates) – paging through all three to reach the
+one wanted felt awkward. S3/Key Management, each with a single resource
+type, were left alone.</li>
+</ul>
+<h2 id="tag-management-domain-design-addendum-2026-07-20">Tag Management
+Domain (Design Addendum, 2026-07-20)</h2>
+<p><strong>Status: implemented 2026-07-20</strong> (all five resource
+types, including S3 Bucket; see PLAN.md Phase 20.30 for the
+implementation record and DECISIONS.md for both the original design
+decision and the S3 apply- closure follow-up decision). “Tag Management”
+(this addendum’s assumed name) is what shipped – no objection was raised
+during implementation. One addition beyond what’s described below:
+removing a bucket’s last tag calls <code>s3:DeleteBucketTagging</code>
+rather than <code>PutBucketTagging</code> with an empty
+<code>TagSet</code>, proactively matching
+<code>ManageBucketLifecyclePolicies</code>’ own
+<code>DeleteBucketLifecycle</code> precedent for the same “replace the
+whole set” operation shape (not itself confirmed against real AWS yet).
+What follows is the original design, requested directly
+(<code>notes-from-tom.txt</code>, TODO.md: “a top level menu item for
+managing tags across resources (EC2, AMI, S3, etc)”), explicitly
+alongside keeping the existing per-resource entry points (“continue to
+support tag management at the point we are working with individual
+resources”). This addendum only covers the new cross-resource domain;
+Phase 20.29’s Compute-scoped Manage Tags (loop until ‘q’, Show tags
+choice, refresh-after-change) stays exactly as it is and is
+unaffected.</p>
+<p><strong>A fourth Domain Picker entry, not a menu item nested in an
+existing domain.</strong>
+<code>DomainActions</code>/<code>domainItems</code>
+(<code>domain_menu.go</code>) gain “Tag Management” alongside
+Compute/Key Management/S3 – the only screen in the app that needs to
+reach across all three existing domains’ resources in one place, so it
+doesn’t fit inside any single one of them (Key Management, for instance,
+has nothing to do with S3 buckets). Like the other three domains,
+entering it runs its own <code>refresh</code> (fetching all five
+taggable resource types fresh, across all regions) on every entry,
+independent of whether the operator has visited Compute/S3/Key
+Management yet this session – matching the existing domain convention
+exactly, not a special case.</p>
+<p><strong>Five taggable resource types, confirmed against the actual
+AWS APIs involved, not assumed:</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col">Resource</th>
+<th scope="col">Tag API</th>
+<th scope="col">Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>EC2 Instance</td>
+<td><code>ec2:CreateTags</code>/<code>DeleteTags</code></td>
+<td>Already working (Manage Tags, Phase 20.29)</td>
+</tr>
+<tr>
+<td>AMI</td>
+<td><code>ec2:CreateTags</code>/<code>DeleteTags</code></td>
+<td>Already working (Manage Tags, Phase 20.29)</td>
+</tr>
+<tr>
+<td>Launch Template</td>
+<td><code>ec2:CreateTags</code>/<code>DeleteTags</code></td>
+<td>New – targets the <em>template resource’s own</em> tags, not the
+<code>TagSpecifications</code> baked into a version’s
+<code>UserData</code> for instances launched from it (a version-creation
+concept already covered by Sync, Phase 20.27/20.28)</td>
+</tr>
+<tr>
+<td>Key Pair</td>
+<td><code>ec2:CreateTags</code>/<code>DeleteTags</code></td>
+<td>New ground – confirmed <code>types.KeyPairInfo</code> has its own
+<code>Tags</code> field and the generic EC2 tagging API applies, but
+clasm has never fetched, displayed, or set a key pair’s tags before
+this</td>
+</tr>
+<tr>
+<td>S3 Bucket</td>
+<td><code>s3:GetBucketTagging</code>/<code>PutBucketTagging</code></td>
+<td>New – a different API shape from the other four:
+<code>PutBucketTagging</code> replaces the <em>entire</em> tag set
+(confirmed via <code>bucket_create.go</code>’s existing, narrower use of
+it for the fixed “Purpose” tag), so Add/Update/Remove here means a
+transparent read-modify-write (fetch the current set, change one entry,
+PUT the whole set back) – the operator still sees “add/update/remove one
+tag,” same as everywhere else. Accepted risk: a concurrent external
+change to the bucket’s tags could be silently overwritten by the
+read-modify-write, consistent with this tool not doing concurrency
+control anywhere else either.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reuses Phase 20.29’s loop mechanism, generalized.</strong>
+<code>manageTagsForResource</code>/ <code>applyOneTagChange</code>
+(Phase 20.29) already take a pluggable <code>fetchTags</code> closure;
+this phase further generalizes <code>applyOneTagChange</code> to also
+take a pluggable <em>apply</em> closure (currently hardcoded to
+<code>ApplyTagChange</code>’s EC2-specific
+<code>CreateTags</code>/<code>DeleteTags</code> calls), so the exact
+same loop/action-picker/confirm/Show-tags-choice UI serves both the four
+EC2-backed resource kinds and S3 buckets uniformly – only the
+fetch/apply closures differ per kind, not the workflow shape. This
+avoids a second, parallel tag-editing UI just for S3.</p>
+<p><strong>Resource selection reuses existing Picker-tier helpers where
+they already exist</strong> (<code>pickInstance</code>,
+<code>pickImage</code>, <code>pickLaunchTemplate</code>,
+<code>pickBucket</code> – confirmed all four already exist and are
+directly reusable) <strong>and adds one new one,
+<code>pickKeyPair</code></strong>, matching the same shape.</p>
+<p><strong>Key pair tags are not surfaced in Key Management’s existing
+“Show resource lists” display for this phase</strong> –
+add/update/remove via the new Tag Management domain is the v1 scope;
+extending <code>inventory.KeyPair</code> with its own
+Project/Environment columns (matching Instance/Image’s own convention)
+is a separate, smaller follow-on if wanted later, not bundled in
+here.</p>
+<p><strong>“Show all tags,” scoped to one resource type at a time – not
+one combined table across all five.</strong> Raised directly after this
+addendum was first drafted: a way to see every tag on every resource of
+a type, not just edit one resource at a time. Reuses the same
+resource-type picker as editing (Instance/AMI/Launch Template/Key
+Pair/Bucket), then a List-tier table of every resource of that type with
+a flattened “Tags” column (every key=value pair, not just
+Project/Environment) – the same shape as Compute’s existing “Show
+instances/AMIs/launch templates” listings, just one more per-type
+listing with the full tag map decoded instead of filtered to the two
+convention tags. Deliberately <strong>not</strong> one table spanning
+all five types at once: they don’t share a natural row shape (different
+ID formats, and critically, tag <em>key sets</em> vary per resource, so
+fixed columns don’t work regardless – you’d end up with one flattened
+text column either way, at which point five separate, type-scoped
+listings read better than one forced-together table). For the four
+EC2-backed types this needs no new AWS call – their existing list calls
+already return full tags inline, just currently decoded down to
+Project/Environment only
+(<code>inventory.Instance</code>/<code>Image</code>/<code>LaunchTemplate</code>/<code>KeyPair</code>);
+for S3 it means one <code>GetBucketTagging</code> call per bucket
+(generalizing <code>bucketPurpose</code>’s existing single-tag-filtered
+pattern to return the whole tag map, run across every bucket rather than
+one at a time).</p>
+<p><strong>Someday/maybe, explicitly out of scope for this
+phase:</strong> a compliance/audit-style report across all five resource
+types showing <em>which resources are missing tags</em> (entirely, or
+missing Project/Environment specifically) – a different query shape than
+“Show all tags” (which shows what each resource <em>has</em>), raised as
+likely to be asked for later but not scoped now (see TODO.md).</p>
+<p><strong>Resolved:</strong> the domain’s own name in the picker is
+“Tag Management,” as assumed above.</p>
 <h2 id="core-features">Core Features</h2>
 <h3 id="compute-domain-ec2-ami">Compute Domain (EC2 &amp; AMI)</h3>
 <p>Features 1 through 12 below are unchanged in behavior from the
@@ -535,18 +1858,32 @@ AMI): 1. Pick an instance, immediately followed by a
 <code>DECISIONS.md</code>, “Preflight check: AWS CLI availability before
 Backup Archive &amp; Trim”) — aborts fast with a clear, actionable error
 if the AWS CLI isn’t installed, before any further prompt or the dry-run
-list 2. Prompt for the backup directory — pre-filled from
-<code>~/.awsops</code>’s <code>backup_directories</code> (see
-“Configuration” above) when the picked instance’s Name tag matches a
-configured pattern (e.g. RDM instances default to
-<code>/opt/rdm_sql_backups</code>, other services to their own
-directory), still editable and never silently accepted; no match leaves
-it unset, same as before this setting existed — an age threshold in days
-(no default — always an explicit, deliberate choice), and the S3 bucket
-— immediately followed by <code>s3:GetBucketLocation</code> to discover
-which region the bucket actually lives in (any region, unrelated to the
-instance’s — see <code>DECISIONS.md</code>, “Resolve a bucket’s actual
-region before Backup Archive &amp; Trim’s access check”) and then an
+list 2. Prompt for the backup directory, then the S3 bucket, then the
+age threshold in days — in that order (see <code>DECISIONS.md</code>,
+“Reorder Backup Archive &amp; Trim’s prompts”: the threshold reads more
+naturally once both the source directory and destination bucket are
+already fixed). The instance picker’s cursor and the directory prompt’s
+default both recall what was actually used last time <em>for this
+specific instance</em> (<code>~/.clasm_state</code>, an app-managed file
+distinct from <code>~/.clasm</code> — see <code>DECISIONS.md</code>,
+“Recall Backup Archive &amp; Trim’s instance/directory choices
+per-instance”), taking priority over <code>~/.clasm</code>’s
+<code>backup_directories</code> Name-pattern match (see “Configuration”
+above; e.g. RDM instances default to <code>/opt/rdm_sql_backups</code>,
+other services to their own directory) when both exist. Either way the
+directory stays editable and is never silently accepted; no recalled
+value and no rule match leaves it unset, same as before either mechanism
+existed. The age threshold itself has no default — always an explicit,
+deliberate choice. The S3 bucket prompt itself is a filterable pick list
+of this account’s buckets (<code>'/'</code> to filter by name), plus an
+“Other” entry to type any bucket name directly — e.g. one outside this
+account’s own listing (see <code>DECISIONS.md</code>, “Bucket picker for
+Backup Archive &amp; Trim”); falls back to a plain free-text prompt if
+the bucket listing itself can’t be fetched. Immediately followed by
+<code>s3:GetBucketLocation</code> to discover which region the bucket
+actually lives in (any region, unrelated to the instance’s — see
+<code>DECISIONS.md</code>, “Resolve a bucket’s actual region before
+Backup Archive &amp; Trim’s access check”) and then an
 <code>s3:HeadBucket</code> access check, scoped to that region, that
 aborts with a clear reason (bucket doesn’t exist, or the operator’s own
 credentials can’t reach it) before any of the steps below run — see
@@ -684,6 +2021,12 @@ present, means “untagged” — not a failure) to read the bucket’s
 table (Name, Region, Static Website, Purpose; untagged shows blank,
 matching this tool’s existing “blank means untagged” convention for
 Name).</p>
+<p><strong>Revised by “S3 Resource List Display — Paged,
+Accessible-Compatible” below (designed 2026-07-10, not yet
+implemented):</strong> the data fetch described above is unchanged, but
+the table is no longer printed automatically on every S3 menu redisplay
+— only when “Show resource lists” is explicitly chosen — and printing
+itself becomes paged.</p>
 <h3 id="create-bucket">18. Create Bucket</h3>
 <p>Interactive workflow: 1. Prompt for a bucket name (globally unique;
 validate against S3’s naming rules locally before calling AWS) 2. Prompt
@@ -745,6 +2088,15 @@ confirm-and-delete step (<code>s3:DeleteObject</code>) — never bundled
 into the same confirmation as the upload, so “yes” to publishing new
 content can never accidentally also mean “yes” to deleting something 7.
 Report a summary: files uploaded, files deleted, bytes transferred</p>
+<p><strong>Superseded, implemented 2026-07-09 by Feature 21.2’s
+interactive file manager</strong> (PLAN.md Phase 20.1) — see “S3 Object
+Management — Interactive File Manager” below. This directory-to-bucket
+workflow remains a first-class, directly reachable capability (not
+folded away as a generic case of something else): it’s now the file
+manager’s dedicated Sync action (<code>S</code> / <code>:sync</code>,
+21.6), not the standalone wizard described above — that wizard
+(<code>bucket_sync.go</code>) is retired; its diff/walk/list logic moved
+to <code>internal/s3diff</code>, reused rather than reimplemented.</p>
 <h3 id="browsemanage-objects">21. Browse/Manage Objects</h3>
 <p>Interactive workflow for ad-hoc bucket inspection outside the sync
 flow: 1. Pick a bucket 2. Prompt for an optional key prefix filter
@@ -760,6 +2112,15 @@ content-type) or delete it 5. Deletion is a plain yes/no per-object
 confirm — Feature 20’s bulk sync deletion gets the stronger “separate
 confirm” treatment because it can affect many files at once; a single
 ad-hoc delete here is lower blast-radius</p>
+<p><strong>Superseded, implemented 2026-07-09 by Feature 21.2’s
+interactive file manager</strong> (PLAN.md Phase 20.1) — see “S3 Object
+Management — Interactive File Manager” below. Single-object browsing,
+filtering, metadata, and delete are folded into the new screen’s
+single-pane mode rather than kept as a second, parallel implementation
+of “filter, pick, act.” The standalone wizard
+(<code>bucket_browse.go</code>’s <code>BrowseBucketObjects</code>) is
+retired; only its <code>listBucketObjectsWithPrefix</code> helper
+remains, still used by Delete Bucket’s empty-bucket check.</p>
 <h3 id="manage-bucket-lifecycle-policies">21.1. Manage Bucket Lifecycle
 Policies</h3>
 <p>Interactive workflow for reviewing, setting, updating, and removing
@@ -815,7 +2176,407 @@ current values</li>
 <code>s3:PutBucketLifecycleConfiguration</code> and confirm
 success</p></li>
 </ol>
+<h3
+id="s3-resource-list-display-paged-accessible-compatible-design-addendum-2026-07-10">S3
+Resource List Display — Paged, Accessible-Compatible (Design Addendum,
+2026-07-10)</h3>
+<p><strong>Superseded 2026-07-10, same day, by “Terminal UI
+Architecture: Menus, Actions, Lists, and Managers” below.</strong>
+<code>internal/ui.PagedTable</code>/ <code>DisplayBuckets</code>
+(implemented per this addendum, then used for less than a day) are
+retired, not extended: screen-reader/accessible-mode compatibility –
+this addendum’s central design constraint – turned out not to be an
+actual requirement for this tool once discussed directly (DECISIONS.md,
+“Deprecate termlib; standardize on huh/bubbletea before 0.0.2”), which
+removes the reason this had to be plain sequential termlib printing
+instead of a real bordered, chrome-consistent <code>bubbletea</code>
+component like the rest of the app. Left in place below as the accurate
+record of what was designed, decided, and briefly shipped, and why it
+changed – not deleted.</p>
+<p><strong>Status (as originally written): designed, not yet
+implemented.</strong> Revises Feature 17 (List Buckets) and the “Show
+resource lists” menu item’s behavior within the S3 domain menu (21.2).
+Scoped to S3 for now — Compute and Key Management’s own “Show resource
+lists” listings (Features 1, 13;
+<code>ui.DisplayInstances</code>/<code>DisplayImages</code>/
+<code>DisplayKeyPairs</code>) keep their current one-shot, unpaginated
+printing; ask before extending this to them. The pager itself, however,
+is deliberately built as a <strong>generic, reusable
+<code>internal/ui</code> component</strong>, not a bucket-specific one —
+S3 buckets are its first consumer, so Compute/Key Management can adopt
+the same mechanism later, when/if their own menus migrate, without a
+redesign (see “Reusability” below).</p>
+<p><strong>Problem.</strong> Today, <code>RunS3Menu</code> calls
+<code>actions.Refresh(ctx)</code> after every successful action (Create
+Bucket, Configure Website, etc.), and <code>refreshS3</code>
+(<code>cmd/clasm/main.go</code>) both re-fetches bucket data AND prints
+the full bucket table (<code>ui.DisplayBuckets</code>) in the same step.
+Two problems fall out of that: the full table reprints after every
+action, not just when the operator asks to see it, cluttering the menu’s
+redisplay; and <code>DisplayBuckets</code> has no pagination at all
+(unlike <code>ui.PickList</code>’s existing 50-item paging), so a large
+bucket count would print unboundedly.</p>
+<p><strong>Decision.</strong> 1. Split “refresh” into its two separate
+concerns: re-fetching bucket data (still happens after every action,
+unchanged, so bucket- selection prompts elsewhere stay current) and
+<em>displaying</em> the bucket table (now happens only when “Show
+resource lists” is explicitly chosen from the S3 menu). 2. “Show
+resource lists” becomes its own paged display, not an inline print: the
+banner (folding in the page count) and column header repeat on every
+page, and the operator navigates with three single-key commands —
+<code>n</code> (next page), <code>p</code> (previous page),
+<code>q</code> (quit — returns to the S3 menu without printing anything
+further). <code>n</code>/<code>p</code> are no-ops at the first/last
+page, matching <code>PickList</code>’s existing boundary behavior. 3.
+Mockup (approved 2026-07-10):</p>
+<pre><code>===== S3 BUCKETS (page 2 of 3, showing 21-40 of 47) =====
+
+NAME                                     REGION     STATIC WEBSITE PURPOSE
+caltech-static-assets                    us-west-1  yes            web-hosting
+research-data-archive-2024               us-west-2  no             backup
+thesis-submissions-fall2025              us-west-2  yes            production
+...                                       ...        ...            ...
+cl-cold-storage-2023                     us-west-1  no             backup
+
+&#39;n&#39; next page   &#39;p&#39; previous page   &#39;q&#39; quit to S3 menu
+Command: </code></pre>
+<ol start="4" type="1">
+<li><strong>Reusability.</strong> The pager is a new generic function in
+<code>internal/ui</code> (working name <code>PagedTable</code>),
+decoupled from any specific resource type: it takes a title-format
+callback (given page/ totalPages/shown/total, returns the banner line),
+an already- rendered header line, and already-rendered row strings — it
+owns only windowing, chrome, and
+<code>n</code>/<code>p</code>/<code>q</code> input, not column
+formatting. <code>DisplayBuckets</code>’s existing
+<code>PadRight</code>/<code>Truncate</code> column rendering is reused
+as-is to build the header/row strings passed in; only the printing loop
+changes. This mirrors <code>PickList</code>’s own shape (a generic
+mechanism domain code plugs labels into), so Compute/Key Management’s
+<code>DisplayInstances</code>/<code>DisplayImages</code>/<code>DisplayKeyPairs</code>
+could later call the same <code>PagedTable</code> with their own
+header/row strings, if and when those menus are revisited — not part of
+this piece of work, but not precluded by it either.</li>
+<li>Stays fully accessible: this is sequential printing throughout —
+print the banner+header+page of rows, print the command line, read one
+line of input, then either print the next page’s block or return — no
+cursor repositioning or redraw at any point, so it behaves identically
+over a real TTY, a <code>TERM=dumb</code> session, or (per DECISIONS.md,
+“huh fields are pipe-testable…”) a piped input/output pair in tests.
+Note this mechanism doesn’t involve <code>huh</code> at all — it’s plain
+<code>termlib</code> printing and <code>LineEditor.Prompt</code>
+reading, the same style <code>PickList</code> already uses; “migrating
+to huh” elsewhere in this codebase and “paging a resource list” are
+orthogonal, and this design keeps them that way.</li>
+</ol>
+<p><strong>Rejected alternatives.</strong> - <em>Print the whole table
+unpaginated, rely on terminal scrollback</em> — today’s actual behavior;
+rejected per this session’s request (buckets can exceed a screen’s
+height, and the table shouldn’t reprint after unrelated actions). -
+<em>Give the paged display a
+<code>huh.Select</code>/<code>bubbletea</code>-style bounded viewport
+(like the interactive file manager’s panes)</em> — rejected: that’s a
+redraw-in-place rendering model, structurally the thing accessible mode
+has to avoid; would need a parallel accessible-mode fallback for no
+benefit over plain sequential paging, which already works today via
+<code>PickList</code>. - <em>Reuse <code>ui.PickList</code> directly
+instead of a new <code>PagedTable</code></em> — <code>PickList</code> is
+shaped around choosing ONE item from a single-column label list (it
+returns a selection). This display shows a multi-column table and makes
+no selection (<code>q</code> just returns) — close in spirit (same
+page-size/boundary conventions) but a distinct function.</p>
+<p><strong>Consequences.</strong> <code>ui.DisplayBuckets</code> is
+replaced by a <code>PagedTable</code> call site;
+<code>cmd/clasm/main.go</code>‘s <code>refreshS3</code> closure splits
+into a silent data-refresh half (still called after every action) and a
+separate paged-display call reachable only from the “Show resource
+lists” menu item; <code>s3MenuItems</code>’ “Show resource lists” entry
+(<code>s3_menu.go</code>) calls the new paged display instead of
+<code>a.Refresh(ctx)</code> alone.</p>
+<hr />
+<h3
+id="s3-object-management-interactive-file-manager-design-addendum-2026-07-09">S3
+Object Management — Interactive File Manager (Design Addendum,
+2026-07-09)</h3>
+<p><strong>Status: implemented 2026-07-09
+(<code>internal/filemanager</code>; PLAN.md Phase 20.1) — unit-tested,
+not yet real-AWS verified (PLAN.md Phase 22).</strong> This addendum was
+design-only when first written; the section below is otherwise left as
+originally drafted (it’s the accurate design record), except where
+marked. It supersedes Feature 20 (Sync Local Directory to Bucket) and
+Feature 21 (Browse/Manage Objects) as S3 menu entry points — both
+wizards are now retired. One addition beyond this addendum’s original
+scope: a dedicated Sync action (21.6) was added during implementation so
+Decision 2 below (“Sync’s directory-mirroring workflow is kept as a
+first-class, directly reachable capability”) is met literally, not just
+approximated by manual tag-and-act; see DECISIONS.md, “Add a dedicated
+Sync action to the file manager.”</p>
+<p>Builds on the huh-vs-bubbletea technology evaluation already recorded
+(<code>continue_next_time.txt</code>;
+<code>agents/hand-off/ 2026-07-09T220000Z-clasm-rename.spmd</code>): huh
+was the leading candidate for replacing termlib’s blocking-prompt style
+generally, evaluated by pulling real source into a scratch module rather
+than trusting docs. This addendum goes one step further for S3 object
+management specifically — huh’s blocking forms are sufficient for
+single-pane browsing and batch selection, but the linked local+bucket
+workflow below (21.3, 21.5, 21.6) needs a live, simultaneously-visible
+two-pane view that huh’s sequential fields structurally can’t provide.
+That one piece is designed as a scoped <code>bubbletea</code> component
+instead — see 21.8 for why that doesn’t reopen the original “don’t
+rewrite everything” objection to bubbletea.</p>
+<h4 id="revised-s3-domain-menu">21.2. Revised S3 Domain Menu</h4>
+<ul>
+<li>Show resource lists</li>
+<li>Create Bucket (Feature 18, unchanged)</li>
+<li>Configure Static Website Hosting (Feature 19, unchanged)</li>
+<li><strong>Browse &amp; Manage Objects</strong> — opens the interactive
+file manager (21.3-21.8) described below, single-pane by default</li>
+<li>Manage Bucket Lifecycle Policies (Feature 21.1, unchanged)</li>
+<li>Delete Bucket (unchanged)</li>
+<li>Back to domain picker</li>
+</ul>
+<p>“Sync Local Directory to Bucket” and the bulk delete-by-prefix case
+are removed as separate menu entries — both become reachable from inside
+the interactive file manager (directory-mirroring via double-pane mode,
+21.3; bulk delete via tagging filtered matches in either mode, 21.6).
+Feature 21’s original single-object browse/metadata/delete is folded in
+the same way rather than kept as a second, parallel implementation:
+tagging exactly one item and choosing an action in single-pane mode
+covers that case without a separate wizard.</p>
+<h4 id="session-start-linking">21.3. Session Start &amp; Linking</h4>
+<p>Entering “Browse &amp; Manage Objects”: 1. Pick a bucket and region
+(<code>huh.Select</code>, reusing Feature 17’s already- fetched listing)
+— this pre-flight step stays on huh; there’s no reason to rebuild bucket
+selection inside the interactive screen. 2. Prompt
+(<code>huh.Confirm</code>): link a local directory now? If yes, prompt a
+path (<code>huh.Input</code>, reusing <code>bucket_sync.go</code>’s
+existing <code>validateLocalDirectory</code>) and open in double-pane
+mode; if no, open single-pane (bucket only). 3. Mid-session, the
+<code>l</code> hotkey links or unlinks a local directory without
+restarting. When nothing is linked, it prompts for a path via the
+command line and splits single-pane into double-pane. When a directory
+<strong>is</strong> linked, <code>l</code> (or <code>:unlink</code>)
+goes straight to a direct Confirm (“Unlink <code>&lt;path&gt;</code> and
+return to single-pane view?”) instead of the command line — added
+2026-07-09 after an operator asked for “a way to go from two panels back
+to displaying only the S3 bucket”; the original design (clear the
+pre-filled <code>:link &lt;path&gt;</code> field and submit it empty)
+was technically reachable but not discoverable as <em>the</em> way back.
+This directly serves “moving between local and bucket as one set of
+activities” without requiring the operator to plan ahead at launch.</p>
+<h4 id="screen-layout-chrome">21.4. Screen Layout &amp; Chrome</h4>
+<pre><code>┌ clasm — S3 File Manager — sql-backups.library.caltech.edu (us-west-2) ─────────────────┐
+├───────────────────────────────┬─────────────────────────────────────────────────────────┤
+│  LOCAL: /path/on/disk          │  S3: bucket-name/prefix/                                │
+│  ...listing...                 │  ...listing...                                          │
+├───────────────────────────────┴─────────────────────────────────────────────────────────┤
+│ 12 items, 3 tagged (4.3 MB)              filter: db0*                                    │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ : ____________________________________________________________________________________  │
+├───────────────────────────────────────────────────────────────────────────────────────────┤
+│ u Upload  d Download  x Delete  f Filter  F Find  S Sync  l Link  Tab Switch  Space Tag  q Quit │
+└───────────────────────────────────────────────────────────────────────────────────────────┘</code></pre>
+<p>Top to bottom: - <strong>Header</strong> — mode indicator, bucket
+name + region, local root once linked. - <strong>Pane area</strong> —
+one pane (single-pane mode) or two side by side (double-pane): local on
+the left, S3 on the right, matching the WinSCP/SFTP-client convention
+this team is more likely to already know than Midnight Commander’s
+layout. A pane’s own header row shows an animated spinner + “Loading…”
+while its listing is being (re)fetched, and Find’s status row shows the
+same spinner while a search is still running (added 2026-07-09 – both
+can take a real, noticeable amount of time against a large bucket, and
+with no feedback the screen just looked frozen/broken). - <strong>Status
+line</strong> — per pane: item count, tagged count, aggregate tagged
+size (needed to see the blast radius of a bulk action before confirming,
+not just a count), active filter string. - <strong>Command line</strong>
+— inert until <code>:</code> or <code>/</code> takes focus; typed verbs
+(<code>:upload</code>, <code>:delete</code>,
+<code>:find &lt;pattern&gt;</code>) or filter patterns. - <strong>Hotkey
+legend</strong> — single-letter mnemonics, not function keys — F-key
+mappings are unreliable across terminal emulators and multiplexers, a
+real enough problem to design around rather than default to. The legend
+is contextual (e.g. <code>x Delete</code> only shown once something is
+tagged). The hotkey bar and the colon command line both drive the same
+underlying action dispatch; neither is a fallback for the other — two
+paths to the same commands, not a primary and a backup. -
+<strong>Progress/confirm overlay</strong> — modal, centered over the
+pane area. Confirms reuse the existing
+<code>Confirm</code>/<code>ConfirmDestructive</code> split unchanged
+(plain yes/no for Upload/Download, type-the-name-back for Delete —
+Security Consideration #11 still applies without exception). Execution
+reuses the existing per-item OK/FAIL progress convention as scrolling
+lines inside the overlay; completion requires an explicit “press any key
+to continue” rather than an auto-dismiss timer, so a FAIL line can never
+be hidden by a timeout.</p>
+<h4 id="pane-navigation-listing">21.5. Pane Navigation &amp;
+Listing</h4>
+<ul>
+<li>Panes navigate <strong>independently</strong> — each side browses to
+any folder/prefix on its own; there is no requirement that both point at
+corresponding paths. This matches the tag-in-focused-pane,
+act-on-other-pane convention directly (21.6) and stays more flexible
+(e.g. uploading from one local folder into an unrelated bucket prefix)
+than an always-synced, always-diffing view would allow.</li>
+<li>Rows sort folders-then-files, alphabetical within each group.</li>
+<li><strong>S3 listing uses <code>s3:ListObjectsV2</code> with
+<code>Delimiter=/</code>, one directory level per call</strong>
+(<code>CommonPrefixes</code> for folders, <code>Contents</code> for
+files) rather than a full-prefix listing grouped client-side. Per-level
+browsing stays cheap regardless of how deep or large the tree is below
+the current level.</li>
+<li><code>f</code> (or <code>/</code> on the command line) filters the
+focused pane’s <strong>current level</strong> by substring match against
+already-fetched rows — cheap, since delimiter-based listing means
+“current level” is never the whole bucket, and instant/synchronous (no
+spinner needed the way Find’s recursive scan needs one, 21.4). A filter
+starting with <code>/</code> is matched via the same anchored form Find
+uses (21.7) instead: an exact/glob match of the current level’s
+basenames rather than a substring, e.g. <code>/index.html</code> matches
+only a file named exactly that, not <code>myindex.html5</code> too –
+added (2026-07-09) so the <code>/</code>-prefix convention means the
+same thing whether typed as a filter or a Find pattern.</li>
+<li>The local pane lists one directory level at a time
+(<code>os.ReadDir</code>), not the full recursive walk
+<code>bucket_sync.go</code> uses for diffing — that recursive traversal
+is reused specifically by Find (21.7) and by the double-pane linked
+workflow’s own diff step, not by ordinary browsing.</li>
+</ul>
+<h4 id="tagging-actions">21.6. Tagging &amp; Actions</h4>
+<ul>
+<li><code>Space</code> tags/untags the row under the cursor;
+<code>*</code> tags every row currently visible (post-filter) in the
+focused pane. Pattern-based tag/untag (mc’s
+<code>+</code>/<code>-</code>) is deliberately left out of this design —
+<code>*</code> after filtering already covers “tag everything matching
+X.”</li>
+<li>Action keys operate on the focused pane’s tagged set (or the row
+under the cursor if nothing is tagged):
+<ul>
+<li><code>u</code> <strong>Upload</strong> (Create/Update) — only
+available when a local directory is linked; tagged local files are
+<code>s3:PutObject</code>’d into the bucket pane’s <em>current</em>
+folder (mc/WinSCP convention: source is the focused/tagged pane,
+destination is the other pane’s current position).</li>
+<li><code>d</code> <strong>Download</strong> (Read) — tagged bucket
+objects (<code>s3:GetObject</code>) land in the local pane’s current
+directory.</li>
+<li><code>x</code> <strong>Delete</strong> — tagged bucket objects
+removed (<code>s3:DeleteObject</code>). This is how both Feature 21’s
+old single-object delete and the old bulk delete-by-prefix case are
+covered by one path now.</li>
+<li><code>m</code> <strong>Show metadata</strong> — carried forward from
+Feature 21’s original per-object metadata display
+(<code>s3:HeadObject</code>); applies to the row under the cursor.</li>
+<li><code>S</code> <strong>Sync</strong> (added during implementation,
+not in this addendum’s original scope — see DECISIONS.md, “Add a
+dedicated Sync action to the file manager”) — only available when a
+local directory is linked. Diffs the <em>entire</em> linked directory
+against the <em>entire</em> bucket by key+size
+(<code>internal/s3diff.Compute</code>, the same logic Feature 20’s
+retired wizard used, not reimplemented) — not scoped to either pane’s
+current navigated position, matching the original wizard’s whole-tree
+semantics. Upload candidates confirm first (plain <code>Confirm</code>);
+only once that stage is accepted or skipped (no upload candidates) does
+the delete stage appear (<code>ConfirmDestructive</code>) — the two are
+never bundled into one prompt (Security Consideration #11), and
+declining the upload stage aborts before the delete stage is ever
+shown.</li>
+</ul></li>
+<li>Confirmation: plain <code>Confirm</code> before Upload/Download,
+<code>ConfirmDestructive</code> (type the bucket name, or the active
+prefix) before Delete — unchanged from Feature 20/21’s existing security
+posture, just reachable from one screen instead of three separate
+workflows.</li>
+<li>Open implementation-time question, not resolved by this design pass:
+whether to batch deletes via <code>s3:DeleteObjects</code> (up to 1000
+keys per call) instead of porting the current
+one-<code>DeleteObject</code>-call-per-key loop — logged previously as a
+“nice to have” (<code>continue_next_time.txt</code>) and worth folding
+in since the delete path is being rebuilt anyway.</li>
+</ul>
+<h4 id="find-recursive-pattern-search">21.7. Find (recursive pattern
+search)</h4>
+<ul>
+<li>Hotkey <code>F</code> or command-line
+<code>:find &lt;pattern&gt;</code> — distinct from <code>f</code>’s
+current-level-only filter.</li>
+<li>Pattern is a <strong>shell glob matched against each entry’s
+basename</strong>, evaluated recursively at every depth below the
+focused pane’s current position (Go stdlib
+<code>path/filepath.Match</code> semantics, including
+backslash-escaping) — the same behavior as
+<code>find &lt;dir&gt; -name '&lt;pattern&gt;'</code>. <code>*.go</code>
+and <code>\.git</code> both work as plain globs; neither needs a regex
+engine. Recursion starts at the focused pane’s current directory, not
+always the tree root, matching Unix <code>find</code>’s own convention
+and avoiding an unbounded scan when the operator only meant to search
+what they’re currently looking at.</li>
+<li>A pattern starting with <code>/</code> is <strong>anchored</strong>
+to the search’s starting point instead of matched against the basename
+alone: the leading <code>/</code> is stripped and the remainder is
+matched (still via <code>filepath.Match</code>, so <code>*</code> still
+won’t cross a <code>/</code>) against each entry’s full path relative to
+that starting point. <code>/index.html</code> therefore matches only a
+root-level <code>index.html</code>, not <code>sub/index.html</code> —
+added (2026-07-09) because basename-only matching couldn’t express “just
+the one at the root” when the same filename legitimately exists at other
+depths too (a common case: every static site under a bucket has its own
+<code>index.html</code>).</li>
+<li>Matches both files and directories/pseudo-folders.</li>
+<li>Results <strong>replace the focused pane’s listing</strong> with a
+flat list, each row showing the path relative to the search’s starting
+point (not just the basename, since matches can span multiple
+subdirectories). Normal tagging (<code>Space</code>, <code>*</code>)
+works directly on results, so matches can be acted on immediately
+without a detour back through normal browsing.</li>
+<li><code>Enter</code> on a result jumps back to normal hierarchical
+browsing at that match’s parent directory, cursor on it;
+<code>Esc</code> discards the find view and returns to normal browsing
+at the prior location.</li>
+<li>On the S3 side this means an on-demand, full recursive
+<code>ListObjectsV2</code> (no <code>Delimiter</code>) under the current
+prefix — the same listing cost Feature 20 (Sync) and the old
+delete-by-prefix case already paid when invoked, just user-triggered
+from inside the browser now rather than automatic. Shows a live
+“Searching… (N scanned, M matched)” status; cancellable
+(<code>Esc</code>/<code>Ctrl-C</code>) since a deep prefix on a large
+bucket could take a while.</li>
+<li>The local side reuses <code>bucket_sync.go</code>’s existing
+<code>filepath.WalkDir</code>-based <code>walkLocalTree</code>
+traversal, with the glob match layered on top — no new local-filesystem
+traversal code needed.</li>
+</ul>
+<h4 id="technology-architecture-notes">21.8. Technology &amp;
+Architecture Notes</h4>
+<ul>
+<li><strong><code>bubbletea</code>, scoped to this one screen</strong> —
+not the full-application rewrite the original evaluation ruled out. That
+evaluation’s objection was the cost of rewriting all ~40
+<code>internal/workflow</code> wizards’ blocking, linear control flow
+into Elm-architecture state machines; it doesn’t apply to building one
+bounded, genuinely interactive component while every other wizard
+(Create Bucket, Configure Website, Lifecycle Policies, Delete Bucket,
+and this screen’s own bucket-selection pre-flight, 21.3) stays on huh’s
+blocking synchronous fields.</li>
+<li>No new dependency weight beyond adopting huh at all: huh already
+pulls in <code>bubbletea</code>, <code>bubbles</code>, and
+<code>lipgloss</code> transitively, so a scoped
+<code>bubbletea.Program</code> for this screen doesn’t add anything huh
+wasn’t already going to bring in.</li>
+<li>This is the one place in the S3 domain design where a live,
+stateful, two-pane view is unavoidable — every other S3 feature (17-19,
+21.1) stays exactly as designed, huh fields only.</li>
+<li>Prototype this screen’s single-pane mode first (the simpler of the
+two) before committing to double-pane/link/Find — same “prototype
+cheaply before porting everything” guidance already recorded from the
+original huh evaluation, now applied one level deeper.</li>
+</ul>
 <h3 id="cloudfront-domain">CloudFront Domain</h3>
+<p><strong>Someday/maybe — not on the active roadmap, no committed
+timeline</strong> (revised 2026-07-09 from “postponed to a later
+version”; see <code>DECISIONS.md</code>, “Demote CloudFront to
+someday/maybe…”). No code written. The design below stays valid
+reference for if this is ever picked back up.</p>
 <p>CloudFront’s control plane is a single global API
 (<code>us-east-1</code>, regardless of where origins live) — this
 domain’s listing is not region-fanned-out the way Compute/Key

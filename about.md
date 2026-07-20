@@ -1,7 +1,7 @@
 ---
 title: clasm
 abstract: |-
-  Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
+  Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, launch templates, and key pairs, plus S3 buckets and backup archives, with cross-resource tag management, cloud-init inspection, and backup archival to S3.
 authors:
   - family_name: Doiel
     given_name: R. S.
@@ -10,7 +10,7 @@ authors:
 
 
 repository_code: https://github.com/caltechlibrary/clasm
-version: 0.0.1
+version: 0.0.2
 
 operating_system:
   - POSIX
@@ -19,15 +19,15 @@ programming_language:
   - Go >= 1.26.4
 
 
-date_released: 2026-07-09
+date_released: 2026-07-20
 ---
 
 About this software
 ===================
 
-## clasm 0.0.1
+## clasm 0.0.2
 
-First tagged release. Core functionality complete, real-AWS verified: EC2/AMI lifecycle management, tag management, cloud-init inspection, and S3 Backup Archive & Trim across two AWS regions; Key Management (key pairs); S3 domain (buckets, static website hosting, directory sync, object browsing, bulk object/bucket delete, lifecycle policies with local ordering validation). CloudFront and a UI/UX pass (evaluating charmbracelet/huh as a termlib successor) are postponed to a later version.
+Adds EC2 Launch Templates and a new top-level Tag Management domain; every interactive screen is now full-height and live-resizing. Launch Templates: create/show/sync/promote/delete, built directly from cloud-init YAML, with IMDSv2 enforced by default, plus version history and a scrollable version-to-version diff. Tag Management: a 4th top-level domain (alongside Compute, Key Management, and S3) for managing or listing tags across EC2 instances, AMIs, launch templates, key pairs, and S3 buckets from one place, distinct from Compute's existing per-resource tag editor; S3 bucket tagging is a transparent read-modify-write over PutBucketTagging/GetBucketTagging/DeleteBucketTagging. Full-height Menu tier: every huh.Select-based menu (domain picker, Compute/Key Management/S3/Tag Management) now fills and live-resizes to the terminal, matching the Picker/List/Manager tiers. Real-AWS-verified bug fixes found via live usage: a context-cancellation bug that broke launching an instance from a launch template; a launch template version selector that AWS rejected outright when given a "v"-prefixed version number; and a Manage Tags screen where choosing "Show tags" appeared to do nothing because the full-height menu scrolled the tag listing out of view before it could be read. All prior v0.0.1 functionality (EC2/AMI lifecycle management, Key Management, the S3 domain, cloud-init inspection, and Backup Archive & Trim) is unchanged and remains real-AWS verified. CloudFront remains someday/maybe, undesigned-for-now.
 
 ## Authors
 
@@ -38,7 +38,7 @@ First tagged release. Core functionality complete, real-AWS verified: EC2/AMI li
 
 
 
-Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, and S3 backup archives, with support for tag management, cloud-init inspection, and backup archival to S3.
+Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, launch templates, and key pairs, plus S3 buckets and backup archives, with cross-resource tag management, cloud-init inspection, and backup archival to S3.
 
 
 - [Code Repository](https://github.com/caltechlibrary/clasm)

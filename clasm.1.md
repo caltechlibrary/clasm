@@ -1,6 +1,6 @@
-%clasm(1) user manual | version 0.0.1 9c2f61c
+%clasm(1) user manual | version 0.0.2 b2be128
 % R. S. Doiel
-% 2026-07-09
+% 2026-07-20
 
 # NAME
 
@@ -20,11 +20,16 @@ behind this team's Invenio RDM deployments, but nothing in its
 mechanisms (tagging, backup archival, cloud-init inspection) is
 RDM-specific.
 
-Run with no options to launch the interactive menu: it lists current EC2
-instances and owned AMIs, then presents a numbered menu of operations
-(create/start/stop/terminate an instance, create/remove an AMI, manage
-tags, show/export cloud-init, archive stale backups to S3, and refresh
-the listings).
+Run with no options to launch the interactive tool: after authenticating,
+it presents a domain picker -- Compute (EC2 instances, AMIs, and launch
+templates), Key Management (SSH key pairs), S3 (buckets, static website
+hosting, and backup archival), and Tag Management (add/update/remove/
+list tags across any of the above from one place). Each domain has its
+own menu of operations (e.g. Compute: create/start/stop/terminate an
+instance, create/remove an AMI, create/sync/promote/delete a launch
+template, show/export cloud-init) reachable after picking that domain;
+resource listings are shown on request via each domain's own "Show..."
+choice, not dumped automatically at startup.
 
 # OPTIONS
 

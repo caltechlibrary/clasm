@@ -14,20 +14,17 @@
 
 - [ ] When doing the Archive backups, the S3 target bucket should be saved as a default but I'm not sure how this works with the bucket picker approach we have now. This needs to be explored.
 - [x] A top level menu item for managing tags across resources (EC2, AMI, S3, etc)
-  - All five resource types (Instance, AMI, Launch Template, Key Pair, S3 Bucket) done 2026-07-20 -- see PLAN.md Phase 20.30. EC2-backed types confirmed against real AWS; S3 Bucket unit-tested but not yet exercised against real AWS.
+  - All five resource types (Instance, AMI, Launch Template, Key Pair, S3 Bucket) done and confirmed against real AWS 2026-07-20 -- see PLAN.md Phase 20.30.
 - [x] My work group uses launch templates instances for EC2 we need to support managing those (list, show a template, add, update and remove)
 - [x] We need to way to sync a launch template with the updates from a cloud init YAML file
   - The flow is cloud init yaml -> launch template -> EC2 instance
-- [ ] Support for AWS container registry as a copy level menu item
-- [ ] SSMS supports interactions with docker containers running inside an EC2 instance we need to provide manageability for those docker services
-  - [ ] list docker services inside EC2 instance
-  - [ ] image docker service instances inside EC2 instance saving the image in the AWS private container registry or on S3
 - [ ] Need a show instances details, ami details, launch template details
 
 ## Nice to have
 
 - [ ] Be able to list the CloudFront distribution ID for S3 static websites
-- [ ] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
+- [x] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
+  - Color usage is substantially more extensive now that the whole UI runs on huh/lipgloss/bubbletea (2026-07-13 chrome standardization): one shared indigo accent across every field/box border/spinner, plus color-coded instance state (green=running, red=stopped, yellow=pending/stopping) in the List-tier tables. The specific "group menu items by color to show relationship" idea, though, was superseded by a deliberate opposite choice -- DECISIONS.md, "Chrome standardization: one shared indigo accent via lipgloss" -- one uniform accent everywhere, not a different color per domain/group, to keep every screen reading as the same visual language. Checking this off as addressed in spirit (color usage substantially increased, and reads more clearly), not as a literal per-group color scheme.
 - [x] For actions that take more than a few minutes, a spinner that shows progress would be nice
 - [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
 - [ ] Retry-on-launch-failure (general case): instead of bouncing back to
@@ -42,6 +39,17 @@
 
 
 ## Someday/maybe (not on the active roadmap)
+
+- Container management: AWS container registry support as a top-level
+  menu item, plus SSM-based interaction with Docker containers running
+  inside an EC2 instance (list the Docker services on an instance;
+  image a running Docker service and save that image to the private
+  container registry or S3). Moved here from Requested Features
+  2026-07-20 -- no design work done, no committed timeline. The two
+  items are grouped together (not split back into two separate
+  entries) since the Docker-service imaging workflow's own save target
+  is the container registry this would introduce -- picking this back
+  up means designing both together, not the registry alone.
 
 - CloudFront domain (PLAN.md Phase 21): designed in DESIGN.md/PLAN.md,
   no code written yet. Postponed by the user (2026-07-09), then further

@@ -1748,19 +1748,2580 @@ buckets and objects cleaned up afterward – no production bucket was
 touched.</p>
 <p><strong>Dependency:</strong> Phase 18</p>
 <hr />
+<h2
+id="phase-20.1-s3-object-management-interactive-file-manager-huh-bubbletea">Phase
+20.1 — S3 Object Management: Interactive File Manager (huh +
+bubbletea)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-09
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean); not yet verified against
+real AWS — see Phase 22.</strong> This is the “next release focuses on
+improving UX and the UI” work flagged when 0.0.1 shipped (see
+DECISIONS.md, “0.0.1 scope: ship on termlib as-is; postpone CloudFront
+and the UI/UX overhaul”). Numbered 20.1 (inserted after Phase 20 without
+renumbering CloudFront’s Phases 21-22 — same decimal-insertion
+convention already used for Phase 15.1-15.26 and DESIGN.md’s Feature
+21.1) because it revises Phase 20’s S3 domain rather than adding a new
+one.</p>
+<p><strong>Effort:</strong> ~24 hours estimated; actual scope grew
+somewhat during implementation (extracting <code>internal/s3diff</code>
+and adding a dedicated Sync action — see below and DECISIONS.md).
+<strong>Priority:</strong> High <strong>Files (as actually built,
+package boundary resolved during implementation):</strong>
+<code>internal/awsclient/s3.go</code>/<code>logging_s3.go</code> (added
+<code>GetObject</code> + wrapper),
+<code>internal/workflow/s3_menu.go</code> (revised menu),
+<code>internal/workflow/object_browser.go</code> (huh pre-flight, new),
+<code>internal/filemanager/*.go</code> (the <code>bubbletea</code>
+<code>Model</code> — its own package, not folded into
+<code>internal/workflow</code>, since <code>internal/workflow</code> now
+depends on it via <code>object_browser.go</code> and a same-package
+dependency the other way would cycle), <code>internal/s3diff/*.go</code>
+(new — <code>diffSync</code>/<code>walkLocalTree</code>/
+<code>listAllBucketObjects</code>/<code>contentTypeFor</code> extracted
+here, out of the now- deleted <code>bucket_sync.go</code>, so both
+<code>internal/workflow</code> and <code>internal/filemanager</code> can
+depend on the same diff logic without a
+<code>workflow</code>&lt;-&gt;<code>filemanager</code> import cycle),
+<code>internal/workflow/bucket_browse.go</code> (stripped to just
+<code>listBucketObjectsWithPrefix</code>, still needed by Delete
+Bucket’s empty-bucket check) and
+<code>internal/workflow/bucket_delete_objects.go</code> (deleted) and
+<code>internal/workflow/bucket_sync.go</code> (deleted, superseded by
+<code>internal/s3diff</code> + the file manager’s Sync action).</p>
+<p>Implements <code>DESIGN.md</code> Features 21.2-21.8.</p>
+<h3 id="work-items-46">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Add
+<code>s3:GetObject</code> to the <code>S3API</code> interface
+(<code>internal/awsclient/s3.go</code>) — Read/Download has been out of
+scope since Phase 20 (“object content is never downloaded”); this phase
+completes Create/ Update/Read/Delete parity (DECISIONS.md)</label></li>
+<li><label><input type="checkbox" checked="" />Session pre-flight on
+huh: pick bucket + region (<code>huh.Select</code>, reusing Feature 17’s
+fetched listing), then confirm/prompt an optional local directory to
+link (<code>huh.Confirm</code> + <code>huh.Input</code>, reusing
+<code>internal/s3diff.ValidateLocalDirectory</code>)</label></li>
+<li><label><input type="checkbox" checked="" /><code>bubbletea</code>
+<code>Model</code> for the screen itself: single-pane and double-pane
+layouts, header, per-pane status line (item count, tagged count,
+aggregate tagged size, active filter), command line, hotkey legend bar,
+progress/confirm modal overlay (DESIGN.md 21.4)</label></li>
+<li><label><input type="checkbox" checked="" />S3 per-directory-level
+listing via <code>ListObjectsV2</code> with <code>Delimiter=/</code>
+(<code>CommonPrefixes</code> + <code>Contents</code>); local per-level
+listing via <code>os.ReadDir</code>; independent navigation per pane
+(DESIGN.md 21.5)</label></li>
+<li><label><input type="checkbox" checked="" />Tagging
+(<code>Space</code>, <code>*</code>) and per-pane current-level
+substring filter (<code>f</code> / <code>/</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Actions and their confirm
+gates: Upload (<code>u</code>, <code>s3:PutObject</code>, requires a
+linked local directory), Download (<code>d</code>,
+<code>s3:GetObject</code>), Delete (<code>x</code>,
+<code>s3:DeleteObject</code>, <code>ConfirmDestructive</code>), Show
+metadata (<code>m</code>, <code>s3:HeadObject</code>) — plain
+<code>Confirm</code> for Upload/Download, per-item OK/FAIL progress in
+the overlay (DESIGN.md 21.6)</label></li>
+<li><label><input type="checkbox" checked="" />Sync action
+(<code>S</code> / <code>:sync</code>, added during implementation — see
+DECISIONS.md “Add a dedicated Sync action to the file manager”): diffs
+the entire linked directory against the entire bucket
+(<code>internal/s3diff.Compute</code>/<code>WalkLocalTree</code>/<code>ListAllBucketObjects</code>),
+gated by the same never-bundled Confirm-then-ConfirmDestructive
+two-stage flow the retired wizard used — fulfills Decision 2 (“Sync’s
+directory-mirroring workflow is kept as a first-class, directly
+reachable capability”) more literally than manual tag-and-act alone
+would have.</label></li>
+<li><label><input type="checkbox" checked="" />Mid-session link/unlink
+(<code>l</code>): prompt a path, split single-pane into double-pane or
+collapse back, without restarting the screen</label></li>
+<li><label><input type="checkbox" checked="" />Find (<code>F</code> /
+<code>:find &lt;pattern&gt;</code>): recursive glob-on-basename search
+from the focused pane’s current position (Go stdlib
+<code>path/filepath.Match</code>), reusing the same
+<code>filepath.WalkDir</code> traversal locally
+(<code>listLocalRecursive</code>) and an on-demand full
+<code>ListObjectsV2</code> (no <code>Delimiter</code>) on the S3 side
+(<code>listS3Recursive</code>); cancellable, live “Searching… (N
+scanned, M matched)” status; <code>Enter</code> to jump to a match’s
+location, <code>Esc</code> to discard results (DESIGN.md
+21.7)</label></li>
+<li><label><input type="checkbox" checked="" />Colon command line
+(<code>:upload</code>, <code>:download</code>, <code>:delete</code>,
+<code>:metadata</code>, <code>:find &lt;pattern&gt;</code>,
+<code>:link &lt;path&gt;</code>, <code>:sync</code>, <code>:quit</code>)
+dispatching to the same action handlers the hotkeys use — not a second,
+parallel implementation of each action</label></li>
+<li><label><input type="checkbox" checked="" />Revise
+<code>s3_menu.go</code>: removed “Sync Local Directory to Bucket,”
+“Browse/Manage Objects,” and the standalone bulk-delete-by-prefix entry;
+added one “Browse &amp; Manage Objects” entry point (DESIGN.md
+21.2)</label></li>
+<li><label><input type="checkbox" checked="" />Retired
+<code>bucket_browse.go</code>’s single-object wizard and
+<code>bucket_delete_objects.go</code>’s prefix-delete wizard now that
+the new screen covers their cases; <code>bucket_sync.go</code>’s wizard
+is also retired (its diff/walk/list helpers moved to
+<code>internal/s3diff</code>, reused by the new screen’s Sync action
+rather than duplicated — see DECISIONS.md for why a plan-time assumption
+that these helpers would simply stay put in
+<code>internal/workflow</code> turned out not to fit Go’s import-cycle
+constraints once <code>object_browser.go</code> needed to call into
+<code>internal/filemanager</code>)</label></li>
+<li><label><input type="checkbox" />Still open, not resolved by this
+phase: whether to batch deletes via <code>s3:DeleteObjects</code> (up to
+1000 keys/call) instead of the current
+one-<code>DeleteObject</code>-per-key loop, now in
+<code>internal/filemanager</code>’s Delete/Sync actions (see TODO.md,
+“nice to have”)</label></li>
+</ul>
+<p><strong>Tests:</strong> resolved —
+<code>github.com/charmbracelet/x/exp/teatest</code> is real and usable
+(confirmed against actual source, per this project’s evaluation
+discipline): <code>teatest.NewTestModel</code> runs the
+<code>Model</code> as a real <code>bubbletea.Program</code> against an
+in-memory terminal, <code>.Send</code> injects key messages, and
+<code>teatest.WaitFor</code> polls rendered output. One practical caveat
+learned while writing these tests: bubbletea’s renderer only retransmits
+screen lines that changed since the last frame, so asserting on
+unchanged-but-still-visible text across two separate
+<code>WaitFor</code> calls can race (the earlier call already drained
+the frame that contained it) — check multiple substrings in one
+<code>WaitFor</code> condition, or assert on the status line’s derived
+text instead of raw row content, when that matters.
+<code>go test -race</code> caught one genuine bug this surfaced: a
+running action’s background goroutine (<code>runDelete</code>) was
+mutating pane state (<code>clearTags</code>) directly instead of only
+sending progress text over its channel, racing with the render loop’s
+concurrent read — fixed by moving that mutation to the overlay-dismiss
+handler, which runs on Update’s single goroutine. Diff/glob/listing
+helpers are tested as plain Go functions independent of the
+<code>Model</code> (<code>internal/s3diff</code>,
+<code>internal/filemanager/entry_test.go</code>,
+<code>listing_test.go</code>, <code>pane_test.go</code>).</p>
+<p><strong>Dependency:</strong> Phase 20 (done)</p>
+<hr />
+<h2 id="phase-20.2-s3-menu-convert-runs3menu-to-huh.select-done">Phase
+20.2 — S3 Menu: Convert RunS3Menu to huh.Select (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean). Continues
+<code>continue_next_time.txt</code>’s next-up item from the Phase 20.1
+session: “replace the S3 management menu and display of buckets with the
+huh module” — this phase covers the menu half; bucket-selection call
+sites are Phase 20.4 (below).</p>
+<p><strong>Files:</strong> <code>internal/workflow/s3_menu.go</code>,
+<code>s3_menu_test.go</code>, <code>huh_accessible_test.go</code> (new —
+reusable pipe-testable-input helper).</p>
+<h3 id="work-items-47">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Resolve whether huh
+fields are pipe-testable at all before writing more untested huh code
+(see DECISIONS.md, “huh fields are pipe-testable via
+WithAccessible(true).WithInput/WithOutput”) — caught and fixed a real
+starvation bug in the first pass (<code>strings.NewReader</code>-backed
+input silently drops every field after the first); fixed with a
+one-line-per-<code>Read</code> reader
+(<code>newHuhAccessibleInput</code>/<code>lineAtATimeReader</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Convert
+<code>RunS3Menu</code>’s picker from <code>ui.PickList</code> to
+<code>huh.Select</code>, selecting by index into
+<code>s3MenuItems</code> (not by <code>s3Item</code> itself —
+<code>huh.Select[T]</code> requires <code>T comparable</code>, and
+<code>s3Item.action</code> is a func)</label></li>
+<li><label><input type="checkbox" checked="" />Map
+<code>huh.ErrUserAborted</code> to <code>ErrBackToDomainPicker</code>
+(abort now backs up one level, matching “Back to domain picker,” instead
+of exiting the whole program) — covered by a standalone unit test
+(<code>mapS3MenuPickerErr</code>) since accessible mode can’t itself
+produce that error to drive an end-to-end test with</label></li>
+<li><label><input type="checkbox" checked="" />Rewrite
+<code>s3_menu_test.go</code> against the new <code>runS3Menu</code>
+(unexported, takes injectable input/output); retired
+<code>TestRunS3Menu_CleanExitOnCancelledPickList</code> (tested a
+<code>PickList</code>-only “0=Cancel” affordance that no longer
+exists)</label></li>
+</ul>
+<p><strong>Tests:</strong> all existing dispatch/refresh/error-handling
+coverage carried over unchanged (same input strings — huh’s
+accessible-mode 1-indexed numbering happens to match
+<code>s3MenuItems</code>’ order); new
+<code>TestMapS3MenuPickerErr</code> for the abort mapping.</p>
+<p><strong>Dependency:</strong> Phase 20.1 (done, established the huh
+call-site pattern); the pipe-testability resolution above (done, same
+session).</p>
+<hr />
+<h2
+id="phase-20.3-s3-domain-paged-accessible-resource-list-display-superseded">Phase
+20.3 — S3 Domain: Paged, Accessible Resource List Display
+(superseded)</h2>
+<p><strong>Superseded 2026-07-10, same day, by Phase 20.6
+below.</strong> Screen-reader/accessible-mode compatibility – this
+phase’s central constraint – turned out not to be an actual requirement
+once discussed directly (DECISIONS.md, “Deprecate termlib; standardize
+on huh/ bubbletea before 0.0.2”).
+<code>internal/ui.PagedTable</code>/<code>DisplayBuckets</code>,
+implemented below, are retired in favor of a
+<code>bubbletea</code>-based List-tier component built on a new shared
+<code>internal/tui</code> chrome package (Phase 20.5), less than a day
+after landing. Left below as the accurate record of what was implemented
+and why it changed, not deleted.</p>
+<p><strong>Status (as originally completed): implemented and unit-tested
+2026-07-10</strong> (<code>go build ./...</code>,
+<code>go vet ./...</code>, <code>go test ./... -race</code> all clean).
+Exposed by testing Phase 20.2: every successful S3 menu action called
+<code>actions.Refresh(ctx)</code>, which both re-fetched bucket data and
+printed the <em>entire</em> bucket table
+(<code>ui.DisplayBuckets</code>) unconditionally — cluttering the menu’s
+redisplay after every action, with no pagination for a large bucket
+count. Full design, mockup (approved before implementation started), and
+rejected alternatives: DESIGN.md, “S3 Resource List Display — Paged,
+Accessible- Compatible”; decision record: DECISIONS.md, “Decouple the S3
+menu from resource-list display; add a generic paged table to
+internal/ui”.</p>
+<p><strong>Priority:</strong> requested directly by the user, ahead of
+Phase 20.4. <strong>Files:</strong>
+<code>internal/ui/paged_table.go</code> (new, generic — not
+bucket-specific), <code>paged_table_test.go</code> (new),
+<code>internal/ui/display.go</code> (<code>DisplayBuckets</code> now
+takes <code>le</code> and returns <code>error</code>, delegates to
+<code>PagedTable</code>), <code>display_test.go</code>,
+<code>internal/workflow/s3_menu.go</code>
+(<code>S3Actions.ShowResourceLists</code>, new field; “Show resource
+lists” entry now dispatches to it instead of <code>Refresh</code>),
+<code>s3_menu_test.go</code>, <code>cmd/clasm/main.go</code>
+(<code>refreshS3</code> now silent-refetch-only;
+<code>showS3ResourceLists</code>, new closure, wired to
+<code>ShowResourceLists</code>).</p>
+<h3 id="work-items-48">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui.PagedTable</code>: a generic pager
+(<code>Title</code> callback + pre-rendered
+<code>Header</code>/<code>Rows</code> strings in,
+<code>n</code>/<code>p</code>/<code>q</code> command loop via
+<code>le.Prompt</code>) — deliberately decoupled from any specific
+resource type, so Compute/Key Management’s
+<code>DisplayInstances</code>/
+<code>DisplayImages</code>/<code>DisplayKeyPairs</code> can reuse it
+later without a redesign, per the user’s framing (“we’ll reuse this UI
+approach as needed migrating to huh for other parts of clasm”); not
+converting those other domains now. Written test-first:
+<code>paged_table_test.go</code> landed before
+<code>paged_table.go</code>.</label></li>
+<li><label><input type="checkbox" checked="" />Built the S3 buckets
+header/row strings for <code>PagedTable</code> reusing
+<code>DisplayBuckets</code>’s existing
+<code>PadRight</code>/<code>Truncate</code> column formatting — only the
+print-loop changed, not the column layout.
+<code>bucketsPageSize = 20</code> (smaller than <code>PickList</code>’s
+50 – a wide multi-column table affords fewer rows per screen than a
+single-column label list).</label></li>
+<li><label><input type="checkbox" checked="" />Split
+<code>cmd/clasm/main.go</code>‘s <code>refreshS3</code>: data re-fetch
+stays unconditional (still called on S3 domain entry and after every S3
+action, via <code>S3Actions.Refresh</code>, so bucket-selection prompts
+elsewhere stay current); <code>showS3ResourceLists</code> is a separate
+closure, wired only to the new <code>S3Actions.ShowResourceLists</code>
+field, which <code>s3MenuItems</code>’ “Show resource lists” entry calls
+instead of <code>Refresh</code>.</label></li>
+<li><label><input type="checkbox" checked="" /><code>q</code> (quit)
+returns to the S3 menu without printing anything further;
+<code>n</code>/<code>p</code> no-op at the first/last page, matching
+<code>PickList</code>’s existing boundary behavior. Commands are
+case-insensitive; unrecognized input reprints an “invalid command”
+message and redisplays the current page (mirrors <code>PickList</code>’s
+own reprompt-on-invalid convention).</label></li>
+<li><label><input type="checkbox" checked="" />Compute/Key Management’s
+own “Show resource lists” listings are explicitly NOT touched by this
+phase.</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>internal/ui/paged_table_test.go</code>
+(11 cases: single/multi page, next/previous navigation and their
+at-boundary no-ops, page-back, invalid-command reprompt,
+case-insensitive commands, empty rows, and read-error propagation — each
+via <code>Title</code>’s recorded call args, not string-scraping
+banners); <code>internal/ui/display_test.go</code>
+(<code>DisplayBuckets</code> empty/populated/paginates-large-lists);
+<code>internal/workflow/s3_menu_test.go</code> (new
+<code>TestRunS3Menu_ShowResourceListsDispatchesToItsOwnAction</code>,
+since no prior test exercised choosing menu item 1 at all). No new
+testability question — <code>PagedTable</code> is plain
+<code>termlib</code>/<code>LineEditor.Prompt</code> sequential printing
+(no <code>huh</code>), pipe-testable the same way
+<code>PickList</code>’s existing tests already are, reusing this
+package’s own <code>newPipeEditor</code> helper.</p>
+<p><strong>Dependency:</strong> Phase 20.2 (done — this phase was found
+while testing it, not a prerequisite of its design).</p>
+<hr />
+<h2 id="phase-20.4-s3-bucket-selection-convert-to-tui.picker-done">Phase
+20.4 — S3 Bucket Selection: Convert to tui.Picker (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+Originally scoped to convert to <code>huh.Select</code>
+(<code>continue_next_time.txt</code>‘s remaining next-up item from Phase
+20.1’s session); retargeted before any code was written once the user
+pointed out <code>huh.Select</code>’s rendering doesn’t match the
+List/Manager tiers’ chrome (“this UI should feel the same whether I
+select a bucket, an AMI or an EC2 instance”) — see DECISIONS.md, “Add a
+Picker tier: resource selection gets its own internal/tui component, not
+huh.Select,” and DESIGN.md’s “Picker tier” section (with the full map of
+every current resource-selection call site across the app).</p>
+<p>Converted the bucket-selection step inside
+<code>ConfigureBucketWebsite</code> (<code>bucket_website.go</code>),
+<code>ManageBucketLifecyclePolicies</code>
+(<code>bucket_lifecycle.go</code>), and <code>DeleteBucket</code>
+(<code>bucket_delete.go</code>) — previously
+<code>ui.PickList(t, le, buckets, bucketLabel, "Select a bucket")</code>
+— to a shared <code>pickBucket</code> helper
+(<code>bucket_website.go</code>, next to <code>bucketLabel</code>) built
+on <code>tui.RunPicker</code>. <code>CreateBucket</code> stayed out of
+scope (it creates a new bucket, not select an existing one); the rest of
+each workflow stays on termlib. <code>object_browser.go</code>’s
+existing <code>huh.Select</code>-based bucket pre-flight was NOT touched
+by this phase — whether it should also move to <code>PickerModel</code>
+is a separate question, not decided here.</p>
+<p><strong>Testable-core split, since <code>tui.RunPicker</code> runs a
+real bubbletea Program that can’t be driven by a test’s pipe
+input</strong> (mirrors the
+<code>RunS3Menu</code>/<code>runS3Menu</code> split from Phase 20.2):
+each of the three exported functions now does the picker call, then
+delegates to an unexported core taking the already-resolved
+<code>bucket</code> directly (<code>configureBucketWebsite</code>,
+<code>manageBucketLifecyclePolicies</code>, <code>deleteBucket</code>).
+Every existing test for “pick a bucket, then do X” was rewritten to call
+the unexported core with a bucket value instead of driving a
+<code>ui.PickList</code>-shaped <code>"1\n"</code> pipe input; each
+function’s own “cancel while picking a bucket” test
+(<code>TestConfigureBucketWebsite_ CancellationAbortsCleanly</code>,
+<code>TestManageBucketLifecyclePolicies_ CancellationAtBucketPick</code>,
+and <code>DeleteBucket</code>’s equivalent) was retired — that tested
+<code>ui.PickList</code>’s “0=Cancel” numbered-option convention, which
+no longer exists once selection is <code>tui.RunPicker</code>-based. The
+picker-selection step itself is covered only by manual/interactive
+verification going forward, the same accepted limitation
+<code>object_browser.go</code>’s huh-based bucket pre-flight already
+has. <code>cancelledIsNil</code> (<code>manage_tags.go</code>) now also
+recognizes <code>tui.ErrCancelled</code> alongside
+<code>ui.ErrCancelled</code>, so cancelling either kind of picker
+behaves identically from the operator’s point of view.</p>
+<p><strong>Dependency:</strong> Phase 20.8
+(<code>internal/tui.PickerModel</code> itself, done).</p>
+<hr />
+<h2
+id="phase-20.5-internaltui-shared-chrome-package-extracted-from-the-file-manager-done">Phase
+20.5 — internal/tui: Shared Chrome Package (extracted from the file
+manager) (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean). First piece of DESIGN.md’s
+“Terminal UI Architecture: Menus, Actions, Lists, and Managers”;
+decision record: DECISIONS.md, “Terminal UI architecture: menu →
+action/list/manager taxonomy; shared internal/tui chrome package.”</p>
+<p><strong>Files:</strong> new <code>internal/tui</code> package
+(<code>box.go</code>, <code>scroll.go</code>, <code>style.go</code> +
+their <code>_test.go</code> files, written test-first);
+<code>internal/filemanager/view.go</code> (box-drawing/scroll/style
+helpers removed, replaced with calls into <code>internal/tui</code>);
+<code>internal/filemanager/box_test.go</code>/<code>scroll_test.go</code>
+(moved tests removed, remaining Model-level tests updated to call
+<code>tui.RuneLen</code> instead of the now-moved
+<code>stripANSI</code>).</p>
+<h3 id="work-items-49">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Moved
+<code>topBorder</code>→<code>TopBorder</code>,
+<code>bottomBorder</code>→<code>BottomBorder</code>,
+<code>divider</code>→<code>Divider</code>,
+<code>splitDivider</code>→<code>SplitDivider</code>,
+<code>mergeDivider</code>→<code>MergeDivider</code>,
+<code>boxLine</code>→<code>BoxLine</code>,
+<code>boxRow2</code>→<code>BoxRow2</code>,
+<code>padOrTruncate</code>→<code>PadOrTruncate</code>,
+<code>runeLen</code>→<code>RuneLen</code>,
+<code>stripANSI</code>→<code>StripANSI</code>,
+<code>scrollWindow</code>→ <code>ScrollWindow</code>,
+<code>styleRow</code>→<code>StyleRow</code> from
+<code>internal/filemanager/view.go</code> into
+<code>internal/tui</code>, exported (capitalized) since they’re now a
+separate package’s public API;
+<code>truncateVisible</code>/<code>reverseVideo</code>/<code>bold</code>/the
+<code>ansi*</code> constants stay unexported within
+<code>internal/tui</code> (only used internally, by
+<code>PadOrTruncate</code>/<code>StyleRow</code> respectively) —
+confirmed no other caller needed them exported. <code>splitWidths</code>
+(the double-pane column-split math) stayed in
+<code>internal/filemanager</code> — it’s specific to that package’s
+two-pane layout, not generic chrome.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/filemanager</code> imports
+<code>internal/tui</code> for all of the above instead of keeping its
+own copy</label></li>
+<li><label><input type="checkbox" checked="" />No behavior change:
+<code>internal/filemanager</code>‘s existing test suite continues to
+pass unmodified in assertions (only the two Model-level width-check
+tests’ direct <code>stripANSI</code> calls were updated to
+<code>tui.RuneLen</code>, since <code>stripANSI</code> itself moved and
+is now unexported in its new package)</label></li>
+</ul>
+<p><strong>Tests:</strong>
+<code>internal/tui/box_test.go</code>/<code>scroll_test.go</code>/<code>style_test.go</code>
+(20 cases total, several new beyond what
+<code>internal/filemanager</code> already had indirectly — direct
+coverage for <code>TopBorder</code>/<code>BottomBorder</code>/
+<code>Divider</code>/<code>SplitDivider</code>/<code>MergeDivider</code>/<code>BoxLine</code>,
+which previously only had indirect coverage via
+<code>filemanager.Model.View()</code>’s tests), written before
+<code>box.go</code>/<code>scroll.go</code>/<code>style.go</code>
+existed. <code>internal/filemanager</code>’s existing test suite
+(unchanged assertions,
+<code>box_test.go</code>/<code>scroll_test.go</code> trimmed to their
+Model-level cases) is the regression check that the extraction was
+behavior-preserving.</p>
+<p><strong>Dependency:</strong> none (pure refactor, no new external
+dependency).</p>
+<hr />
+<h2
+id="phase-20.6-s3-domain-list-viewer-bubbletea-component-replaces-pagedtable-done">Phase
+20.6 — S3 Domain: List Viewer bubbletea Component (replaces PagedTable)
+(done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean). Replaces Phase 20.3
+(superseded, above). Full design: DESIGN.md, “Terminal UI
+Architecture…,” “List tier” section; decision record: DECISIONS.md,
+“Terminal UI architecture…”.</p>
+<p><strong>Files:</strong> <code>internal/tui/listview.go</code> (new:
+<code>ListViewConfig</code>, <code>ListViewModel</code>,
+<code>NewListViewModel</code>, <code>RunListView</code>) +
+<code>listview_test.go</code> (new, written test-first);
+<code>internal/ui/display.go</code> (<code>DisplayBuckets</code>
+rewritten around <code>tui.RunListView</code>;
+<code>bucketListViewConfig</code> extracted as its testable core);
+<code>internal/ui/paged_table.go</code>/<code>paged_table_test.go</code>
+(removed); <code>cmd/clasm/main.go</code>
+(<code>showS3ResourceLists</code> now calls
+<code>ui.DisplayBuckets(ctx, s3State.buckets)</code> — no
+<code>term</code>/<code>le</code> needed, <code>huh</code>/
+<code>termlib</code> aren’t involved at all). The “List S3 Buckets”
+rename and dropping “Back to domain picker” are Phase 20.7, not this
+phase — this phase only replaces the <em>rendering mechanism</em> behind
+“Show resource lists,” not its label or the surrounding menu.</p>
+<h3 id="work-items-50">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />A single bordered box (no
+split panes), frozen header row, scrollable body reusing
+<code>internal/tui</code>’s shared <code>ScrollWindow</code> logic
+(Phase 20.5)</label></li>
+<li><label><input type="checkbox" checked="" />Sized to the real
+terminal via <code>tea.WindowSizeMsg</code> (sent once at start, again
+on every resize except Windows/no-SIGWINCH — an initial size still
+arrives there); falls back to
+<code>defaultListViewWidth</code>/<code>Height</code> before the first
+one lands</label></li>
+<li><label><input type="checkbox" checked="" />A real legend bar at the
+bottom (“↑/↓,k/j scroll q Quit”) — this tier fully owns its rendering,
+unlike the menu tier</label></li>
+<li><label><input type="checkbox" checked="" />Renders inline, no
+<code>tea.WithAltScreen</code>, matching every other screen in this
+app</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>q</code>/<code>ctrl+c</code> quits
+<code>RunListView</code> with a nil error, which
+<code>DisplayBuckets</code>/<code>ShowResourceLists</code> simply
+propagate — <code>runS3Menu</code> treats that the same as any other
+successful action, continuing its own loop back to the S3 menu. No
+<code>ErrBackToDomainPicker</code> special-casing needed; returning to
+the right screen falls out of the existing dispatch structure by
+construction.</label></li>
+<li><label><input type="checkbox" checked="" />Reuses
+<code>DisplayBuckets</code>’s existing bucket-row formatting
+(<code>PadRight</code>/<code>Truncate</code> column layout), now
+isolated in <code>bucketListViewConfig</code> — only the rendering
+mechanism changed, not the column layout</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>internal/tui/listview_test.go</code> (9
+cases). A real rendering lesson surfaced while writing them, worth
+keeping in mind for any future <code>internal/tui</code> component: when
+rendered content height <em>exactly</em> matches the declared terminal
+height (this component’s own “fill the screen” design, by construction —
+<code>windowHeight = height - chrome</code>), driving it through a real
+<code>teatest.NewTestModel</code> Program can lose its own top line to
+the emulated terminal’s scrolling, a known class of issue with inline
+(non-<code>tea.WithAltScreen</code>) bubbletea rendering, not a bug in
+this component specifically. <code>internal/filemanager</code>’s own
+test suite already sidesteps this the same way:
+exact-height/scroll-window assertions
+(<code>TestModel_LargeListing_*</code>) drive <code>Model</code>
+directly (set <code>width</code>/<code>height</code>, call
+<code>Update</code>/<code>View()</code> synchronously) rather than
+through <code>teatest</code>, reserving <code>teatest</code> for
+key-driven behavior with content comfortably smaller than the terminal.
+This phase’s tests follow the same split.</p>
+<p><strong>Dependency:</strong> Phase 20.5 (done — the shared chrome
+it’s built on).</p>
+<p><strong>Dependency:</strong> Phase 20.5 (the shared chrome it’s built
+on).</p>
+<hr />
+<h2
+id="phase-20.7-s3-menu-universal-q-quit-key-remove-back-to-domain-picker-rename-show-resource-lists-done">Phase
+20.7 — S3 Menu: universal ‘q’ quit key; remove “Back to domain picker”;
+rename “Show resource lists” (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean). Applies DECISIONS.md’s “TUI
+keybinding conventions” to the one menu converted so far.</p>
+<p><strong>Files:</strong> <code>internal/workflow/s3_menu.go</code>,
+<code>s3_menu_test.go</code>.</p>
+<h3 id="work-items-51">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>RunS3Menu</code>’s
+<code>huh.Select</code> gains <code>q</code> as an additional
+<code>Quit</code> trigger (<code>Form.WithKeyMap</code>,
+<code>KeyMap.Quit</code> gains <code>"q"</code> alongside the default
+<code>"ctrl+c"</code> via
+<code>key.NewBinding(key.WithKeys("ctrl+c",     "q"))</code>) — resolves
+through the already-existing
+<code>mapS3MenuPickerErr</code>/<code>ErrUserAborted</code>→<code>ErrBackToDomainPicker</code>
+path; no new dispatch logic</label></li>
+<li><label><input type="checkbox" checked="" />A short static hint line
+(<code>"(q to go back)"</code>) printed via the existing
+<code>t.Println</code>/<code>t.Refresh()</code> above the menu on every
+redisplay (huh’s own footer can’t show a custom “q: quit” entry — see
+DECISIONS.md for why)</label></li>
+<li><label><input type="checkbox" checked="" />Removed “Back to domain
+picker” from <code>s3MenuItems</code> (redundant with <code>q</code>);
+removed the now-dead <code>choice.action == nil</code> branch in
+<code>runS3Menu</code> (<code>s3Item.action</code> is never nil
+anymore)</label></li>
+<li><label><input type="checkbox" checked="" />Relabeled “Show resource
+lists” → “List S3 Buckets” (label only;
+<code>S3Actions.ShowResourceLists</code> and other Go identifiers are
+unchanged)</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>s3_menu_test.go</code> rewritten around
+a <code>context.WithCancel</code> +
+cancel-from-within-the-test-action-closure pattern for every test that
+previously chose “Back to domain picker” (item 7) to end the loop after
+observing one dispatch — that menu item no longer exists, and accessible
+mode has no way to simulate the <code>q</code>/ctrl+c abort that
+replaces it (same limitation <code>mapS3MenuPickerErr</code> already
+documented). New <code>TestS3MenuItems_NoBackToDomainPickerEntry</code>
+(exactly 6 items, no nil action) and
+<code>TestS3MenuItems_FirstItemIsListS3Buckets</code> guard the removal/
+rename directly. The <code>q</code>-triggers-Quit behavior itself can
+only be confirmed by real interactive use — not yet done, same class of
+gap as this session’s other <code>huh</code>/<code>bubbletea</code>
+work.</p>
+<p><strong>Dependency:</strong> Phase 20.2 (the menu this applies
+to).</p>
+<hr />
+<h2
+id="phase-20.8-internaltui-pickermodel-selectable-filterable-list-tier-component-done">Phase
+20.8 — internal/tui: PickerModel (selectable, filterable List-tier
+component) (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean). Full
+design: DESIGN.md, “Terminal UI Architecture…,” “Picker tier” section;
+decision record: DECISIONS.md, “Add a Picker tier: resource selection
+gets its own internal/tui component, not huh.Select.”</p>
+<p><strong>Files:</strong> <code>internal/tui/picker.go</code>
+(<code>PickerConfig</code>, <code>PickerModel</code>,
+<code>NewPickerModel</code>, <code>RunPicker</code>,
+<code>ErrCancelled</code>) + <code>picker_test.go</code> (12 cases,
+written test-first).</p>
+<h3 id="work-items-52">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Same chrome as
+<code>ListViewModel</code>
+(<code>TopBorder</code>/<code>BoxLine</code>/<code>Divider</code>/
+<code>ScrollWindow</code>/<code>StyleRow</code>/<code>BottomBorder</code>),
+same real <code>tea.WindowSizeMsg</code> sizing, same inline (no
+altscreen) rendering, same legend-bar convention</label></li>
+<li><label><input type="checkbox" checked="" /><code>Enter</code>
+selects the row under the cursor and returns its index;
+<code>q</code>/<code>ctrl+c</code> cancels, reported as the new
+<code>tui.ErrCancelled</code> (mirrors <code>ui.PickList</code>’s
+<code>ErrCancelled</code> and huh’s <code>ErrUserAborted</code>, so
+callers use the same
+<code>if err != nil { return     cancelledIsNil(...) }</code> shape as
+every other pick-list-shaped call site)</label></li>
+<li><label><input type="checkbox" checked="" /><code>/</code> enters
+filter-typing mode (not always-on type-ahead —
+<code>j</code>/<code>k</code> stay unambiguous navigation keys outside
+of filter mode), narrows visible rows by case-insensitive substring
+match against each row’s rendered text (mirroring
+<code>ui.PickList</code>’s <code>filterByLabel</code> convention and
+<code>internal/filemanager</code>’s pane filter), <code>Esc</code>
+clears the filter. Deliberately does not special-case
+<code>q</code>/ctrl+c while filtering (every key is literal text),
+matching <code>internal/filemanager</code>’s own
+<code>handleCommandLineKey</code> precedent.</label></li>
+<li><label><input type="checkbox" checked="" />Returns an index into the
+caller’s original row slice, not a typed value —
+<code>internal/tui</code> doesn’t need generics; callers map the index
+back into their own typed slice (<code>buckets[idx]</code>, …), the same
+pattern <code>pickS3MenuItem</code> already uses for
+<code>s3MenuItems</code></label></li>
+</ul>
+<p><strong>A real rendering finding, beyond what Phase 20.6 already
+documented:</strong> the content area’s rendered height must be pinned
+to the <em>unfiltered</em> row count (bounded by the window height), not
+however many rows the current filter happens to match — otherwise the
+box’s height shrinks and grows as the operator types a filter, which
+reproduced the same class of inline-bubbletea-rendering hiccup Phase
+20.6 found with exact/changing frame heights (confirmed by a failing
+test before this fix, not just reasoned about). Fixed by padding the
+content area with blank rows up to a stable height determined by the
+total dataset size — incidentally also better UX (a fixed-height results
+viewport while typing a filter, <code>fzf</code>-style, rather than the
+box visibly resizing).</p>
+<p><strong>Tests:</strong> written before the implementation, following
+<code>listview_test.go</code>’s established split (<code>teatest</code>
+for key-driven behavior with content comfortably smaller than the
+terminal, direct <code>Model</code>-driving for exact
+scroll-window/height assertions). Two <code>teatest</code>-based filter
+tests initially failed for a second, distinct reason: bubbletea only
+retransmits screen lines that changed since the <em>immediately
+preceding</em> frame, so checking for the same text across two separate
+<code>WaitFor</code> calls (one already having drained it from the
+stream) can race if a later frame doesn’t happen to change that
+particular line again — fixed by combining assertions into single
+<code>WaitFor</code> calls, exactly the workaround
+<code>internal/filemanager</code>’s own tests already document for this
+same class of issue.</p>
+<p><strong>Dependency:</strong> Phase 20.5 (the shared chrome it’s built
+on).</p>
+<hr />
+<h2
+id="phase-20.9-lifecycle-rules-action-menu-convert-to-huh.select-done">Phase
+20.9 — Lifecycle Rules Action Menu: Convert to huh.Select (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+Requested directly by the user after manually trying the S3 domain
+(Phase 20.7’s <code>q</code> key took a moment to render the first time,
+prompting a live check): convert
+<code>ManageBucketLifecyclePolicies</code>’s “Choose an action” menu
+(Add rule/Edit rule/Remove rule/View rule details) from
+<code>ui.PickList</code> to <code>huh.Select</code>, matching
+<code>RunS3Menu</code>’s Phase 20.2/20.7 pattern exactly — this is a
+guide-menu-shaped choice (a small, fixed action set), not a Picker-tier
+candidate (DESIGN.md’s “Picker tier” map already excluded it for this
+reason).</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/bucket_lifecycle.go</code>
+(<code>pickLifecycleAction</code>, new;
+<code>lifecycleActionLabel</code> removed, no longer needed),
+<code>bucket_lifecycle_test.go</code> (all 15 tests updated).</p>
+<h3 id="work-items-53">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>pickLifecycleAction</code>:
+<code>huh.Select[string]</code> over <code>lifecycleActions</code>
+(already comparable strings, no index-based workaround needed, unlike
+Phase 20.2’s <code>s3MenuItems</code>), <code>q</code> bound alongside
+<code>ctrl+c</code> on <code>Quit</code>, input/output nil in
+production, supplied by tests for the accessible-mode pipe path (same
+shape as <code>pickS3MenuItem</code>)</label></li>
+<li><label><input type="checkbox" checked="" />“Back” removed from
+<code>lifecycleActions</code>; the loop’s <code>switch</code> statement
+is exhaustive over the remaining 4 actions, no <code>default</code>
+fallback needed</label></li>
+<li><label><input type="checkbox" checked="" />A <code>ctx.Err()</code>
+check added at the top of <code>manageBucketLifecyclePolicies</code>’s
+loop (previously missing, unlike
+<code>RunS3Menu</code>/<code>RunMainMenu</code>/<code>RunKeyMgmtMenu</code>’s
+loops) — needed for test termination via context-cancellation, and
+closes a pre-existing small gap in this loop’s own
+convention</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>"(q to go back)"</code> hint printed above the action
+menu, matching <code>RunS3Menu</code>’s convention (huh’s own footer
+can’t show it)</label></li>
+<li><label><input type="checkbox" checked="" />Abort maps through
+<code>huhCancelledIsNil</code> (clean nil return, no “Cancelled.”
+message) — treated as equivalent to the old “Back” choice, not to
+<code>ui.PickList</code>’s “0=Cancel” (which does print “Cancelled.” via
+<code>cancelledIsNil</code>); this action menu is a menu, not an
+in-progress action, per the “quit vs. cancel” wording
+convention</label></li>
+</ul>
+<p><strong>Tests:</strong> action-menu selections now feed through a
+separate <code>newHuhAccessibleInput</code> reader, not <code>le</code>
+(which still feeds every other prompt in this function —
+rule/storage-class <code>PickList</code>s, confirms, day-count/ID input,
+unaffected by this phase). Several tests that used to select “Back”
+(position 5) to end the loop cleanly were restructured around real
+terminating actions instead, since that position no longer exists and
+the <code>q</code>/ctrl+c abort that replaces it can’t be simulated in
+accessible mode (same limitation <code>mapS3MenuPickerErr</code> already
+documents) — e.g. choosing “Edit rule”/“View rule details” with zero
+rules present returns immediately by construction, which several tests
+already relied on incidentally and now rely on deliberately.
+<code>TestManageBucketLifecyclePolicies_BackActionSkipsPut</code>
+(tested the “Back” choice specifically) was retired, matching the
+precedent set by
+<code>TestRunS3Menu_BackToDomainPickerDoesNotRefresh</code> in Phase
+20.2.</p>
+<p><strong>Dependency:</strong> Phase 20.2 (established the pattern this
+reuses).</p>
+<hr />
+<h2 id="phase-20.10-menu-tier-top-level-navigation-menus-done">Phase
+20.10 — Menu Tier: Top-Level Navigation Menus (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+First batch of DESIGN.md’s Menu-tier punch list, working through it in
+the order the user requested (menu tier, then picker, then list).
+Converts the three top-level navigation menus from
+<code>ui.PickList</code> to <code>huh.Select</code>, each an exact copy
+of <code>RunS3Menu</code>’s Phase 20.2/20.7 pattern: select by index
+(each item’s <code>action</code> is a func, not comparable),
+<code>q</code> bound alongside <code>ctrl+c</code> on <code>Quit</code>,
+a printed hint above the menu, the redundant “Back”/“Exit” menu item
+dropped.</p>
+<p><strong>Files:</strong>
+<code>domain_menu.go</code>/<code>domain_menu_test.go</code>,
+<code>menu.go</code>/ <code>menu_test.go</code>,
+<code>keymgmt_menu.go</code>/<code>keymgmt_menu_test.go</code>.</p>
+<h3 id="work-items-54">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Domain picker
+(<code>domain_menu.go</code>, <code>pickDomainItem</code>): drops “Exit”
+(not “Back” – this is the root menu, so <code>q</code> here means exit
+the whole program, matching what “Exit” used to do); hint text is
+<code>"(q to exit)"</code>, not
+<code>"(q to go back)"</code></label></li>
+<li><label><input type="checkbox" checked="" />Compute main menu
+(<code>menu.go</code>, <code>pickMainMenuItem</code>): drops “Back to
+domain picker”</label></li>
+<li><label><input type="checkbox" checked="" />Key Management menu
+(<code>keymgmt_menu.go</code>, <code>pickKeyMgmtItem</code>): drops
+“Back to domain picker”</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>mapS3MenuPickerErr</code> generalized to
+<code>mapMenuPickerErr</code> and moved to <code>domain_menu.go</code>
+(next to <code>ErrBackToDomainPicker</code>, its own natural home) –
+shared across all <code>huh</code>-converted domain menus instead of
+duplicated per file</label></li>
+</ul>
+<p><strong>Tests:</strong> every test that used to select “Back”/“Exit”
+(by position) to end a menu loop was rewritten around the
+<code>context.WithCancel</code> +
+cancel-from-within-the-test-action-closure pattern established in Phase
+20.7 (<code>cancelingAction</code>, shared from
+<code>s3_menu_test.go</code> rather than redefined per file); tests for
+the removed-item’s own specific behavior
+(<code>TestRunMainMenu_BackToDomainPickerDoesNotRefresh</code>,
+<code>TestRunKeyMgmtMenu_BackToDomainPickerDoesNotRefresh</code>,
+<code>TestRunMainMenu_CleanExitOnCancelledPickList</code>,
+<code>TestRunKeyMgmtMenu_CleanExitOnCancelledPickList</code>,
+<code>TestRunDomainPicker_ExitEndsTheProgram</code>,
+<code>TestRunDomainPicker_CleanExitOnCancelledPickList</code>) were
+retired, same precedent as Phase 20.2/20.7/20.9. New
+<code>TestDomainItems_NoExitEntry</code>/
+<code>TestMainMenuItems_NoBackToDomainPickerEntry</code>/
+<code>TestKeyMgmtMenuItems_NoBackToDomainPickerEntry</code> guard each
+menu’s item count and non-nil actions directly.</p>
+<p><strong>Dependency:</strong> Phase 20.2 (the pattern this
+reuses).</p>
+<hr />
+<h2 id="phase-20.11-menu-tier-remaining-punch-list-items-done">Phase
+20.11 — Menu Tier: Remaining Punch-List Items (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+Completes DESIGN.md’s Menu-tier punch list – every remaining
+<code>ui.PickList</code> call site classified as Menu tier is now
+<code>huh.Select</code>. Two shared helpers added to
+<code>domain_menu.go</code> next to <code>runMenuField</code>/
+<code>menuQuitKeyMap</code>: <code>pickString</code> (fixed
+<code>[]string</code> options) and its generic backer
+<code>pickComparable[T comparable]</code> (fixed <code>[]T</code>
+options with a caller-supplied label func) – covers every remaining site
+without repeating the index-selection workaround
+<code>pickS3MenuItem</code>/ <code>pickMainMenuItem</code>/etc. needed
+only because their option types embed a <code>func</code> field.</p>
+<h3 id="work-items-55">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Instance-vs-AMI kind,
+<code>show_cloud_init.go</code>/<code>manage_tags.go</code>: split
+<code>ShowCloudInit</code>/<code>ManageTags</code> into thin entry
+points + testable <code>showCloudInit</code>/<code>manageTags</code>
+cores taking a shared <code>menuInput</code>/<code>menuOutput</code>
+pair</label></li>
+<li><label><input type="checkbox" checked="" />Tag Add/Update/Remove
+action + select-a-tag-to-update/remove, <code>manage_tags.go</code>:
+same <code>menuInput</code>/<code>menuOutput</code> pair as the kind
+picker above – all four huh.Selects in one call read the shared reader
+in sequence</label></li>
+<li><label><input type="checkbox" checked="" />Region (S3,
+<code>bucket_create.go</code>) and Region (Key Management,
+<code>keymgmt_common.go</code>):
+<code>promptRegion</code>/<code>promptS3Region</code> take
+<code>input</code>/<code>output</code> now; <code>CreateBucket</code>,
+<code>CreateKeyPairStandalone</code>,
+<code>ImportKeyPairStandalone</code> each split into entry point +
+testable core</label></li>
+<li><label><input type="checkbox" checked="" />Bucket-purpose enum,
+<code>bucket_create.go</code>: same <code>createBucket</code> core as
+the region picker above</label></li>
+<li><label><input type="checkbox" checked="" />Instance type (curated
+list + “Other”), <code>launch_prompts.go</code>:
+<code>promptInstanceType</code> takes
+<code>input</code>/<code>output</code>; selects by
+<code>instanceTypeChoice</code> value directly via
+<code>pickComparable</code> (no index workaround needed – the struct is
+<code>comparable</code>)</label></li>
+<li><label><input type="checkbox" checked="" />AZ-incompatibility
+remediation choice, <code>instance_type_az_check.go</code>, and
+ENA-incompatibility remediation choice,
+<code>instance_type_ena_check.go</code>:
+<code>ensureInstanceType     SupportedInSubnet</code>/<code>ensureInstanceTypeENACompatible</code>
+take a shared <code>menuInput</code>/<code>menuOutput</code> pair,
+threaded into their own nested <code>promptInstanceType</code> call when
+the operator picks “Change instance type” – both are loops, so the pair
+is read across iterations the same way a domain menu’s own loop reads
+it</label>
+<ul>
+<li>Threading this up the call chain required splitting
+<code>CollectLaunchInstanceParams</code>/<code>CollectLaunchInstanceParamsFromCloudInit</code>
+(<code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>)
+and
+<code>CreateInstanceFromAMI</code>/<code>CreateInstanceFromCloudInit</code>
+(<code>create_instance_from_ami.go</code>/<code>create_instance_from_cloud_init.go</code>)
+into entry points + testable cores, all sharing one
+<code>menuInput</code>/<code>menuOutput</code> pair down to
+<code>promptInstanceType</code></li>
+</ul></li>
+<li><label><input type="checkbox" checked="" />Storage class, guided
+backup flow (curated 4) and generic editor (full enum),
+<code>bucket_lifecycle.go</code>: <code>promptGuidedBackupRule</code>/
+<code>promptGenericRule</code> take
+<code>menuInput</code>/<code>menuOutput</code>, reusing
+<code>manageBucketLifecyclePolicies</code>’s existing
+<code>actionMenuInput</code>/ <code>actionMenuOutput</code> pair
+(already threaded through for <code>pickLifecycleAction</code>) via
+<code>addLifecycleRule</code>/<code>editLifecycleRule</code></label></li>
+</ul>
+<p><strong>Tests:</strong> every affected test call site now feeds its
+huh.Select(s) via a separate <code>newHuhAccessibleInput</code> reader
+instead of the numbered <code>le</code>-pipe selection
+<code>ui.PickList</code> used to read; <code>le</code> still feeds every
+other prompt unaffected by these conversions. Cancellation tests for
+pickers that used to support a <code>PickList</code>
+“0=Cancel”/<code>le</code>-driven abort
+(<code>TestShowCloudInit_CancelledKindPickList</code>,
+<code>TestCreateBucket_RegionCancellationAbortsCleanly</code>,
+<code>TestCreateKeyPairStandalone_CancelledRegionPick</code>,
+<code>TestImportKeyPairStandalone_CancelledRegionPick</code>) were
+retired – <code>q</code>/ <code>ctrl+c</code> abort has no
+accessible-mode keyboard to simulate it with, same precedent as every
+prior phase’s menu conversions. <code>cancelledIsNil</code>
+(<code>manage_tags.go</code>) now also matches
+<code>huh.ErrUserAborted</code>, unifying it with
+<code>ui.ErrCancelled</code>/<code>tui.ErrCancelled</code> as the one
+cancellation-mapping policy for one-off Menu-tier pickers (as opposed to
+<code>mapMenuPickerErr</code>, which is specific to domain-loop menus
+backing out to <code>ErrBackToDomainPicker</code>).</p>
+<p><strong>Files:</strong> <code>domain_menu.go</code> (new
+<code>pickString</code>/<code>pickComparable</code> helpers),
+<code>show_cloud_init.go</code>/<code>_test.go</code>,
+<code>manage_tags.go</code>/<code>_test.go</code>,
+<code>bucket_create.go</code>/<code>_test.go</code>,
+<code>keymgmt_common.go</code>, <code>keypair_create.go</code>/
+<code>_test.go</code>,
+<code>keypair_import.go</code>/<code>_test.go</code>,
+<code>launch_prompts.go</code>/ <code>_test.go</code>,
+<code>instance_type_az_check.go</code>/<code>_test.go</code>,
+<code>instance_type_ena_check.go</code>/<code>_test.go</code>,
+<code>launch_instance.go</code>/<code>_test.go</code>,
+<code>launch_from_cloud_init.go</code>/<code>_test.go</code>,
+<code>create_instance_from_ami.go</code>/ <code>_test.go</code>,
+<code>create_instance_from_cloud_init.go</code>/<code>_test.go</code>,
+<code>bucket_lifecycle.go</code>/<code>_test.go</code>.</p>
+<p><strong>Dependency:</strong> Phase 20.10 (the
+<code>runMenuField</code> helper this builds on).</p>
+<p>DESIGN.md’s Menu-tier punch list is now fully converted – next up is
+the Picker tier (8 remaining entries), per the user’s requested order
+(menu, then picker, then list).</p>
+<hr />
+<h2
+id="phase-20.12-picker-tier-every-remaining-resource-selector-done">Phase
+20.12 — Picker Tier: Every Remaining Resource Selector (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+Completes DESIGN.md’s Picker-tier punch list – every remaining
+<code>ui.PickList</code> call site classified as Picker tier
+(fetched/variable-length resource collections) is now
+<code>tui.RunPicker</code>. Six new one-line-per-type picker helpers
+added next to each resource’s own label function, all following
+<code>pickBucket</code>’s exact shape (Phase 20.4): build
+<code>rows []string</code> from the resource’s label func, call
+<code>tui.RunPicker</code>, index back into the original slice –
+<code>pickInstance</code>/<code>pickImage</code> (power_state.go/
+launch_instance.go), <code>pickSubnet</code> (launch_prompts.go),
+<code>pickInstanceProfileChoice</code>/<code>pickRole</code>
+(create_instance_profile.go), <code>pickKeyPairChoice</code>
+(create_key_pair.go), <code>pickKeyPairForDeletion</code>
+(keypair_delete.go), <code>pickLifecycleRule</code>
+(bucket_lifecycle.go).</p>
+<h3 id="work-items-56">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />EC2 instance, 6 call
+sites (<code>backup_archive.go</code>,
+<code>create_ami_from_instance.go</code>,
+<code>show_cloud_init.go</code>, <code>power_state.go</code> x2,
+<code>terminate_instance.go</code>, <code>manage_tags.go</code>): each
+split into a thin entry point (calls <code>pickInstance</code>) + a
+testable core taking the already-resolved instance directly</label></li>
+<li><label><input type="checkbox" checked="" />AMI, 5 call sites
+(<code>launch_from_cloud_init.go</code>,
+<code>launch_instance.go</code>, <code>show_cloud_init.go</code>,
+<code>manage_tags.go</code>, <code>remove_ami.go</code>): same split.
+<code>launch_instance.go</code>/<code>launch_from_cloud_init.go</code>
+required an extra cascade –
+<code>CollectLaunchInstanceParams(FromCloudInit)</code> and
+<code>CreateInstanceFrom{AMI,CloudInit}</code> all split into entry
+points + testable cores taking a resolved <code>image</code> instead of
+the full <code>images</code> list, since AMI selection used to happen
+<em>inside</em> the already-testable core built in Phase
+20.11</label></li>
+<li><label><input type="checkbox" checked="" />Subnet,
+<code>launch_prompts.go</code> (<code>promptSubnetID</code>): list-path
+tests retired – <code>filterSubnetsByInstanceTypeAZ</code>’s own tests
+(instance_type_az_check_test.go) already cover the pre-picker filtering
+logic; the free-text fallback path (zero subnets) stays fully
+testable</label></li>
+<li><label><input type="checkbox" checked="" />IAM instance profile (+
+none/create-new) and IAM role (to attach),
+<code>create_instance_profile.go</code>:
+<code>createInstanceProfileInteractive</code> split so
+<code>createInstanceProfileForRole</code> (the create-new sub-flow, once
+a role is resolved) is directly testable; list-path tests for
+<code>promptIAMInstanceProfileOrCreate</code> itself retired since it
+always builds a choices list of at least
+<code>["(none)", "Create new..."]</code>, reaching the picker on every
+path except the list-fetch-error free-text fallback</label></li>
+<li><label><input type="checkbox" checked="" />Key pair (fetched, +
+create-new), <code>create_key_pair.go</code>
+(<code>promptKeyPairNameOrCreate</code>): list-path tests retired
+(redundant with <code>listKeyPairs</code>’ own tests);
+<code>createNewKeyPairInteractive</code> (no picker of its own) gained
+its own direct test coverage instead of being driven indirectly through
+the picker</label></li>
+<li><label><input type="checkbox" checked="" />Key pair (fetched, to
+delete), <code>keypair_delete.go</code> (<code>DeleteKeyPair</code>):
+same entry-point/testable-core split as EC2 instance/AMI</label></li>
+<li><label><input type="checkbox" checked="" />S3 lifecycle rule
+(view/edit/remove), <code>bucket_lifecycle.go</code>:
+<code>viewLifecycleRuleDetail</code>/<code>editLifecycleRule</code>/<code>removeLifecycleRule</code>
+all gained a <code>ctx</code> param and now call
+<code>pickLifecycleRule</code>;
+<code>editLifecycleRuleForRule</code>/<code>removeLifecycleRuleForRule</code>
+extracted as testable cores; the “view” path’s own display logic
+(<code>printLifecycleRuleDetail</code>) got direct test coverage instead
+of being driven through the loop</label></li>
+</ul>
+<p><strong>Tests:</strong> every affected call site’s
+happy-path/error-path tests were rewritten to call the new testable core
+with an already-resolved resource instead of driving
+<code>ui.PickList</code>’s numbered selection through <code>le</code>; a
+handful of fakes needed a forced-error field
+(<code>fakeIAMClientNoProfiles()</code>,
+<code>errNoKeyPairsConfigured</code> on <code>fakeEC2Client</code>) so
+unrelated launch-params tests don’t themselves reach the now-bubbletea
+IAM-profile/key-pair pickers. “0=Cancel”/ list-selection tests for every
+converted picker were retired – a real bubbletea Program can’t be
+pipe-tested, no keyboard to simulate an abort or a specific-item
+selection with – the same precedent <code>pickBucket</code> (Phase 20.4)
+already established; each retirement is commented in place noting what
+still covers the underlying logic directly (the resource’s own
+list/filter tests, or a newly-split testable core).</p>
+<p><strong>Files:</strong>
+<code>power_state.go</code>/<code>_test.go</code>,
+<code>launch_instance.go</code>/<code>_test.go</code>,
+<code>launch_from_cloud_init.go</code>/<code>_test.go</code>,
+<code>create_instance_from_ami.go</code>/ <code>_test.go</code>,
+<code>create_instance_from_cloud_init.go</code>/<code>_test.go</code>,
+<code>terminate_instance.go</code>/<code>_test.go</code>,
+<code>backup_archive.go</code>/<code>_test.go</code>,
+<code>create_ami_from_instance.go</code>/<code>_test.go</code>,
+<code>remove_ami.go</code>/<code>_test.go</code>,
+<code>show_cloud_init.go</code>/<code>_test.go</code>,
+<code>manage_tags.go</code>/<code>_test.go</code>,
+<code>launch_prompts.go</code>/<code>_test.go</code>,
+<code>create_instance_profile.go</code>/<code>_test.go</code>,
+<code>create_key_pair.go</code>/<code>_test.go</code>,
+<code>keypair_delete.go</code>/<code>_test.go</code>,
+<code>bucket_lifecycle.go</code>/<code>_test.go</code>,
+<code>userdata_test.go</code> (gained
+<code>promptCloudInitYAMLFile</code>’s own direct tests, migrated out of
+<code>launch_from_cloud_init_test.go</code>).</p>
+<p><strong>Dependency:</strong> Phase 20.4 (<code>pickBucket</code>, the
+pattern every helper here copies) and Phase 20.11 (the Menu-tier sweep
+that had to finish first).</p>
+<p>DESIGN.md’s Picker-tier punch list is now fully converted – next up
+is the List tier (3 remaining entries: EC2 instances, AMIs, Key pairs),
+per the user’s requested order (menu, then picker, then list).</p>
+<hr />
+<h2 id="phase-20.13-list-tier-ec2-instances-amis-key-pairs-done">Phase
+20.13 — List Tier: EC2 Instances, AMIs, Key Pairs (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+Completes DESIGN.md’s List-tier punch list – the last remaining tier
+from the full termlib-to-huh/bubbletea conversion sweep.
+<code>DisplayInstances</code>, <code>DisplayImages</code>, and
+<code>DisplayKeyPairs</code> (<code>internal/ui/display.go</code>)
+converted to <code>tui.RunListView</code>, mirroring
+<code>DisplayBuckets</code>/ <code>bucketListViewConfig</code> (Phase
+20.6) exactly: each gained an
+<code>instanceListViewConfig</code>/<code>imageListViewConfig</code>/<code>keyPairListViewConfig</code>
+builder (pure, unit-testable column formatting, reusing the existing
+<code>orUnknown</code>/<code>orNone</code>/<code>stateColor</code>
+helpers unchanged) and became a thin <code>func(ctx, ...) error</code>
+wrapper.</p>
+<h3 id="work-items-57">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>DisplayInstances</code>/<code>DisplayImages</code>/<code>DisplayKeyPairs</code>:
+new <code>*ListViewConfig</code> builders + <code>tui.RunListView</code>
+wrappers, signature changed from <code>(t *termlib.Terminal, ...)</code>
+(no return) to <code>(ctx context.Context, ...) error</code>, matching
+<code>DisplayBuckets</code></label></li>
+<li><label><input type="checkbox" checked="" /><code>instanceRow</code>
+extracted from <code>instanceListViewConfig</code> so the STATE column’s
+color-embedding logic (running=green, stopped/terminated=red,
+pending/stopping=yellow) stays testable via an explicit
+<code>colorEnabled bool</code> parameter, independent of the real
+<code>ColorEnabled()</code> TTY/NO_COLOR check a test runs under
+(<code>go test</code> never has a real stdout TTY, so
+<code>ColorEnabled()</code> itself can’t be forced true
+in-process)</label></li>
+<li><label><input type="checkbox" checked="" />Fixed a real bug surfaced
+by preserving that STATE color: <code>tui.     reverseVideo</code>
+(internal/tui/style.go) now re-asserts reverse-video after any reset a
+row already embeds, so a colorized STATE cell landing on the cursor row
+doesn’t cut the row’s highlight short at the cell’s own closing
+reset</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>MenuActions</code>/<code>KeyMgmtActions</code>
+(<code>internal/workflow/menu.go</code>/ <code>keymgmt_menu.go</code>)
+each split their existing <code>Refresh</code> field into a silent
+fetch-only <code>Refresh</code> + a new <code>ShowResourceLists</code>
+display field, mirroring <code>S3Actions</code>’ own split (Phase 20.6)
+– required because <code>tui.RunListView</code> blocks on an interactive
+bubbletea loop until <code>q</code>, so calling it unconditionally after
+every dispatched action (the old <code>Refresh</code> behavior) would
+force pressing <code>q</code> after every single action just to get back
+to the menu. <code>mainMenuItems</code>/ <code>keyMgmtMenuItems</code>’s
+“Show resource lists” entries now dispatch to
+<code>ShowResourceLists</code> instead of
+<code>Refresh</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>:
+<code>refresh</code>/<code>refreshKeyMgmt</code> closures now only fetch
+(no display); new <code>showComputeResourceLists</code>/
+<code>showKeyMgmtResourceLists</code> closures call the converted
+<code>Display*</code> functions and are wired to each
+<code>Actions</code> struct’s new <code>ShowResourceLists</code>
+field</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>display_test.go</code>’s
+<code>TestDisplayInstances_*</code>/
+<code>TestDisplayImages_*</code>/<code>TestDisplayKeyPairs_*</code>
+(direct calls against a <code>bytes.Buffer</code>-backed
+<code>termlib.Terminal</code>) replaced with
+<code>TestInstanceListViewConfig_*</code>/<code>TestImageListViewConfig_*</code>/
+<code>TestKeyPairListViewConfig_*</code> (direct calls against the new
+pure builders, asserting on
+<code>cfg.Header</code>/<code>cfg.Rows</code>/<code>cfg.Title</code>),
+matching <code>TestBucketListViewConfig_*</code>’s existing style
+exactly; the two color-specific tests became
+<code>TestInstanceRow_ColorEnabled_ AppliesStateColor</code>/<code>ColorDisabled_NoANSICodes</code>,
+calling <code>instanceRow</code> directly with an explicit bool instead
+of relying on the ambient terminal state <code>DisplayInstances</code>
+used to take as a parameter. New
+<code>TestStyleRow_CursorRowReassertsReverseVideoAfterEmbeddedReset</code>
+(<code>internal/tui/style_test.go</code>) covers the
+<code>reverseVideo</code> fix directly.
+<code>menu_test.go</code>/<code>keymgmt_menu_test.go</code> gained
+<code>TestRunMainMenu_ShowResourceListsDispatchesToItsOwnAction</code>/
+<code>TestRunKeyMgmtMenu_ShowResourceListsDispatchesToItsOwnAction</code>,
+mirroring <code>s3_menu_test.go</code>’s existing
+<code>TestRunS3Menu_ShowResourceListsDispatches ToItsOwnAction</code> –
+neither menu’s “Show resource lists” dispatch had ever actually been
+exercised by a test before (both <code>testMenuActions</code>/
+<code>testKeyMgmtActions</code> helpers only wired
+<code>Refresh</code>), a real coverage gap this phase closed along the
+way.</p>
+<h2
+id="phase-20.14-chrome-consistency-full-height-rendering-fix-list-tier-filtering-done">Phase
+20.14 — Chrome Consistency: Full-Height Rendering Fix + List-Tier
+Filtering (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-10</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean).
+Follow-up to Phase 20.13, from user-reported feedback after using the
+newly converted List tier: (1) the List/Picker/file-manager boxes
+weren’t using the full terminal height, and (2) List-tier filtering –
+listed in DESIGN.md’s keybinding table (<code>/</code> = Filter, “Menus,
+pickers, lists, managers”) since Phase 20.8 but never built for lists –
+was still missing.</p>
+<h3 id="work-items-58">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Root-caused the height
+bug: these are inline (non-alt-screen) bubbletea programs, and a box
+sized to nearly the full terminal height renders wherever the cursor
+already sits rather than at row 0; if that doesn’t fit in the remaining
+rows below the cursor, the terminal scrolls and bubbletea’s
+redraw-in-place bookkeeping goes stale, pushing the top of the box out
+of view. Fixed by returning <code>tea.ClearScreen</code> from
+<code>Init()</code> on <code>ListViewModel</code>,
+<code>PickerModel</code>, and <code>filemanager.Model</code> – confirmed
+by the user (“Scrolling is much improved”) – see DECISIONS.md, “Clear
+the screen on entry for every inline bubbletea screen”</label></li>
+<li><label><input type="checkbox" checked="" />Extracted
+<code>internal/tui/filter.go</code>’s <code>filterState</code>
+(<code>apply</code>, <code>moveCursor</code>,
+<code>handleIdleKey</code>, <code>handleFilterKey</code>,
+<code>statusLine</code>) out of <code>PickerModel</code>’s
+previously-inline filter fields/methods, so <code>ListViewModel</code>
+and <code>PickerModel</code> share one filter implementation instead of
+each keeping its own copy – keeps them consistent by construction rather
+than by convention, per the user’s “we want to have the chrome more
+consistent” feedback</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>ListViewModel</code> gained <code>/</code>
+filter-typing mode, the filter status line + divider, and an updated
+legend (<code>↑/↓,k/j scroll  / filter  q Quit</code>), reusing
+<code>PickerModel</code>’s exact behavior (case-insensitive substring
+match, <code>Enter</code> commits and keeps navigating the narrowed
+list, <code>Esc</code> clears it, content-height pinned to the
+<em>unfiltered</em> row count so the box doesn’t jitter while
+typing)</label></li>
+<li><label><input type="checkbox" checked="" />Also made
+<code>ListViewModel</code>’s header row conditional on
+<code>Header != ""</code> (previously always rendered, even blank),
+matching <code>PickerModel</code> exactly – zero behavior change for
+existing callers, all of which always supply a
+<code>Header</code></label></li>
+<li><label><input type="checkbox" checked="" />Unified both models’
+<code>windowHeight()</code> onto one shared
+<code>filterableWindowHeight(height, hasHeader bool)</code> helper
+(<code>baseChromeRows</code> + <code>headerChromeRows</code> if header +
+always <code>filterChromeRowCount</code> for the filter line/divider),
+fixing a minor pre-existing off-by-one in <code>PickerModel</code>’s own
+chrome math (it subtracted an extra, imprecise <code>-1</code> “for the
+filter line” rather than counting the filter line’s own
+divider)</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>internal/tui/listview_test.go</code>
+gained <code>TestListView_SlashEntersFilterModeAndNarrowsRows</code>,
+<code>_FilterIsCaseInsensitive</code>, <code>_EscClearsFilter</code>,
+<code>_LettersDuringFilterModeAreTextNotCommands</code> – direct mirrors
+of <code>picker_test.go</code>’s existing filter tests, minus selection
+(List has nothing to choose).
+<code>TestListView_LegendShowsScrollAndQuit</code> renamed to
+<code>_LegendShowsScrollFilterAndQuit</code> and now also asserts
+“filter” appears. All of <code>picker_test.go</code>’s existing filter
+tests continued to pass unchanged against the refactored
+<code>filterState</code>-backed <code>PickerModel</code>, confirming the
+extraction didn’t change Picker’s own behavior.</p>
+<p><strong>Files:</strong>
+<code>internal/ui/display.go</code>/<code>display_test.go</code>,
+<code>internal/tui/style.go</code>/<code>style_test.go</code>,
+<code>internal/workflow/menu.go</code>/ <code>menu_test.go</code>,
+<code>internal/workflow/keymgmt_menu.go</code>/
+<code>keymgmt_menu_test.go</code>, <code>cmd/clasm/main.go</code>.</p>
+<p><strong>Dependency:</strong> Phase 20.6
+(<code>bucketListViewConfig</code>/<code>DisplayBuckets</code>, the
+pattern every builder here copies) and Phase 20.12 (the Picker-tier
+sweep that had to finish first).</p>
+<p>DESIGN.md’s full termlib-to-huh/bubbletea conversion punch list
+(Menu, Picker, and List tiers) is now completely converted. Remaining
+termlib call sites outside this punch list
+(e.g. <code>ui.PickList</code>/<code>ui.Prompt</code>/
+<code>Confirm</code> calls not classified into any of the three tiers)
+stay as-is per DESIGN.md’s own note that <code>internal/ui</code>
+shrinks over the course of termlib removal rather than being replaced in
+one step.</p>
+<h2
+id="phase-20.15-termlib-removal-part-1-foundational-helpers-done">Phase
+20.15 — Termlib Removal, Part 1: Foundational Helpers (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-13</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> all clean except
+the pre-existing, unrelated <code>version.go</code>). Implements
+DESIGN.md, “Removing termlib: Action Wizards and Output,” and
+DECISIONS.md, “Remove termlib entirely: input via huh, output via
+io.Writer.”</p>
+<p>Landed differently from the original design in one real way, found
+while implementing:
+<code>ui.Prompt</code>/<code>Confirm</code>/<code>ConfirmDestructive</code>
+don’t just need a <em>testable core</em> (the
+<code>RunXxx</code>/<code>runXxx</code> split used everywhere else) –
+they need their accessible-mode I/O <strong>exposed as a functional
+option</strong> (<code>ui.WithIO(input, output)</code>,
+<code>WithConfirmIO(input, output)</code>), because these three are
+called from dozens of call sites spread across both
+<code>internal/ui</code> and <code>internal/workflow</code>, not from
+one function with one obvious “core” to split.
+<code>ConfirmDestructive</code> also changed shape slightly to make room
+for the options param: <code>mustMatch ...string</code> became
+<code>mustMatch []string, opts ...ConfirmOption</code> (Go allows only
+one variadic per signature) – the ~6 call sites now wrap their arguments
+in a slice literal instead of passing them bare. This option-based shape
+is what let Phase 20.16 thread the same input/output pair through every
+intermediate “leaf” prompt function (not just the handful anticipated
+below) without a second, parallel mechanism.</p>
+<h3 id="work-items-59">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/prompt.go</code>: rebuilt
+<code>Prompt</code> on <code>huh.NewInput()</code>, with a new
+<code>WithIO(input, output) PromptOption</code> for accessible-mode
+testability (no separate <code>promptCore</code> needed – see the note
+above). <code>WithDefault</code> pre-fills the field’s
+<code>Value</code>; <code>WithValidator</code> becomes
+<code>.Validate()</code>, with a fix found via a real test failure: the
+validator itself must treat a blank submission as automatically valid
+when a default is set (skip validation, don’t reject ““), since huh
+validates before default-substitution – otherwise a validator that
+(correctly) never accepts blank input on its own
+(e.g. <code>validateAMIName</code>) blocks the default from ever being
+used.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/confirm.go</code>:
+<code>Confirm</code> rebuilt on <code>huh.NewConfirm()</code> (the
+re-prompt-on-bad-input loop disappears – a toggle can’t produce
+unrecognized input); <code>ConfirmDestructive</code> rebuilt on
+<code>huh.NewInput()</code> with no validator (a validator would make
+huh re-prompt until correct, changing the existing
+single-attempt-then-cancel semantics) – the exact-match check runs after
+the field returns, same as before. Both take a new
+<code>WithConfirmIO</code> option instead of a testable-core
+split.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/picklist.go</code> and
+<code>picklist_test.go</code> deleted outright – confirmed dead code, no
+production caller remained. <code>ErrCancelled</code> (still used by the
+AZ/ENA-incompatibility remediation menus) moved to
+<code>prompt.go</code> rather than being deleted with the rest of the
+file.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/color.go</code>:
+<code>termlib.Bold</code>/<code>Reset</code> replaced with local
+<code>ansiBold</code>/<code>ansiReset</code> constants;
+<code>Highlight</code> otherwise unchanged.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/display.go</code>:
+<code>termlib.PadRight</code>/<code>Truncate</code>/<code>Green</code>/
+<code>Red</code>/<code>Yellow</code> replaced with local rune-aware
+<code>padRight</code>/<code>truncate</code> helpers and local ANSI
+constants; <code>stateColor</code>/<code>instanceRow</code>/the
+<code>*ListViewConfig</code> builders otherwise unchanged.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/progress_ticker.go</code>:
+<code>*termlib.Terminal</code> → <code>io.Writer</code>;
+<code>termlib.FormatDuration</code> → local <code>formatDuration</code>
+(same <code>m:ss</code>/<code>h:mm:ss</code>, rounded to the second).
+Mechanical parity only – no bubbletea spinner in this pass (deferred;
+see TODO.md).</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/domain_menu.go</code>:
+<code>runMenuField</code>’s <code>t     *termlib.Terminal</code>
+parameter (used only to print the static “(q to go back)” hint) →
+<code>io.Writer</code>, along with every other function in the file
+(<code>pickString</code>, <code>pickComparable</code>,
+<code>pickDomainItem</code>,
+<code>RunDomainPicker</code>/<code>runDomainPicker</code>,
+<code>NotYetImplemented</code>).</label></li>
+<li><label><input type="checkbox" checked="" />Every
+<code>errors.Is(err, termlib.ErrInterrupted)</code> check replaced with
+the equivalent <code>errors.Is(err, huh.ErrUserAborted)</code> check,
+per call site (<code>menu.go</code>’s <code>isExitSignal</code>, and the
+menu test files).</label></li>
+</ul>
+<p><strong>Tests:</strong>
+<code>prompt_test.go</code>/<code>confirm_test.go</code> rewritten to
+call the public
+<code>Prompt</code>/<code>Confirm</code>/<code>ConfirmDestructive</code>
+directly with <code>WithIO</code>/<code>WithConfirmIO</code>, matching
+the accessible-mode pipe pattern already established for the Menu tier.
+<code>picklist_test.go</code> deleted.
+<code>display_test.go</code>/<code>color_test.go</code> updated for the
+local constants, plus new
+<code>TestTruncate</code>/<code>TestPadRight</code> parity tests (ported
+from termlib’s own test cases) that weren’t there before.
+<code>progress_ticker_test.go</code> updated to construct a
+<code>bytes.Buffer</code> directly instead of
+<code>termlib.New(&amp;buf)</code>, plus a new
+<code>TestFormatDuration</code> (also ported from termlib’s own test
+cases).</p>
+<p><strong>Files:</strong>
+<code>internal/ui/{prompt,picklist,color,display}.go</code> (+ tests),
+<code>internal/workflow/{confirm,progress_ticker,domain_menu}.go</code>
+(+ tests).</p>
+<h2
+id="phase-20.16-termlib-removal-part-2-propagate-across-action-wizards-done">Phase
+20.16 — Termlib Removal, Part 2: Propagate Across Action Wizards
+(done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-13</strong> (same
+clean sweep as Phase 20.15 – the two landed together in one sitting,
+since Go’s whole-module compilation meant Phase 20.15’s signature
+changes and this phase’s propagation had to be internally consistent at
+every commit boundary; see DESIGN.md’s “Sequencing” note). Propagated
+<code>le *termlib.LineEditor</code> removal and
+<code>t *termlib.Terminal</code> → <code>io.Writer</code> across every
+remaining caller, then removed <code>termlib</code> from
+<code>go.mod</code>.</p>
+<p>The real scope turned out larger than the original work-item list
+below:
+<code>ui.Prompt</code>/<code>Confirm</code>/<code>ConfirmDestructive</code>’s
+new <code>WithIO</code>/ <code>WithConfirmIO</code> options (Phase
+20.15) meant every intermediate function between a workflow’s testable
+core and its leaf prompt call also needed
+<code>input io.Reader, output io.Writer</code> parameters threaded
+through – <code>promptKeyPairNameOrCreate</code>,
+<code>promptSubnetID</code>, <code>promptSecurityGroupIDs</code>,
+<code>promptIAMInstanceProfileOrCreate</code>,
+<code>createInstanceProfileForRole</code>,
+<code>createInstanceProfileInteractive</code>,
+<code>promptCloudInitYAMLFile</code>,
+<code>offerFstrimIfAvailable</code>,
+<code>confirmLifecycleChange</code>, <code>promptOptionalDays</code>,
+<code>promptPositiveDays</code>,
+<code>removeLifecycleRule(ForRule)</code>,
+<code>startEC2Instance</code>/<code>stopEC2Instance</code>,
+<code>terminateEC2Instance</code>/ <code>confirmTerminate</code>,
+<code>removeAMI</code>/<code>confirmRemoveAMI</code>,
+<code>deleteKeyPair</code>/ <code>confirmDeleteKeyPair</code>,
+<code>runLaunch</code>, <code>createAMIFromInstance</code>, and
+<code>createBucket</code>/<code>configureBucketWebsite</code> (which
+previously had no menu-tier huh.Select at all, so no
+<code>menuInput</code>/<code>menuOutput</code> pair to reuse) – none of
+these were anticipated in the original per-file list, found only by
+tracing every <code>Confirm(</code>/<code>ConfirmDestructive(</code>/
+<code>ui.Prompt(</code> call site after the mechanical sweep below and
+checking whether its enclosing function had any way to reach it from a
+test.</p>
+<p>A second real gap, found only by actually running the test suite (not
+by static analysis): huh’s accessible-mode input
+(<code>accessibility. PromptString</code>, used by
+<code>Input.RunAccessible</code>) has <strong>no way to surface EOF as
+an error</strong> – it silently falls back to the field’s default (or
+blank) forever, unlike <code>termlib.LineEditor.Prompt</code>, which
+returned <code>io.EOF</code> once piped input ran out.
+<code>TestCreateInstanceProfileForRole_ NameCollisionRetries</code>
+relied on that old behavior (a fake that always errors, expecting the
+retry loop to eventually surface an error once input was exhausted) and
+hung indefinitely under the new behavior instead. Fixed by giving
+<code>fakeIAMClient</code> the same
+<code>createInstanceProfile ErrOnce</code> shape
+<code>fakeEC2Client</code> already used for the analogous key-pair test,
+and rewriting the test to expect a successful retry rather than an
+eventual error – the more accurate reflection of real interactive
+behavior anyway (an operator retrying a genuinely duplicate name would
+keep being asked forever, not have the tool give up on their
+behalf).</p>
+<p><code>TestImportKeyPairStandalone_PromptLabelStaysShort</code> (a
+guard against a real, now-moot termlib bug –
+<code>LineEditor.Prompt</code>’s raw-mode redraw math assumed a prompt
+fit on one terminal row) was retired outright, same treatment as
+<code>ui.PickList</code>’s own tests.</p>
+<h3 id="work-items-60">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><strong>Compute
+domain:</strong> <code>launch_instance.go</code>,
+<code>launch_prompts.go</code>, <code>launch_execute.go</code>,
+<code>launch_from_cloud_init.go</code>,
+<code>create_instance_from_ami.go</code>,
+<code>create_instance_from_cloud_init.go</code>,
+<code>create_ami_from_instance.go</code>,
+<code>create_instance_profile.go</code>, <code>power_state.go</code>,
+<code>terminate_instance.go</code>, <code>remove_ami.go</code>,
+<code>manage_tags.go</code>, <code>show_cloud_init.go</code>,
+<code>cloud_init_export.go</code>,
+<code>instance_type_az_check.go</code>,
+<code>instance_type_ena_check.go</code>, <code>fstrim.go</code>,
+<code>userdata.go</code>, <code>menu.go</code>,
+<code>backup_archive.go</code></label></li>
+<li><label><input type="checkbox" checked="" /><strong>Key Management
+domain:</strong> <code>keymgmt_menu.go</code>,
+<code>keymgmt_common.go</code>, <code>create_key_pair.go</code>,
+<code>keypair_create.go</code>, <code>keypair_delete.go</code>,
+<code>keypair_import.go</code></label></li>
+<li><label><input type="checkbox" checked="" /><strong>S3
+domain:</strong> <code>s3_menu.go</code>, <code>bucket_create.go</code>,
+<code>bucket_delete.go</code>, <code>bucket_website.go</code>,
+<code>bucket_lifecycle.go</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: deleted
+<code>termlib.New(out)</code>/ <code>termlib.NewLineEditor(...)</code>
+construction; <code>os.Stdout</code> passed directly wherever an
+<code>io.Writer</code> is still needed.</label></li>
+<li><label><input type="checkbox" checked="" /><code>go.mod</code>:
+removed the <code>github.com/rsdoiel/termlib</code> requirement via
+<code>go mod tidy</code> – confirmed zero remaining source references
+first.</label></li>
+<li><label><input type="checkbox" checked="" />Full sweep:
+<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code>, <code>gofmt -l</code> clean (except
+pre-existing <code>version.go</code>).</label></li>
+</ul>
+<p><strong>Tests:</strong> every <code>_test.go</code> file that
+constructed <code>termlib.New(&amp;buf)</code> to capture output
+rewritten to use a <code>bytes.Buffer</code> directly.
+<code>newPipeEditor</code> (previously wrapping a real
+<code>os.Pipe</code> + <code>termlib. LineEditor</code>) rewritten to
+return a <code>(io.Writer, io.Reader, *bytes.Buffer)</code> trio backed
+by <code>newHuhAccessibleInput</code>’s line-at-a-time reader, with the
+writer and buffer deliberately the same value. Every test driving a
+menu-tier huh.Select <em>and</em> one or more free-text prompts/confirms
+in the same call had its two previously-independent input streams
+(<code>le</code> for free text, a separate
+<code>newHuhAccessibleInput</code> reader for the menu) merged into one
+combined stream, in the exact order the production code actually reads
+them – verified by running the suite, not just by tracing the code,
+since a wrong merge order fails loudly (wrong field gets the wrong text)
+rather than silently.</p>
+<p><strong>Files:</strong> all files listed above, plus each one’s
+corresponding <code>_test.go</code>, plus
+<code>go.mod</code>/<code>go.sum</code>.</p>
+<h2
+id="phase-20.17-chrome-standardization-shared-lipgloss-palette-done">Phase
+20.17 — Chrome Standardization: Shared lipgloss Palette (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DESIGN.md, “Chrome Standardization: A Shared lipgloss
+Palette,” and DECISIONS.md, “Chrome standardization: one shared indigo
+accent via lipgloss.”</p>
+<h3 id="work-items-61">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/tui/theme.go</code> (new):
+<code>accentColor</code> (the same adaptive indigo huh’s
+<code>ThemeCharm</code> uses),
+<code>borderStyle</code>/<code>titleStyle</code>
+<code>lipgloss.Style</code>s for <code>box.go</code>, and
+<code>Theme() *huh.Theme</code> — built from
+<code>huh.ThemeBase()</code> with the indigo accent applied to focused
+titles/borders/selection indicator+marker/confirm button/text input
+prompt+cursor; <code>Blurred</code> mirrors <code>Focused</code> with a
+hidden border, <code>Group.Title</code> matches
+<code>Focused.Title</code>.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/tui/box.go</code>:
+<code>TopBorder</code>/<code>BottomBorder</code>/<code>Divider</code>/
+<code>SplitDivider</code>/<code>MergeDivider</code>/<code>BoxLine</code>/<code>BoxRow2</code>
+all render their border characters (and <code>TopBorder</code>’s title)
+through <code>borderStyle</code>/<code>titleStyle</code>.
+<code>BoxLine</code>/<code>BoxRow2</code> render their <code>│</code>
+per call (not cached in a package var) so they track the current
+lipgloss color profile the same way every other function in the file
+does — an earlier draft cached a package-level <code>boxSide</code>
+string rendered once at init time, which silently froze in whatever
+color profile was active at package load and stopped responding to later
+profile changes; caught via a throwaway sanity test that forced
+<code>lipgloss.SetColorProfile</code> and diffed the raw escape codes.
+Width math (<code>RuneLen</code>/<code>PadOrTruncate</code>) already
+stripped ANSI, so no change needed there.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/ui/prompt.go</code> (<code>Prompt</code>),
+<code>internal/workflow/confirm.go</code> (<code>Confirm</code>,
+<code>ConfirmDestructive</code>),
+<code>internal/workflow/domain_menu.go</code>
+(<code>runMenuField</code>),
+<code>internal/workflow/object_browser.go</code>
+(<code>runFieldWithHelp</code>): each <code>huh.NewForm(...)</code>
+gained <code>.WithTheme(tui.Theme())</code>.</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>internal/tui/box_test.go</code> — the
+four tests asserting exact/ literal border strings
+(<code>TestBottomBorder_MatchesInnerWidth</code>,
+<code>TestDivider_MatchesInnerWidth</code>,
+<code>TestTopBorder_TitleFitsWithinWidth</code>,
+<code>TestSplitAndMergeDividers_JoinAtTheMiddleColumn</code>) and
+<code>TestBoxLine_PadsToInnerWidthAndAddsBorders</code> updated to
+compare against <code>StripANSI(got)</code>. New
+<code>internal/tui/theme_test.go</code> confirms <code>Theme()</code> is
+non-nil, <code>Focused.Title</code>’s foreground matches the shared
+<code>accentColor</code>, and <code>Blurred.Base</code>’s border style
+is <code>lipgloss.HiddenBorder()</code>. Full
+<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> sweep green; <code>gofmt -l .</code>
+clean except a pre-existing, unrelated <code>version.go</code>
+(generated file).</p>
+<p><strong>Files:</strong>
+<code>internal/tui/{theme.go (new),theme_test.go (new),box.go, box_test.go}</code>,
+<code>internal/ui/prompt.go</code>,
+<code>internal/workflow/{confirm, domain_menu,object_browser}.go</code>,
+<code>go.mod</code>/<code>go.sum</code> (<code>lipgloss</code> promoted
+from indirect to direct via <code>go mod tidy</code>).</p>
+<p><strong>Dependency:</strong> None — additive styling, no signature
+changes.</p>
+<h2 id="phase-20.18-progress-ticker-real-bubbletea-spinner-done">Phase
+20.18 — Progress Ticker: Real bubbletea Spinner (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Depended on Phase 20.17 for the shared accent color
+(<code>tui.SpinnerStyle()</code>).</p>
+<h3 id="work-items-62">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/progress_ticker.go</code>: replaced
+the periodic <code>fmt.Fprintf</code> loop with a small
+<code>bubbletea</code> model (<code>progressModel</code>) pairing a
+<code>github.com/charmbracelet/bubbles/spinner.Model</code>
+(<code>spinner.MiniDot</code>, styled via
+<code>tui.SpinnerStyle()</code>) with an elapsed-time label recomputed
+on every render. Driven by its own <code>progressTickMsg</code> cadence
+(<code>tea.Tick(interval, ...)</code>) rather than
+<code>spinner.Model</code>’s built-in FPS-based tick, so the refresh
+rate stays caller/test-controlled instead of hardcoded per spinner
+style. <code>startProgressTicker</code>’s signature dropped the
+<code>interval     time.Duration</code> parameter it used to take
+(<code>func(w io.Writer, label     string) (stop func())</code>): under
+the old <code>fmt.Fprintf</code>-per-tick design that argument meant
+“how often a new status line prints” and all three call sites already
+passed the identical <code>30*time.Second</code>; under a real animated
+spinner it would have meant “how often the glyph advances,” and 30s is
+far too slow to look like an animation, so keeping it would have left
+the argument either dead or silently wrong at every call site. Replaced
+with a package constant,
+<code>DefaultSpinnerInterval =     120*time.Millisecond</code>, used
+internally.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>progressModel</code> clears itself on stop:
+<code>stop()</code> now sends a <code>progressStopMsg</code> (not a bare
+<code>p.Quit()</code>), which the model handles by rendering one final
+blank <code>View()</code> before returning <code>tea.Quit</code> –
+confirmed via a throwaway sanity test capturing the raw program output,
+which showed the terminal’s final control sequences clear the spinner’s
+line (<code>\x1b[J</code>/<code>\x1b[2K</code>) rather than leaving “⠹
+waiting (elapsed 0:12)” printed. <code>startProgressTicker</code>’s
+returned <code>stop</code> still blocks until the underlying
+<code>tea.Program</code>’s <code>Run()</code> goroutine has fully exited
+(same no-race-with-post-stop-output contract the old ticker/goroutine
+pair had).</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>tui.SpinnerStyle()</code> added to
+<code>internal/tui/theme.go</code> alongside <code>Theme()</code>,
+returning a <code>lipgloss.Style</code> in the shared accent for the
+spinner glyph.</label></li>
+<li><label><input type="checkbox" checked="" />Updated callers
+(<code>create_ami_from_instance.go</code>,
+<code>show_cloud_init.go</code> – which also dropped its now-unused
+<code>time</code> import –, <code>backup_archive.go</code>) to the new
+two-argument call shape.</label></li>
+</ul>
+<p><strong>Tests:</strong> <code>progress_ticker_test.go</code>’s two
+async tests (<code>TestStartProgressTicker_PrintsPeriodically</code>,
+<code>TestStartProgressTicker_StopsCleanly</code>) updated to drop the
+removed <code>interval</code> argument and sleep in multiples of
+<code>DefaultSpinnerInterval</code> instead of a caller-supplied fast
+interval; <code>TestFormatDuration</code> unchanged. Full
+<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> sweep green.</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/progress_ticker.go</code> (+ test),
+<code>internal/workflow/{create_ami_from_instance,show_cloud_init, backup_archive}.go</code>,
+<code>internal/tui/theme.go</code>.</p>
+<p><strong>Dependency:</strong> Phase 20.17 (soft).</p>
+<h2
+id="phase-20.19-object_browser.go-bucket-pre-flight-onto-pickbucket-done">Phase
+20.19 — object_browser.go: Bucket Pre-flight onto pickBucket (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong></p>
+<h3 id="work-items-63">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/object_browser.go</code>:
+<code>BrowseAndManageObjects</code>’s <code>selectBucket</code> (bare
+<code>huh.Select</code> +
+<code>bucketOptions</code>/<code>huh.NewOption</code> construction)
+replaced with
+<code>pickBucket(ctx, "Select a bucket",     buckets)</code>;
+cancellation mapped via <code>cancelledIsNil(w, err)</code> instead of
+<code>huhCancelledIsNil</code> for this call site
+(<code>confirmLink</code>/ the local-directory <code>huh.Input</code>
+keep <code>huhCancelledIsNil</code>, unaffected).
+<code>cancelledIsNil</code> needs a <code>w io.Writer</code> (it prints
+“Cancelled.” on the way out, unlike <code>huhCancelledIsNil</code>’s
+silent return), so <code>BrowseAndManageObjects</code> gained a
+<code>w io.Writer</code> parameter
+(<code>func(ctx, w, newS3Client, buckets) error</code>, matching every
+sibling <code>S3Actions</code> workflow function’s own shape) threaded
+from <code>cmd/clasm/main.go</code>’s existing
+<code>out</code>.</label></li>
+</ul>
+<p><strong>Tests:</strong> No <code>object_browser_test.go</code>
+existed before this change (bare <code>huh.Select</code> fields aren’t
+unit-tested via the accessible-mode pipe path in this codebase the way
+Menu-tier <code>huh.Select</code>s are – there was nothing to retire or
+update). Full <code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> sweep green.</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/object_browser.go</code>,
+<code>cmd/clasm/main.go</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<hr />
+<h2 id="phase-20.20-backup-archive-trim-reorder-prompts-done">Phase
+20.20 — Backup Archive &amp; Trim: Reorder Prompts (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DECISIONS.md, “Reorder Backup Archive &amp; Trim’s
+prompts.”</p>
+<h3 id="work-items-64">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>:
+<code>backupArchiveAndTrim</code>’s prompt sequence reordered from
+instance/directory/age-days/bucket to instance/directory/bucket/age-days
+– the S3 bucket prompt (and its immediately-following
+<code>BucketRegion</code>/<code>newS3Client</code>/
+<code>CheckS3BucketAccess</code> sequence) now runs directly after the
+directory prompt, with the age-threshold prompt moved to run last,
+immediately before the dry-run listing.</label></li>
+</ul>
+<p><strong>Tests:</strong> every existing
+<code>backup_archive_test.go</code> test’s input string (four
+<code>\n</code>-joined answers) reordered to match; assertions
+unchanged.</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/{backup_archive.go,backup_archive_test.go}</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<h2
+id="phase-20.21-backup-archive-trim-recall-instancedirectory-done">Phase
+20.21 — Backup Archive &amp; Trim: Recall Instance/Directory (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DECISIONS.md, “Recall Backup Archive &amp; Trim’s
+instance/directory choices per-instance.”</p>
+<h3 id="work-items-65">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>internal/state</code> package:
+<code>State</code>/<code>BackupArchiveState</code>
+(<code>LastInstanceID</code>,
+<code>LastDirectoryByInstance map[string]string</code>),
+<code>DefaultPath()</code> (<code>~/.clasm_state</code>),
+<code>Load</code>/<code>Save</code> – mirrors
+<code>internal/config</code>’s own
+<code>Load</code>/<code>DefaultPath</code> shape, but as its own
+app-managed file, not folded into <code>~/.clasm</code>.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/tui/picker.go</code>:
+<code>PickerConfig</code> gained <code>InitialCursor     int</code>;
+<code>NewPickerModel</code> positions <code>filter.cursor</code> there
+when it’s in range, falling back to 0 (the pre-existing default)
+otherwise.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/power_state.go</code>:
+<code>pickInstance</code> split into <code>pickInstance</code>
+(unchanged callers) and <code>pickInstanceDefaulted</code> (takes a
+<code>defaultInstanceID string</code>, resolves it to a row index,
+passes it as <code>InitialCursor</code>).</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>: new
+<code>BackupHistory</code> struct (<code>LastInstanceID</code>,
+<code>LastDirectoryByInstance</code>,
+<code>Save func     (instanceID, directory string) error</code>);
+<code>BackupArchiveAndTrim</code> gained a
+<code>hist BackupHistory</code> parameter, passed through to
+<code>pickInstanceDefaulted</code> and to the directory prompt’s default
+(taking priority over <code>backupDirRules</code>’ Name-pattern match),
+and <code>hist.Save</code> called once both instance and directory are
+resolved. A <code>Save</code> error is reported to <code>w</code> as a
+warning, not returned.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: loads
+<code>~/.clasm_state</code> at startup (import aliased
+<code>appstate</code> – this file already has a local <code>state</code>
+struct variable, which would otherwise shadow the package name), builds
+the <code>Save</code> closure, wires <code>workflow.BackupHistory</code>
+into the <code>BackupArchiveAndTrim</code> action closure.</label></li>
+</ul>
+<p><strong>Tests:</strong> new <code>internal/state/state_test.go</code>
+(missing-file, malformed- YAML, save-then-load round-trip, overwrite,
+<code>DefaultPath</code>); new <code>internal/tui/picker_test.go</code>
+cases (<code>InitialCursor</code> positions the cursor; out-of-range
+falls back to 0; Enter immediately selects the pre-positioned row); new
+<code>internal/workflow/backup_archive_test.go</code> cases (recalled
+directory takes priority over the Name-pattern rule; <code>Save</code>
+is called with the right instance/directory; a <code>Save</code> error
+is a warning, not fatal).</p>
+<p><strong>Files:</strong>
+<code>internal/state/{state.go,state_test.go}</code> (new),
+<code>internal/tui/{picker.go,picker_test.go}</code>,
+<code>internal/workflow/ {power_state.go,backup_archive.go,backup_archive_test.go}</code>,
+<code>cmd/clasm/main.go</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<h2
+id="phase-20.22-contextual-description-text-on-menupicker-tier-screens-done">Phase
+20.22 — Contextual Description Text on Menu/Picker-tier Screens
+(done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DECISIONS.md, “Contextual description text on
+Menu/Picker-tier screens.”</p>
+<h3 id="work-items-66">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/tui/picker.go</code>:
+<code>PickerConfig</code> gained a <code>Description     string</code>
+field, rendered as its own <code>BoxLine</code> + <code>Divider</code>
+directly below the top border (mirroring <code>Header</code>’s existing
+shape), above any <code>Header</code>/rows.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/tui/filter.go</code>:
+<code>filterableWindowHeight</code> gained a
+<code>hasDescription bool</code> parameter, costing the same two rows a
+header does when present; <code>ListViewModel</code>’s call site passes
+<code>false</code> (List-tier is out of scope – tabular resource
+listings aren’t “just a pick list”).</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/domain_menu.go</code>:
+<code>pickString</code>/<code>pickComparable</code> (the shared
+Menu-tier helpers) gained a <code>description string</code> parameter,
+applied via huh’s own <code>.Description(...)</code>; all 11 call sites
+across the package updated with real contextual text. The 4 direct
+<code>huh.NewSelect</code> call sites not funneled through these helpers
+(<code>pickDomainItem</code>, <code>pickMainMenuItem</code>,
+<code>pickKeyMgmtItem</code>, <code>pickS3MenuItem</code>) each gained a
+<code>.Description(...)</code> call directly.</label></li>
+<li><label><input type="checkbox" checked="" />Picker-tier functions
+called from more than one call site with meaningfully different context
+(<code>pickImage</code>, <code>pickBucket</code>,
+<code>pickInstance</code>/<code>pickInstanceDefaulted</code>) gained a
+<code>description     string</code> parameter threaded from their own
+callers. Picker-tier functions with exactly one caller
+(<code>pickInstanceProfileChoice</code>, <code>pickRole</code>,
+<code>pickSubnet</code>, <code>pickKeyPairChoice</code>,
+<code>pickKeyPairForDeletion</code>, <code>pickLifecycleRule</code>) got
+a single description written directly into the function.</label></li>
+</ul>
+<p><strong>Tests:</strong> new <code>internal/tui/filter_test.go</code>
+(description costs two rows like a header; height never drops below the
+floor); new <code>TestPicker_DescriptionRendersBelowTopBorder</code> in
+<code>picker_test.go</code>. No new workflow-level tests – the
+description strings are static text threaded through already-tested call
+paths, not new branching logic.</p>
+<p><strong>Files:</strong>
+<code>internal/tui/{picker.go,filter.go,filter_test.go, picker_test.go,listview.go}</code>,
+and every <code>internal/workflow/*.go</code> file containing a
+Menu-tier <code>huh.Select</code> or one of the 9 Picker-tier
+<code>tui.PickerConfig</code> constructor call sites (15 + 9 call sites
+across ~20 files).</p>
+<p><strong>Dependency:</strong> None.</p>
+<h2
+id="phase-20.23-huh-fields-full-box-border-to-match-tuis-chrome-done">Phase
+20.23 — huh Fields: Full Box Border to Match tui’s Chrome (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DECISIONS.md, “huh fields get a full box border to match
+tui’s chrome.”</p>
+<h3 id="work-items-67">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/tui/theme.go</code>: <code>Theme()</code>’s
+<code>Focused.Base</code>/<code>Focused.Card</code> now call
+<code>.Border(lipgloss.NormalBorder())</code> (matching
+<code>box.go</code>’s own box-drawing characters) instead of inheriting
+<code>huh.ThemeBase</code>’s left-only <code>ThickBorder</code>;
+<code>Padding(0, 1)</code> replaces <code>ThemeBase</code>’s
+<code>PaddingLeft(1)</code>. <code>Blurred.Base</code> still hides its
+border via <code>lipgloss.HiddenBorder()</code>, now over the full
+four-sided footprint.</label></li>
+</ul>
+<p><strong>Tests:</strong> verified via a throwaway test rendering
+<code>Theme().Focused. Base.Render(...)</code> directly with a forced
+true-color profile and inspecting the raw ANSI output – confirms a full
+<code>┌─┐│ │└─┘</code> box in the shared accent, not huh’s default
+left-bar. Not committed as a permanent test (a pure styling value, not
+branching logic); full <code>go build ./...</code>,
+<code>go vet ./...</code>, <code>go test ./... -race</code> sweep green
+throughout.</p>
+<p><strong>Files:</strong> <code>internal/tui/theme.go</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<hr />
+<h2 id="phase-20.24-clear-the-screen-at-startup-done">Phase 20.24 —
+Clear the Screen at Startup (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DECISIONS.md, “Clear the screen at startup.” Partially
+addresses a combined request (“clear the screen first and take up the
+full height of the terminal window”); the “full height” half was
+deliberately not implemented here – see the note below.</p>
+<h3 id="work-items-68">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>internal/ui/clear.go</code>:
+<code>ClearScreen(w io.Writer)</code>, sending
+<code>ansi.EraseEntireScreen</code> +
+<code>ansi.CursorHomePosition</code> (the same two sequences
+<code>tea.ClearScreen</code> sends internally), from
+<code>github.com/charmbracelet/x/ansi</code> (already an indirect
+dependency via <code>bubbletea</code>, promoted to direct via
+<code>go mod     tidy</code>).</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: calls
+<code>ui.ClearScreen(out)</code> once, after the
+<code>-help</code>/<code>-license</code>/<code>-version</code> early
+exits (which stay script/pipe-friendly) but before any other output,
+including error paths.</label></li>
+</ul>
+<p><strong>Not done, deliberately deferred:</strong> making the domain
+picker (or the Menu tier generally) visually fill the terminal’s full
+height. The domain picker is a <code>huh.Select</code> (Menu tier),
+which – unlike the Picker/List/Manager tier’s bubbletea components – has
+no built-in concept of “occupy the full window height”; every other
+Menu-tier screen in the app (S3/EC2/Key Management menus) is the same
+compact, content-sized form, so making only the root domain picker
+full-height would be visually inconsistent with every menu one level
+deeper, the opposite of the consistency this session’s other chrome work
+has been building toward. Revisit if this turns out to be what “full
+height” specifically meant, once clarified.</p>
+<p><strong>Tests:</strong> <code>internal/ui/clear_test.go</code>
+asserts the exact bytes written match
+<code>ansi.EraseEntireScreen + ansi.CursorHomePosition</code>.</p>
+<p><strong>Files:</strong>
+<code>internal/ui/{clear.go,clear_test.go}</code> (new),
+<code>cmd/clasm/main.go</code>,
+<code>go.mod</code>/<code>go.sum</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<h2 id="phase-20.25-bucket-picker-for-backup-archive-trim-done">Phase
+20.25 — Bucket Picker for Backup Archive &amp; Trim (done)</h2>
+<p><strong>Status: implemented and verified 2026-07-13.</strong>
+Implements DECISIONS.md, “Bucket picker for Backup Archive &amp;
+Trim.”</p>
+<h3 id="work-items-69">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/backup_archive.go</code>: new
+<code>bucketChoice</code> type (<code>label</code>, <code>name</code>,
+<code>other bool</code>) and <code>promptBackupBucket</code> function –
+fetches buckets via <code>inventory.ListBuckets</code>, offers them as a
+filterable <code>huh.Select</code> (via the existing
+<code>pickComparable</code> helper, so <code>'/'</code> filtering and
+accessible-mode pipe-testing come for free) plus an “Other (type a
+bucket name)” entry, falling back entirely to the original free-text
+<code>ui.Prompt</code> when the listing fails or is empty.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>backupArchiveAndTrim</code>’s bucket-resolution line
+now calls
+<code>promptBackupBucket(ctx, w, s3Client, newS3Client, input,     output)</code>
+instead of a bare <code>ui.Prompt("S3 bucket", ...)</code> – no other
+signature changes; bucket resolution stays in the same place in the same
+testable core.</label></li>
+</ul>
+<p><strong>Tests:</strong> three new cases in
+<code>backup_archive_test.go</code>
+(<code>TestBackupArchiveAndTrim_BucketPickerOffersKnownBuckets</code>,
+<code>..._BucketPickerOtherFallsBackToFreeText</code>,
+<code>..._BucketPickerFallsBackToFreeTextOnListError</code>), each
+verifying the resulting bucket name via the upload command’s
+<code>s3://&lt;bucket&gt;/...</code> destination. Every pre-existing
+test in this file continues to pass unchanged – none populate
+<code>fakeS3Client.buckets</code>, so <code>ListBuckets</code> returns
+an empty list and they all naturally exercise the free-text fallback
+branch, exactly as before this change.</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/{backup_archive.go,backup_archive_test.go}</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<h2 id="phase-20.26-full-height-menu-tier-done">Phase 20.26 —
+Full-height Menu Tier (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-20</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean; <code>gofmt -l</code> clean
+except the pre-existing, unrelated <code>version.go</code>); not yet
+verified against real AWS/a real terminal – see Phase 22 and the general
+manual-verification gap every phase this session has carried. Resolves
+Phase 20.24’s deferred “full height” request. Implements
+<code>DESIGN.md</code>, “Full-height Menu Tier,” and
+<code>DECISIONS.md</code>, “Full-height Menu tier via live
+<code>WindowSizeMsg</code> tracking, applied at every depth.”</p>
+<h3 id="work-items-70">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/domain_menu.go</code>: extended
+<code>quitKeyGuard</code> to intercept <code>tea.WindowSizeMsg</code>
+and call
+<code>form.WithHeight(msg.Height     - menuHintReservedLines)</code> on
+every resize.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>runMenuField</code>: both the filtering and
+non-filtering <code>huh.Field</code> paths now route through the same
+<code>quitKeyGuard</code>-wrapped <code>tea.NewProgram</code>, so every
+Menu-tier <code>huh.Select</code> (root domain picker, S3/EC2/Key
+Management submenus, <code>pickString</code>/
+<code>pickComparable</code> call sites) gets full-height sizing
+uniformly – no per-call-site change needed. (In practice every current
+call site already builds a <code>*huh.Select</code>, which satisfies
+<code>filteringField</code>, so the “non-filtering” branch was already
+dead code – unified anyway, matching the plan, so a future non-Select
+field costs nothing extra.)</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Reserved-line
+count confirmed empirically, and corrected from the design addendum’s
+own assumption</strong>: rendering a real form (with the actual
+<code>tui.Theme()</code>, not a stand-in) at a known
+<code>WithHeight</code> and counting the rendered output showed
+<code>menuHintReservedLines</code> must be <strong>2</strong>, not 1 –
+<code>runMenuField</code>’s own printed hint line, <em>plus</em> one
+line for <code>huh.Form</code>’s own trailing help/keybindings footer
+(e.g. “↑ up • ↓ down • / filter • enter submit”), which renders
+<em>below</em> whatever height <code>WithHeight(n)</code> was given (a
+form asked for height <code>n</code> renders <code>n+1</code> lines
+total). Reserving only 1 overflowed the terminal by exactly one line in
+every case tested; reserving 2 landed exactly on the terminal height in
+every case (10, 24, 40 rows). <code>tui.Theme()</code>’s own
+border/padding did not change this count – it’s already inside
+<code>Select.Height()</code>’s own budget.</label></li>
+</ul>
+<p><strong>Tests:</strong>
+<code>internal/workflow/domain_menu_height_test.go</code> (new) –
+<code>TestQuitKeyGuard_WindowSizeMsgProducesFullTerminalHeight</code>
+asserts the combined on-screen output (hint line + form view) equals the
+terminal height exactly, across several sizes;
+<code>TestQuitKeyGuard_ ShortContentStillFillsTheWindow</code> confirms
+a 2-option menu still renders padded close to full height at a 30-row
+terminal, not shrunk to content;
+<code>TestQuitKeyGuard_TinyTerminalDoesNotPanic</code> covers the
+non-positive-height no-op path. Accessible-mode (pipe-tested) call sites
+are unaffected – they never construct a <code>tea.Program</code>, so
+this whole path doesn’t apply to them.</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/domain_menu.go</code>,
+<code>internal/workflow/domain_menu_height_test.go</code> (new).</p>
+<p><strong>Dependency:</strong> None.</p>
+<h2 id="phase-20.27-launch-templates-done">Phase 20.27 — Launch
+Templates (done)</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-20</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean; <code>gofmt -l</code> clean
+except the pre-existing, unrelated <code>version.go</code>); not yet
+verified against real AWS – see Phase 22. v0.0.2’s headline feature,
+confirmed directly 2026-07-20 (v0.0.1 is already piloting in production,
+unreleased – no git tag yet). Folds in the IMDSv2 bug fix (TODO.md,
+Bugs) as one design/ implementation pass, since both touch the same
+<code>MetadataOptions</code> concept. Implements <code>DESIGN.md</code>,
+“Launch Templates,” and <code>DECISIONS.md</code>, “Launch templates:
+build directly from cloud-init YAML, diff-then-new- version sync, fold
+in IMDSv2.” Deliberately excludes TODO.md’s tags-screen fix,
+backup-bucket-default, and top-level cross-resource tag management –
+those get their own design/decision/plan pass after this one lands.</p>
+<p><strong>Effort:</strong> ~24 hours estimated (comparable scope to
+Phase 20.1: a new client surface, seven new interactive workflows, a
+diff mechanism, plus three IMDSv2 call sites) <strong>Priority:</strong>
+High <strong>Files:</strong>
+<code>internal/awsclient/ec2.go</code>/<code>logging_ec2.go</code> (7
+new <code>EC2API</code> methods + logging wrapper),
+<code>internal/inventory/launch_templates.go</code> (new –
+<code>LaunchTemplate</code> list-tier type, per-version detail type,
+<code>ListLaunchTemplates</code> + version-detail fetch, aggregated
+across regions like <code>Image</code>/ <code>Instance</code>),
+<code>internal/workflow/show_launch_template.go</code> (new –
+List/Show), <code>internal/workflow/launch_template_create.go</code>
+(new – Create from Cloud-Init YAML),
+<code>internal/workflow/launch_from_template.go</code> (new – Create EC2
+Instance from Launch Template, naming to match the existing
+<code>launch_from_cloud_init.go</code> convention),
+<code>internal/workflow/launch_template_sync.go</code> (new –
+Sync/diff/no-op detection),
+<code>internal/workflow/launch_template_manage.go</code> (new – Promote
+to Default, Delete Version(s), Delete Template),
+<code>internal/workflow/launch_execute.go</code> (IMDSv2 on plain
+<code>RunInstances</code>), <code>internal/workflow/menu.go</code> (7
+new <code>mainMenuItems</code> entries + matching
+<code>MenuActions</code> fields), <code>cmd/clasm/main.go</code>
+(wiring), <code>go.mod</code>/<code>go.sum</code>
+(<code>github.com/aymanbagabas/go-udiff</code> promoted from indirect to
+direct – already present transitively via
+<code>charmbracelet/x/exp/teatest</code>, used by
+<code>internal/filemanager</code>’s own tests, so no new dependency is
+actually being introduced).</p>
+<h3 id="work-items-71">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><strong>EC2 client
+surface:</strong> add <code>CreateLaunchTemplate</code>,
+<code>CreateLaunchTemplateVersion</code>,
+<code>DescribeLaunchTemplates</code>,
+<code>DescribeLaunchTemplateVersions</code>,
+<code>ModifyLaunchTemplate</code>, <code>DeleteLaunchTemplate</code>,
+<code>DeleteLaunchTemplateVersions</code> to <code>EC2API</code>,
+mirrored into <code>logging_ec2.go</code>.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Data
+model:</strong> <code>inventory.LaunchTemplate</code>
+(<code>TemplateID</code>, <code>Name</code>,
+<code>DefaultVersion</code>, <code>LatestVersion</code>,
+<code>Region</code>, <code>Project</code>, <code>Environment</code>) via
+<code>DescribeLaunchTemplates</code>, aggregated across regions
+concurrently (same shape as
+<code>ListImages</code>/<code>ListInstances</code>); a per-version
+detail type via <code>DescribeLaunchTemplateVersions</code> (version
+number, create date, AMI, instance type, IAM instance profile, security
+groups, subnet, tags, <code>MetadataOptions</code>) – deliberately not
+the full <code>RequestLaunchTemplateData</code> surface.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>List Launch
+Templates:</strong> fold into the existing “Show resource lists”
+List-tier display as a new resource type, alongside instances/AMIs – not
+a separate top-level action.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Show Launch
+Template:</strong> pick a template, then a version
+(<code>$Default</code> pre-selected), display the curated detail fields
+above. Flags the template passively (no separate audit action) if
+<code>MetadataOptions.HttpTokens != required</code>.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Create Launch
+Template from Cloud-Init YAML:</strong> reuse Feature 3’s file-path
+prompt (file only, never inline text) plus its
+AMI/instance-type/subnet/security-group/IAM-profile/tag prompts;
+<code>CreateLaunchTemplate</code> (implicitly creates version 1) with
+<code>MetadataOptions</code> forced to required, unconditionally – not a
+prompt.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Create EC2
+Instance from Launch Template:</strong> pick a template, then a version
+– prompt pre-filled to <code>$Default</code> (same
+recalled-but-overridable shape as Backup Archive &amp; Trim’s
+instance/directory defaults) but editable to an explicit version number
+or <code>$Latest</code>. Collects nothing else;
+<code>RunInstances</code> via <code>LaunchTemplateSpecification</code>.
+A third peer entry alongside Features 2 and 3, not a hybrid of
+either.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Sync Cloud-Init
+YAML to a Template:</strong> pick a template + version to compare
+against, pick a YAML file; decode the version’s <code>UserData</code>
+and compare against the file’s content. Identical → report “no changes –
+nothing to sync,” stop, no version created. Different → render a
+plain-text unified diff via
+<code>go-udiff.Unified(oldLabel, newLabel, old, new string) string</code>,
+require explicit confirmation, then
+<code>CreateLaunchTemplateVersion</code>. Never auto-promotes the new
+version to default.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Promote Launch
+Template Version to Default:</strong> <code>ModifyLaunchTemplate</code>
+with <code>DefaultVersion</code> set to the chosen version – its own
+explicit action, never a side effect of Sync.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Delete Launch
+Template Version(s):</strong> prune specific versions
+(<code>DeleteLaunchTemplateVersions</code>) without touching the whole
+template. Same safety-first shape as Feature 9 (Remove AMI): show what
+would be deleted, extra warning if tagged
+<code>Environment=production</code>, type-to-confirm. Also reports any
+per-version failures AWS returns
+(<code>UnsuccessfullyDeletedLaunchTemplateVersions</code>), not just a
+bare success count.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Delete Launch
+Template:</strong> whole-template delete
+(<code>DeleteLaunchTemplate</code>), same safety-first
+shape.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Tagging:</strong>
+<code>CreateLaunchTemplate</code>’s <code>TagSpecifications</code>
+reuses <code>launch_execute.go</code>’s existing
+<code>buildTagSpecification(types.ResourceTypeLaunchTemplate,     tags)</code>
+unchanged.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>IMDSv2 (closes
+the TODO.md bug):</strong> <code>launch_execute.go</code>’s
+<code>RunInstances</code> call (Features 2 and 3) gains
+<code>MetadataOptions: &amp;types.InstanceMetadataOptionsRequest{HttpTokens:     types.HttpTokensStateRequired}</code>
+– previously set no <code>MetadataOptions</code> at all. Every new
+template’s <code>RequestLaunchTemplateData.MetadataOptions</code> gets
+<code>types.LaunchTemplateInstanceMetadataOptionsRequest{HttpTokens:     types.LaunchTemplateHttpTokensStateRequired}</code>
+unconditionally – these are two distinct SDK enum types for the same
+concept, confirmed by reading <code>enums.go</code>, not assumed. Subnet
+placement in <code>RequestLaunchTemplateData</code> has no flat
+<code>SubnetId</code> field (unlike <code>RunInstancesInput</code>) – it
+must go through one <code>NetworkInterfaces</code> entry, and once
+that’s used, security groups must move into that same entry’s
+<code>Groups</code> field rather than the top-level
+<code>SecurityGroupIds</code> (AWS’s own documented constraint,
+confirmed by reading the SDK’s field comments).</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>menu.go</code>/<code>main.go</code>: wire the seven
+new actions into <code>mainMenuItems</code>/<code>MenuActions</code>
+(List Launch Templates folds into the existing “Show resource lists”
+entry instead of adding an eighth).</label></li>
+</ul>
+<p><strong>Tests:</strong> each new workflow gets an accessible-mode
+pipe-tested core, matching every existing Menu-tier workflow’s
+convention. <code>launch_execute_test.go</code>’s existing
+<code>fakeEC2Client</code> embeds <code>awsclient.EC2API</code>, so
+widening the interface doesn’t break any existing test; the new
+launch-template methods get added to that same shared fake rather than a
+second one. Specific cases to cover: Sync’s
+identical-content-skips-a-version branch and different-content-shows-
+a-diff-then-creates-a-version branch; the
+plain-<code>RunInstances</code> and new-template
+<code>MetadataOptions</code> both come back <code>required</code> in the
+captured request; Delete Version(s)/Delete Template’s
+<code>Environment=production</code> extra-warning gate.</p>
+<p><strong>Dependency:</strong> None (builds on the existing EC2
+client/inventory/ Menu-tier conventions; does not depend on Phase
+20.26).</p>
+<h2
+id="phase-20.28-launch-templates-real-usage-fixes-and-version-history">Phase
+20.28 — Launch Templates: Real-Usage Fixes and Version History</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-20</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean; <code>gofmt -l</code> clean
+except the pre-existing, unrelated <code>version.go</code>); not yet
+re-verified against real AWS. Direct fallout from the operator’s first
+real-AWS pass over Phase 20.27 (creating a template, launching from it,
+syncing, promoting, listing, deleting) – one genuine bug found from the
+debug log, three UX gaps from live use. Implements
+<code>DECISIONS.md</code>, “Accept <code>v</code>-prefixed launch
+template versions” and “Launch Template version history, scrollable
+diffs, and split Show resource lists.”</p>
+<h3 id="work-items-72">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><strong>Bug: version
+selector rejected <code>"v1"</code>.</strong> Found in
+<code>clasm-debug-20260720-132204.jsonl</code>: the operator typed
+<code>v1</code> at the version prompt (natural, since
+<code>launchTemplateLabel</code>‘s own display format is “default v2”)
+and AWS rejected it outright for both
+<code>DescribeLaunchTemplateVersions</code> (“Invalid launch template
+version…”) and <code>ModifyLaunchTemplate</code> (“A launch template
+version must be specified…” – Promote appeared to silently do nothing,
+but had actually failed). New <code>normalizeVersionSelector</code>
+strips a leading <code>v</code>/<code>V</code> from a plain number
+before it reaches any AWS call; applied at all four version-entry points
+(Show/ Create-from-template/Sync’s shared prompt, Promote’s prompt,
+Delete-versions’ comma-separated list).</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Scrollable
+diff.</strong> Sync’s confirmation diff used to
+<code>fmt.Fprintln</code> a raw dump that could exceed the terminal and
+scroll off screen. New <code>displayRows</code>/<code>displayDiff</code>
+render through the shared List-tier component
+(<code>tui.RunListView</code>) in real interactive use; accessible/test
+mode falls back to the same plain dump as before (no real bubbletea loop
+exists there to drive a List-tier screen), so no existing test needed
+rewriting.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Launch template
+version history.</strong> Show Launch Template gained a sub-choice after
+picking a template: “Show version detail” (the original behavior), “List
+all versions” (number/date/ default-flag via new
+<code>inventory.ListLaunchTemplateVersions</code>, no content diffing),
+or “Diff two versions” (prompts for two version selectors, reuses the
+same diff mechanism Sync already has, read-only – never creates a
+version).</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Split Show
+resource lists (Compute only).</strong> Replaced the single combined
+action (Instances -&gt; AMIs -&gt; Launch Templates, paged through in
+sequence) with three separate menu entries: “Show instances,” “Show
+AMIs,” “Show launch templates” – reported directly as feeling awkward to
+page through two resource types to reach the third. S3 and Key
+Management are unaffected (each has exactly one resource type, no paging
+awkwardness there). <code>MenuActions.ShowResourceLists</code> became
+<code>ShowInstances</code>/<code>ShowAMIs</code>/
+<code>ShowLaunchTemplates</code>; <code>mainMenuItems</code> grew from
+18 to 20 entries.</label></li>
+</ul>
+<p><strong>Tests:</strong>
+<code>TestShowLaunchTemplate_AcceptsVPrefixedVersion</code> and
+<code>TestNormalizeVersionSelector</code> reproduce the exact failure
+from the debug log before fixing it;
+<code>TestDisplayDiff_AccessibleModeFallsBackToPlainDump</code> covers
+the test-mode branch;
+<code>TestShowLaunchTemplate_ListAllVersions</code>/
+<code>_DiffTwoVersions</code>/<code>_DiffTwoVersions_IdenticalReportsNoDifference</code>/
+<code>TestLaunchTemplateVersionRows</code> cover the new sub-choices;
+<code>TestListLaunchTemplateVersions_*</code> cover the new inventory
+call; <code>menu_test.go</code>’s hardcoded menu-item indices and count
+were updated for the reordering (matching the same maintenance every
+prior menu-ordering change in this project has needed).</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/show_launch_template.go</code>,
+<code>internal/workflow/launch_template_manage.go</code>,
+<code>internal/workflow/launch_template_sync.go</code>,
+<code>internal/inventory/launch_templates.go</code>,
+<code>internal/workflow/menu.go</code>, <code>cmd/clasm/main.go</code>,
+plus each file’s <code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> Phase 20.27.</p>
+<h2 id="phase-20.29-manage-tags-loop-until-q-show-tags-choice">Phase
+20.29 — Manage Tags: Loop Until ‘q’, Show Tags Choice</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-20</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean; <code>gofmt -l</code> clean
+except the pre-existing, unrelated <code>version.go</code>); not yet
+re-verified against real AWS. Closes the TODO.md bug: “missing a ‘show
+tags’ menu option and the tags shown at the top of the screen don’t
+update on change.” Implements <code>DECISIONS.md</code>, “Manage Tags:
+loop until ‘q’, always show current tags, add a Show tags choice.”</p>
+<h3 id="work-items-73">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>manageTagsForResource</code> restructured into a loop
+(display current tags -&gt; pick an action -&gt; act -&gt; loop) instead
+of one change then exit. Tags are re-displayed at the top of every
+iteration from a fresh fetch (a new <code>fetchTags</code> closure,
+built per-kind in <code>manageTags</code> and threaded through), not the
+original snapshot – this is the actual fix for “tags shown don’t update
+on change.”</label></li>
+<li><label><input type="checkbox" checked="" />“Show tags” added as a
+fourth action alongside Add/Update/Remove – deliberately a near no-op
+(just loops back to the redisplay every iteration already does), present
+because the operator asked for it by name.</label></li>
+<li><label><input type="checkbox" checked="" />Extracted
+<code>applyOneTagChange</code> (collect + confirm + apply one
+Add/Update/Remove) out of the loop body, so it’s directly unit-testable
+on its own without driving the loop at all.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>isCancellation</code> extracted from
+<code>cancelledIsNil</code>’s existing check and widened to include
+<code>io.EOF</code>, matching <code>menu.go</code>’s own
+<code>isExitSignal</code> (which already included it) – brings two
+similar-but-inconsistent “did the operator cancel” checks in this
+package in line with each other.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>A real testing
+gotcha, worth recording for future looping workflows in this
+package:</strong> huh’s own accessible-mode <code>Select</code> has no
+way to signal “the input is exhausted” as an error. Confirmed by reading
+<code>internal/accessibility.PromptString</code> (huh v1.0.0) – on
+<code>scanner.Scan()</code> returning false (EOF), it silently falls
+back to the field’s default value (here, option 1) and returns nil, it
+does not propagate <code>io.EOF</code>. A first attempt at this loop
+relied on running out of scripted test input to end it (matching this
+package’s usual <code>cancelledIsNil</code> convention) and instead span
+forever silently re-selecting “Show tags” and reconstructing
+<code>huh.Form</code>s – confirmed via <code>go test -timeout</code> and
+a goroutine dump, not assumed. Fixed by adding a <code>ctx.Err()</code>
+check at the top of the loop (matching <code>runMainMenu</code>’s own
+convention in <code>menu.go</code>) and having tests cancel
+<code>ctx</code> explicitly at the exact point they want the loop to
+stop – the same <code>cancelingAction</code> pattern
+<code>menu_test.go</code> already uses for <code>RunMainMenu</code>’s
+own loop, adapted here to trigger from a data-fetch closure
+(<code>cancelAfterNFetches</code>) instead of a dispatched menu
+action.</label></li>
+</ul>
+<p><strong>Tests:</strong>
+<code>TestManageTags_AddOnInstance</code>/<code>_UpdateOnAMI</code>/<code>_RemoveOnInstance</code>/
+<code>_EnvironmentNoteShown</code>/<code>_DeclinedConfirmationDoesNotApply</code>/
+<code>_NoExistingTagsToUpdate</code>/<code>_RejectsBlankTagKeyOnAdd</code>
+now call <code>applyOneTagChange</code> directly (simpler, and sidesteps
+the EOF gotcha entirely since there’s no loop involved).
+<code>TestManageTags_ShowTagsRedisplaysAndContinues</code> and
+<code>TestManageTags_LoopRefreshesTagsAfterChange</code> exercise the
+actual loop via <code>manageTagsForResource</code>, using
+<code>cancelAfterNFetches</code> to end it deterministically – the
+latter is the actual bug-fix proof: it Adds a tag, then immediately
+Updates it, which only succeeds if the loop refreshed tags from AWS in
+between (via a new <code>statefulTagsFakeEC2Client</code> that, unlike
+the shared <code>fakeEC2Client</code>, actually tracks tag state across
+<code>CreateTags</code>/<code>DescribeInstances</code> calls).</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/manage_tags.go</code>,
+<code>internal/workflow/manage_tags_test.go</code>.</p>
+<p><strong>Dependency:</strong> None.</p>
+<h3 id="real-usage-fix-2026-07-20">Real-usage fix (2026-07-20)</h3>
+<p>Found during Phase 20.30’s real-terminal testing: Add/Update/Remove
+all confirmed working (instances, AMIs, launch templates, key pairs),
+but “Show tags” appeared to do nothing – the screen looked unchanged.
+Root cause: the full-height “Choose an action” Select (Phase 20.26)
+scrolls the separately-printed <code>displayTags</code> output out of
+view the instant it renders, on every iteration – not specific to “Show
+tags” itself, but most noticeable there since nothing else changes on
+screen. Fixed by embedding the current tags directly in the Select’s own
+<code>Description</code> (<code>actionMenuDescription</code>, tested),
+so they’re guaranteed part of the same full-height chrome instead of
+relying on scrollback. See DECISIONS.md, “Manage Tags: embed current
+tags in the action Select’s own Description…”.
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/
+<code>gofmt</code> all clean; confirmed against a real terminal
+2026-07-20 for all four kinds (instance, AMI, launch template, key
+pair).</p>
+<hr />
+<h2 id="phase-20.30-tag-management-domain">Phase 20.30 — Tag Management
+Domain</h2>
+<p><strong>Status: all five resource types (Instance/AMI/Launch
+Template/Key Pair/S3 Bucket) implemented, unit-tested, and confirmed
+against real AWS 2026-07-20</strong> (<code>go build ./...</code>,
+<code>go vet ./...</code>, <code>go test ./... -race</code> all clean;
+<code>gofmt -l</code> clean except the pre-existing, unrelated
+<code>version.go</code>; Manage Tags’ Add/Update/Remove/Show tags all
+confirmed working at a real terminal for every kind, including S3
+Bucket’s read-modify-write and the real-usage fix below). Phase 20.30 is
+complete. Implements <code>DESIGN.md</code>, “Tag Management Domain
+(Design Addendum, 2026-07-20)” and <code>DECISIONS.md</code>, “Tag
+Management: a fourth domain, generalizing the Manage Tags loop across
+five resource types” plus “Generalize applyOneTagChange for S3’s
+read-modify-write tag semantics.” Closes the TODO.md requested feature:
+“A top level menu item for managing tags across resources (EC2, AMI, S3,
+etc).” Depended on Phase 20.29’s loop/<code>manageTagsForResource</code>
+shape, reused as-is for the EC2-backed types and unchanged in shape for
+S3 (only the apply closure it’s given differs).</p>
+<p><strong>Effort:</strong> Large (comparable to Phase 20.27, Launch
+Templates).</p>
+<p><strong>Priority:</strong> Requested feature, not a bug fix; no
+committed deadline.</p>
+<h3
+id="design-note-applyonetagchange-generalized-only-when-s3-actually-needed-it">Design
+note: <code>applyOneTagChange</code> generalized only when S3 actually
+needed it</h3>
+<p>The original plan (below) assumed <code>applyOneTagChange</code>
+would need a pluggable <em>apply</em> closure from the start. In
+practice, this phase shipped in two slices: the four EC2-backed kinds
+first, then S3. <code>ApplyTagChange</code> (EC2’s
+<code>CreateTags</code>/<code>DeleteTags</code>) already worked
+unmodified for all four EC2-backed kinds – Launch Template and Key Pair
+needed new <em>fetch</em> functions
+(<code>fetchLaunchTemplateTags</code>/<code>fetchKeyPairTags</code>) and
+new wiring, but not a new apply path – so the pluggable-apply-closure
+generalization was deferred until S3 actually needed it, rather than
+built speculatively up front. Rather than touch Compute’s existing
+narrow <code>ManageTags</code>/<code>manageTags</code> (Instance/AMI
+only) at all, a new, separate
+<code>ManageResourceTags</code>/<code>manageResourceTags</code> (in the
+new <code>internal/workflow/tag_management.go</code>) was added: it
+picks a kind, then a resource, then hands off to
+<code>manageTagsForResource</code>. Once the S3 slice began,
+<code>applyOneTagChange</code>/<code>manageTagsForResource</code> were
+generalized to take a <code>tagApplyFunc</code> closure instead of a
+hardcoded <code>awsclient.EC2API</code> client (DECISIONS.md,
+“Generalize applyOneTagChange for S3’s read-modify-write tag semantics”)
+– EC2-backed callers now build
+<code>func(ctx, params) error { return ApplyTagChange(ctx, client, params) }</code>
+at their one remaining call site each, and S3 builds
+<code>applyBucketTagChange</code> (<code>bucket_tags.go</code>)
+instead.</p>
+<h3 id="work-items-ec2-backed-types">Work Items (EC2-backed types)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Added
+<code>Tags map[string]string</code> to
+<code>inventory.Instance</code>/<code>Image</code>/
+<code>LaunchTemplate</code>/<code>KeyPair</code>, populated via a new
+package-private <code>tagsToMap</code> (mirroring
+<code>tagValues</code>) during the same Describe*/existing FromSDK
+decode already done for each – no new AWS call. Broke four
+<code>_test.go</code> files’ <code>got[i] != want[i]</code> struct
+comparisons (a struct containing a map field isn’t comparable with
+<code>==</code>/<code>!=</code> in Go) – fixed by switching those to
+<code>reflect.DeepEqual</code> with the expected <code>Tags</code> map
+now spelled out in each <code>want</code> literal, plus new
+<code>TestXFromSDK_CarriesFullTagMap</code> tests per type proving a tag
+outside the Name/Project/Environment convention still
+appears.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>fetchLaunchTemplateTags</code>/<code>fetchKeyPairTags</code>
+added to <code>manage_tags.go</code>, mirroring
+<code>fetchInstanceTags</code>/<code>fetchImageTags</code>. Launch
+template tags come from <code>ec2:DescribeLaunchTemplates</code> (the
+template resource’s own live tags), not
+<code>DescribeLaunchTemplateVersions</code> (a version’s
+<code>TagSpecifications</code> – Sync’s concern, Phase 20.27/20.28). Key
+pair tags are keyed by <code>KeyPairId</code>, not <code>KeyName</code>
+– matching how <code>ApplyTagChange</code> addresses any EC2 resource
+via <code>Resources: []string{id}</code>.</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>pickKeyPair</code> (Picker tier, <code>tag_management.go</code>),
+matching
+<code>pickInstance</code>/<code>pickImage</code>/<code>pickLaunchTemplate</code>’s
+shape – generic, unlike the existing deletion-specific
+<code>pickKeyPairForDeletion</code>.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>ManageResourceTags</code>/<code>manageResourceTags</code>
+(<code>tag_management.go</code>): picks a kind (Instance/AMI/Launch
+Template/Key Pair), picks a resource of that kind, then dispatches into
+the existing, unmodified <code>manageTagsForResource</code> loop.
+Compute’s own “Manage tags for an instance or AMI” is untouched – this
+is a genuinely separate, wider entry point (DECISIONS.md, rejected
+alternatives).</label></li>
+<li><label><input type="checkbox" checked="" />“Show all tags”:
+<code>ui.TaggedResource</code>/<code>flattenTags</code>/
+<code>tagsListViewConfig</code>/<code>DisplayAllTags</code>
+(<code>internal/ui/display.go</code>) – one shared row shape
+(ID/Label/Tags) and List-tier table builder reused per kind, TAGS column
+showing every key=value pair sorted by key, not just
+Project/Environment.
+<code>instanceTaggedResources</code>/<code>imageTaggedResources</code>/
+<code>launchTemplateTaggedResources</code>/<code>keyPairTaggedResources</code>
+(<code>tag_management.go</code>) convert each kind’s already-fetched
+inventory listing into that shared row shape (no new AWS call for any of
+the four). <code>ShowAllTags</code>/<code>showAllTags</code> picks a
+kind, then calls <code>ui.DisplayAllTags</code> with that kind’s
+rows.</label></li>
+<li><label><input type="checkbox" checked="" />Fourth
+<code>domainItems</code>/<code>DomainActions.TagManagement</code> entry,
+“Tag Management” (<code>domain_menu.go</code>), alongside Compute/Key
+Management/ S3.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>TagMgmtActions</code>/<code>tagmgmt_menu.go</code>
+(new file, mirrors <code>keymgmt_menu.go</code>’s shape exactly): two
+menu items, “Manage tags” and “Show all tags”.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: new
+<code>tagMgmtState</code> + <code>refreshTagMgmt</code> (independently
+re-fetches all four EC2-backed types, not reused from
+<code>state</code>/<code>keyMgmtState</code> – same reasoning as
+<code>refreshKeyMgmt</code>’s own independent instance refetch, since an
+operator may reach this domain before visiting Compute or Key Management
+in a given run), <code>tagMgmtActions</code>, and
+<code>domains.TagManagement</code> wired to
+<code>RunTagMgmtMenu</code>.</label></li>
+</ul>
+<h3 id="tests-ec2-backed-types">Tests (EC2-backed types)</h3>
+<ul>
+<li><code>TestXFromSDK_CarriesFullTagMap</code> per inventory type
+(Instance/Image/ LaunchTemplate/KeyPair), plus updated aggregate tests
+asserting the full <code>Tags</code> map via
+<code>reflect.DeepEqual</code>.</li>
+<li><code>TestFetchLaunchTemplateTags</code>/<code>TestFetchKeyPairTags</code>
+(+ <code>_NotFound</code> variants), matching
+<code>TestFetchInstanceTags</code>/<code>TestFetchImageTags</code>’s
+shape.</li>
+<li><code>TestManageResourceTags_No{Instances,AMIs,LaunchTemplates,KeyPairs}Found</code>
+– the only paths reachable via pipe input before a real Picker-tier
+call, matching <code>manageTags</code>’s own accepted untested-dispatch
+limitation.</li>
+<li><code>TestFlattenTags_*</code>/<code>TestTagsListViewConfig_*</code>
+(<code>internal/ui</code>) and
+<code>Test{Instance,Image,LaunchTemplate,KeyPair}TaggedResources</code>
+(<code>internal/workflow</code>) – pure data-transform coverage for
+“Show all tags”, without driving <code>tui.RunListView</code>’s
+interactive loop.</li>
+<li><code>tagmgmt_menu_test.go</code>, a full mirror of
+<code>keymgmt_menu_test.go</code>’s suite (dispatch,
+refresh-after-action, error survival, clean exit on cancelled
+ctx/interrupt/EOF, no stray “Back to domain picker” entry).</li>
+<li><code>domain_menu_test.go</code>:
+<code>TestRunDomainPicker_DispatchesToTagManagement</code>, and
+<code>TestDomainItems_NoExitEntry</code> updated from 3 to 4
+domains.</li>
+</ul>
+<p><strong>Files (EC2-backed types):</strong>
+<code>internal/inventory/{instances,images,launch_templates,keypairs}.go</code>
+and their <code>_test.go</code> files,
+<code>internal/workflow/manage_tags.go</code>,
+<code>internal/workflow/tag_management.go</code> (new),
+<code>internal/workflow/tag_management_test.go</code> (new),
+<code>internal/workflow/tagmgmt_menu.go</code> (new),
+<code>internal/workflow/tagmgmt_menu_test.go</code> (new),
+<code>internal/workflow/domain_menu.go</code> +
+<code>domain_menu_test.go</code>,
+<code>internal/workflow/launch_execute_test.go</code> (shared fake
+gained <code>DescribeLaunchTemplates</code>),
+<code>internal/ui/display.go</code> + <code>display_test.go</code>,
+<code>cmd/clasm/main.go</code>.</p>
+<h3 id="work-items-s3-bucket">Work Items (S3 Bucket)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Generalized
+<code>applyOneTagChange</code>/<code>manageTagsForResource</code> to
+take a <code>tagApplyFunc</code> closure
+(<code>func(ctx, TagChangeParams) error</code>) instead of a hardcoded
+<code>awsclient.EC2API</code> client. <code>manageTags</code> (Compute,
+Phase 20.29) and <code>manageResourceTags</code>’s four EC2-backed cases
+each build
+<code>func(ctx, params) error { return     ApplyTagChange(ctx, client, params) }</code>
+at their one remaining call site.</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/bucket_tags.go</code>:
+<code>fetchBucketTags</code> (<code>GetBucketTagging</code>,
+<code>NoSuchTagSet</code> -&gt; empty map, same convention as
+<code>bucketPurpose</code>) and <code>applyBucketTagChange</code> (the
+S3 <code>tagApplyFunc</code>) – fetch the bucket’s full tag set, apply
+one Add/Update/Remove locally, then write the whole set back via
+<code>PutBucketTagging</code>, or <code>DeleteBucketTagging</code> if
+the result is empty (removing the bucket’s last tag) rather than
+<code>PutBucketTagging</code> with an empty <code>TagSet</code> –
+proactively matching <code>ManageBucketLifecyclePolicies</code>’
+<code>DeleteBucketLifecycle</code> precedent for the same “replace the
+whole set” operation shape (added <code>DeleteBucketTagging</code> to
+<code>awsclient.S3API</code> + its logging wrapper + the shared
+<code>fakeS3Client</code> for this). Not itself confirmed against real
+AWS yet – <code>PutBucketTaggingInput</code>’s SDK-level client-side
+validator was checked and only requires <code>TagSet</code> to be
+non-nil, not non-empty, so an empty-but-non-nil
+<code>PutBucketTagging</code> might in fact have worked;
+<code>DeleteBucketTagging</code> was still chosen out of caution,
+matching the lifecycle precedent, pending real-usage verification either
+way.</label></li>
+<li><label><input type="checkbox" checked="" />“S3 Bucket” added as a
+fifth entry to <code>tagManagementKinds</code> (shared by
+<code>ManageResourceTags</code>’s and <code>ShowAllTags</code>’s kind
+pickers); <code>manageResourceTags</code>’s new case reuses
+<code>pickBucket</code>, <code>fetchBucketTags</code>, and
+<code>applyBucketTagChange</code>.</label></li>
+<li><label><input type="checkbox" checked="" />“Show all tags” for S3
+Bucket: <code>bucketTaggedResources</code>
+(<code>tag_management.go</code>) makes one on-demand
+<code>GetBucketTagging</code> call per bucket via
+<code>newS3Client</code> – deliberately NOT folded into the shared
+<code>ListBuckets</code>/<code>inventory.Bucket</code> (unlike the four
+EC2-backed types’ free full tag map), since that would add N extra
+network calls to every other S3 screen that doesn’t need
+tags.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: <code>tagMgmtState</code>
+gained <code>buckets</code>; <code>refreshTagMgmt</code> now also calls
+<code>inventory.ListBuckets</code>;
+<code>tagMgmtActions.ManageTags</code>/<code>ShowAllTags</code> pass
+<code>newS3Client</code> and <code>tagMgmtState.buckets</code>
+through.</label></li>
+</ul>
+<h3 id="tests-s3-bucket">Tests (S3 Bucket)</h3>
+<ul>
+<li><code>TestFetchBucketTags</code>/<code>_NoSuchTagSetIsEmptyNotError</code>/
+<code>_PropagatesOtherErrors</code>
+(<code>bucket_tags_test.go</code>).</li>
+<li>A new <code>statefulTagsFakeS3Client</code> (mirroring
+<code>statefulTagsFakeEC2Client</code>), proving:
+<code>TestApplyBucketTagChange_Add</code>/ <code>_Update</code>;
+<code>TestApplyBucketTagChange_RemoveLastTagUsesDeleteBucketTagging</code>
+(the direct proof for the <code>DeleteBucketTagging</code> choice –
+asserts <code>PutBucketTagging</code> is <em>not</em> called with an
+empty set); <code>_RemoveOneOfSeveralTagsUsesPutBucketTagging</code>
+(the non-empty-result case still uses <code>PutBucketTagging</code>);
+<code>_AddThenUpdateRoundTrips</code> (the actual read-modify-write
+proof, same role as
+<code>TestManageTags_LoopRefreshesTagsAfterChange</code> plays for
+EC2).</li>
+<li><code>TestManageResourceTags_NoBucketsFound</code>,
+<code>TestBucketTaggedResources</code>/
+<code>_PropagatesClientError</code>
+(<code>tag_management_test.go</code>), using the shared
+<code>fakeS3Client</code>/<code>newRegionS3Client</code> test
+helpers.</li>
+<li>Full existing EC2-backed test suite re-run unchanged after the
+<code>tagApplyFunc</code> generalization (regression coverage; no
+existing test needed to change behaviorally, only its direct calls to
+<code>applyOneTagChange</code>/<code>manageTagsForResource</code> now
+wrap the fake via a new <code>ec2Apply(client)</code> test helper).</li>
+</ul>
+<p><strong>Files (S3 Bucket):</strong>
+<code>internal/awsclient/s3.go</code> + <code>logging_s3.go</code>
+(<code>DeleteBucketTagging</code>),
+<code>internal/workflow/manage_tags.go</code> (<code>tagApplyFunc</code>
+generalization), <code>internal/workflow/manage_tags_test.go</code>
+(<code>ec2Apply</code> helper),
+<code>internal/workflow/bucket_tags.go</code> (new),
+<code>internal/workflow/bucket_tags_test.go</code> (new),
+<code>internal/workflow/tag_management.go</code> +
+<code>tag_management_test.go</code>,
+<code>internal/workflow/bucket_fakes_test.go</code> +
+<code>backup_verify_test.go</code> (shared <code>fakeS3Client</code>
+gained <code>DeleteBucketTagging</code>),
+<code>internal/workflow/tagmgmt_menu.go</code>,
+<code>cmd/clasm/main.go</code>.</p>
+<p><strong>Dependency:</strong> Phase 20.29 (Manage Tags
+loop/<code>manageTagsForResource</code>).</p>
+<hr />
 <h2 id="phase-21-cloudfront-domain">Phase 21 — CloudFront Domain</h2>
-<p><strong>Status: postponed to a later version (2026-07-09, see TODO.md
-and DECISIONS.md) – not part of 0.0.1.</strong> No code written; the
+<p><strong>Status: someday/maybe – not on the active roadmap, no
+committed timeline (revised 2026-07-09 from “postponed to a later
+version,” see DECISIONS.md).</strong> No code written; the
 <code>CloudFront</code> domain-picker entry was removed rather than left
 wired to <code>NotYetImplemented</code>, so the 0.0.1 UI doesn’t expose
 a menu item that goes nowhere. The design below stays valid reference
-for whenever this is picked back up.</p>
-<p><strong>Effort:</strong> ~8 hours <strong>Priority:</strong> Medium
+for if this is ever picked back up, but it is not queued as “next”
+behind anything currently planned (Phase 20.1 is the active next-release
+work).</p>
+<p><strong>Effort:</strong> ~8 hours (implementation) + real-AWS
+verification, now folded into this phase’s own scope rather than Phase
+22’s – see below <strong>Priority:</strong> Deferred (someday/maybe)
 <strong>Files:</strong> <code>internal/awsclient/cloudfront.go</code>,
 <code>internal/inventory/distributions.go</code>,
 <code>internal/workflow/{distribution_create,distribution_invalidate}.go</code></p>
 <p>Implements <code>DESIGN.md</code> Features 22-25.</p>
-<h3 id="work-items-46">Work Items</h3>
+<h3 id="work-items-74">Work Items</h3>
 <ul>
 <li><code>CloudFrontAPI</code> interface:
 <code>ListDistributions</code>, <code>GetDistribution</code>,
@@ -1786,6 +4347,11 @@ update the bucket policy scoped to this distribution’s ARN
 <code>cloudfront:CreateInvalidation</code>, poll until
 <code>Completed</code></li>
 <li>Wire into the domain picker from Phase 18</li>
+<li>Real-AWS verification for this domain (create a distribution for a
+real test bucket, verify it actually serves content, invalidate, confirm
+the cache refreshes) – moved here from Phase 22 (see below) now that
+CloudFront is someday/maybe rather than queued as “next”; Phase 22 no
+longer needs to wait on this phase to close out</li>
 </ul>
 <p><strong>Tests:</strong> fakes for each new CloudFront call;
 OAC-then-bucket-policy sequencing;
@@ -1794,29 +4360,30 @@ test timeouts</p>
 <p><strong>Dependency:</strong> Phase 18, Phase 20 (Create Distribution
 hands off to Create Bucket)</p>
 <hr />
-<h2 id="phase-22-real-aws-testing-key-management-s3-cloudfront">Phase 22
-— Real-AWS Testing: Key Management, S3, CloudFront</h2>
+<h2 id="phase-22-real-aws-testing-key-management-s3">Phase 22 — Real-AWS
+Testing: Key Management, S3</h2>
 <p><strong>Effort:</strong> ~6 hours <strong>Priority:</strong> High
 <strong>Files:</strong> <code>TEST_PLAN_REAL_AWS.txt</code> (extended
 with new sections)</p>
-<p>Mirrors Phase 16’s manual-verification approach, extended to the
-three new domains. Independent of Phase 16/17 (Compute’s own
+<p>Mirrors Phase 16’s manual-verification approach, extended to Key
+Management and S3. Independent of Phase 16/17 (Compute’s own
 verification and Bash retirement) — see <code>DECISIONS.md</code>,
-2026-07-02.</p>
-<h3 id="work-items-47">Work Items</h3>
+2026-07-02. No longer covers CloudFront (see <code>DECISIONS.md</code>,
+“Demote CloudFront to someday/maybe…”) — that verification now lives in
+Phase 21 itself, whenever it’s picked up, so this phase isn’t blocked on
+a someday/maybe item.</p>
+<h3 id="work-items-75">Work Items</h3>
 <ul>
 <li>Extend <code>TEST_PLAN_REAL_AWS.txt</code> with sections for Key
-Management (create/import/delete against real AWS, all four regions), S3
-(create bucket, configure website hosting, sync a small test site,
-browse/ delete objects), and CloudFront (create a distribution for a
-real test bucket, verify it actually serves content, invalidate, confirm
-the cache refreshes)</li>
+Management (create/import/delete against real AWS, all four regions) and
+S3 (create bucket, configure website hosting, sync a small test site,
+browse/delete objects)</li>
 <li>Run manually against the real AWS account, same
 <code>[ok]</code>-marker convention as Phase 16</li>
 <li>Update <code>TEST_PLAN_REAL_AWS.txt</code> if the Go CLI’s exact
 prompts/flow differ from what’s documented</li>
 </ul>
-<p><strong>Dependency:</strong> Phase 19, 20, 21</p>
+<p><strong>Dependency:</strong> Phase 19, 20</p>
 <hr />
 <h2 id="deferred-to-a-later-version-phase-23-not-scheduled">Deferred to
 a Later Version (Phase 23+, not scheduled)</h2>
@@ -2011,8 +4578,14 @@ Implementation</h2>
 <td>Phase 18</td>
 </tr>
 <tr>
+<td>Phase 20.1</td>
+<td>High</td>
+<td>24h</td>
+<td>Phase 20</td>
+</tr>
+<tr>
 <td>Phase 21</td>
-<td>Medium</td>
+<td>Deferred (someday/maybe)</td>
 <td>8h</td>
 <td>Phase 18, Phase 20</td>
 </tr>
@@ -2020,7 +4593,7 @@ Implementation</h2>
 <td>Phase 22</td>
 <td>High</td>
 <td>6h</td>
-<td>Phase 19, 20, 21</td>
+<td>Phase 19, 20</td>
 </tr>
 <tr>
 <td>Phase 23+</td>

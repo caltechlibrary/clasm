@@ -3478,14 +3478,13 @@ all four kinds (instance, AMI, launch template, key pair).
 ## Phase 20.30 — Tag Management Domain
 
 **Status: all five resource types (Instance/AMI/Launch Template/Key
-Pair/S3 Bucket) implemented and unit-tested 2026-07-20** (`go build
-./...`, `go vet ./...`, `go test ./... -race` all clean; `gofmt -l`
-clean except the pre-existing, unrelated `version.go`). EC2-backed
-types additionally confirmed against real AWS 2026-07-20 (Manage Tags'
-Add/Update/Remove/Show tags all working at a real terminal for all
-four kinds, including the real-usage fix below); **S3 Bucket is
-implemented and unit-tested but not yet exercised against real AWS.**
-Implements `DESIGN.md`, "Tag Management Domain (Design Addendum,
+Pair/S3 Bucket) implemented, unit-tested, and confirmed against real
+AWS 2026-07-20** (`go build ./...`, `go vet ./...`, `go test ./...
+-race` all clean; `gofmt -l` clean except the pre-existing, unrelated
+`version.go`; Manage Tags' Add/Update/Remove/Show tags all confirmed
+working at a real terminal for every kind, including S3 Bucket's
+read-modify-write and the real-usage fix below). Phase 20.30 is
+complete. Implements `DESIGN.md`, "Tag Management Domain (Design Addendum,
 2026-07-20)" and `DECISIONS.md`, "Tag Management: a fourth domain,
 generalizing the Manage Tags loop across five resource types" plus
 "Generalize applyOneTagChange for S3's read-modify-write tag

@@ -25,110 +25,91 @@
 </nav>
 <section id="main-content">
 <h1 id="action-items">Action items</h1>
+<h2 id="bugs">Bugs</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" checked="" />UI bug, we should check
-to make sure aws cli is on remote system before invoking it, that way we
-can explicitly say it is missing and how to install it – implemented as
-<code>CheckAWSCLIAvailable</code>
-(<code>internal/workflow/backup_cli_check.go</code>), see DECISIONS.md,
-“Preflight check: AWS CLI availability before Backup Archive &amp; Trim”
-(2026-07-02).</label></li>
-</ul>
-<h2 id="done-go-rewrite-see-plan.md-decisions.md-2026-07-01">Done (Go
-rewrite — see PLAN.md, DECISIONS.md 2026-07-01)</h2>
-<p>PLAN.md Phases 0 through 17 are implemented, tested, and verified
-against real AWS as of 2026-07-08 (<code>go build ./...</code>,
-<code>go vet ./...</code>, <code>go test ./... -race</code>,
-<code>gofmt -l</code> all clean; <code>TEST_PLAN_REAL_AWS.txt</code>
-fully checked off, 112/112 items).</p>
-<ul class="task-list">
-<li><label><input type="checkbox" checked="" />Work through
-<code>TEST_PLAN_REAL_AWS.txt</code> against real AWS, both configured
-regions (us-west-1, us-west-2 – narrowed from four; see DECISIONS.md,
-“Narrow configured regions to us-west-1/us-west-2”)</label></li>
-<li><label><input type="checkbox" checked="" />Phase 16 (PLAN.md):
-manual test plan fully run, no open gaps</label></li>
-<li><label><input type="checkbox" checked="" />Phase 17 (PLAN.md):
-documentation pass + retire
-<code>ec2_ami_manager.bash</code>/<code>ami_copy.bash</code>/<code>tests/*.bats</code>
-– done 2026-07-08, see DECISIONS.md, “Retire ec2_ami_manager.bash,
-ami_copy.bash, and the Bash test suite”</label></li>
-<li><label><input type="checkbox" checked="" />Phase 19 (PLAN.md): Key
-Management domain (list/create/import/ delete key pairs) – done
-2026-07-08, wired into the domain picker</label></li>
-<li><label><input type="checkbox" checked="" />Phase 20 (PLAN.md): S3
-domain (buckets, static website hosting, directory sync, object
-browsing, lifecycle policies) – done and real-AWS verified 2026-07-08,
-wired into the domain picker. One real bug found and fixed during
-verification (removing a bucket’s last lifecycle rule now correctly
-calls <code>DeleteBucketLifecycle</code> instead of an invalid
-empty-<code>Rules</code> <code>PutBucketLifecycleConfiguration</code> –
-see DECISIONS.md, “Clear a bucket’s lifecycle configuration via
-DeleteBucketLifecycle, not an empty
-PutBucketLifecycleConfiguration”).</label></li>
-<li><label><input type="checkbox" checked="" />Manage Bucket Lifecycle
-Policies’ guided flow now validates locally that a transition’s days is
-strictly less than the rule’s expiration days (and vice versa in the
-generic editor), instead of surfacing AWS’s raw rejection – see
-<code>validateLessThan</code>/ <code>validateGreaterThan</code> in
-<code>internal/workflow/bucket_lifecycle.go</code>. Closes the gap noted
-below under “Discussed but not yet designed/ implemented” as of
-2026-07-08.</label></li>
-<li><label><input type="checkbox" checked="" />Manage Bucket Lifecycle
-Policies’ “View rule details” action: pick a rule and see its full
-expiration/transition/filter configuration without entering the Add/Edit
-flow; loops back to the action menu instead of exiting the
-workflow.</label></li>
-<li><label><input type="checkbox" checked="" />Delete Bucket: refuses a
-non-empty bucket (reports the object count) and gates the irreversible
-<code>s3:DeleteBucket</code> call with <code>ConfirmDestructive</code>
-(type the bucket name back).</label></li>
-<li><label><input type="checkbox" checked="" />Delete Objects by Prefix:
-bulk-deletes every object under a key prefix (blank prefix = whole
-bucket) without needing a local directory to diff against the way Sync
-does; gated the same way, typing the prefix (or bucket name) back to
-confirm.</label></li>
-<li><label><input type="checkbox" checked="" /><code>ui.PickList</code>
-filter-as-you-type: non-numeric input narrows any picker’s list by a
-case-insensitive label substring match (bucket lists, instance lists,
-etc.), and the bucket list itself is now returned sorted alphabetically
-by <code>inventory.ListBuckets</code>.</label></li>
-</ul>
-<h2 id="postponed-to-a-later-version">Postponed to a later version</h2>
+<li><label><input type="checkbox" checked="" />Each screen should fill
+the terminal window consistantly, still a problem in current version
+(commit a3c07051cf83899ca4b7dd333a55830870f183dc)</label>
 <ul>
-<li>CloudFront domain (PLAN.md Phases 21-22): designed in
-DESIGN.md/PLAN.md, no code written yet. Explicitly postponed by the user
-(2026-07-09) – removed from <code>DomainActions</code>/the domain picker
-rather than left as a “not yet implemented” placeholder entry, so 0.0.1
-doesn’t expose a menu item that goes nowhere. The design in
-DESIGN.md/PLAN.md stays valid reference for whenever this is picked back
-up.</li>
-<li>UI/UX overhaul: 0.0.1 ships on <code>termlib</code> (the current
-numbered-menu, blocking-prompt style) as-is.
-<code>charmbracelet/huh</code> (built on <code>bubbletea</code>) was
-evaluated as a likely direction for the <em>next</em> release – closer
-fit than raw <code>bubbletea</code> since its fields are
-synchronous/blocking like termlib’s, has a built-in accessible/
-scriptable mode (<code>RunAccessible(w, r)</code>) that maps onto this
-project’s existing pipe-based test pattern, and its <code>Select</code>
-field’s built-in incremental filtering is a nicer target than the
-numbered-list-plus- filter approach <code>ui.PickList</code> just grew.
-Not started; would touch most of <code>internal/workflow</code>’s ~40
-prompt call sites plus their tests.</li>
+<li>I don’t think when a new screen is written that we’re actually
+checking the window’s height. Many screens clear but then ownly draw in
+about 1/3 of the window height</li>
+<li>Confirmed fixed 2026-07-20 across all four TUI tiers
+(Menu/Picker/List/Manager) – see TUI_REFERENCE.md</li>
+</ul></li>
+<li><label><input type="checkbox" checked="" />The bahavior of the
+filter and picker filter needs to be uniform, right now some filters
+treat “q” as quick filter rather than the default huh uses (empty
+string), the “q” doesn’t exit the whole clasm but returns to the prior
+screen.</label></li>
+<li><label><input type="checkbox" checked="" />The screen for adding,
+updating, and removing tags is missing a “show tags” menu option and the
+tags shown at the top of he screen don’t update on change</label></li>
+<li><label><input type="checkbox" checked="" />When creating a new EC2
+instance the IDMSv2 metadata value should be set to true per AWS
+Security recommendations</label></li>
 </ul>
-<h2 id="discussed-but-not-yet-designedimplemented">Discussed but not yet
-designed/implemented</h2>
+<h2 id="requested-features">Requested features</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" checked="" />Pre-flight sanity check
-before <code>RunInstances</code>: cross-reference the picked AMI’s
-<code>EnaSupport</code> against the picked instance type’s ENA
-requirement. Both known failure classes from this session are now
-implemented: instance-type/Availability-Zone (DECISIONS.md, “Pre-flight
-check: instance type vs. subnet Availability Zone”) and
-instance-type/AMI-ENA-support (DECISIONS.md, “Pre-flight check: instance
-type vs. AMI ENA support”). If a third incompatibility class turns up,
-that’s the point to reconsider a shared framework, not before (see
-either decision’s “Rejected alternatives”).</label></li>
+<li><label><input type="checkbox" />When doing the Archive backups, the
+S3 target bucket should be saved as a default but I’m not sure how this
+works with the bucket picker approach we have now. This needs to be
+explored.</label></li>
+<li><label><input type="checkbox" checked="" />A top level menu item for
+managing tags across resources (EC2, AMI, S3, etc)</label>
+<ul>
+<li>All five resource types (Instance, AMI, Launch Template, Key Pair,
+S3 Bucket) done and confirmed against real AWS 2026-07-20 – see PLAN.md
+Phase 20.30.</li>
+</ul></li>
+<li><label><input type="checkbox" checked="" />My work group uses launch
+templates instances for EC2 we need to support managing those (list,
+show a template, add, update and remove)</label></li>
+<li><label><input type="checkbox" checked="" />We need to way to sync a
+launch template with the updates from a cloud init YAML file</label>
+<ul>
+<li>The flow is cloud init yaml -&gt; launch template -&gt; EC2
+instance</li>
+</ul></li>
+<li><label><input type="checkbox" />Need a show instances details, ami
+details, launch template details</label></li>
+</ul>
+<h2 id="nice-to-have">Nice to have</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />Be able to list the CloudFront
+distribution ID for S3 static websites</label></li>
+<li><label><input type="checkbox" checked="" />More color usage will
+make the interface easier to read, we can show relationship between menu
+items using color to group</label>
+<ul>
+<li>Color usage is substantially more extensive now that the whole UI
+runs on huh/lipgloss/bubbletea (2026-07-13 chrome standardization): one
+shared indigo accent across every field/box border/spinner, plus
+color-coded instance state (green=running, red=stopped,
+yellow=pending/stopping) in the List-tier tables. The specific “group
+menu items by color to show relationship” idea, though, was superseded
+by a deliberate opposite choice – DECISIONS.md, “Chrome standardization:
+one shared indigo accent via lipgloss” – one uniform accent everywhere,
+not a different color per domain/group, to keep every screen reading as
+the same visual language. Checking this off as addressed in spirit
+(color usage substantially increased, and reads more clearly), not as a
+literal per-group color scheme.</li>
+</ul></li>
+<li><label><input type="checkbox" checked="" />For actions that take
+more than a few minutes, a spinner that shows progress would be
+nice</label></li>
+<li><label><input type="checkbox" />Bulk object delete (the file
+manager’s Delete/Sync actions, <code>internal/filemanager</code>)
+currently loops one <code>s3:DeleteObject</code> call per key.
+<code>github.com/peak/s5cmd/v2</code>’s
+<code>storage.S3.MultiDelete</code> batches keys into groups of up to
+1000 and calls the batch <code>s3:DeleteObjects</code> API in parallel
+chunks – not importable directly (aws-sdk-go v1 + urfave/cli coupling,
+vs. this project’s aws-sdk-go-v2), but <code>aws-sdk-go-v2</code>’s
+<code>s3</code> package already exposes <code>DeleteObjects</code>, so
+the same batching pattern could be reimplemented natively without a new
+dependency. Evaluated 2026-07-09, flagged again as an open question in
+PLAN.md Phase 20.1’s work items, still not started.</label></li>
 <li><label><input type="checkbox" />Retry-on-launch-failure (general
 case): instead of bouncing back to the main menu on any
 <code>RunInstances</code> error, keep the already-collected params and
@@ -140,50 +121,52 @@ instance type / pick a different subnet / abort) for that one failure
 class, pre-flight rather than reactive – this item is about generalizing
 to <em>any</em> RunInstances failure, not just that one.</label></li>
 </ul>
-<h2 id="nice-to-have">Nice to have</h2>
-<ul class="task-list">
-<li><label><input type="checkbox" />More color usage will make the
-interface easier to read, we can show relationship between menu items
-using color to group</label></li>
-<li><label><input type="checkbox" />For actions that take more than a
-few minutes, a spinner that shows progress would be nice</label></li>
-<li><label><input type="checkbox" />Bulk object delete (Sync’s delete
-step, Delete Objects by Prefix) currently loops one
-<code>s3:DeleteObject</code> call per key.
-<code>github.com/peak/s5cmd/v2</code>’s
-<code>storage.S3.MultiDelete</code> batches keys into groups of up to
-1000 and calls the batch <code>s3:DeleteObjects</code> API in parallel
-chunks – not importable directly (aws-sdk-go v1 + urfave/cli coupling,
-vs. this project’s aws-sdk-go-v2), but <code>aws-sdk-go-v2</code>’s
-<code>s3</code> package already exposes <code>DeleteObjects</code>, so
-the same batching pattern could be reimplemented natively without a new
-dependency. Evaluated 2026-07-09, not started.</label></li>
-</ul>
-<h2
-id="superseded-bash-version-retired-2026-07-08-see-decisions.md">Superseded
-(Bash version — retired 2026-07-08, see DECISIONS.md)</h2>
-<p>Real-world use surfaced three bugs (<code>eval</code> quoting crash
-in the interactive picker, a locale-dependent <code>grep</code> failure,
-and a malformed AWS CLI tag string that silently prevented AMI creation)
-that led to the decision to retarget to Go rather than keep patching.
-<code>ec2_ami_manager.bash</code>, <code>ami_copy.bash</code>,
-<code>ami_copy_basic_steps.md</code>, and the BATS suite have now been
-deleted from this repo (see DECISIONS.md, “Retire ec2_ami_manager.bash,
-ami_copy.bash, and the Bash test suite”) – the items below are
-historical record only, not actionable.</p>
-<ul class="task-list">
-<li><label><input type="checkbox" checked="" />Phase 5b (PLAN.md, Bash
-version): port ami_copy.bash’s volume-size estimate, SSM fstrim step,
-unbounded creation polling, and Invenio-RDM running-instance guidance
-into ec2_ami_manager.bash’s Phase 5 workflow. Implemented and
-unit-tested (tests/test_create_ami.bats, 27 tests).</label></li>
-<li><label><input type="checkbox" /><del>Manually verify
-ec2_ami_manager.bash’s create-AMI workflow against a real EC2
-instance</del> — superseded; verification now targets the Go binary (see
-PLAN.md Phase 16)</label></li>
-<li><label><input type="checkbox" /><del>Write BATS tests for Phase 6
-(AMI removal) and Phase 7 (main menu)</del> — superseded; those
-workflows get Go tests instead</label></li>
+<h2 id="somedaymaybe-not-on-the-active-roadmap">Someday/maybe (not on
+the active roadmap)</h2>
+<ul>
+<li><p>Container management: AWS container registry support as a
+top-level menu item, plus SSM-based interaction with Docker containers
+running inside an EC2 instance (list the Docker services on an instance;
+image a running Docker service and save that image to the private
+container registry or S3). Moved here from Requested Features 2026-07-20
+– no design work done, no committed timeline. The two items are grouped
+together (not split back into two separate entries) since the
+Docker-service imaging workflow’s own save target is the container
+registry this would introduce – picking this back up means designing
+both together, not the registry alone.</p></li>
+<li><p>CloudFront domain (PLAN.md Phase 21): designed in
+DESIGN.md/PLAN.md, no code written yet. Postponed by the user
+(2026-07-09), then further demoted the same day from “postponed to a
+later version” to someday/maybe – no committed timeline (see
+DECISIONS.md, “Demote CloudFront to someday/maybe…”). Removed from
+<code>DomainActions</code>/the domain picker rather than left as a “not
+yet implemented” placeholder entry, so 0.0.1 doesn’t expose a menu item
+that goes nowhere. The design in DESIGN.md/PLAN.md stays valid reference
+for if this is ever picked back up. Phase 22 (real-AWS testing for Key
+Management/S3) no longer depends on it.</p></li>
+<li><p>Change EBS storage properties (volume size, type, IOPS,
+throughput) in a launch template. AWS supports this fully via
+<code>RequestLaunchTemplateData.BlockDeviceMappings</code> – confirmed
+against the SDK, 2026-07-20 – but the current template model
+deliberately excludes it (DESIGN.md, “Launch Templates,” curated field
+set), and the plain instance-launch wizard (Features 2/3) doesn’t set
+<code>BlockDeviceMappings</code> either, so every instance clasm
+launches today just inherits the source AMI’s default EBS config.
+Anticipated need: launch templates are expected to become the way
+development EC2 instances get spun up, and instance type/CPU/RAM/storage
+will likely need refining over time based on cost – not urgent yet, but
+flagged so it isn’t lost.</p></li>
+<li><p>A compliance/audit-style report across the Tag Management
+domain’s five resource types (EC2 instance, AMI, launch template, key
+pair, S3 bucket): which resources are missing tags entirely (or missing
+the Project/Environment convention specifically). Raised 2026-07-20
+during Tag Management’s design, expected to come up again later –
+distinct from “Show all tags” (Phase 20.30, per-resource-type, showing
+what each resource <em>has</em>), this would be a cross-type view
+answering “what’s missing,” which is a different query shape and likely
+needs its own design pass (e.g., does “missing tags” mean zero tags at
+all, or specifically missing Project/Environment?). Not scoped or
+started.</p></li>
 </ul>
 </section>
 <footer-global></footer-global>
