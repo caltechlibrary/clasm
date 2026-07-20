@@ -277,12 +277,12 @@ func main() {
 		images          []inventory.Image
 		launchTemplates []inventory.LaunchTemplate
 		keyPairs        []inventory.KeyPair
+		buckets         []inventory.Bucket
 	}
-	// refreshTagMgmt independently re-fetches all four EC2-backed
-	// resource types the Tag Management domain currently covers (S3
-	// Bucket to follow, PLAN.md Phase 20.30's remaining work) -- not
-	// reused from state/keyMgmtState, since an operator may reach this
-	// domain before visiting Compute or Key Management in this run (see
+	// refreshTagMgmt independently re-fetches all five resource types
+	// the Tag Management domain covers -- not reused from state/
+	// keyMgmtState/s3State, since an operator may reach this domain
+	// before visiting Compute, Key Management, or S3 in this run (see
 	// refreshKeyMgmt's own comment for the same reasoning).
 	refreshTagMgmt := func(ctx context.Context) error {
 		instances, err := inventory.ListInstances(ctx, ec2Clients)
@@ -301,7 +301,11 @@ func main() {
 		if err != nil {
 			return fmt.Errorf("listing key pairs: %w", err)
 		}
-		tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs = instances, images, launchTemplates, keyPairs
+		buckets, err := inventory.ListBuckets(ctx, s3Client, newS3Client)
+		if err != nil {
+			return fmt.Errorf("listing buckets: %w", err)
+		}
+		tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets = instances, images, launchTemplates, keyPairs, buckets
 		return nil
 	}
 
@@ -403,10 +407,10 @@ func main() {
 
 	tagMgmtActions := workflow.TagMgmtActions{
 		ManageTags: func(ctx context.Context) error {
-			return workflow.ManageResourceTags(ctx, out, ec2Clients, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs)
+			return workflow.ManageResourceTags(ctx, out, ec2Clients, newS3Client, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets)
 		},
 		ShowAllTags: func(ctx context.Context) error {
-			return workflow.ShowAllTags(ctx, out, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs)
+			return workflow.ShowAllTags(ctx, out, newS3Client, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets)
 		},
 		Refresh: refreshTagMgmt,
 	}

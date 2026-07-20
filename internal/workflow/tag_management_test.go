@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -20,7 +24,7 @@ import (
 
 func TestManageResourceTags_NoInstancesFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("1\n") // kind = Instance
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +35,7 @@ func TestManageResourceTags_NoInstancesFound(t *testing.T) {
 
 func TestManageResourceTags_NoAMIsFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("2\n") // kind = AMI
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +46,7 @@ func TestManageResourceTags_NoAMIsFound(t *testing.T) {
 
 func TestManageResourceTags_NoLaunchTemplatesFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("3\n") // kind = Launch Template
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,12 +57,23 @@ func TestManageResourceTags_NoLaunchTemplatesFound(t *testing.T) {
 
 func TestManageResourceTags_NoKeyPairsFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("4\n") // kind = Key Pair
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "No key pairs found") {
 		t.Errorf("expected a no-key-pairs message, got:\n%s", buf.String())
+	}
+}
+
+func TestManageResourceTags_NoBucketsFound(t *testing.T) {
+	term, menuInput, buf := newPipeEditor("5\n") // kind = S3 Bucket
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No buckets found") {
+		t.Errorf("expected a no-buckets message, got:\n%s", buf.String())
 	}
 }
 
@@ -117,6 +132,39 @@ func TestKeyPairTaggedResources(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// bucketTaggedResources is not a pure data transform like its four
+// EC2-backed siblings above -- it makes a real (fake, here)
+// s3:GetBucketTagging call per bucket, since inventory.Bucket doesn't
+// carry a full tag map the way Instance/Image/LaunchTemplate/KeyPair
+// now do (DECISIONS.md, "Tag Management: a fourth domain...", "Show
+// all tags" design). Still unit-testable via a fake newS3Client.
+func TestBucketTaggedResources(t *testing.T) {
+	fake := &fakeS3Client{tagSet: []types.Tag{{Key: aws.String("Purpose"), Value: aws.String("backup")}}}
+	newS3Client := newRegionS3Client(map[string]awsclient.S3API{"us-west-2": fake})
+	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-west-2"}}
+
+	got, err := bucketTaggedResources(context.Background(), newS3Client, buckets)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []ui.TaggedResource{
+		{ID: "my-bucket", Label: bucketLabel(buckets[0]), Tags: map[string]string{"Purpose": "backup"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestBucketTaggedResources_PropagatesClientError(t *testing.T) {
+	newS3Client := newRegionS3Client(map[string]awsclient.S3API{})
+	buckets := []inventory.Bucket{{Name: "my-bucket", Region: "us-east-1"}}
+
+	_, err := bucketTaggedResources(context.Background(), newS3Client, buckets)
+	if err == nil {
+		t.Fatal("expected an error")
 	}
 }
 

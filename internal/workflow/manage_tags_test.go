@@ -55,6 +55,16 @@ func (f *statefulTagsFakeEC2Client) DeleteTags(ctx context.Context, params *ec2.
 	return &ec2.DeleteTagsOutput{}, nil
 }
 
+// ec2Apply wraps an awsclient.EC2API fake as a tagApplyFunc, matching
+// how manageTags/manageResourceTags build their own EC2 apply closure
+// around ApplyTagChange in production -- lets these tests keep passing
+// a plain fake rather than constructing the closure at every call site.
+func ec2Apply(client awsclient.EC2API) tagApplyFunc {
+	return func(ctx context.Context, params TagChangeParams) error {
+		return ApplyTagChange(ctx, client, params)
+	}
+}
+
 func TestApplyTagChange_Add(t *testing.T) {
 	fake := &fakeEC2Client{}
 	err := ApplyTagChange(context.Background(), fake, TagChangeParams{ResourceID: "i-1", Action: "add", Key: "Owner", Value: "dld"})
@@ -136,6 +146,32 @@ func TestFetchImageTags(t *testing.T) {
 	}
 }
 
+// actionMenuDescription is the direct fix for a real bug found via
+// live-terminal testing (reported: choosing "Show tags" appeared to do
+// nothing -- the screen looked unchanged, even after a confirmed
+// Add/Update/Remove). Root cause: the full-height action Select
+// (Phase 20.26) scrolls displayTags' separately-printed output out of
+// view the instant it renders, so the current tags must be part of the
+// Select's own chrome (its Description) to stay visible regardless of
+// terminal height.
+
+func TestActionMenuDescription_ListsCurrentTags(t *testing.T) {
+	tags := map[string]string{"Project": "caltechauthors", "Owner": "dld"}
+	got := actionMenuDescription("i-1 - web", tags)
+	for _, want := range []string{"i-1 - web", "Project = caltechauthors", "Owner = dld"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("actionMenuDescription = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestActionMenuDescription_NoTags(t *testing.T) {
+	got := actionMenuDescription("i-1 - web", nil)
+	if !strings.Contains(got, "(no tags)") {
+		t.Errorf("actionMenuDescription = %q, want it to mention (no tags)", got)
+	}
+}
+
 func TestFetchLaunchTemplateTags(t *testing.T) {
 	fake := &fakeEC2Client{launchTemplates: []types.LaunchTemplate{
 		{
@@ -212,7 +248,7 @@ func TestManageTags_AddOnInstance(t *testing.T) {
 	input := "Owner\n" + "dld\n" + "y\n" // key, value, confirm
 	term, menuInput, buf := newPipeEditor(input)
 
-	changed, err := applyOneTagChange(context.Background(), term, fake, "i-1", "i-1 - web", "Add", nil, menuInput, buf)
+	changed, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "i-1", "i-1 - web", "Add", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +266,7 @@ func TestManageTags_UpdateOnAMI(t *testing.T) {
 	input := "1\n" + "caltechauthors\n" + "y\n" // pick Project (only tag), new value, confirm
 	term, menuInput, buf := newPipeEditor(input)
 
-	changed, err := applyOneTagChange(context.Background(), term, fake, "ami-1", "ami-1 - base", "Update", tags, menuInput, buf)
+	changed, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "ami-1", "ami-1 - base", "Update", tags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,7 +284,7 @@ func TestManageTags_RemoveOnInstance(t *testing.T) {
 	tags := map[string]string{"Owner": "dld"}
 	term, menuInput, buf := newPipeEditor("1\ny\n") // pick Owner (only tag), confirm
 
-	changed, err := applyOneTagChange(context.Background(), term, fake, "i-1", "i-1 - web", "Remove", tags, menuInput, buf)
+	changed, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "i-1", "i-1 - web", "Remove", tags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -265,7 +301,7 @@ func TestManageTags_EnvironmentNoteShown(t *testing.T) {
 	fake := &fakeEC2Client{}
 	term, menuInput, buf := newPipeEditor("Environment\nproduction\ny\n")
 
-	_, err := applyOneTagChange(context.Background(), term, fake, "i-1", "i-1 - web", "Add", nil, menuInput, buf)
+	_, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "i-1", "i-1 - web", "Add", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -278,7 +314,7 @@ func TestManageTags_DeclinedConfirmationDoesNotApply(t *testing.T) {
 	fake := &fakeEC2Client{}
 	term, menuInput, buf := newPipeEditor("Owner\ndld\nn\n")
 
-	changed, err := applyOneTagChange(context.Background(), term, fake, "i-1", "i-1 - web", "Add", nil, menuInput, buf)
+	changed, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "i-1", "i-1 - web", "Add", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -294,7 +330,7 @@ func TestManageTags_NoExistingTagsToUpdate(t *testing.T) {
 	fake := &fakeEC2Client{}
 	term, menuInput, buf := newPipeEditor("") // Update needs no input at all -- there's nothing to pick
 
-	changed, err := applyOneTagChange(context.Background(), term, fake, "i-1", "i-1 - web", "Update", nil, menuInput, buf)
+	changed, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "i-1", "i-1 - web", "Update", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +347,7 @@ func TestManageTags_RejectsBlankTagKeyOnAdd(t *testing.T) {
 	input := "\nOwner\ndld\ny\n" // blank key (rejected), retry key, value, confirm
 	term, menuInput, buf := newPipeEditor(input)
 
-	changed, err := applyOneTagChange(context.Background(), term, fake, "i-1", "i-1 - web", "Add", nil, menuInput, buf)
+	changed, err := applyOneTagChange(context.Background(), term, ec2Apply(fake), "i-1", "i-1 - web", "Add", nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -369,7 +405,7 @@ func TestManageTags_ShowTagsRedisplaysAndContinues(t *testing.T) {
 		return fetchInstanceTags(ctx, fake, "i-1")
 	})
 
-	err = manageTagsForResource(ctx, term, fake, "i-1", "i-1 - web", tags, fetchTags, menuInput, buf)
+	err = manageTagsForResource(ctx, term, ec2Apply(fake), "i-1", "i-1 - web", tags, fetchTags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -400,7 +436,7 @@ func TestManageTags_LoopRefreshesTagsAfterChange(t *testing.T) {
 		return fetchInstanceTags(ctx, fake, "i-1")
 	})
 
-	err := manageTagsForResource(ctx, term, fake, "i-1", "i-1 - web", nil, fetchTags, menuInput, buf)
+	err := manageTagsForResource(ctx, term, ec2Apply(fake), "i-1", "i-1 - web", nil, fetchTags, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

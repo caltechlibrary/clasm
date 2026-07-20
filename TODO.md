@@ -13,8 +13,8 @@
 ## Requested features
 
 - [ ] When doing the Archive backups, the S3 target bucket should be saved as a default but I'm not sure how this works with the bucket picker approach we have now. This needs to be explored.
-- [ ] A top level menu item for managing tags across resources (EC2, AMI, S3, etc)
-  - EC2-backed types (Instance, AMI, Launch Template, Key Pair) done 2026-07-20 -- see PLAN.md Phase 20.30. S3 Bucket remains (needs a pluggable apply closure for `PutBucketTagging`'s read-modify-write semantics).
+- [x] A top level menu item for managing tags across resources (EC2, AMI, S3, etc)
+  - All five resource types (Instance, AMI, Launch Template, Key Pair, S3 Bucket) done 2026-07-20 -- see PLAN.md Phase 20.30. EC2-backed types confirmed against real AWS; S3 Bucket unit-tested but not yet exercised against real AWS.
 - [x] My work group uses launch templates instances for EC2 we need to support managing those (list, show a template, add, update and remove)
 - [x] We need to way to sync a launch template with the updates from a cloud init YAML file
   - The flow is cloud init yaml -> launch template -> EC2 instance
@@ -22,6 +22,7 @@
 - [ ] SSMS supports interactions with docker containers running inside an EC2 instance we need to provide manageability for those docker services
   - [ ] list docker services inside EC2 instance
   - [ ] image docker service instances inside EC2 instance saving the image in the AWS private container registry or on S3
+- [ ] Need a show instances details, ami details, launch template details
 
 ## Nice to have
 

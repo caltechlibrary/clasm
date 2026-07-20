@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -139,6 +140,39 @@ func displayTags(w io.Writer, label string, tags map[string]string) {
 	}
 }
 
+// actionMenuDescription formats resourceLabel's current tags for the
+// "Choose an action" Select's own Description, so they're rendered
+// inside that Select's full-height chrome (Phase 20.26) rather than
+// relying solely on displayTags' separate plain print staying visible
+// above it. Reported directly: on a real terminal, choosing "Show
+// tags" appeared to do nothing -- the screen looked unchanged -- even
+// though the loop does re-run displayTags every iteration. Root cause:
+// a Menu-tier huh.Select is pinned to the full terminal height on every
+// render (DESIGN.md, "Full-height Menu Tier"), so the instant the
+// action prompt re-renders, it fills the whole visible terminal and
+// scrolls whatever was printed just before it (here, displayTags'
+// output) out of view -- the data was always current, only the
+// *screen* wasn't showing it. Embedding the same tags directly in this
+// Select's Description guarantees they're part of what's on screen
+// when the operator is asked to choose an action, regardless of
+// terminal height or what scrolled off above. displayTags itself is
+// kept too -- accessible mode (huh.Select.RunAccessible) only ever
+// prints a field's Title and options, never its Description, so the
+// existing accessible-mode tests (which assert tag content appears in
+// output) still depend on displayTags' plain print.
+func actionMenuDescription(label string, tags map[string]string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Current tags for %s:", label)
+	keys := sortedKeys(tags)
+	if len(keys) == 0 {
+		b.WriteString("\n  (no tags)")
+	}
+	for _, k := range keys {
+		fmt.Fprintf(&b, "\n  %s = %s", k, tags[k])
+	}
+	return b.String()
+}
+
 // ManageTags runs the full Manage Tags workflow (DESIGN.md, Feature 7):
 // pick an instance or AMI, display its current tags, choose add/update/
 // remove, collect the key/value, confirm (simple yes/no -- cheap and
@@ -223,7 +257,8 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 		}
 	}
 
-	return manageTagsForResource(ctx, w, client, resourceID, resourceLabel, tags, fetchTags, menuInput, menuOutput)
+	apply := func(ctx context.Context, params TagChangeParams) error { return ApplyTagChange(ctx, client, params) }
+	return manageTagsForResource(ctx, w, apply, resourceID, resourceLabel, tags, fetchTags, menuInput, menuOutput)
 }
 
 // manageTagsForResource is manageTags' testable core for a single
@@ -242,6 +277,13 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 // so "Show tags" as its own menu choice is deliberately a no-op beyond
 // looping back to that redisplay -- it exists because the operator
 // asked for it by name, not because the display is otherwise hidden.
+// That redisplay is also embedded directly in the action Select's own
+// Description (actionMenuDescription), not just the separate plain
+// displayTags print above it -- see actionMenuDescription's doc
+// comment for the real-usage bug (Phase 20.30 testing) this fixed:
+// on a real terminal, the full-height Select (Phase 20.26) scrolled
+// displayTags' output out of view the instant it rendered, making
+// "Show tags" look broken even though the underlying data was current.
 //
 // The ctx.Err() check at the top of the loop matches runMainMenu's own
 // convention (menu.go) -- and, for this function specifically, is
@@ -254,7 +296,7 @@ func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 // their one cancelingAction fires). Tests instead cancel ctx explicitly
 // at the point they want the loop to stop, exactly like menu_test.go's
 // cancelingAction already does for RunMainMenu's loop.
-func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC2API, resourceID, resourceLabel string, tags map[string]string, fetchTags func(ctx context.Context) (map[string]string, error), menuInput io.Reader, menuOutput io.Writer) error {
+func manageTagsForResource(ctx context.Context, w io.Writer, apply tagApplyFunc, resourceID, resourceLabel string, tags map[string]string, fetchTags func(ctx context.Context) (map[string]string, error), menuInput io.Reader, menuOutput io.Writer) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -262,7 +304,7 @@ func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC
 
 		displayTags(w, resourceLabel, tags)
 
-		action, err := pickString(w, "Choose an action", "The resource's current tags are listed above.", "(q to cancel)", []string{"Show tags", "Add", "Update", "Remove"}, menuInput, menuOutput)
+		action, err := pickString(w, "Choose an action", actionMenuDescription(resourceLabel, tags), "(q to cancel)", []string{"Show tags", "Add", "Update", "Remove"}, menuInput, menuOutput)
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}
@@ -270,7 +312,7 @@ func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC
 			continue
 		}
 
-		changed, err := applyOneTagChange(ctx, w, client, resourceID, resourceLabel, action, tags, menuInput, menuOutput)
+		changed, err := applyOneTagChange(ctx, w, apply, resourceID, resourceLabel, action, tags, menuInput, menuOutput)
 		if err != nil {
 			if isCancellation(err) {
 				fmt.Fprintln(w, "Cancelled.")
@@ -289,15 +331,27 @@ func manageTagsForResource(ctx context.Context, w io.Writer, client awsclient.EC
 	}
 }
 
+// tagApplyFunc commits one already-collected Add/Update/Remove change
+// (DECISIONS.md, "Tag Management: a fourth domain..."). EC2-backed
+// resources (Instance/AMI/Launch Template/Key Pair) use ApplyTagChange
+// (CreateTags/DeleteTags, fine-grained, one call per change); S3
+// buckets use applyBucketTagChange (bucket_tags.go) instead, since
+// s3:PutBucketTagging replaces the whole tag set and has no
+// fine-grained add/remove-one-tag call of its own -- callers build
+// whichever closure matches the resource kind and pass it to
+// applyOneTagChange/manageTagsForResource, which are otherwise
+// identical regardless of which kind of resource they're editing.
+type tagApplyFunc func(ctx context.Context, params TagChangeParams) error
+
 // applyOneTagChange collects and applies a single Add/Update/Remove,
 // once the operator has already chosen which -- extracted from
 // manageTagsForResource so its own loop (above) can distinguish "the
 // operator cancelled a sub-step" (continue the loop, back to the
 // action picker) from "the change actually happened" (refresh tags)
 // from "nothing to do" (no existing tags, or a declined confirmation --
-// loop with tags unchanged). Returns changed=true only after
-// ApplyTagChange itself succeeds.
-func applyOneTagChange(ctx context.Context, w io.Writer, client awsclient.EC2API, resourceID, resourceLabel, action string, tags map[string]string, menuInput io.Reader, menuOutput io.Writer) (changed bool, err error) {
+// loop with tags unchanged). Returns changed=true only after apply
+// itself succeeds.
+func applyOneTagChange(ctx context.Context, w io.Writer, apply tagApplyFunc, resourceID, resourceLabel, action string, tags map[string]string, menuInput io.Reader, menuOutput io.Writer) (changed bool, err error) {
 	params := TagChangeParams{ResourceID: resourceID}
 	switch action {
 	case "Add":
@@ -351,7 +405,7 @@ func applyOneTagChange(ctx context.Context, w io.Writer, client awsclient.EC2API
 		return false, nil
 	}
 
-	if err := ApplyTagChange(ctx, client, params); err != nil {
+	if err := apply(ctx, params); err != nil {
 		return false, fmt.Errorf("updating tags on %s: %w", resourceID, err)
 	}
 

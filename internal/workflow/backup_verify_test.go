@@ -46,6 +46,9 @@ type fakeS3Client struct {
 	getBucketTaggingErr error
 	tagSet              []types.Tag // GetBucketTagging's canned response
 
+	deleteBucketTaggingErr   error
+	deleteBucketTaggingCalls []s3.DeleteBucketTaggingInput
+
 	getBucketWebsiteErr error
 	websiteIndexSuffix  string // "" simulates NoSuchWebsiteConfiguration
 	websiteErrorKey     string

@@ -59,7 +59,7 @@ func pickTagMgmtItem(w io.Writer, input io.Reader, output io.Writer) (tagMgmtIte
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Choose an option").
-		Description("Manage tags on an EC2 instance, AMI, launch template, or key pair, or list every tag on all resources of one kind.").
+		Description("Manage tags on an EC2 instance, AMI, launch template, key pair, or S3 bucket, or list every tag on all resources of one kind.").
 		Options(opts...).
 		Value(&idx)
 

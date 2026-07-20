@@ -3456,46 +3456,74 @@ across `CreateTags`/`DescribeInstances` calls).
 
 **Dependency:** None.
 
+### Real-usage fix (2026-07-20)
+
+Found during Phase 20.30's real-terminal testing: Add/Update/Remove all
+confirmed working (instances, AMIs, launch templates, key pairs), but
+"Show tags" appeared to do nothing -- the screen looked unchanged.
+Root cause: the full-height "Choose an action" Select (Phase 20.26)
+scrolls the separately-printed `displayTags` output out of view the
+instant it renders, on every iteration -- not specific to "Show tags"
+itself, but most noticeable there since nothing else changes on
+screen. Fixed by embedding the current tags directly in the Select's
+own `Description` (`actionMenuDescription`, tested), so they're
+guaranteed part of the same full-height chrome instead of relying on
+scrollback. See DECISIONS.md, "Manage Tags: embed current tags in the
+action Select's own Description...". `go build`/`vet`/`test -race`/
+`gofmt` all clean; confirmed against a real terminal 2026-07-20 for
+all four kinds (instance, AMI, launch template, key pair).
+
 ---
 
 ## Phase 20.30 — Tag Management Domain
 
-**Status: EC2-backed types (Instance/AMI/Launch Template/Key Pair)
-implemented and unit-tested 2026-07-20** (`go build ./...`,
-`go vet ./...`, `go test ./... -race` all clean; `gofmt -l` clean
-except the pre-existing, unrelated `version.go`); not yet re-verified
-against real AWS. **S3 Bucket is not yet wired in** -- see the punch
-list at the bottom of this phase for the remaining slice. Implements
-`DESIGN.md`, "Tag Management Domain (Design Addendum, 2026-07-20)" and
-`DECISIONS.md`, "Tag Management: a fourth domain, generalizing the
-Manage Tags loop across five resource types." Partially closes the
-TODO.md requested feature: "A top level menu item for managing tags
-across resources (EC2, AMI, S3, etc)" (EC2/AMI done; S3 remains).
-Depended on Phase 20.29's loop/`manageTagsForResource` shape, reused
-as-is.
+**Status: all five resource types (Instance/AMI/Launch Template/Key
+Pair/S3 Bucket) implemented and unit-tested 2026-07-20** (`go build
+./...`, `go vet ./...`, `go test ./... -race` all clean; `gofmt -l`
+clean except the pre-existing, unrelated `version.go`). EC2-backed
+types additionally confirmed against real AWS 2026-07-20 (Manage Tags'
+Add/Update/Remove/Show tags all working at a real terminal for all
+four kinds, including the real-usage fix below); **S3 Bucket is
+implemented and unit-tested but not yet exercised against real AWS.**
+Implements `DESIGN.md`, "Tag Management Domain (Design Addendum,
+2026-07-20)" and `DECISIONS.md`, "Tag Management: a fourth domain,
+generalizing the Manage Tags loop across five resource types" plus
+"Generalize applyOneTagChange for S3's read-modify-write tag
+semantics." Closes the TODO.md requested feature: "A top level menu
+item for managing tags across resources (EC2, AMI, S3, etc)." Depended
+on Phase 20.29's loop/`manageTagsForResource` shape, reused as-is for
+the EC2-backed types and unchanged in shape for S3 (only the apply
+closure it's given differs).
 
 **Effort:** Large (comparable to Phase 20.27, Launch Templates).
 
 **Priority:** Requested feature, not a bug fix; no committed deadline.
 
-### Design note: no `applyOneTagChange` generalization needed yet
+### Design note: `applyOneTagChange` generalized only when S3 actually needed it
 
 The original plan (below) assumed `applyOneTagChange` would need a
-pluggable *apply* closure from the start. In practice, `ApplyTagChange`
-(EC2's `CreateTags`/`DeleteTags`) already works unmodified for all four
-EC2-backed kinds -- Launch Template and Key Pair needed new *fetch*
-functions (`fetchLaunchTemplateTags`/`fetchKeyPairTags`) and new
-wiring, but not a new apply path. Rather than touch Compute's existing
-narrow `ManageTags`/`manageTags` (Instance/AMI only) at all, a new,
-separate `ManageResourceTags`/`manageResourceTags` (in the new
+pluggable *apply* closure from the start. In practice, this phase
+shipped in two slices: the four EC2-backed kinds first, then S3.
+`ApplyTagChange` (EC2's `CreateTags`/`DeleteTags`) already worked
+unmodified for all four EC2-backed kinds -- Launch Template and Key
+Pair needed new *fetch* functions
+(`fetchLaunchTemplateTags`/`fetchKeyPairTags`) and new wiring, but not
+a new apply path -- so the pluggable-apply-closure generalization was
+deferred until S3 actually needed it, rather than built speculatively
+up front. Rather than touch Compute's existing narrow
+`ManageTags`/`manageTags` (Instance/AMI only) at all, a new, separate
+`ManageResourceTags`/`manageResourceTags` (in the new
 `internal/workflow/tag_management.go`) was added: it picks a kind, then
-a resource, then hands off to the *same*, unmodified
-`manageTagsForResource` loop Phase 20.29 built. The pluggable-apply-
-closure generalization is deferred to the S3 slice, since S3's
-read-modify-write `PutBucketTagging` semantics are the first case that
-actually needs a different apply path.
+a resource, then hands off to `manageTagsForResource`. Once the S3
+slice began, `applyOneTagChange`/`manageTagsForResource` were
+generalized to take a `tagApplyFunc` closure instead of a hardcoded
+`awsclient.EC2API` client (DECISIONS.md, "Generalize applyOneTagChange
+for S3's read-modify-write tag semantics") -- EC2-backed callers now
+build `func(ctx, params) error { return ApplyTagChange(ctx, client,
+params) }` at their one remaining call site each, and S3 builds
+`applyBucketTagChange` (`bucket_tags.go`) instead.
 
-### Work Items (EC2-backed types -- done)
+### Work Items (EC2-backed types)
 
 - [x] Added `Tags map[string]string` to `inventory.Instance`/`Image`/
       `LaunchTemplate`/`KeyPair`, populated via a new package-private
@@ -3551,7 +3579,7 @@ actually needs a different apply path.
       Management in a given run), `tagMgmtActions`, and
       `domains.TagManagement` wired to `RunTagMgmtMenu`.
 
-### Tests (EC2-backed types -- done)
+### Tests (EC2-backed types)
 
 - `TestXFromSDK_CarriesFullTagMap` per inventory type (Instance/Image/
   LaunchTemplate/KeyPair), plus updated aggregate tests asserting the
@@ -3573,7 +3601,7 @@ actually needs a different apply path.
 - `domain_menu_test.go`: `TestRunDomainPicker_DispatchesToTagManagement`,
   and `TestDomainItems_NoExitEntry` updated from 3 to 4 domains.
 
-**Files (done):** `internal/inventory/{instances,images,launch_templates,keypairs}.go`
+**Files (EC2-backed types):** `internal/inventory/{instances,images,launch_templates,keypairs}.go`
 and their `_test.go` files, `internal/workflow/manage_tags.go`,
 `internal/workflow/tag_management.go` (new),
 `internal/workflow/tag_management_test.go` (new),
@@ -3584,33 +3612,81 @@ and their `_test.go` files, `internal/workflow/manage_tags.go`,
 `DescribeLaunchTemplates`), `internal/ui/display.go` +
 `display_test.go`, `cmd/clasm/main.go`.
 
-### Remaining work: S3 Bucket
+### Work Items (S3 Bucket)
 
-- [ ] Generalize `applyOneTagChange` to take a pluggable *apply*
-      closure alongside the `fetchTags` closure it already takes --
-      only needed now, for S3 (the EC2-backed apply closure stays
-      `ApplyTagChange`, unchanged; a new S3 closure implements
-      read-modify-write).
-- [ ] New S3 bucket tag fetch/apply functions implementing transparent
-      read-modify-write: fetch the bucket's full tag set
-      (`GetBucketTagging`), change one entry, `PutBucketTagging` the
-      whole set back. Scoped to add/update/remove only, matching the
-      rest of this phase.
-- [ ] Add "S3 Bucket" as a fifth kind to `ManageResourceTags`'s kind
-      picker and (reusing `pickBucket`) resource picker.
-- [ ] "Show all tags" for S3 Bucket: a dedicated on-demand fetch (one
-      `GetBucketTagging` call per bucket), used only by this action --
-      deliberately NOT baked into the shared `ListBuckets`/
-      `inventory.Bucket`, since that would add N extra network calls to
-      every other S3 screen that doesn't need tags (unlike the four
-      EC2-backed types, whose full tag map came free from data already
-      being fetched).
-- [ ] Tests: generalized `applyOneTagChange` regression-tested against
-      existing Phase 20.29 EC2 tests (must still pass unchanged) plus
-      new S3 read-modify-write tests (Add/Update/Remove against a fake
-      S3 client tracking `GetBucketTagging`/`PutBucketTagging` state,
-      mirroring `statefulTagsFakeEC2Client`'s approach); "Show all
-      tags" for S3 asserting one `GetBucketTagging` call per bucket.
+- [x] Generalized `applyOneTagChange`/`manageTagsForResource` to take a
+      `tagApplyFunc` closure (`func(ctx, TagChangeParams) error`)
+      instead of a hardcoded `awsclient.EC2API` client. `manageTags`
+      (Compute, Phase 20.29) and `manageResourceTags`'s four EC2-backed
+      cases each build `func(ctx, params) error { return
+      ApplyTagChange(ctx, client, params) }` at their one remaining
+      call site.
+- [x] New `internal/workflow/bucket_tags.go`: `fetchBucketTags`
+      (`GetBucketTagging`, `NoSuchTagSet` -> empty map, same convention
+      as `bucketPurpose`) and `applyBucketTagChange` (the S3
+      `tagApplyFunc`) -- fetch the bucket's full tag set, apply one
+      Add/Update/Remove locally, then write the whole set back via
+      `PutBucketTagging`, or `DeleteBucketTagging` if the result is
+      empty (removing the bucket's last tag) rather than
+      `PutBucketTagging` with an empty `TagSet` -- proactively
+      matching `ManageBucketLifecyclePolicies`'
+      `DeleteBucketLifecycle` precedent for the same "replace the
+      whole set" operation shape (added `DeleteBucketTagging` to
+      `awsclient.S3API` + its logging wrapper + the shared
+      `fakeS3Client` for this). Not itself confirmed against real AWS
+      yet -- `PutBucketTaggingInput`'s SDK-level client-side validator
+      was checked and only requires `TagSet` to be non-nil, not
+      non-empty, so an empty-but-non-nil `PutBucketTagging` might in
+      fact have worked; `DeleteBucketTagging` was still chosen out of
+      caution, matching the lifecycle precedent, pending real-usage
+      verification either way.
+- [x] "S3 Bucket" added as a fifth entry to `tagManagementKinds`
+      (shared by `ManageResourceTags`'s and `ShowAllTags`'s kind
+      pickers); `manageResourceTags`'s new case reuses `pickBucket`,
+      `fetchBucketTags`, and `applyBucketTagChange`.
+- [x] "Show all tags" for S3 Bucket: `bucketTaggedResources`
+      (`tag_management.go`) makes one on-demand `GetBucketTagging` call
+      per bucket via `newS3Client` -- deliberately NOT folded into the
+      shared `ListBuckets`/`inventory.Bucket` (unlike the four
+      EC2-backed types' free full tag map), since that would add N
+      extra network calls to every other S3 screen that doesn't need
+      tags.
+- [x] `cmd/clasm/main.go`: `tagMgmtState` gained `buckets`;
+      `refreshTagMgmt` now also calls `inventory.ListBuckets`;
+      `tagMgmtActions.ManageTags`/`ShowAllTags` pass `newS3Client` and
+      `tagMgmtState.buckets` through.
+
+### Tests (S3 Bucket)
+
+- `TestFetchBucketTags`/`_NoSuchTagSetIsEmptyNotError`/
+  `_PropagatesOtherErrors` (`bucket_tags_test.go`).
+- A new `statefulTagsFakeS3Client` (mirroring
+  `statefulTagsFakeEC2Client`), proving: `TestApplyBucketTagChange_Add`/
+  `_Update`; `TestApplyBucketTagChange_RemoveLastTagUsesDeleteBucketTagging`
+  (the direct proof for the `DeleteBucketTagging` choice -- asserts
+  `PutBucketTagging` is *not* called with an empty set);
+  `_RemoveOneOfSeveralTagsUsesPutBucketTagging` (the non-empty-result
+  case still uses `PutBucketTagging`); `_AddThenUpdateRoundTrips` (the
+  actual read-modify-write proof, same role as
+  `TestManageTags_LoopRefreshesTagsAfterChange` plays for EC2).
+- `TestManageResourceTags_NoBucketsFound`, `TestBucketTaggedResources`/
+  `_PropagatesClientError` (`tag_management_test.go`), using the shared
+  `fakeS3Client`/`newRegionS3Client` test helpers.
+- Full existing EC2-backed test suite re-run unchanged after the
+  `tagApplyFunc` generalization (regression coverage; no existing test
+  needed to change behaviorally, only its direct calls to
+  `applyOneTagChange`/`manageTagsForResource` now wrap the fake via a
+  new `ec2Apply(client)` test helper).
+
+**Files (S3 Bucket):** `internal/awsclient/s3.go` + `logging_s3.go`
+(`DeleteBucketTagging`), `internal/workflow/manage_tags.go`
+(`tagApplyFunc` generalization), `internal/workflow/manage_tags_test.go`
+(`ec2Apply` helper), `internal/workflow/bucket_tags.go` (new),
+`internal/workflow/bucket_tags_test.go` (new),
+`internal/workflow/tag_management.go` + `tag_management_test.go`,
+`internal/workflow/bucket_fakes_test.go` + `backup_verify_test.go`
+(shared `fakeS3Client` gained `DeleteBucketTagging`),
+`internal/workflow/tagmgmt_menu.go`, `cmd/clasm/main.go`.
 
 **Dependency:** Phase 20.29 (Manage Tags loop/`manageTagsForResource`).
 

@@ -31,7 +31,15 @@ import (
 // file manager's Download action (DESIGN.md 21.6, Phase 20.1) --
 // completes Create/Update/Read/Delete parity, previously deferred in
 // Phase 20. Not adding PutBucketPolicy -- only needed by the deferred
-// public-read opt-out.
+// public-read opt-out. DeleteBucketTagging supports the Tag Management
+// domain's S3 Bucket kind (PLAN.md Phase 20.30): removing a bucket's
+// last tag goes through this separate operation rather than
+// PutBucketTagging with an empty TagSet, proactively matching the
+// DeleteBucketLifecycle precedent above (PutBucketLifecycleConfiguration
+// was confirmed via real-AWS testing to reject an empty Rules list) --
+// not itself re-confirmed against real AWS, but the same class of
+// "replace the whole set" operation, so treated with the same caution
+// until real-usage testing says otherwise.
 type S3API interface {
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
@@ -51,6 +59,7 @@ type S3API interface {
 	PutBucketLifecycleConfiguration(ctx context.Context, params *s3.PutBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.PutBucketLifecycleConfigurationOutput, error)
 	DeleteBucketLifecycle(ctx context.Context, params *s3.DeleteBucketLifecycleInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketLifecycleOutput, error)
 	DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error)
+	DeleteBucketTagging(ctx context.Context, params *s3.DeleteBucketTaggingInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketTaggingOutput, error)
 }
 
 // NewS3Client constructs an S3 client from the SDK's default credential

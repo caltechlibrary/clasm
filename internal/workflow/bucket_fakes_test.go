@@ -61,6 +61,14 @@ func (f *fakeS3Client) GetBucketTagging(ctx context.Context, params *s3.GetBucke
 	return &s3.GetBucketTaggingOutput{TagSet: f.tagSet}, nil
 }
 
+func (f *fakeS3Client) DeleteBucketTagging(ctx context.Context, params *s3.DeleteBucketTaggingInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketTaggingOutput, error) {
+	f.deleteBucketTaggingCalls = append(f.deleteBucketTaggingCalls, *params)
+	if f.deleteBucketTaggingErr != nil {
+		return nil, f.deleteBucketTaggingErr
+	}
+	return &s3.DeleteBucketTaggingOutput{}, nil
+}
+
 func (f *fakeS3Client) GetBucketWebsite(ctx context.Context, params *s3.GetBucketWebsiteInput, optFns ...func(*s3.Options)) (*s3.GetBucketWebsiteOutput, error) {
 	if f.getBucketWebsiteErr != nil {
 		return nil, f.getBucketWebsiteErr

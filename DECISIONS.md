@@ -4,6 +4,140 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-20 — Generalize applyOneTagChange for S3's read-modify-write tag semantics
+
+**Context.** With the four EC2-backed kinds of Tag Management done and
+confirmed against real AWS, S3 Bucket was the one remaining kind (see
+DECISIONS.md, "Tag Management: a fourth domain...", which anticipated
+this exact generalization but deliberately deferred it until a real
+second apply-shape existed -- PLAN.md Phase 20.30's "Design note").
+`s3:PutBucketTagging` replaces a bucket's *entire* tag set and has no
+fine-grained add/remove-one-tag call the way EC2's
+`CreateTags`/`DeleteTags` do, so S3 needed a genuinely different apply
+path, not just new fetch/wiring like Launch Template/Key Pair did.
+
+**Decision.** `applyOneTagChange`/`manageTagsForResource`
+(`manage_tags.go`) now take a `tagApplyFunc` (`func(ctx
+context.Context, params TagChangeParams) error`) instead of a
+hardcoded `awsclient.EC2API` client. Every existing call site
+(Compute's `manageTags`, and `manageResourceTags`'s four EC2-backed
+cases) builds `func(ctx, params) error { return ApplyTagChange(ctx,
+client, params) }` once, at the point `client` is already resolved --
+mechanically identical behavior, just the client wrapped in a closure
+instead of passed raw. New `internal/workflow/bucket_tags.go` adds the
+S3 side: `fetchBucketTags` (a full-tag-set `GetBucketTagging`, treating
+`NoSuchTagSet` as empty, same convention as `bucketPurpose`) and
+`applyBucketTagChange` (the S3 `tagApplyFunc`) -- fetch current tags,
+apply the one collected Add/Update/Remove locally, then write the
+whole set back. If that leaves zero tags (removing the bucket's last
+one), it calls the newly-added `s3:DeleteBucketTagging` instead of
+`PutBucketTagging` with an empty `TagSet` -- proactively matching
+`ManageBucketLifecyclePolicies`' own `DeleteBucketLifecycle` precedent
+for the same "replace the whole set" operation shape (real-AWS
+verification there found `PutBucketLifecycleConfiguration` rejects an
+empty `Rules` list client-side). Checked (not assumed) whether the same
+applies to `PutBucketTaggingInput`: the SDK's generated
+`validateOpPutBucketTaggingInput`/`validateTagging` only require
+`TagSet` to be non-nil, not non-empty, so an empty-but-non-nil
+`PutBucketTagging` call might in fact succeed client-side (and
+possibly server-side too) -- `DeleteBucketTagging` was still chosen
+out of caution, matching the established precedent, since this hasn't
+been confirmed against real AWS either way yet.
+
+**Rationale.** Generalizing only when a real second apply-shape
+appeared (S3) rather than up front (when the EC2-backed slice was
+built) avoided speculative complexity in Phase 20.30's first slice --
+every EC2-backed call site needed no behavior change at all, just a
+closure wrapper, confirming the deferral was the right call. Rejecting
+`PutBucketTagging` with an empty set (in favor of
+`DeleteBucketTagging`) even though the client-side validator would
+accept it errs toward the same caution the lifecycle-rules case
+already established, rather than assuming AWS's server-side behavior
+matches what the client-side SDK validator merely permits.
+
+**Rejected alternatives.**
+- *A second, parallel tag-editing workflow just for S3* -- rejected:
+  would duplicate `manageTagsForResource`'s entire loop/action-picker/
+  confirm/Show-tags shape for no reason, the exact outcome the
+  pluggable-apply-closure generalization was designed to avoid.
+- *Skip `DeleteBucketTagging` and always call `PutBucketTagging`,
+  since the client-side validator accepts an empty `TagSet`* --
+  rejected: client-side acceptance doesn't confirm server-side
+  acceptance, and the lifecycle-rules case already showed AWS can
+  reject an empty "whole set" write that the SDK itself doesn't block
+  locally; safer to match that precedent than assume this operation
+  differs, pending real-AWS confirmation.
+
+**Consequences.** `manage_tags_test.go` gained a small `ec2Apply(client)`
+test helper so existing direct calls to
+`applyOneTagChange`/`manageTagsForResource` keep working unchanged.
+New `statefulTagsFakeS3Client` (`bucket_tags_test.go`, mirroring
+`statefulTagsFakeEC2Client`) proves the S3 read-modify-write round
+trip and the `DeleteBucketTagging`-on-empty branch specifically.
+`awsclient.S3API` gained `DeleteBucketTagging` (+ logging wrapper +
+shared `fakeS3Client` method). See PLAN.md Phase 20.30, "Work Items
+(S3 Bucket)".
+
+---
+
+## 2026-07-20 — Manage Tags: embed current tags in the action Select's own Description, not just a separate print above it
+
+**Context.** Found via real-terminal testing of the new Tag Management
+domain (Phase 20.30): confirmed Add/Update/Remove all worked correctly
+for both launch templates and instances, but choosing "Show tags" from
+the action menu appeared to do nothing -- the screen looked unchanged.
+Confirmed directly with the operator (not assumed): the screen, not the
+underlying data, was the problem.
+
+**Decision.** `manageTagsForResource`'s loop (Phase 20.29) already
+re-displays current tags via a plain `displayTags(w, ...)` print at the
+top of every iteration, immediately followed by the "Choose an action"
+huh.Select. Root cause: that Select is a Menu-tier field, pinned to the
+full terminal height on every render (DESIGN.md, "Full-height Menu
+Tier", Phase 20.26) -- so the instant it renders, it fills the entire
+visible terminal and scrolls whatever was printed just before it (here,
+displayTags' output) out of view. The data was always current; the
+*screen* just never showed it by the time the operator could read it.
+Fixed by adding `actionMenuDescription(label, tags)` and passing it as
+the Select's own `Description` -- embedding the same tag listing inside
+the full-height chrome that's guaranteed to be on screen, instead of
+relying on separately-scrolled-away plain output. `displayTags` itself
+is kept alongside it, unchanged: huh.Select's accessible-mode
+`RunAccessible` only ever prints a field's Title and options, never its
+Description (confirmed by reading huh v1.0.0's `field_select.go`), so
+every existing accessible-mode test asserting tag content in output
+still depends on `displayTags`' plain print and needed no changes.
+
+**Rationale.** This is the same class of bug the Full-height Menu Tier
+work (Phase 20.26) already flagged as a risk in principle -- a
+full-height render can silently evict whatever was on screen just
+before it -- but this specific instance wasn't caught until real
+interactive use, since `manage_tags_test.go`'s coverage only asserts
+buffer *content*, not what remains visibly on screen after a
+full-height render. No other Menu-tier call site in this package prints
+data immediately before a full-height Select the way this one does, so
+this fix is scoped to `manageTagsForResource` rather than a broader
+change to `runMenuField`/`quitKeyGuard`.
+
+**Rejected alternatives.**
+- *Shrink the action Select below full terminal height so the printed
+  tags stay visible above it* -- rejected: reverses Phase 20.26's own
+  full-height decision for one call site, reintroducing the
+  inconsistent-compact-submenu problem that phase deliberately fixed.
+- *Remove "Show tags" as a menu choice, since the loop already
+  redisplays tags on every iteration regardless* -- rejected: the
+  redisplay-on-every-iteration behavior is exactly what was invisible;
+  removing the choice wouldn't fix the underlying visibility bug for
+  the post-Add/Update/Remove redisplay either.
+
+**Consequences.** `actionMenuDescription` (`manage_tags.go`), tested
+directly (`TestActionMenuDescription_ListsCurrentTags`/`_NoTags`).
+Applies uniformly to both Compute's "Manage tags for an instance or
+AMI" (Phase 20.29) and Tag Management's "Manage tags" (Phase 20.30),
+since both call the same `manageTagsForResource`.
+
+---
+
 ## 2026-07-20 — Tag Management: a fourth domain, generalizing the Manage Tags loop across five resource types
 
 **Context.** Requested directly (`notes-from-tom.txt`, TODO.md: "a top

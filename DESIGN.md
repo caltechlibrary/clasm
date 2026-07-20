@@ -1032,7 +1032,17 @@ history, scrollable diffs, and split Show resource lists," and
 
 ## Tag Management Domain (Design Addendum, 2026-07-20)
 
-**Status: designed 2026-07-20.** Requested directly (`notes-from-tom.txt`,
+**Status: implemented 2026-07-20** (all five resource types, including
+S3 Bucket; see PLAN.md Phase 20.30 for the implementation record and
+DECISIONS.md for both the original design decision and the S3 apply-
+closure follow-up decision). "Tag Management" (this addendum's assumed
+name) is what shipped -- no objection was raised during implementation.
+One addition beyond what's described below: removing a bucket's last
+tag calls `s3:DeleteBucketTagging` rather than `PutBucketTagging` with
+an empty `TagSet`, proactively matching `ManageBucketLifecyclePolicies`'
+own `DeleteBucketLifecycle` precedent for the same "replace the whole
+set" operation shape (not itself confirmed against real AWS yet). What
+follows is the original design, requested directly (`notes-from-tom.txt`,
 TODO.md: "a top level menu item for managing tags across resources
 (EC2, AMI, S3, etc)"), explicitly alongside keeping the existing
 per-resource entry points ("continue to support tag management at the
@@ -1117,8 +1127,8 @@ Project/Environment specifically) -- a different query shape than
 "Show all tags" (which shows what each resource *has*), raised as
 likely to be asked for later but not scoped now (see TODO.md).
 
-**Not decided yet:** the domain's own name in the picker ("Tag
-Management" assumed above) -- left for the implementation plan.
+**Resolved:** the domain's own name in the picker is "Tag Management,"
+as assumed above.
 
 ## Core Features
 
