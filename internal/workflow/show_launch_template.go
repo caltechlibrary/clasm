@@ -2,9 +2,12 @@ package workflow
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/aymanbagabas/go-udiff"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -53,13 +56,51 @@ const defaultVersionSelector = "$Default"
 // $Default -- shared by Show Launch Template, Create EC2 Instance from
 // Launch Template, and Sync's "which version to compare against."
 func promptLaunchTemplateVersion(input io.Reader, output io.Writer) (string, error) {
-	return ui.Prompt("Version ($Default, $Latest, or a version number)", ui.WithDefault(defaultVersionSelector), ui.WithIO(input, output))
+	return promptLaunchTemplateVersionLabeled("Version ($Default, $Latest, or a version number)", input, output)
+}
+
+// promptLaunchTemplateVersionLabeled is promptLaunchTemplateVersion
+// with a caller-supplied label -- Show Launch Template's version-diff
+// needs two distinct prompts ("First version to compare"/"Second
+// version to compare"), each still normalized and pre-filled to
+// $Default the same way.
+func promptLaunchTemplateVersionLabeled(label string, input io.Reader, output io.Writer) (string, error) {
+	raw, err := ui.Prompt(label, ui.WithDefault(defaultVersionSelector), ui.WithIO(input, output))
+	if err != nil {
+		return "", err
+	}
+	return normalizeVersionSelector(raw), nil
+}
+
+// normalizeVersionSelector strips a leading "v"/"V" from a plain
+// version number (e.g. "v1" -> "1") before it reaches an AWS call --
+// found during real-AWS testing 2026-07-20: AWS's launch-template
+// version parameter accepts only "$Default", "$Latest", or a bare
+// numeric string, but this project's own launchTemplateLabel/display
+// format shows versions as "v2", "v3", making "v1" a natural, likely
+// thing to type and a hard rejection otherwise ("Invalid launch
+// template version: either '$Default', '$Latest', or a numeric version
+// are allowed"). "$Default"/"$Latest" (and anything not of the form
+// v<digits>) pass through unchanged.
+func normalizeVersionSelector(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || (s[0] != 'v' && s[0] != 'V') {
+		return s
+	}
+	rest := s[1:]
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return s
+		}
+	}
+	return rest
 }
 
 // ShowLaunchTemplate runs the Show Launch Template workflow (DESIGN.md,
-// "Launch Templates"): pick a template, pick a version (defaulting to
-// $Default), display its curated detail fields, and flag it if IMDSv2
-// isn't required.
+// "Launch Templates"): pick a template, then choose to view its current
+// version detail, list every version, or diff two versions' content --
+// version history/diffing added 2026-07-20 in response to real usage
+// feedback ("I only know there's another version, not what changed").
 func ShowLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, templates []inventory.LaunchTemplate) error {
 	if len(templates) == 0 {
 		fmt.Fprintln(w, "No launch templates found.")
@@ -81,6 +122,28 @@ func showLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 	if err != nil {
 		return err
 	}
+
+	choice, err := pickString(w, fmt.Sprintf("Show for %s (%s)", lt.TemplateID, lt.Name), "",
+		"(q to cancel)", []string{"Show version detail", "List all versions", "Diff two versions"}, input, output)
+	if err != nil {
+		return cancelledIsNil(w, err)
+	}
+
+	switch choice {
+	case "Show version detail":
+		return showLaunchTemplateDetail(ctx, w, client, lt, input, output)
+	case "List all versions":
+		return showLaunchTemplateVersionList(ctx, w, client, lt, input)
+	case "Diff two versions":
+		return showLaunchTemplateVersionDiff(ctx, w, client, lt, input, output)
+	}
+	return nil
+}
+
+// showLaunchTemplateDetail displays one version's curated detail
+// fields -- the original Show Launch Template behavior, now one of
+// three choices under the template-level menu above.
+func showLaunchTemplateDetail(ctx context.Context, w io.Writer, client awsclient.EC2API, lt inventory.LaunchTemplate, input io.Reader, output io.Writer) error {
 	version, err := promptLaunchTemplateVersion(input, output)
 	if err != nil {
 		return err
@@ -91,6 +154,75 @@ func showLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 	}
 	displayLaunchTemplateVersion(w, lt, detail)
 	return nil
+}
+
+// showLaunchTemplateVersionList lists every version of lt: number,
+// creation time, and whether it's the default -- deliberately no
+// per-version detail or content diffing here, just "which versions
+// exist and when" (see showLaunchTemplateVersionDiff for content
+// comparison).
+func showLaunchTemplateVersionList(ctx context.Context, w io.Writer, client awsclient.EC2API, lt inventory.LaunchTemplate, input io.Reader) error {
+	versions, err := inventory.ListLaunchTemplateVersions(ctx, client, lt.TemplateID)
+	if err != nil {
+		return err
+	}
+	return displayRows(ctx, w, fmt.Sprintf("Versions of %s (%s)", lt.TemplateID, lt.Name), launchTemplateVersionRows(versions), input)
+}
+
+// launchTemplateVersionRows formats ListLaunchTemplateVersions' output
+// for display -- extracted so it's testable without driving
+// displayRows' own interactive/accessible-mode split.
+func launchTemplateVersionRows(versions []inventory.LaunchTemplateVersionSummary) []string {
+	rows := make([]string, len(versions))
+	for i, v := range versions {
+		label := fmt.Sprintf("v%d", v.VersionNumber)
+		if v.IsDefaultVersion {
+			label += " (default)"
+		}
+		rows[i] = fmt.Sprintf("%-14s created %s", label, displayOrNone(v.CreateTime))
+	}
+	return rows
+}
+
+// showLaunchTemplateVersionDiff prompts for two versions and shows a
+// plain-text diff of their decoded cloud-init content -- read-only,
+// never creates a new version (see Sync Cloud-Init YAML to a Template
+// for that).
+func showLaunchTemplateVersionDiff(ctx context.Context, w io.Writer, client awsclient.EC2API, lt inventory.LaunchTemplate, input io.Reader, output io.Writer) error {
+	v1, err := promptLaunchTemplateVersionLabeled("First version to compare ($Default, $Latest, or a version number)", input, output)
+	if err != nil {
+		return err
+	}
+	v2, err := promptLaunchTemplateVersionLabeled("Second version to compare ($Default, $Latest, or a version number)", input, output)
+	if err != nil {
+		return err
+	}
+
+	d1, err := inventory.DescribeLaunchTemplateVersion(ctx, client, lt.TemplateID, v1)
+	if err != nil {
+		return err
+	}
+	d2, err := inventory.DescribeLaunchTemplateVersion(ctx, client, lt.TemplateID, v2)
+	if err != nil {
+		return err
+	}
+
+	yaml1, err := base64.StdEncoding.DecodeString(d1.UserData)
+	if err != nil {
+		return fmt.Errorf("decoding version %d's user-data: %w", d1.VersionNumber, err)
+	}
+	yaml2, err := base64.StdEncoding.DecodeString(d2.UserData)
+	if err != nil {
+		return fmt.Errorf("decoding version %d's user-data: %w", d2.VersionNumber, err)
+	}
+
+	if string(yaml1) == string(yaml2) {
+		fmt.Fprintf(w, "Versions %d and %d have identical cloud-init content.\n", d1.VersionNumber, d2.VersionNumber)
+		return nil
+	}
+
+	diff := udiff.Unified(fmt.Sprintf("version %d", d1.VersionNumber), fmt.Sprintf("version %d", d2.VersionNumber), string(yaml1), string(yaml2))
+	return displayDiff(ctx, w, fmt.Sprintf("Diff: %s version %d vs version %d", lt.TemplateID, d1.VersionNumber, d2.VersionNumber), diff, input)
 }
 
 // displayLaunchTemplateVersion prints a launch template version's

@@ -11,7 +11,7 @@ import (
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
-// MenuActions bundles the seventeen workflow entry points the main menu
+// MenuActions bundles the twenty workflow entry points the main menu
 // dispatches to, as zero-arg-besides-ctx closures. main.go constructs
 // each closure bound to the live AWS clients and the current instance/
 // AMI/launch-template listing snapshot; this indirection is what lets
@@ -28,10 +28,7 @@ type MenuActions struct {
 	RemoveAMI                   func(ctx context.Context) error
 	ShowCloudInit               func(ctx context.Context) error
 	BackupArchiveAndTrim        func(ctx context.Context) error
-	// Launch-template actions (DESIGN.md, "Launch Templates"): List
-	// Launch Templates has no dedicated field -- it folds into
-	// ShowResourceLists below, alongside instances/AMIs, rather than
-	// being a separate top-level action.
+	// Launch-template actions (DESIGN.md, "Launch Templates").
 	ShowLaunchTemplate                func(ctx context.Context) error
 	CreateLaunchTemplateFromCloudInit func(ctx context.Context) error
 	CreateInstanceFromLaunchTemplate  func(ctx context.Context) error
@@ -45,15 +42,23 @@ type MenuActions struct {
 	// operation") so instance/AMI/template-selection prompts elsewhere
 	// stay current, and once on entering the Compute domain.
 	Refresh func(ctx context.Context) error
-	// ShowResourceLists shows the already-fetched instance/AMI/launch-
-	// template listings in the shared List-tier component (DESIGN.md,
-	// "Terminal UI Architecture: Menus, Actions, Lists, and Managers").
-	// Called only by "Show resource lists" -- unlike Refresh, it never
-	// runs automatically after other actions (tui.RunListView blocks on
-	// an interactive bubbletea loop until 'q', so showing it after every
-	// action would force pressing 'q' just to get back to the menu --
-	// see S3Actions' own Refresh/ShowResourceLists split, Phase 20.6).
-	ShowResourceLists func(ctx context.Context) error
+	// ShowInstances/ShowAMIs/ShowLaunchTemplates each show one resource
+	// type's already-fetched listing in the shared List-tier component
+	// (DESIGN.md, "Terminal UI Architecture: Menus, Actions, Lists, and
+	// Managers") -- three separate menu entries rather than one combined
+	// "Show resource lists" paging through all three in sequence
+	// (reported directly 2026-07-20: paging through Instances -> AMIs ->
+	// Launch Templates to reach the one you actually wanted felt
+	// awkward). Unlike Refresh, none of these run automatically after
+	// other actions (tui.RunListView blocks on an interactive bubbletea
+	// loop until 'q', so showing it after every action would force
+	// pressing 'q' just to get back to the menu -- see S3Actions' own
+	// Refresh/ShowResourceLists split, Phase 20.6, which this still
+	// matches in spirit: fetch happens in Refresh, display is a
+	// separate, explicit choice).
+	ShowInstances       func(ctx context.Context) error
+	ShowAMIs            func(ctx context.Context) error
+	ShowLaunchTemplates func(ctx context.Context) error
 }
 
 // menuItem pairs a main-menu label with the MenuActions field it
@@ -63,17 +68,21 @@ type menuItem struct {
 	action func(MenuActions, context.Context) error
 }
 
-// mainMenuItems is DESIGN.md's Main Menu, in order. "Show resource
-// lists" leads the menu (DECISIONS.md, "Move Show resource lists to the
+// mainMenuItems is DESIGN.md's Main Menu, in order. The three "Show"
+// entries lead the menu (DECISIONS.md, "Move Show resource lists to the
 // top of the Compute menu; rename from Refresh") -- it's the natural
 // first move on entering the domain (orient before acting), not just
-// one action among ten. No "Back to domain picker" entry -- DECISIONS.md,
-// "TUI keybinding conventions": 'q' is the universal back key
-// everywhere, so a redundant menu item would just be a second way to do
-// the same thing (matching s3MenuItems' own drop of "Back to domain
-// picker" in Phase 20.7).
+// one action among many -- split into three separate entries rather
+// than one combined listing (DECISIONS.md, "Split Show resource lists
+// into per-resource-type Compute menu entries"). No "Back to domain
+// picker" entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is
+// the universal back key everywhere, so a redundant menu item would
+// just be a second way to do the same thing (matching s3MenuItems' own
+// drop of "Back to domain picker" in Phase 20.7).
 var mainMenuItems = []menuItem{
-	{"Show resource lists", func(a MenuActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
+	{"Show instances", func(a MenuActions, ctx context.Context) error { return a.ShowInstances(ctx) }},
+	{"Show AMIs", func(a MenuActions, ctx context.Context) error { return a.ShowAMIs(ctx) }},
+	{"Show launch templates", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplates(ctx) }},
 	{"Create EC2 instance from AMI", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
 	{"Create EC2 instance from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
 	{"Create EC2 instance from launch template", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
@@ -120,7 +129,7 @@ func pickMainMenuItem(w io.Writer, input io.Reader, output io.Writer) (menuItem,
 }
 
 // RunMainMenu runs the Compute domain's interactive menu loop (DESIGN.md,
-// "Compute Domain (EC2 & AMI)"): show the 18-option menu, dispatch the
+// "Compute Domain (EC2 & AMI)"): show the 20-option menu, dispatch the
 // chosen action, refresh listings after a successful dispatch, and
 // repeat -- until the picker is aborted ('q'/ctrl+c, reported as
 // ErrBackToDomainPicker), a cancelled ctx (e.g. Ctrl+C delivered as

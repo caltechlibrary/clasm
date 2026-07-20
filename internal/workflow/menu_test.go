@@ -44,7 +44,9 @@ func testMenuActions(refreshCalls *int) MenuActions {
 		DeleteLaunchTemplateVersions:      noop,
 		DeleteLaunchTemplate:              noop,
 		Refresh:                           countingAction(refreshCalls),
-		ShowResourceLists:                 noop,
+		ShowInstances:                     noop,
+		ShowAMIs:                          noop,
+		ShowLaunchTemplates:               noop,
 	}
 }
 
@@ -64,7 +66,7 @@ func TestRunMainMenu_DispatchesToTheChosenAction(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.StartEC2Instance = cancelingAction(&startCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -73,20 +75,23 @@ func TestRunMainMenu_DispatchesToTheChosenAction(t *testing.T) {
 	}
 }
 
-// TestRunMainMenu_ShowResourceListsDispatchesToItsOwnAction covers a
-// real gap: "Show resource lists" used to dispatch to Refresh directly
-// (DESIGN.md's List-tier punch list split it into a separate
-// ShowResourceLists field, mirroring S3Actions' own split), but no
-// existing test chose item 1 to exercise that dispatch at all. The
-// post-action refresh still fires afterward (unconditional for every
-// menu item, unchanged) -- this test checks both calls happen.
-func TestRunMainMenu_ShowResourceListsDispatchesToItsOwnAction(t *testing.T) {
+// TestRunMainMenu_ShowInstancesDispatchesToItsOwnAction covers a real
+// gap: "Show resource lists" used to dispatch to Refresh directly
+// (DESIGN.md's List-tier punch list split it into separate
+// ShowInstances/ShowAMIs/ShowLaunchTemplates fields, mirroring
+// S3Actions' own Refresh/ShowResourceLists split, then split further
+// per resource type -- DECISIONS.md, "Split Show resource lists into
+// per-resource-type Compute menu entries"), but no existing test chose
+// item 1 to exercise that dispatch at all. The post-action refresh
+// still fires afterward (unconditional for every menu item, unchanged)
+// -- this test checks both calls happen.
+func TestRunMainMenu_ShowInstancesDispatchesToItsOwnAction(t *testing.T) {
 	var refreshCalls, showCalls int
 	term, buf := newTermOnly()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	actions := testMenuActions(&refreshCalls)
-	actions.ShowResourceLists = cancelingAction(&showCalls, cancel)
+	actions.ShowInstances = cancelingAction(&showCalls, cancel)
 
 	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
@@ -108,7 +113,7 @@ func TestRunMainMenu_RefreshesAfterASuccessfulAction(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.StartEC2Instance = cancelingAction(&startCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -134,7 +139,7 @@ func TestRunMainMenu_ActionErrorDoesNotCrashLoop(t *testing.T) {
 		return nil
 	}
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("2\n2\n"), buf) // Create EC2 instance from AMI, twice
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("4\n4\n"), buf) // Create EC2 instance from AMI, twice
 	if err != nil {
 		t.Fatalf("expected the loop to survive a single action's error and exit cleanly once ctx is cancelled, got: %v", err)
 	}
@@ -165,7 +170,7 @@ func TestRunMainMenu_CleanExitOnInterrupt(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.CreateInstanceFromAMI = failingAction(huh.ErrUserAborted)
 
-	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
+	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("4\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on huh.ErrUserAborted, got: %v", err)
 	}
 }
@@ -176,14 +181,14 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.CreateInstanceFromAMI = failingAction(io.EOF)
 
-	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
+	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("4\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on io.EOF, got: %v", err)
 	}
 }
 
 func TestMainMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(mainMenuItems) != 18 {
-		t.Fatalf("len(mainMenuItems) = %d, want 18 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
+	if len(mainMenuItems) != 20 {
+		t.Fatalf("len(mainMenuItems) = %d, want 20 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
 	}
 	for _, item := range mainMenuItems {
 		if item.action == nil {

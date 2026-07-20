@@ -14,6 +14,22 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
+func TestDisplayDiff_AccessibleModeFallsBackToPlainDump(t *testing.T) {
+	var buf bytes.Buffer
+	// input non-nil signals accessible/test mode -- no real bubbletea
+	// loop exists to drive a List-tier screen, so this must fall back
+	// to a plain fmt dump rather than calling tui.RunListView (which
+	// would hang waiting for a real terminal).
+	err := displayDiff(context.Background(), &buf, "Diff title", "-old line\n+new line\n", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "-old line") || !strings.Contains(out, "+new line") {
+		t.Errorf("output missing diff content:\n%s", out)
+	}
+}
+
 func launchTemplateVersionWithUserData(versionNumber int64, userData string) types.LaunchTemplateVersion {
 	return types.LaunchTemplateVersion{
 		LaunchTemplateId: aws.String("lt-1"),

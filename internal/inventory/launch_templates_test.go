@@ -193,3 +193,31 @@ func TestDescribeLaunchTemplateVersion_PropagatesError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestListLaunchTemplateVersions_ReturnsEveryVersion(t *testing.T) {
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
+		sdkLaunchTemplateVersion("lt-1", 1, false, true),
+		sdkLaunchTemplateVersion("lt-1", 2, true, true),
+	}}
+	got, err := ListLaunchTemplateVersions(context.Background(), fake, "lt-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d versions, want 2", len(got))
+	}
+	if got[0].VersionNumber != 1 || got[0].IsDefaultVersion {
+		t.Errorf("got[0] = %+v, want version 1, not default", got[0])
+	}
+	if got[1].VersionNumber != 2 || !got[1].IsDefaultVersion {
+		t.Errorf("got[1] = %+v, want version 2, default", got[1])
+	}
+}
+
+func TestListLaunchTemplateVersions_PropagatesError(t *testing.T) {
+	fake := &fakeEC2Client{describeLaunchTemplateVersionsErr: errors.New("boom")}
+	_, err := ListLaunchTemplateVersions(context.Background(), fake, "lt-1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}

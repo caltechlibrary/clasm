@@ -3121,39 +3121,60 @@ fallback branch, exactly as before this change.
 
 **Dependency:** None.
 
-## Phase 20.26 — Full-height Menu Tier
+## Phase 20.26 — Full-height Menu Tier (done)
 
-**Status: designed 2026-07-20, not yet implemented.** Resolves Phase
-20.24's deferred "full height" request. Implements `DESIGN.md`,
-"Full-height Menu Tier," and `DECISIONS.md`, "Full-height Menu tier via
-live `WindowSizeMsg` tracking, applied at every depth."
+**Status: implemented and unit-tested 2026-07-20** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean; `gofmt -l` clean except
+the pre-existing, unrelated `version.go`); not yet verified against real
+AWS/a real terminal -- see Phase 22 and the general manual-verification
+gap every phase this session has carried. Resolves Phase 20.24's
+deferred "full height" request. Implements `DESIGN.md`, "Full-height
+Menu Tier," and `DECISIONS.md`, "Full-height Menu tier via live
+`WindowSizeMsg` tracking, applied at every depth."
 
 ### Work Items
 
-- [ ] `internal/workflow/domain_menu.go`: extend `quitKeyGuard` (or a
-      sibling wrapper covering the same `*huh.Form` interface) to
+- [x] `internal/workflow/domain_menu.go`: extended `quitKeyGuard` to
       intercept `tea.WindowSizeMsg` and call `form.WithHeight(msg.Height
-      - reserved)` on every resize, where `reserved` accounts for
-      `runMenuField`'s own `fmt.Fprintln(w, hint)` line printed outside
-      the form.
-- [ ] `runMenuField`: route both the filtering and non-filtering
-      `huh.Field` paths through the same wrapper, so every Menu-tier
-      `huh.Select` (root domain picker, S3/EC2/Key Management submenus,
-      `pickString`/`pickComparable` call sites) gets full-height sizing
-      uniformly — no per-call-site change needed since `runMenuField` is
-      the shared entry point.
-- [ ] Confirm the reserved-line count against `tui.Theme()`'s actual
-      border/padding plus huh's own `titleFooterHeight`, so the combined
-      output doesn't exceed the terminal height by one line.
+      - menuHintReservedLines)` on every resize.
+- [x] `runMenuField`: both the filtering and non-filtering `huh.Field`
+      paths now route through the same `quitKeyGuard`-wrapped
+      `tea.NewProgram`, so every Menu-tier `huh.Select` (root domain
+      picker, S3/EC2/Key Management submenus, `pickString`/
+      `pickComparable` call sites) gets full-height sizing uniformly --
+      no per-call-site change needed. (In practice every current call
+      site already builds a `*huh.Select`, which satisfies
+      `filteringField`, so the "non-filtering" branch was already dead
+      code -- unified anyway, matching the plan, so a future non-Select
+      field costs nothing extra.)
+- [x] **Reserved-line count confirmed empirically, and corrected from
+      the design addendum's own assumption**: rendering a real form (with
+      the actual `tui.Theme()`, not a stand-in) at a known `WithHeight`
+      and counting the rendered output showed `menuHintReservedLines`
+      must be **2**, not 1 -- `runMenuField`'s own printed hint line,
+      *plus* one line for `huh.Form`'s own trailing help/keybindings
+      footer (e.g. "↑ up • ↓ down • / filter • enter submit"), which
+      renders *below* whatever height `WithHeight(n)` was given (a form
+      asked for height `n` renders `n+1` lines total). Reserving only 1
+      overflowed the terminal by exactly one line in every case tested;
+      reserving 2 landed exactly on the terminal height in every case
+      (10, 24, 40 rows). `tui.Theme()`'s own border/padding did not
+      change this count -- it's already inside `Select.Height()`'s own
+      budget.
 
-**Tests:** exercise `WithHeight` being called with the expected value
-for a given `tea.WindowSizeMsg`, and that content shorter than the
-window still renders a fixed-height box (`lipgloss.Style.Height`
-padding). Accessible-mode (pipe-tested) call sites are unaffected --
-they never construct a `tea.Program`, so this whole path doesn't apply
-to them.
+**Tests:** `internal/workflow/domain_menu_height_test.go` (new) --
+`TestQuitKeyGuard_WindowSizeMsgProducesFullTerminalHeight` asserts the
+combined on-screen output (hint line + form view) equals the terminal
+height exactly, across several sizes; `TestQuitKeyGuard_
+ShortContentStillFillsTheWindow` confirms a 2-option menu still renders
+padded close to full height at a 30-row terminal, not shrunk to
+content; `TestQuitKeyGuard_TinyTerminalDoesNotPanic` covers the
+non-positive-height no-op path. Accessible-mode (pipe-tested) call
+sites are unaffected -- they never construct a `tea.Program`, so this
+whole path doesn't apply to them.
 
-**Files:** `internal/workflow/domain_menu.go` (+ test).
+**Files:** `internal/workflow/domain_menu.go`,
+`internal/workflow/domain_menu_height_test.go` (new).
 
 **Dependency:** None.
 
@@ -3297,6 +3318,76 @@ captured request; Delete Version(s)/Delete Template's
 
 **Dependency:** None (builds on the existing EC2 client/inventory/
 Menu-tier conventions; does not depend on Phase 20.26).
+
+## Phase 20.28 — Launch Templates: Real-Usage Fixes and Version History
+
+**Status: implemented and unit-tested 2026-07-20** (`go build ./...`,
+`go vet ./...`, `go test ./... -race` all clean; `gofmt -l` clean except
+the pre-existing, unrelated `version.go`); not yet re-verified against
+real AWS. Direct fallout from the operator's first real-AWS pass over
+Phase 20.27 (creating a template, launching from it, syncing, promoting,
+listing, deleting) -- one genuine bug found from the debug log, three
+UX gaps from live use. Implements `DECISIONS.md`, "Accept
+`v`-prefixed launch template versions" and "Launch Template version
+history, scrollable diffs, and split Show resource lists."
+
+### Work Items
+
+- [x] **Bug: version selector rejected `"v1"`.** Found in
+      `clasm-debug-20260720-132204.jsonl`: the operator typed `v1` at
+      the version prompt (natural, since `launchTemplateLabel`'s own
+      display format is "default v2") and AWS rejected it outright for
+      both `DescribeLaunchTemplateVersions` ("Invalid launch template
+      version...") and `ModifyLaunchTemplate` ("A launch template
+      version must be specified..." -- Promote appeared to silently do
+      nothing, but had actually failed). New `normalizeVersionSelector`
+      strips a leading `v`/`V` from a plain number before it reaches
+      any AWS call; applied at all four version-entry points (Show/
+      Create-from-template/Sync's shared prompt, Promote's prompt,
+      Delete-versions' comma-separated list).
+- [x] **Scrollable diff.** Sync's confirmation diff used to
+      `fmt.Fprintln` a raw dump that could exceed the terminal and
+      scroll off screen. New `displayRows`/`displayDiff` render through
+      the shared List-tier component (`tui.RunListView`) in real
+      interactive use; accessible/test mode falls back to the same
+      plain dump as before (no real bubbletea loop exists there to
+      drive a List-tier screen), so no existing test needed rewriting.
+- [x] **Launch template version history.** Show Launch Template gained
+      a sub-choice after picking a template: "Show version detail"
+      (the original behavior), "List all versions" (number/date/
+      default-flag via new `inventory.ListLaunchTemplateVersions`, no
+      content diffing), or "Diff two versions" (prompts for two version
+      selectors, reuses the same diff mechanism Sync already has,
+      read-only -- never creates a version).
+- [x] **Split Show resource lists (Compute only).** Replaced the single
+      combined action (Instances -> AMIs -> Launch Templates, paged
+      through in sequence) with three separate menu entries: "Show
+      instances," "Show AMIs," "Show launch templates" -- reported
+      directly as feeling awkward to page through two resource types
+      to reach the third. S3 and Key Management are unaffected (each
+      has exactly one resource type, no paging awkwardness there).
+      `MenuActions.ShowResourceLists` became `ShowInstances`/`ShowAMIs`/
+      `ShowLaunchTemplates`; `mainMenuItems` grew from 18 to 20 entries.
+
+**Tests:** `TestShowLaunchTemplate_AcceptsVPrefixedVersion` and
+`TestNormalizeVersionSelector` reproduce the exact failure from the
+debug log before fixing it; `TestDisplayDiff_AccessibleModeFallsBackToPlainDump`
+covers the test-mode branch; `TestShowLaunchTemplate_ListAllVersions`/
+`_DiffTwoVersions`/`_DiffTwoVersions_IdenticalReportsNoDifference`/
+`TestLaunchTemplateVersionRows` cover the new sub-choices;
+`TestListLaunchTemplateVersions_*` cover the new inventory call;
+`menu_test.go`'s hardcoded menu-item indices and count were updated for
+the reordering (matching the same maintenance every prior menu-ordering
+change in this project has needed).
+
+**Files:** `internal/workflow/show_launch_template.go`,
+`internal/workflow/launch_template_manage.go`,
+`internal/workflow/launch_template_sync.go`,
+`internal/inventory/launch_templates.go`,
+`internal/workflow/menu.go`, `cmd/clasm/main.go`, plus each file's
+`_test.go` counterpart.
+
+**Dependency:** Phase 20.27.
 
 ---
 

@@ -46,6 +46,7 @@ func promoteLaunchTemplateVersion(ctx context.Context, w io.Writer, clients map[
 	if err != nil {
 		return err
 	}
+	version = normalizeVersionSelector(version)
 
 	ok, err := Confirm(fmt.Sprintf("Make version %s the default version of %s?", version, lt.TemplateID), WithConfirmIO(input, output))
 	if err != nil {
@@ -104,6 +105,9 @@ func deleteLaunchTemplateVersions(ctx context.Context, w io.Writer, clients map[
 	if len(versions) == 0 {
 		fmt.Fprintln(w, "No version numbers given; nothing to delete.")
 		return nil
+	}
+	for i, v := range versions {
+		versions[i] = normalizeVersionSelector(v)
 	}
 
 	fmt.Fprintf(w, "\n=== DRY RUN: deleting version(s) %s of launch template %s (%s) ===\n", strings.Join(versions, ", "), lt.TemplateID, lt.Name)

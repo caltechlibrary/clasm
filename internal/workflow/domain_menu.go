@@ -59,24 +59,55 @@ type filteringField interface {
 	GetFiltering() bool
 }
 
-// quitKeyGuard wraps a *huh.Form, disabling its own Quit keybinding
-// (ctrl+c and, via menuQuitKeyMap, 'q') for exactly as long as the
-// active field reports it's filtering. Without this, huh.Form.Update
-// checks its top-level Quit binding *before* the keystroke ever reaches
-// the field -- so typing a bucket/option name containing the letter
-// 'q' into a filter (e.g. "sql") aborts the whole form on that letter
-// instead of it becoming filter text (reported directly: typing "sql"
-// into Backup Archive & Trim's bucket-filter picker exited clasm
-// outright, every time, on the 'q'). tui/filter.go's own Picker-tier
-// filterState avoids this same class of bug by checking filtering
-// state before its own quit-key case; huh's Form has no such hook, so
-// this instead reaches into the same *key.Binding WithKeyMap already
-// installed and toggles Enabled() before every keystroke -- key.Matches
-// (bubbles/key) honors a disabled binding, so a disabled Quit simply
-// never matches, and the keystroke falls through to the field like any
-// other character. This also means ctrl+c is swallowed as a no-op while
-// filtering rather than quitting -- matching, not diverging from,
-// tui/filter.go's own documented precedent for the Picker tier.
+// menuHintReservedLines is the number of terminal rows that sit outside
+// whatever height a Menu-tier huh.Form is told to be, and so must be
+// subtracted from the real terminal height before calling WithHeight
+// (DESIGN.md, "Full-height Menu Tier": "Reserved chrome"). Two lines,
+// confirmed empirically (not assumed) by rendering a real form at a
+// known WithHeight and counting the actual output:
+//   - 1 for runMenuField's own hint (e.g. "(q to go back)"), printed via
+//     a plain fmt.Fprintln(w, hint) *before* the form's own bubbletea
+//     Program starts, always exactly one short, non-wrapping line.
+//   - 1 for huh.Form's own trailing help/keybindings footer line (e.g.
+//     "↑ up • ↓ down • / filter • enter submit"), rendered *below*
+//     whatever height WithHeight(n) was given -- a form asked for
+//     height n renders n+1 lines total, not n, so this must be
+//     accounted for separately from the hint above.
+const menuHintReservedLines = 2
+
+// quitKeyGuard wraps a *huh.Form, giving every Menu-tier huh.Select two
+// things bubbletea's default Form.Update doesn't provide on its own
+// (DESIGN.md, "Full-height Menu Tier"):
+//
+//  1. Disabling the Quit keybinding (ctrl+c and, via menuQuitKeyMap,
+//     'q') for exactly as long as the active field reports it's
+//     filtering. Without this, huh.Form.Update checks its top-level
+//     Quit binding *before* the keystroke ever reaches the field -- so
+//     typing a bucket/option name containing the letter 'q' into a
+//     filter (e.g. "sql") aborts the whole form on that letter instead
+//     of it becoming filter text (reported directly: typing "sql" into
+//     Backup Archive & Trim's bucket-filter picker exited clasm
+//     outright, every time, on the 'q'). tui/filter.go's own
+//     Picker-tier filterState avoids this same class of bug by
+//     checking filtering state before its own quit-key case; huh's
+//     Form has no such hook, so this instead reaches into the same
+//     *key.Binding WithKeyMap already installed and toggles Enabled()
+//     before every keystroke -- key.Matches (bubbles/key) honors a
+//     disabled binding, so a disabled Quit simply never matches, and
+//     the keystroke falls through to the field like any other
+//     character. This also means ctrl+c is swallowed as a no-op while
+//     filtering rather than quitting -- matching, not diverging from,
+//     tui/filter.go's own documented precedent for the Picker tier.
+//  2. Keeping the form's own height pinned to the real terminal height
+//     (minus menuHintReservedLines), live, on every resize --
+//     huh.Form's own tea.WindowSizeMsg handling only *shrinks* a group
+//     to fit and only when nothing has ever called WithHeight; it
+//     never grows short content to fill unused space. Intercepting the
+//     message here and calling WithHeight ourselves, every time, is
+//     what makes a 3-option menu still render as a full-terminal-height
+//     box instead of a compact one -- the same live-resize mechanism
+//     internal/tui/picker.go and listview.go already use for the
+//     Picker/List tier.
 type quitKeyGuard struct {
 	*huh.Form
 	setQuitEnabled func(bool)
@@ -84,8 +115,16 @@ type quitKeyGuard struct {
 }
 
 func (g *quitKeyGuard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := msg.(tea.KeyMsg); ok {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
 		g.setQuitEnabled(!g.filtering())
+	case tea.WindowSizeMsg:
+		// A non-positive result (a terminal shorter than the reserved
+		// hint line -- vanishingly unlikely) is a safe no-op:
+		// Form.WithHeight leaves f.height at 0, and Form.Update's own
+		// WindowSizeMsg handling (which runs next, via g.Form.Update
+		// below) falls back to its own shrink-to-fit sizing.
+		g.Form.WithHeight(msg.Height - menuHintReservedLines)
 	}
 	m, cmd := g.Form.Update(msg)
 	g.Form = m.(*huh.Form)
@@ -96,18 +135,22 @@ func (g *quitKeyGuard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // conversion punch list): prints hint via w (huh's own footer can't
 // show a custom "q: ..." entry -- its SelectKeyMap has no quit/back
 // binding to add one to, and KeyBinds() isn't overridable without
-// forking huh), binds 'q' alongside ctrl+c on Quit, and runs it --
-// through quitKeyGuard for a filterable field in real interactive use,
-// so 'q' typed as filter text doesn't abort the form (see
-// quitKeyGuard's own doc comment). input/output are nil in production
+// forking huh), binds 'q' alongside ctrl+c on Quit, and runs it through
+// quitKeyGuard in real interactive use -- every Menu-tier huh.Select
+// this package builds gets both the quit-while-filtering guard (a
+// no-op for a field that doesn't implement filteringField -- none
+// currently exist among this package's call sites, all of which build
+// *huh.Select, but the fallback costs nothing) and live full-height
+// sizing (DESIGN.md, "Full-height Menu Tier") uniformly, with no
+// per-call-site change needed. input/output are nil in production
 // (interactive, real terminal) and supplied by tests for the
 // accessible-mode pipe path -- accessible mode has no bubbletea Update
-// loop to guard (it reads whole lines via a plain io.Reader), so it
-// always runs unguarded. Returns the raw form error, including
-// huh.ErrUserAborted, unmapped -- callers choose how to map it:
-// mapMenuPickerErr for domain-loop menus that back out to
-// ErrBackToDomainPicker, huhCancelledIsNil for one-off workflow
-// sub-choices that just cancel the whole workflow cleanly.
+// loop to guard or resize (it reads whole lines via a plain io.Reader),
+// so it always runs unguarded, full-height sizing included. Returns
+// the raw form error, including huh.ErrUserAborted, unmapped --
+// callers choose how to map it: mapMenuPickerErr for domain-loop menus
+// that back out to ErrBackToDomainPicker, huhCancelledIsNil for one-off
+// workflow sub-choices that just cancel the whole workflow cleanly.
 func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, output io.Writer) error {
 	fmt.Fprintln(w, hint)
 
@@ -118,14 +161,14 @@ func runMenuField(w io.Writer, hint string, field huh.Field, input io.Reader, ou
 		return form.Run()
 	}
 
-	ff, ok := field.(filteringField)
-	if !ok {
-		return form.Run()
+	filtering := func() bool { return false }
+	if ff, ok := field.(filteringField); ok {
+		filtering = ff.GetFiltering
 	}
 
 	form.SubmitCmd = tea.Quit
 	form.CancelCmd = tea.Quit
-	guard := &quitKeyGuard{Form: form, setQuitEnabled: keymap.Quit.SetEnabled, filtering: ff.GetFiltering}
+	guard := &quitKeyGuard{Form: form, setQuitEnabled: keymap.Quit.SetEnabled, filtering: filtering}
 	if _, err := tea.NewProgram(guard).Run(); err != nil {
 		return fmt.Errorf("huh: %w", err)
 	}

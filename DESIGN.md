@@ -792,11 +792,21 @@ top/bottom border, already accounted for by `tui.Theme()`'s border
 padding), or the combined output ends up one line taller than the
 terminal.
 
-**Not decided yet:** the exact reserved-line count (depends on how
-`tui.Theme()`'s border/padding interacts with `huh`'s own
-`titleFooterHeight`), and whether `runMenuField`'s non-filtering
-`form.Run()` callers need any interface change to accept the new
-wrapper. Left for the implementation plan, not this addendum.
+**Resolved during implementation (2026-07-20; see PLAN.md Phase
+20.26):** the reserved-line count is **2**, not 1 as first assumed here
+-- confirmed empirically by rendering a real form (the actual
+`tui.Theme()`, not a stand-in) at a known `WithHeight` and counting the
+output. One line is the hint; the second is `huh.Form`'s own trailing
+help/keybindings footer, which renders *below* whatever height
+`WithHeight(n)` was given (a form asked for height `n` renders `n+1`
+lines total) -- not something this addendum had accounted for.
+`tui.Theme()`'s border/padding turned out not to change the count at
+all. `runMenuField`'s non-filtering `form.Run()` path was folded into
+the same `quitKeyGuard`-wrapped path rather than left as a second
+mechanism -- in practice every current call site already builds a
+`*huh.Select` (which satisfies `filteringField`), so that path was
+already dead code, but unifying it means a future non-Select field
+costs nothing extra.
 
 ## Launch Templates (Design Addendum, 2026-07-20)
 
@@ -995,6 +1005,30 @@ project's tests need to cover the identical-content-skips-a-version
 and different-content-shows-a-diff-then-creates-a-version branches,
 via the same accessible-mode pipe-testing convention every other
 Menu-tier workflow already uses).
+
+### Real-usage follow-ups (2026-07-20)
+
+The first real-AWS pass over this feature (create a template, launch
+from it, sync, promote, list, delete) surfaced one bug and three UX
+gaps, all addressed the same day -- see `DECISIONS.md`, "Accept
+`v`-prefixed launch template versions" and "Launch Template version
+history, scrollable diffs, and split Show resource lists," and
+`PLAN.md` Phase 20.28:
+
+- AWS rejects a `"v"`-prefixed version number outright; this project's
+  own display convention (`launchTemplateLabel`'s "default v2") made
+  typing one a near-certainty. Fixed at the input boundary
+  (`normalizeVersionSelector`), not by changing the display format.
+- Show Launch Template gained "list all versions" and "diff two
+  versions" alongside its original single-version detail view --
+  "there's another version" alone wasn't enough to know what changed.
+- Sync's confirmation diff (and the new version-diff) render through
+  the shared List-tier component instead of a raw, potentially-
+  off-screen text dump.
+- Compute's "Show resource lists" split into three menu entries (Show
+  instances/AMIs/launch templates) -- paging through all three to
+  reach the one wanted felt awkward. S3/Key Management, each with a
+  single resource type, were left alone.
 
 ## Core Features
 

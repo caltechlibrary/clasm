@@ -4,6 +4,131 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-20 — Launch Template version history, scrollable diffs, and split Show resource lists
+
+**Context.** First real-AWS pass over Phase 20.27's launch template
+support surfaced three UX gaps, all from actual use rather than design
+review: (1) Show Launch Template only reports "there's another
+version," not what changed in it; (2) Sync's confirmation diff is a
+raw `fmt.Fprintln` dump that can scroll off screen with no way to page
+back through it; (3) Compute's "Show resource lists" pages through
+Instances -> AMIs -> Launch Templates as one combined flow, which felt
+awkward when the operator only wanted one of the three.
+
+**Decision.**
+- Show Launch Template gains a sub-choice after picking a template:
+  show one version's detail (existing behavior), list every version
+  (number/creation time/default flag, via new
+  `inventory.ListLaunchTemplateVersions`), or diff any two versions'
+  decoded cloud-init content (reusing Sync's own diff mechanism,
+  read-only -- never creates a version).
+- Both Sync's diff and the new version-diff render through the shared
+  List-tier component (`tui.RunListView`) in real interactive use, via
+  new `displayRows`/`displayDiff` helpers -- scrollable, consistent
+  chrome with every other resource listing in the app, rather than a
+  second, purpose-built diff viewer. Accessible/test mode (no real
+  bubbletea loop available) falls back to the same plain dump Sync
+  already printed, so no existing test needed rewriting.
+- Compute's single "Show resource lists" becomes three menu entries:
+  "Show instances," "Show AMIs," "Show launch templates." S3 and Key
+  Management are deliberately left alone -- each has exactly one
+  resource type, so there's no paging-through-others problem to fix
+  there.
+
+**Rationale.**
+- Listing versions and diffing two of them are different questions
+  ("what versions exist" vs. "what changed") -- collapsing them into
+  one action would either overload a single screen or force the
+  operator through a diff they didn't ask for just to see a version
+  list.
+- Reusing the List-tier component for diffs (rather than a bespoke
+  viewer) keeps the diff-in-a-scrollable-box mechanism identical
+  everywhere it's needed (Sync's confirmation step and Show's
+  version-diff), and matches this project's general preference for
+  reusing existing chrome over inventing new UI per feature.
+- Splitting Show resource lists only where the reported problem
+  actually exists (Compute's three resource types) avoids restructuring
+  S3/Key Management for a problem they don't have.
+
+**Rejected alternatives.**
+- *A single "list versions with diff" screen* -- combines two distinct
+  questions into one, and would need to diff by default or require an
+  extra step to opt out, neither of which is simpler than two separate
+  choices.
+- *A dedicated diff viewer component* (syntax-aware, side-by-side) --
+  more capable, more to build than this need calls for; the List-tier's
+  existing scroll/filter chrome is sufficient for plain-text unified
+  diffs.
+- *Keep Show resource lists combined, let `q` advance instead of exit*
+  -- considered as a lighter-touch fix, but three separate, directly
+  reachable menu entries is more discoverable than a "press q to see
+  the next one" convention the operator would have to learn.
+
+**Consequences.** New `inventory.ListLaunchTemplateVersions` +
+`LaunchTemplateVersionSummary`; `show_launch_template.go` restructured
+around a template-level sub-menu (existing tests updated for the new
+leading choice-prompt); `MenuActions.ShowResourceLists` replaced by
+`ShowInstances`/`ShowAMIs`/`ShowLaunchTemplates`; `mainMenuItems` grows
+from 18 to 20, requiring the same hardcoded-index maintenance in
+`menu_test.go` every prior menu-ordering change in this project has
+needed. See `PLAN.md` Phase 20.28.
+
+---
+
+## 2026-07-20 — Accept "v"-prefixed launch template versions
+
+**Context.** Found via the debug log from the operator's first
+real-AWS pass over Phase 20.27
+(`clasm-debug-20260720-132204.jsonl`): typing `v1` at a version prompt
+-- a natural thing to type, since `launchTemplateLabel`'s own display
+format is "default v2" -- caused a hard AWS rejection at two call
+sites: `DescribeLaunchTemplateVersions` ("Invalid launch template
+version: either '$Default', '$Latest', or a numeric version are
+allowed") and `ModifyLaunchTemplate` ("A launch template version must
+be specified..."). The latter is why Promote appeared to silently do
+nothing -- it had actually failed outright, not succeeded-without-
+refreshing as first suspected.
+
+**Decision.** New `normalizeVersionSelector(s string) string` strips a
+leading `v`/`V` from a plain version number (`"v1"` -> `"1"`) before it
+reaches any AWS call. `"$Default"`/`"$Latest"` and anything not of the
+exact form `v<digits>` pass through unchanged. Applied at all four
+places a version selector is entered: the shared
+`promptLaunchTemplateVersion`/`promptLaunchTemplateVersionLabeled`
+(Show, Create-from-template, Sync's compare-against version, Show's
+two version-diff prompts), Promote's version prompt, and Delete
+Version(s)'s comma-separated list.
+
+**Rationale.**
+- The mismatch is self-inflicted: this project's own display convention
+  ("v2", "v3" in `launchTemplateLabel`) primes the operator to type
+  what they see elsewhere in the same tool, and AWS's API has no
+  tolerance for that format at all -- normalizing at the boundary is
+  more correct than asking every operator to remember an
+  AWS-vs-clasm formatting distinction.
+- A single shared normalization function, applied everywhere a version
+  selector is entered, avoids fixing the same bug three more times as
+  new version-entry points get added later.
+
+**Rejected alternatives.**
+- *Change `launchTemplateLabel`'s display format instead* (drop the
+  "v" prefix) -- fixes the display/input mismatch from the other
+  direction, but "v2"/"v3" is a reasonable, common way to label
+  versions for a human reader; normalizing the input is less invasive
+  than changing an already-shipped display convention.
+- *Validate and reject `"v1"` with a clear error message, re-prompt* --
+  considered, but silently accepting the obviously-intended value is
+  friendlier than making the operator retype it correctly, and there's
+  no ambiguity in what `v<digits>` means.
+
+**Consequences.** `internal/workflow/show_launch_template.go` gains
+`normalizeVersionSelector`; `launch_template_manage.go`'s Promote and
+Delete Version(s) prompts both call it. Test-first: reproduced the
+exact `"v1"` -> AWS-rejects-it failure before fixing it. See `PLAN.md`
+Phase 20.28.
+
+---
+
 ## 2026-07-20 — Launch templates: build directly from cloud-init YAML, diff-then-new-version sync, fold in IMDSv2
 
 **Context.** Requested directly (`notes-from-tom.txt`) and confirmed as

@@ -189,10 +189,12 @@ func main() {
 	}
 	// refresh only re-fetches instance/AMI/launch-template data -- it no
 	// longer displays it (DESIGN.md, "Terminal UI Architecture: Menus,
-	// Actions, Lists, and Managers"). Displaying is
-	// showComputeResourceLists, reachable only via the Compute menu's
-	// explicit "Show resource lists" choice (same split as
-	// refreshS3/showS3ResourceLists below).
+	// Actions, Lists, and Managers"). Displaying is showInstances/
+	// showAMIs/showLaunchTemplatesList, each reachable only via the
+	// Compute menu's own explicit "Show ..." choice (DECISIONS.md,
+	// "Split Show resource lists into per-resource-type Compute menu
+	// entries" -- same split as refreshS3/showS3ResourceLists below,
+	// just three listings instead of one).
 	refresh := func(ctx context.Context) error {
 		instances, err := inventory.ListInstances(ctx, ec2Clients)
 		if err != nil {
@@ -209,13 +211,13 @@ func main() {
 		state.instances, state.images, state.launchTemplates = instances, images, launchTemplates
 		return nil
 	}
-	showComputeResourceLists := func(ctx context.Context) error {
-		if err := ui.DisplayInstances(ctx, state.instances); err != nil {
-			return err
-		}
-		if err := ui.DisplayImages(ctx, state.images); err != nil {
-			return err
-		}
+	showInstances := func(ctx context.Context) error {
+		return ui.DisplayInstances(ctx, state.instances)
+	}
+	showAMIs := func(ctx context.Context) error {
+		return ui.DisplayImages(ctx, state.images)
+	}
+	showLaunchTemplatesList := func(ctx context.Context) error {
 		return ui.DisplayLaunchTemplates(ctx, state.launchTemplates)
 	}
 
@@ -326,8 +328,10 @@ func main() {
 		DeleteLaunchTemplate: func(ctx context.Context) error {
 			return workflow.DeleteLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
 		},
-		Refresh:           refresh,
-		ShowResourceLists: showComputeResourceLists,
+		Refresh:             refresh,
+		ShowInstances:       showInstances,
+		ShowAMIs:            showAMIs,
+		ShowLaunchTemplates: showLaunchTemplatesList,
 	}
 
 	s3Actions := workflow.S3Actions{

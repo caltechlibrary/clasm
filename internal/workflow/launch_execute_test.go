@@ -125,6 +125,14 @@ type fakeEC2Client struct {
 	launchTemplateVersions                  []types.LaunchTemplateVersion
 	describeLaunchTemplateVersionsErr       error
 	lastDescribeLaunchTemplateVersionsInput *ec2.DescribeLaunchTemplateVersionsInput
+	// launchTemplateVersionsByVersion, if set, resolves
+	// DescribeLaunchTemplateVersions by the requested Versions[0]
+	// selector instead of always returning the same fixed
+	// launchTemplateVersions slice -- needed by tests that fetch two
+	// different versions of the same template (Show Launch Template's
+	// version-to-version diff) and need each call to return distinct
+	// content.
+	launchTemplateVersionsByVersion map[string]types.LaunchTemplateVersion
 
 	lastCreateLaunchTemplateInput *ec2.CreateLaunchTemplateInput
 	createLaunchTemplateErr       error
@@ -152,6 +160,11 @@ func (f *fakeEC2Client) DescribeLaunchTemplateVersions(ctx context.Context, para
 	f.lastDescribeLaunchTemplateVersionsInput = params
 	if f.describeLaunchTemplateVersionsErr != nil {
 		return nil, f.describeLaunchTemplateVersionsErr
+	}
+	if f.launchTemplateVersionsByVersion != nil && len(params.Versions) == 1 {
+		if v, ok := f.launchTemplateVersionsByVersion[params.Versions[0]]; ok {
+			return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: []types.LaunchTemplateVersion{v}}, nil
+		}
 	}
 	return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: f.launchTemplateVersions}, nil
 }

@@ -147,6 +147,45 @@ func DescribeLaunchTemplateVersion(ctx context.Context, client awsclient.EC2API,
 	return launchTemplateVersionFromSDK(out.LaunchTemplateVersions[0]), nil
 }
 
+// LaunchTemplateVersionSummary is one version's identifying metadata,
+// for listing every version of a template (DESIGN.md, "Launch
+// Templates" version-history addendum, 2026-07-20) -- deliberately
+// lighter than LaunchTemplateVersionDetail (no AMI/instance-type/tags),
+// since a version list is about "which versions exist and when," not
+// full per-version detail.
+type LaunchTemplateVersionSummary struct {
+	VersionNumber    int64
+	CreateTime       string
+	IsDefaultVersion bool
+}
+
+// ListLaunchTemplateVersions fetches every version of templateID --
+// client must already be scoped to the template's own region, matching
+// DescribeLaunchTemplateVersion. AWS's own ordering isn't guaranteed;
+// callers sort if a specific order matters.
+func ListLaunchTemplateVersions(ctx context.Context, client awsclient.EC2API, templateID string) ([]LaunchTemplateVersionSummary, error) {
+	var summaries []LaunchTemplateVersionSummary
+	input := &ec2.DescribeLaunchTemplateVersionsInput{LaunchTemplateId: aws.String(templateID)}
+	for {
+		out, err := client.DescribeLaunchTemplateVersions(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range out.LaunchTemplateVersions {
+			summaries = append(summaries, LaunchTemplateVersionSummary{
+				VersionNumber:    aws.ToInt64(v.VersionNumber),
+				CreateTime:       formatTime(v.CreateTime),
+				IsDefaultVersion: aws.ToBool(v.DefaultVersion),
+			})
+		}
+		if out.NextToken == nil {
+			break
+		}
+		input.NextToken = out.NextToken
+	}
+	return summaries, nil
+}
+
 func launchTemplateVersionFromSDK(v types.LaunchTemplateVersion) LaunchTemplateVersionDetail {
 	detail := LaunchTemplateVersionDetail{
 		TemplateID:       aws.ToString(v.LaunchTemplateId),

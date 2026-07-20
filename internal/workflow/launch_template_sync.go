@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/tui"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // SyncLaunchTemplate runs the Sync Cloud-Init YAML to a Template
@@ -76,9 +79,9 @@ func syncLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 
 	sourceVersion := fmt.Sprintf("%d", detail.VersionNumber)
 	diff := udiff.Unified(fmt.Sprintf("%s version %s", lt.TemplateID, sourceVersion), "local file", oldYAML, newYAML)
-	fmt.Fprintln(w, "\n--- diff ---")
-	fmt.Fprint(w, diff)
-	fmt.Fprintln(w, "------------")
+	if err := displayDiff(ctx, w, fmt.Sprintf("Diff: %s version %s vs local file", lt.TemplateID, sourceVersion), diff, input); err != nil {
+		return err
+	}
 
 	ok, err := Confirm(fmt.Sprintf("Create a new version of %s with these changes?", lt.TemplateID), WithConfirmIO(input, output))
 	if err != nil {
@@ -96,6 +99,36 @@ func syncLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 
 	fmt.Fprintf(w, "Created version %d of %s. It is NOT the default version yet -- use Promote Launch Template Version to Default when ready.\n", newVersion, lt.TemplateID)
 	return nil
+}
+
+// displayRows shows rows to the operator -- a scrollable List-tier box
+// in real interactive use (DESIGN.md, "Launch Templates": a raw fmt
+// dump can exceed the terminal and scroll off screen with no way to
+// page back through it, reported directly 2026-07-20), or a plain
+// line-by-line fmt dump when input is non-nil (accessible/test mode,
+// where there's no real bubbletea loop to drive a List-tier screen at
+// all -- the same convention every Picker-tier-adjacent step in this
+// package already follows). Shared by Sync's diff-before-a-new-version,
+// Show Launch Template's version-to-version diff, and its list-every-
+// version display.
+func displayRows(ctx context.Context, w io.Writer, title string, rows []string, input io.Reader) error {
+	if input != nil {
+		fmt.Fprintf(w, "\n--- %s ---\n", title)
+		for _, r := range rows {
+			fmt.Fprintln(w, r)
+		}
+		return nil
+	}
+	return tui.RunListView(ctx, tui.ListViewConfig{
+		Title:        title,
+		Rows:         rows,
+		ColorEnabled: ui.ColorEnabled(),
+	})
+}
+
+// displayDiff is displayRows specialized for a unified diff string.
+func displayDiff(ctx context.Context, w io.Writer, title, diff string, input io.Reader) error {
+	return displayRows(ctx, w, title, strings.Split(strings.TrimRight(diff, "\n"), "\n"), input)
 }
 
 // createLaunchTemplateVersion creates a new version of templateID,
