@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>clasm</title>
+    <link rel="stylesheet" href="https://caltechlibrary.github.io/css/site.css">
+    <link rel="stylesheet" href="https://media.library.caltech.edu/cl-webcomponents/css/code-blocks.css">
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/copyToClipboard.js"></script>
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/footer-global.js"></script>
+</head>
+<body>
+<header>
+<a href="https://library.caltech.edu"><img src="https://media.library.caltech.edu/assets/caltechlibrary-logo.png" alt="Caltech Library logo"></a>
+</header>
+<a href="#main-content" class="visually-hidden">skip to main content</a>
+<nav>
+<ul>
+    <li><a href="/">All Library Apps</a></li>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="LICENSE">LICENSE</a></li>
+    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="user_manual.html">User Manual</a></li>
+    <li><a href="about.html">About</a></li>
+    <li><a href="https://github.com/caltechlibrary/clasm">Code Repository</a></li>
+</ul>
+</nav>
+<section id="main-content">
+<h1 id="clasm-tui-reference">clasm TUI Reference</h1>
+<p>A visual reference for clasm’s terminal UI, for testers and
+developers: know what chrome (borders, hint lines, footer text) to
+expect on a given screen, so a genuine difference between screens reads
+as “this is a different tier, working as designed” rather than “this
+looks broken.” Written after a round of manual resize testing
+(2026-07-20) turned up exactly this confusion – see
+<code>DECISIONS.md</code>, “Full-height Menu tier via live
+<code>WindowSizeMsg</code> tracking, applied at every depth,” and
+<code>PLAN.md</code> Phase 20.26/20.28.</p>
+<p>Every mockup below was checked against real rendered output
+(<code>go test</code>-driven, with the real <code>tui.Theme()</code> and
+a real <code>huh.Form</code>/ <code>quitKeyGuard</code>, not
+hand-guessed), not assumed. Box-drawing characters match
+<code>internal/tui/box.go</code> exactly (<code>┌─┐│├─┤└─┘</code>).</p>
+<p>clasm has five distinct chrome “tiers.” Only one of them
+(<strong>Menu tier</strong>) is what Phase 20.26 made full-height; the
+other three boxed tiers (<strong>Picker</strong>, <strong>List</strong>,
+<strong>Manager</strong>) have had their own, separate
+<code>tea.WindowSizeMsg</code> handling since Phase 20.4-20.12, well
+before this session. <strong>Plain prompts</strong> never go full-height
+at all – that’s deliberate, not a gap.</p>
+<h2 id="menu-tier-huh.select-via-runmenufieldquitkeyguard">1. Menu tier
+— <code>huh.Select</code> via
+<code>runMenuField</code>/<code>quitKeyGuard</code></h2>
+<p><strong>Where:</strong>
+<code>internal/workflow/domain_menu.go</code>. Every domain picker,
+every per-domain action menu (Compute/S3/Key Management), and every
+small fixed-list pick within a workflow
+(<code>pickString</code>/<code>pickComparable</code> call sites,
+e.g. Backup Archive &amp; Trim’s bucket picker, Manage Tags’
+Instance-vs-AMI choice).</p>
+<p><strong>Distinguishing features:</strong> - A hint line
+(<code>(q to go back)</code> or <code>(q to exit)</code>) printed
+<strong>outside and above</strong> the box, via a plain
+<code>fmt.Fprintln</code> <em>before</em> the bubbletea Program even
+starts – not part of the box itself. - Full terminal height (Phase
+20.26) – the box’s own interior pads with blank lines to fill whatever’s
+left after the hint line and huh’s own footer
+(<code>menuHintReservedLines = 2</code>, both accounted for). - huh’s
+own footer line, printed <strong>outside and below</strong> the box –
+wording depends on the field (a filterable Select shows
+<code>/ filter</code>; a non-filterable one omits it).</p>
+<pre><code>(q to go back)
+┌ Choose an option ───────────────────────────────┐
+│ Manage EC2 instances, AMIs, and launch          │
+│ templates, or archive stale backups to S3.      │
+│ &gt; Show instances                                │
+│   Show AMIs                                     │
+│   Show launch templates                         │
+│   ...                                           │
+│                                                 │
+│                                                 │
+└─────────────────────────────────────────────────┘
+↑ up • ↓ down • / filter • enter submit</code></pre>
+<h2 id="picker-tier-tui.runpickerpickermodel">2. Picker tier —
+<code>tui.RunPicker</code>/<code>PickerModel</code></h2>
+<p><strong>Where:</strong> <code>internal/tui/picker.go</code>.
+Selecting <em>one</em> item from a fetched, variable-length collection –
+an instance, an AMI, an S3 bucket, a key pair, a launch template. Not
+huh at all; its own bubbletea <code>Model</code>.</p>
+<p><strong>Distinguishing features:</strong> - No separate hint line
+outside the box – everything (title, optional description, rows, filter
+status, legend) is <strong>inside one continuous bordered box</strong>.
+- Its own legend wording, different from huh’s:
+<code>↑/↓,k/j scroll  / filter  enter select  q Quit</code>. - Already
+full-height and live-resizing before this session (own
+<code>tea.WindowSizeMsg</code> handling in <code>Update</code>).</p>
+<pre><code>┌ Select an instance ─────────────────────────────┐
+│ Connects to this instance via SSM to list       │
+│ and upload backup files.                        │
+│ &gt; i-0123abc - web (running, us-east-1)          │
+│   i-0456def - db (stopped, us-west-2)           │
+│                                                 │
+│                                                 │
+├─────────────────────────────────────────────────┤
+│ filter: none                                    │
+├─────────────────────────────────────────────────┤
+│ ↑/↓,k/j scroll  / filter  enter select  q Quit  │
+└─────────────────────────────────────────────────┘</code></pre>
+<h2 id="list-tier-tui.runlistviewlistviewmodel">3. List tier —
+<code>tui.RunListView</code>/<code>ListViewModel</code></h2>
+<p><strong>Where:</strong> <code>internal/tui/listview.go</code>.
+Read-only tabular listings – “Show instances,” “Show AMIs,” “Show launch
+templates,” “List S3 Buckets,” Key Management’s “Show resource
+lists.”</p>
+<p><strong>Distinguishing features:</strong> identical shape to the
+Picker tier (same shared chrome, <code>internal/tui/box.go</code>),
+minus selection – the legend omits <code>enter select</code> since
+there’s nothing to choose:
+<code>↑/↓,k/j scroll  / filter  q Quit</code>. A frozen header row
+(column titles) sits above the scrollable body when the config provides
+one.</p>
+<pre><code>┌ EC2 Instances ──────────────────────────────────┐
+│ INSTANCE ID  NAME  STATE    AMI ID   REGION     │
+│ i-0123abc    web   running  ami-1    us-east-1  │
+│ i-0456def    db    stopped  ami-2    us-west-2  │
+│                                                 │
+├─────────────────────────────────────────────────┤
+│ filter: none                                    │
+├─────────────────────────────────────────────────┤
+│ ↑/↓,k/j scroll  / filter  q Quit                │
+└─────────────────────────────────────────────────┘</code></pre>
+<h2 id="manager-tier-internalfilemanager.model">4. Manager tier —
+<code>internal/filemanager.Model</code></h2>
+<p><strong>Where:</strong> <code>internal/filemanager</code>. S3’s
+“Browse &amp; Manage Objects” – the only stateful, persistent
+interactive screen in clasm (everything else is either read-only or a
+one-shot wizard). Single-pane (bucket only) or double-pane (bucket + a
+linked local directory).</p>
+<p><strong>Distinguishing features:</strong> the richest legend (every
+hotkey the screen supports), a status line (item count, tagged count,
+tagged size), and a <code>:command</code> line mode
+(<code>f</code>/<code>/</code> to filter, <code>:</code> for a
+colon-command) in addition to hotkeys. Two panes side by side when a
+local directory is linked.</p>
+<pre><code>┌ s3://my-bucket ──────────────────────┬ ~/backups ───────────────────────┐
+│ NAME              SIZE    MOD        │ NAME             SIZE   MOD      │
+│ [ ] file1.txt     1.2 KB  ...        │ [ ] file1.txt    1.2 KB  ...     │
+│ [x] file2.txt     3.4 KB  ...        │                                  │
+│                                      │                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 2 items, 1 tagged (3.4 KB)                                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│ u Upload  d Download  x Delete  m Metadata  f Filter  F Find  S Sync    │
+│ r Refresh  l Unlink (1-pane)  Tab Switch  Space Tag  * Tag All  q Quit  │
+└─────────────────────────────────────────────────────────────────────────┘</code></pre>
+<h2 id="plain-prompts-ui.promptconfirm-huh.inputhuh.confirm">5. Plain
+prompts — <code>ui.Prompt</code>/<code>Confirm</code>
+(<code>huh.Input</code>/<code>huh.Confirm</code>)</h2>
+<p><strong>Where:</strong> free-text and yes/no prompts throughout every
+workflow (Name tag, directory paths, age thresholds, “Launch this
+instance?”). Still a bordered <code>huh</code> box
+(<code>tui.Theme()</code> applies here too), but <strong>deliberately
+not full-height</strong> – these never go through
+<code>quitKeyGuard</code>/<code>WithHeight</code>, so they stay
+content-sized. This is by design, not a gap: a one-line input field
+filling the whole terminal would look broken, not helpful.</p>
+<pre><code>┌ Name tag ───────────────────────────────────────┐
+│ &gt;                                               │
+└─────────────────────────────────────────────────┘
+enter submit</code></pre>
+<pre><code>┌ Launch this instance? ──────────────────────────┐
+│                                                 │
+│      Yes     No                                 │
+└─────────────────────────────────────────────────┘
+←/→ toggle • enter submit • y Yes • n No</code></pre>
+<h2 id="high-level-screen-map-tagged-by-tier">High-level screen map,
+tagged by tier</h2>
+<p>Domains and their menu items only – not every prompt inside every
+workflow (see the individual <code>internal/workflow/*.go</code> files
+for that level of detail; it changes too often to keep a full tree in
+sync here).</p>
+<pre><code>Domain Picker [Menu]
+├─ Compute (EC2 &amp; AMI) [Menu, 20 items]
+│  ├─ Show instances / Show AMIs / Show launch templates   [List]
+│  ├─ Create EC2 instance from AMI / cloud-init YAML / launch template
+│  │                                                        [Picker + plain prompts]
+│  ├─ Start / Stop / Terminate EC2 instance                 [Picker + plain prompt/Confirm]
+│  ├─ Manage tags for an instance or AMI                     [Menu + Picker + plain prompts]
+│  ├─ Create AMI from EC2 instance / Remove AMI               [Picker + plain prompts]
+│  ├─ Show/export cloud-init for an instance or AMI            [Menu + Picker]
+│  ├─ Show a launch template (detail / list versions / diff two) [Picker + Menu + List]
+│  ├─ Create/Sync/Promote/Delete launch template (version(s))  [Picker + plain prompts + List (diff)]
+│  └─ Archive stale backups to S3 and trim disk space           [Picker + Menu (bucket) + plain prompts]
+├─ Key Management [Menu, 4 items]
+│  ├─ Show resource lists (key pairs)                          [List]
+│  ├─ Create / Import Key Pair                                  [plain prompts]
+│  └─ Delete Key Pair                                            [Picker]
+└─ S3 (Buckets &amp; Static Websites) [Menu, 6 items]
+   ├─ List S3 Buckets                                            [List]
+   ├─ Create Bucket / Configure Static Website Hosting             [Menu (region) + plain prompts]
+   ├─ Browse &amp; Manage Objects                                       [Picker (bucket) + Manager]
+   ├─ Manage Bucket Lifecycle Policies                               [Picker + Menu (storage class)]
+   └─ Delete Bucket                                                   [Picker + plain prompts]</code></pre>
+</section>
+<footer-global></footer-global>
+</body>
+</html>
