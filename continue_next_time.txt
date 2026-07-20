@@ -1,89 +1,84 @@
 
-We did some bug fixxing this morning (2026-07-14), I've cleaned up the TODO.md to only have in complete items.
+clasm — where we left off (2026-07-20, end of day; v0.0.2 released)
+=====================================================================
 
-clasm — where we left off (2026-07-13, end of the chrome/UX-refinements session)
-==============================================================================
+STATUS: v0.0.2 released today (codemeta.json/CITATION.cff/about.md/
+installer.sh/installer.ps1/version.go/clasm.1.md all regenerated via
+cmt from codemeta.json; committed and released by the user). Four
+domains now: Compute (EC2 & AMI, including Launch Templates), Key
+Management, S3, and Tag Management (new this session, PLAN.md Phase
+20.30). Every Menu-tier huh.Select is full-height and live-resizing
+(Phase 20.26) -- this resolved the "NEXT UP" open question left by the
+2026-07-13 hand-off/continue-file: rather than making only the root
+picker full-height (which would have looked inconsistent one level
+deeper), every Menu-tier screen was made full-height uniformly,
+matching the Picker/List/Manager tiers' own live-resize behavior.
 
-STATUS: termlib is fully removed (PLAN.md Phases 20.15-20.16) -- every
-screen is now huh (Menu tier: guide menus/action wizards) or bubbletea
-(internal/tui: Picker/List/Manager tiers), no exceptions, no fallback.
-Since then, a long chrome-consistency + UX-refinement run (Phases
-20.17-20.25, all done, each with its own DESIGN.md addendum and
-DECISIONS.md entry -- read those for full detail, this file only
-summarizes) landed: one shared indigo lipgloss accent across huh and
-tui; a real animated progress spinner; contextual description text on
-every Menu/Picker-tier screen; a full box border on huh fields matching
-tui's box-drawing shape; Backup Archive & Trim's prompts reordered
-(instance/directory/bucket/age-days) and now recall the last-used
-instance/directory per instance (~/.clasm_state, a new app-managed file
-distinct from the hand-edited ~/.clasm config); a screen clear at
-startup; and a filterable bucket picker (with a free-text "Other"
-escape hatch) for Backup Archive & Trim's bucket prompt. `go build
-./...`, `go vet ./...`, `go test ./... -race` are all clean; `gofmt -l`
-is clean except the pre-existing, unrelated `version.go` (a generated
-file). Nothing is staged or committed -- that's the user's to do.
+Today's work, in order: Full-height Menu Tier (20.26); Launch
+Templates (20.27/20.28) -- create/show/sync/promote/delete built
+directly from cloud-init YAML, IMDSv2 forced, version history +
+scrollable diff; Manage Tags loop fix (20.29) -- loop until 'q', a
+"Show tags" choice, refresh-after-change; the new Tag Management domain
+(20.30) -- manage-or-list tags across Instance/AMI/Launch Template/Key
+Pair/S3 Bucket from one place, S3 via a transparent read-modify-write
+over PutBucketTagging (generalized manageTagsForResource/
+applyOneTagChange to take a pluggable apply closure for this). All
+five Tag Management kinds are real-AWS confirmed.
 
-NEXT UP: full-height domain picker (the deferred half of today's first request)
---------------------------------------------------------------------
+Three real bugs found only via live usage, not tests, fixed same day:
+(1) a context-cancellation bug that broke launching an instance from a
+launch template (WaitUntilRunning reused an already-cancelled timeout
+context); (2) AWS rejecting a "v"-prefixed launch template version
+selector outright (normalizeVersionSelector fixes it -- this is what
+made Promote look silently broken); (3) "Show tags" appearing to do
+nothing on a real terminal -- root cause: the new full-height action
+Select (Phase 20.26) scrolled the plain-printed tag listing out of
+view the instant it rendered, fixed by embedding the tags directly in
+the Select's own Description (actionMenuDescription). This last one is
+a general lesson worth remembering: any call site that prints plain
+text immediately before a full-height Menu-tier Select is at risk of
+the same silent-scroll bug -- check for that pattern first if a future
+"the screen looks unchanged" report comes in.
 
-The user's actual request was "clear the screen first and take up the
-full height of the terminal window." Only the clear-screen half was
-implemented (Phase 20.24) -- the domain picker itself is still a
-compact, content-sized huh.Select, not full-height. This was
-deliberately NOT guessed at further, because it's a real architectural
-fork, not an implementation detail:
+TUI_REFERENCE.md (new this session, mid-week) has verified ANSI box
+mockups per tier plus a screen-map tree -- read it before touching
+chrome, it was built specifically to stop resize-behavior confusion
+between the Menu/Picker/List/Manager tiers (a multi-round investigation
+this session concluded was stale-binary testing, not a real bug, once
+resolved).
 
-- The Menu tier (huh.Select) has no built-in "occupy the full terminal
-  height" concept the way the Picker/List/Manager tier's bubbletea
-  components do (real tea.WindowSizeMsg-driven sizing, content padded
-  to fill).
-- Making ONLY the root domain picker full-height would look
-  inconsistent with every menu one level deeper (S3/EC2/Key Management
-  submenus), which would stay compact -- the opposite direction from
-  all the chrome-consistency work just finished.
-- The much bigger alternative -- redesigning the entire Menu tier onto
-  a full-height bubbletea component, effectively retiring huh.Select
-  for navigation menus -- hasn't been scoped at all.
+`go build ./...`, `go vet ./...`, `go test ./... -race` clean
+throughout every phase; `gofmt -l .` clean except the pre-existing,
+unrelated `version.go`.
 
-Ask the user directly which of these (or something else entirely) they
-meant by "full height" before writing any code. See DECISIONS.md,
-"Clear the screen at startup," and PLAN.md Phase 20.24's own deferred
-note for what's already been reasoned through.
+NEXT UP: no single forced next step -- several open TODO.md items, ask
+the user which (or something else) before starting any of them
+---------------------------------------------------------------------
 
-Also still open:
-- Manual/interactive verification. Most of this session's chrome/UX
-  work (the full border, description text, the bucket picker's
-  filtering) has only been checked via automated tests and a few
-  throwaway ANSI-output sanity scripts, not run by a human at a real
-  terminal. Worth a real pass through the app before calling any of it
-  fully finished.
-- Whether the recall-history mechanism (~/.clasm_state) should ever be
-  surfaced/editable by the operator (e.g. "forget this instance"), or
-  stay purely automatic -- not raised yet, no need to raise it
-  unprompted.
+- Backup Archive & Trim: save the S3 target bucket as a default,
+  unclear yet how that meshes with the current bucket-picker approach
+  -- needs exploring, not just implementing.
+- A details view for a single instance/AMI/launch template (beyond the
+  existing List-tier table columns) -- the user's own recent TODO.md
+  addition, not scoped.
+- CloudFront distribution ID listing for S3 static websites (small,
+  standalone -- doesn't require the CloudFront domain itself, which
+  stays someday/maybe).
+- Bulk object delete via s3:DeleteObjects (batches of up to 1000) in
+  place of the file manager's current one-DeleteObject-per-key loop.
+- Retry-on-launch-failure generalized to any RunInstances error (today
+  only the instance-type/AZ pre-flight check has a narrower, scoped
+  version of this).
 
-Other unclaimed threads (lower priority, ask before picking one)
---------------------------------------------------------------------
+Someday/maybe, not on the active roadmap (see TODO.md for full detail
+on each): CloudFront domain; EBS storage properties in launch
+templates; a missing-tags compliance/audit report across the Tag
+Management domain's five resource types; container management (AWS
+container registry + SSM-based Docker container interaction inside an
+EC2 instance) -- moved here from Requested Features today, since it
+had no design work and no committed timeline.
 
-- PLAN.md Phase 22 (real-AWS testing for Key Management/S3) still not
-  run -- needs the user's own AWS account access.
-- PLAN.md Phase 21 (CloudFront) is explicitly someday/maybe, not on the
-  active roadmap.
-- PLAN.md Phase 16/18's own status headers are stale (no "(done)"
-  marker) even though TODO.md confirms both were actually completed
-  and verified back in Phase 17's retirement pass -- minor doc
-  cleanup, noticed but not fixed.
-- No v0.0.1 git tag or GitHub release yet, and the GitHub-side repo
-  rename (caltechlibrary/awstools -> caltechlibrary/clasm) is still the
-  user's to do.
-- Batch delete via s3:DeleteObjects (up to 1000 keys/call) instead of
-  the file manager's current one-DeleteObject-per-key loop: still an
-  open "nice to have" (TODO.md).
-- The S3 lifecycle policy ID string "awsops-backup-policy"
-  (internal/workflow/bucket_lifecycle.go) is still deliberately
-  un-renamed -- ask before touching it.
-
-Git state: the user commits, pushes, tags, and handles the GitHub repo
-rename themselves -- never run git commit/push/tag/release without
-being explicitly asked. See agents/knowledge.db (project "clasm") and
+Git state: the user commits, pushes, tags, and handles releases
+themselves -- never run git commit/push/tag/release without being
+explicitly asked. See agents/knowledge.db (project "clasm") and
 agents/hand-off/ for prior sessions' full detail.
