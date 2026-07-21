@@ -41,6 +41,24 @@ func buildTagSpecification(resourceType types.ResourceType, tags map[string]stri
 	return spec
 }
 
+// buildRootBlockDeviceMapping converts params' root volume override
+// into the single BlockDeviceMapping entry needed to apply it, or nil
+// if RootVolumeSizeGB is 0 ("no override" -- AWS keeps inheriting the
+// AMI's own default). Only DeviceName and Ebs.VolumeSize are set --
+// every other Ebs field (VolumeType, Iops, Encrypted,
+// DeleteOnTermination) is left unset, which AWS inherits from the
+// source AMI's own mapping/snapshot for any field not explicitly
+// overridden (DESIGN.md, "Configurable EBS Root Volume Size").
+func buildRootBlockDeviceMapping(params LaunchInstanceParams) []types.BlockDeviceMapping {
+	if params.RootVolumeSizeGB == 0 {
+		return nil
+	}
+	return []types.BlockDeviceMapping{{
+		DeviceName: aws.String(params.RootDeviceName),
+		Ebs:        &types.EbsBlockDevice{VolumeSize: aws.Int32(params.RootVolumeSizeGB)},
+	}}
+}
+
 // Launch calls ec2:RunInstances for a single instance from params,
 // returning the new instance's ID. Executing against AWS is kept
 // separate from CollectLaunchInstanceParams so a future Recorded Script
@@ -49,14 +67,15 @@ func buildTagSpecification(resourceType types.ResourceType, tags map[string]stri
 // record/replay").
 func Launch(ctx context.Context, client awsclient.EC2API, params LaunchInstanceParams) (string, error) {
 	input := &ec2.RunInstancesInput{
-		ImageId:           aws.String(params.ImageID),
-		InstanceType:      types.InstanceType(params.InstanceType),
-		KeyName:           aws.String(params.KeyName),
-		SecurityGroupIds:  params.SecurityGroupIDs,
-		SubnetId:          aws.String(params.SubnetID),
-		MinCount:          aws.Int32(1),
-		MaxCount:          aws.Int32(1),
-		TagSpecifications: []types.TagSpecification{buildTagSpecification(types.ResourceTypeInstance, params.Tags)},
+		ImageId:             aws.String(params.ImageID),
+		InstanceType:        types.InstanceType(params.InstanceType),
+		KeyName:             aws.String(params.KeyName),
+		SecurityGroupIds:    params.SecurityGroupIDs,
+		SubnetId:            aws.String(params.SubnetID),
+		MinCount:            aws.Int32(1),
+		MaxCount:            aws.Int32(1),
+		TagSpecifications:   []types.TagSpecification{buildTagSpecification(types.ResourceTypeInstance, params.Tags)},
+		BlockDeviceMappings: buildRootBlockDeviceMapping(params),
 		// IMDSv2 required, unconditionally -- not an operator choice, per
 		// AWS security recommendations (TODO.md bug; DECISIONS.md, "Launch
 		// templates: build directly from cloud-init YAML, diff-then-new-

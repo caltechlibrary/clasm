@@ -3,29 +3,19 @@
 
 ## Bugs 
 
-- [x] Each screen should fill the terminal window consistantly, still a problem in current version (commit a3c07051cf83899ca4b7dd333a55830870f183dc)
-  - I don't think when a new screen is written that we're actually checking the window's height. Many screens clear but then ownly draw in about 1/3 of the window height
-  - Confirmed fixed 2026-07-20 across all four TUI tiers (Menu/Picker/List/Manager) -- see TUI_REFERENCE.md
-- [x] The bahavior of the filter and picker filter needs to be uniform, right now some filters treat "q" as quick filter rather than the default huh uses (empty string), the "q" doesn't exit the whole clasm but returns to the prior screen.
-- [x] The screen for adding, updating, and removing tags is missing a "show tags" menu option and the tags shown at the top of he screen don't update on change
-- [x] When creating a new EC2 instance the IDMSv2 metadata value should be set to true per AWS Security recommendations
-
 ## Requested features
 
 - [ ] When doing the Archive backups, the S3 target bucket should be saved as a default but I'm not sure how this works with the bucket picker approach we have now. This needs to be explored.
-- [x] A top level menu item for managing tags across resources (EC2, AMI, S3, etc)
-  - All five resource types (Instance, AMI, Launch Template, Key Pair, S3 Bucket) done and confirmed against real AWS 2026-07-20 -- see PLAN.md Phase 20.30.
-- [x] My work group uses launch templates instances for EC2 we need to support managing those (list, show a template, add, update and remove)
-- [x] We need to way to sync a launch template with the updates from a cloud init YAML file
-  - The flow is cloud init yaml -> launch template -> EC2 instance
+- [x] Set the root EBS volume size when creating an instance/launch template (instead of always inheriting the AMI's default, e.g. 8GB), and resize a running instance's root volume after the fact.
+  - Designed and scoped 2026-07-21 -- see DESIGN.md, "Configurable EBS Root Volume Size", DECISIONS.md, "Configurable EBS root volume size: scope, flow coverage, and resize automation depth", and PLAN.md Phase 20.31.
+  - Implemented and unit-tested 2026-07-21, both parts: setting the size at creation (instances and launch templates) and the new "Resize instance's root volume" menu entry, including automated OS-level `growpart`/`resize2fs`/`xfs_growfs` via SSM with a manual-instructions fallback for any layout it doesn't recognize (e.g. LVM). Not yet verified against real AWS.
 - [ ] Need a show instances details, ami details, launch template details
+  - Show Launch Template already exists (Compute domain, since 2026-07-20) and covers the launch-template half: AMI, instance type, root volume size (added 2026-07-21), key pair, IAM instance profile, security groups, subnet, Project/Environment tags, IMDSv2 status. What's still missing is the equivalent single-resource detail view for an individual EC2 instance and an individual AMI -- today those are only ever seen as a row in the list-tier table (Show instances/Show AMIs), not a dedicated detail screen. Should show the same shape of settings the launch template view already does: instance type, EBS volume size(s) (`volume_info.go`'s `GatherVolumeInfo` already fetches this for AMI-creation-time estimates, so the data path exists), security groups, subnet, IAM instance profile, key pair, tags, and (for AMIs) block device mappings/root device name.
 
 ## Nice to have
 
+- [ ] A means of reporting the details of our an EC2 Instance, AMI instance or launch template, that can be downloaded as Markdown report document
 - [ ] Be able to list the CloudFront distribution ID for S3 static websites
-- [x] More color usage will make the interface easier to read, we can show relationship between menu items using color to group
-  - Color usage is substantially more extensive now that the whole UI runs on huh/lipgloss/bubbletea (2026-07-13 chrome standardization): one shared indigo accent across every field/box border/spinner, plus color-coded instance state (green=running, red=stopped, yellow=pending/stopping) in the List-tier tables. The specific "group menu items by color to show relationship" idea, though, was superseded by a deliberate opposite choice -- DECISIONS.md, "Chrome standardization: one shared indigo accent via lipgloss" -- one uniform accent everywhere, not a different color per domain/group, to keep every screen reading as the same visual language. Checking this off as addressed in spirit (color usage substantially increased, and reads more clearly), not as a literal per-group color scheme.
-- [x] For actions that take more than a few minutes, a spinner that shows progress would be nice
 - [ ] Bulk object delete (the file manager's Delete/Sync actions, `internal/filemanager`) currently loops one `s3:DeleteObject` call per key. `github.com/peak/s5cmd/v2`'s `storage.S3.MultiDelete` batches keys into groups of up to 1000 and calls the batch `s3:DeleteObjects` API in parallel chunks -- not importable directly (aws-sdk-go v1 + urfave/cli coupling, vs. this project's aws-sdk-go-v2), but `aws-sdk-go-v2`'s `s3` package already exposes `DeleteObjects`, so the same batching pattern could be reimplemented natively without a new dependency. Evaluated 2026-07-09, flagged again as an open question in PLAN.md Phase 20.1's work items, still not started.
 - [ ] Retry-on-launch-failure (general case): instead of bouncing back to
       the main menu on any `RunInstances` error, keep the already-collected
@@ -62,18 +52,35 @@
   picked back up. Phase 22 (real-AWS testing for Key Management/S3) no
   longer depends on it.
 
-- Change EBS storage properties (volume size, type, IOPS, throughput)
-  in a launch template. AWS supports this fully via
-  `RequestLaunchTemplateData.BlockDeviceMappings` -- confirmed against
-  the SDK, 2026-07-20 -- but the current template model deliberately
-  excludes it (DESIGN.md, "Launch Templates," curated field set), and
-  the plain instance-launch wizard (Features 2/3) doesn't set
-  `BlockDeviceMappings` either, so every instance clasm launches today
-  just inherits the source AMI's default EBS config. Anticipated need:
-  launch templates are expected to become the way development EC2
-  instances get spun up, and instance type/CPU/RAM/storage will likely
-  need refining over time based on cost -- not urgent yet, but flagged
-  so it isn't lost.
+- **Gap (found in production use, 2026-07-22):** no way to attach/associate
+  an IAM instance profile to an EC2 instance that's *already running* --
+  `promptIAMInstanceProfileOrCreate`/`create_instance_profile.go` is only
+  invoked from the launch workflow (`launch_instance.go`), and
+  `IAMInstanceProfile` is only ever consumed by `launch_execute.go`
+  (`RunInstancesInput`) and `launch_template_create.go` (launch-template
+  data). There is no `AssociateIamInstanceProfile` /
+  `ReplaceIamInstanceProfileAssociation` call anywhere in the codebase --
+  the only EC2 IAM-instance-profile API present is the read-only
+  `DescribeIamInstanceProfileAssociations` (`internal/awsclient/ec2.go`),
+  used just to display an instance's current profile. Separately (by
+  design, per DECISIONS.md "2026-07-02 -- Support picking or creating an
+  IAM instance profile from within awsops"): clasm only attaches an
+  *existing* IAM role to a new instance profile
+  (`iam:CreateInstanceProfile` + `iam:AddRoleToInstanceProfile`) -- it
+  never creates the role or its permissions policy itself, so even the
+  launch-time path requires the role/bucket-scoped policy to already
+  exist, authored outside clasm.
+  Surfaced when setting up an already-running InvenioRDM test instance
+  (Granian-vs-Gunicorn experiment) that needed S3 access: the AWS
+  best-practice approach (attach a role instead of putting static
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in a `.env` file on disk)
+  turned out to be unavailable for a running instance, so the workaround
+  was a plain IAM user access key instead. Two separate improvements,
+  either useful on its own: (1) support associating/replacing an instance
+  profile on a running instance, not just at launch; (2) optionally
+  support creating a minimal bucket-scoped role+policy from within clasm
+  (currently explicitly out of scope) so instance-profile setup doesn't
+  require a separate manual IAM detour.
 
 - A compliance/audit-style report across the Tag Management domain's
   five resource types (EC2 instance, AMI, launch template, key pair, S3

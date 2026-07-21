@@ -11,7 +11,7 @@ import (
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
-// MenuActions bundles the twenty workflow entry points the main menu
+// MenuActions bundles the twenty-one workflow entry points the main menu
 // dispatches to, as zero-arg-besides-ctx closures. main.go constructs
 // each closure bound to the live AWS clients and the current instance/
 // AMI/launch-template listing snapshot; this indirection is what lets
@@ -23,11 +23,15 @@ type MenuActions struct {
 	StartEC2Instance            func(ctx context.Context) error
 	StopEC2Instance             func(ctx context.Context) error
 	TerminateEC2Instance        func(ctx context.Context) error
-	ManageTags                  func(ctx context.Context) error
-	CreateAMIFromInstance       func(ctx context.Context) error
-	RemoveAMI                   func(ctx context.Context) error
-	ShowCloudInit               func(ctx context.Context) error
-	BackupArchiveAndTrim        func(ctx context.Context) error
+	// ResizeInstanceRootVolume grows a running instance's root EBS
+	// volume and its OS-level partition/filesystem (DESIGN.md,
+	// "Configurable EBS Root Volume Size", Part 2).
+	ResizeInstanceRootVolume func(ctx context.Context) error
+	ManageTags               func(ctx context.Context) error
+	CreateAMIFromInstance    func(ctx context.Context) error
+	RemoveAMI                func(ctx context.Context) error
+	ShowCloudInit            func(ctx context.Context) error
+	BackupArchiveAndTrim     func(ctx context.Context) error
 	// Launch-template actions (DESIGN.md, "Launch Templates").
 	ShowLaunchTemplate                func(ctx context.Context) error
 	CreateLaunchTemplateFromCloudInit func(ctx context.Context) error
@@ -89,6 +93,7 @@ var mainMenuItems = []menuItem{
 	{"Start EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
 	{"Stop EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
 	{"Terminate EC2 instance", func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
+	{"Resize instance's root volume", func(a MenuActions, ctx context.Context) error { return a.ResizeInstanceRootVolume(ctx) }},
 	{"Manage tags for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 	{"Create AMI from EC2 instance (running or stopped)", func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},
 	{"Remove AMI", func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},

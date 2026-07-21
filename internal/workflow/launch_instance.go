@@ -27,6 +27,21 @@ type LaunchInstanceParams struct {
 	IAMInstanceProfile string
 	UserData           string
 	Tags               map[string]string
+	// RootDeviceName and RootVolumeSizeGB together override the AMI's
+	// own default root volume size (DESIGN.md, "Configurable EBS Root
+	// Volume Size" -- TODO.md's confirmed production bug: every
+	// instance/launch template clasm created before this silently
+	// inherited the source AMI's default, e.g. 8GB for stock Ubuntu).
+	// RootDeviceName is resolved alongside the size, at collection
+	// time (describeImageRootVolume), because the builders that
+	// consume LaunchInstanceParams (Launch,
+	// buildRequestLaunchTemplateData) only see this struct, not the
+	// source inventory.Image. RootVolumeSizeGB of 0 means "no
+	// override" -- the builders omit BlockDeviceMappings entirely and
+	// AWS applies the AMI's own default, unchanged from before this
+	// feature.
+	RootDeviceName   string
+	RootVolumeSizeGB int32
 }
 
 // CollectLaunchInstanceParams interactively collects a LaunchInstanceParams
@@ -90,6 +105,15 @@ func collectLaunchInstanceParams(ctx context.Context, w io.Writer, ec2Clients ma
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
+	rootDeviceName, rootDefaultGB, err := describeImageRootVolume(ctx, ec2Client, image.ImageID)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+	rootVolumeSizeGB, err := promptRootVolumeSizeGB(rootDefaultGB, menuInput, menuOutput)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
 	keyName, err := promptKeyPairNameOrCreate(ctx, w, ec2Client, sshKeyDir(), menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
@@ -147,6 +171,8 @@ func collectLaunchInstanceParams(ctx context.Context, w io.Writer, ec2Clients ma
 		SubnetID:           subnet.SubnetID,
 		IAMInstanceProfile: iamProfile,
 		UserData:           userData,
+		RootDeviceName:     rootDeviceName,
+		RootVolumeSizeGB:   rootVolumeSizeGB,
 		Tags: map[string]string{
 			"Name":        name,
 			"Project":     project,

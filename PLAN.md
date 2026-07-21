@@ -3775,6 +3775,121 @@ item.
 
 ---
 
+## Phase 20.31 — Configurable EBS Root Volume Size
+
+**Status: implemented and unit-tested 2026-07-21** (`go build ./...`,
+`go vet ./...`, `go test ./... -timeout 60s` all clean; `gofmt -l`
+clean). Implements DESIGN.md, "Configurable EBS Root Volume Size" and
+DECISIONS.md, "Configurable EBS root volume size: scope, flow
+coverage, and resize automation depth." Closes TODO.md's "Bug
+(confirmed in production use, 2026-07-22)" entry. Built test-first
+throughout: every new behavior (the missing `BlockDeviceMappings`,
+each `growRootFilesystem` fallback branch, the menu dispatch) has a
+test that failed before the corresponding code existed. Not yet
+verified against real AWS.
+
+### Work Items
+
+**Part 1 — set root volume size at creation:**
+
+- [x] `describeImageRootVolume` helper (`ebs_size.go`): one
+      `ec2:DescribeImages` call scoped to a single AMI, returning its
+      `RootDeviceName` and default `VolumeSize`
+- [x] `LaunchInstanceParams` gains `RootVolumeSizeGB int32` and
+      `RootDeviceName string`
+- [x] New prompt (`promptRootVolumeSizeGB`, `ebs_size.go`) in
+      `collectLaunchInstanceParams` (`launch_instance.go`) and
+      `collectLaunchInstanceParamsFromCloudInit`
+      (`launch_from_cloud_init.go`), right after
+      `ensureInstanceTypeENACompatible`, defaulting to the AMI's own
+      size, validated `>=` that default
+- [x] `buildRootBlockDeviceMapping` helper (`launch_execute.go`),
+      reused by `Launch` and a `LaunchTemplateBlockDeviceMappingRequest`
+      counterpart inlined into `buildRequestLaunchTemplateData`
+      (`launch_template_create.go`)
+- [x] `inventory.LaunchTemplateVersionDetail` gains `RootVolumeSizeGB
+      int32`, decoded in `DescribeLaunchTemplateVersion` (reads the
+      version's first `BlockDeviceMappings` entry -- clasm-created
+      versions never carry more than one), shown in Show Launch
+      Template's detail display (`rootVolumeSizeDisplay`, `ebs_size.go`)
+
+**Part 2 — resize an already-running instance's root volume:**
+
+- [x] `EC2API` gains `ModifyVolume`, `DescribeVolumesModifications`,
+      mirrored into `logging_ec2.go`
+- [x] New Compute-domain menu entry, "Resize instance's root volume"
+      (`resize_volume.go`): `pickInstance` -> `rootVolumeInfo` resolves
+      the root `Ebs.VolumeId` and current size from a fresh
+      `DescribeInstances`+`DescribeVolumes` pair -> `promptNewVolumeSizeGB`
+      (strictly greater than current) -> the same `Environment=production`
+      + type-to-confirm gate Feature 9 (Remove AMI) established
+      (`ConfirmDestructive`) -> `modifyVolumeSize` -> `waitUntilVolumeModificationUsable`
+      polls `DescribeVolumesModifications` until `optimizing`/`completed`
+      (errors immediately on `failed`)
+- [x] SSM automation of the OS-side growth (`ssm_grow.go`,
+      `growRootFilesystem`): two SSM round-trips via the existing
+      `WaitForSSMOnline`/`RunShellCommand` primitives (`ssm.go`) --
+      first `findmnt -no SOURCE,FSTYPE /` to detect the root device and
+      filesystem type, parsed in Go (`parseFindmntOutput`,
+      `splitDiskAndPartition`) rather than trusting a monolithic bash
+      script to self-detect and bail out correctly; then, only if that
+      parses to a single recognized partition-on-a-whole-disk layout
+      (NVMe- or Xen/legacy-named) and a supported filesystem (ext2/3/4
+      or xfs), a second command runs `growpart` + `resize2fs`/
+      `xfs_growfs`. Falls back to printing the same manual
+      `growpart`/`resize2fs` commands the operator ran by hand for the
+      original incident (`printManualGrowInstructions`) whenever SSM
+      isn't online, either command fails, the layout is unrecognized
+      (e.g. LVM), or the filesystem type isn't supported -- never
+      errors the overall resize workflow
+- [x] Fixture-driven unit tests for the `findmnt`-output-parsing logic
+      (`ssm_grow_test.go`: `splitDiskAndPartition`/`parseFindmntOutput`/
+      `rootFilesystemGrowCommand`), independent of any live SSM
+      round-trip, plus `growRootFilesystem`'s own tests against a fake
+      SSM client for every fallback branch and the success path
+
+**Tests:** test-first throughout -- `TestLaunch_SetsRootVolumeSize`/
+`TestBuildRequestLaunchTemplateData_SetsRootVolumeSize` reproduced the
+"no `BlockDeviceMappings` sent" gap (confirmed failing before the fix,
+matching this project's established convention) before the fix;
+`TestCollectLaunchInstanceParams_SetsRootVolumeSize`/
+`TestCollectLaunchInstanceParamsFromCloudInit_SetsRootVolumeSize` cover
+the prompt end-to-end; `TestDescribeLaunchTemplateVersion_DecodesRootVolumeSize`/
+`TestShowLaunchTemplate_DisplaysRootVolumeSize` cover the display side;
+`TestRootVolumeInfo_*`/`TestPromptNewVolumeSizeGB_*`/
+`TestModifyVolumeSize_*`/`TestWaitUntilVolumeModificationUsable_*`/
+`TestResizeInstanceRootVolume_*` cover Part 2's own workflow;
+`TestSplitDiskAndPartition_*`/`TestParseFindmntOutput_*`/
+`TestRootFilesystemGrowCommand_*`/`TestGrowRootFilesystem_*` cover the
+SSM automation, including every fallback branch. One real bug caught
+during this phase: `growRootFilesystem`/`resizeInstanceRootVolume`
+initially hardcoded production SSM timeouts (2 min/10 min), making
+their own "SSM not online" tests actually wait out those real
+timeouts -- fixed by threading `onlineTimeout`/`commandTimeout`/
+`pollInterval` through explicitly (`growRootFilesystem`) and by
+configuring the fake SSM client to resolve immediately
+(`resizeInstanceRootVolume`'s own test), matching
+`checkCloudInitCompletion`'s existing pattern. `menu_test.go`'s
+hardcoded menu-item count (20 -> 21) was updated for the new entry,
+same maintenance cost every prior menu-ordering change in this project
+has needed.
+
+**Files:** `internal/workflow/launch_instance.go`,
+`internal/workflow/launch_from_cloud_init.go`,
+`internal/workflow/launch_execute.go`,
+`internal/workflow/launch_template_create.go`,
+`internal/inventory/launch_templates.go`,
+`internal/workflow/show_launch_template.go`,
+`internal/awsclient/ec2.go`, `internal/awsclient/logging_ec2.go`,
+`internal/workflow/menu.go`, `cmd/clasm/main.go`, new
+`internal/workflow/ebs_size.go`, `internal/workflow/resize_volume.go`,
+`internal/workflow/ssm_grow.go`, plus each file's `_test.go`
+counterpart.
+
+**Dependency:** Phase 20.27 (Launch Templates).
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

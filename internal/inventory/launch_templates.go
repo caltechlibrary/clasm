@@ -133,6 +133,15 @@ type LaunchTemplateVersionDetail struct {
 	IMDSv2Required bool
 	Project        string
 	Environment    string
+	// RootVolumeSizeGB is the root EBS volume size override baked into
+	// this version, or 0 if the version predates this feature, was
+	// created outside clasm, or never set an override -- meaning the
+	// AMI's own default applies (DESIGN.md, "Configurable EBS Root
+	// Volume Size"). Decoded from the version's own
+	// BlockDeviceMappings, which clasm-created versions carry at most
+	// one entry in (the root override), matching the same curated,
+	// root-only scope LaunchInstanceParams uses.
+	RootVolumeSizeGB int32
 }
 
 // DescribeLaunchTemplateVersion fetches one version's curated detail.
@@ -224,6 +233,9 @@ func launchTemplateVersionFromSDK(v types.LaunchTemplateVersion) LaunchTemplateV
 		}
 	}
 	_, detail.Project, detail.Environment = tagSpecificationValues(data.TagSpecifications)
+	if len(data.BlockDeviceMappings) > 0 && data.BlockDeviceMappings[0].Ebs != nil {
+		detail.RootVolumeSizeGB = aws.ToInt32(data.BlockDeviceMappings[0].Ebs.VolumeSize)
+	}
 	return detail
 }
 

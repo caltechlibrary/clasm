@@ -4,6 +4,136 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-21 — Root filesystem growth: detect-in-Go then act, not a self-detecting bash script
+
+**Context.** Implementing Part 2 of "Configurable EBS root volume
+size" (PLAN.md Phase 20.31): once `ec2:ModifyVolume` grows the EBS
+volume itself, the OS-level partition and filesystem still need to
+grow to use the extra space (`growpart` + `resize2fs`/`xfs_growfs`) --
+the exact manual step the operator had to do by hand for the
+production incident this phase closes. The open design question was
+*where* the "is this a layout we can safely automate, or should we
+back off" decision gets made: entirely inside one bash script sent via
+SSM, or split into a detect step (bash) plus a decide step (Go).
+
+**Decision.** Two separate SSM round-trips, both through the existing
+`WaitForSSMOnline`/`RunShellCommand` primitives (`ssm.go`, already used
+by `checkCloudInitCompletion` for the cloud-init-status check -- no new
+SSM plumbing needed). First, `findmnt -no SOURCE,FSTYPE /` reports the
+root partition's device path and filesystem type; its output is parsed
+in Go (`splitDiskAndPartition`, `parseFindmntOutput`, `ssm_grow.go`),
+not in bash. Only if that parse succeeds -- a single partition directly
+on a whole disk, NVMe- or Xen/legacy-named, ext2/3/4 or xfs -- does a
+second command actually run `growpart`/`resize2fs`/`xfs_growfs`.
+Anything else (an LVM logical volume such as
+`/dev/mapper/ubuntu--vg-ubuntu--lv`, a device-mapper node, an
+unsupported filesystem) falls back to printing the same manual
+commands the operator already ran by hand, rather than growing
+anything. Rationale: PLAN.md's own work-item language for this phase
+called for "fixture-driven unit tests for the `findmnt`-output-parsing
+logic, independent of any live SSM round-trip" -- only achievable if
+that parsing is a plain Go function, not logic buried inside a bash
+string this project's tests can't introspect. It also keeps the
+one genuinely destructive step (the actual `growpart` call) gated
+behind Go-side validation of the parsed device, rather than trusting a
+single monolithic script to both detect its own layout and correctly
+bail out if it doesn't recognize it -- "fail loud, don't guess" applies
+to the detection logic itself, not just its outcome.
+
+**Bug caught by this phase's own tests.** `growRootFilesystem` and
+`resizeInstanceRootVolume` initially hardcoded the package's production
+`Default*` SSM timeouts (2 minutes online, 10 minutes per command)
+directly, rather than taking them as parameters the way
+`checkCloudInitCompletion` already does. The first test run of
+`TestGrowRootFilesystem_SSMNotOnline_PrintsManualInstructions` actually
+took 120 real seconds to pass -- it was genuinely waiting out the
+production timeout, not simulating it. Fixed by threading
+`onlineTimeout`/`commandTimeout`/`pollInterval` through
+`growRootFilesystem` explicitly (production call site in
+`resize_volume.go` passes the real `Default*` constants; tests pass
+millisecond-scale ones), and by configuring
+`resizeInstanceRootVolume`'s own end-to-end test's fake SSM client to
+resolve immediately rather than shrinking the timeout further --
+matching `checkCloudInitCompletion`'s existing shape, which this phase
+should have followed from the start.
+
+---
+
+## 2026-07-21 — Sort the base-AMI pick list for deterministic ordering
+
+**Context.** Building two launch templates for comparable systems back
+to back, the operator noticed the Ubuntu LTS entries in the base-AMI
+pick list (Feature 2/3, Create Launch Template from Cloud-Init YAML)
+came up in a different order each run, making it easy to pick the
+wrong release by muscle memory. Root cause: `inventory.ListImages`
+aggregates owned AMIs across regions via concurrent per-region
+goroutines feeding a channel, and `listOfficialUbuntuAMIs`
+(`official_ubuntu_amis.go`) iterates `clients`, a Go map -- both orders
+are randomized by the language, not by AWS, so the same AMI could land
+in a different list position every time the picker opened.
+
+**Decision.** `imagesWithOfficialUbuntu` (the shared function feeding
+`pickImage` in every one of the four launch flows) now sorts the
+combined list by Region then Name before returning it, using the same
+`sort.Slice` approach `inventory.ListBuckets` already established for
+the same class of problem (deterministic order after a concurrent/map
+aggregation). No new dependency, no change to what's offered -- only
+the order is now stable across runs.
+
+---
+
+## 2026-07-21 — Configurable EBS root volume size: scope, flow coverage, and resize automation depth
+
+**Context.** TODO.md's "Bug (confirmed in production use, 2026-07-22)"
+entry: a launch template built for a 250GB InvenioRDM comparison
+instance instead produced an 8GB root volume (the stock Ubuntu 24.04
+AMI default), because neither `RunInstances` (`launch_execute.go`) nor
+`CreateLaunchTemplate` (`launch_template_create.go`) has ever set
+`BlockDeviceMappings` -- the Launch Templates addendum
+(DESIGN.md, 2026-07-20) explicitly deferred the entire block-device-
+mapping surface as out of scope for the curated field set. This
+reopens that specific piece of it. Three scope questions were put to
+the operator directly rather than assumed, since each has a real
+implementation-cost/flexibility trade-off:
+
+**Decision 1 -- root volume size only, not a general block-device-
+mapping editor.** The confirmed real need is "the default is too
+small, I sometimes need 250-500GB," not additional data volumes or
+per-volume type/IOPS control. Matches the project's existing curated-
+field-set restraint (Launch Templates addendum) rather than reopening
+the full AWS struct.
+
+**Decision 2 -- every instance-creation flow and template creation, not
+just templates.** `collectLaunchInstanceParams` and
+`collectLaunchInstanceParamsFromCloudInit` are the two shared
+parameter-collection cores behind Feature 2 (AMI), Feature 3
+(cloud-init), and Create Launch Template from Cloud-Init YAML (which
+already reuses the cloud-init core, per DESIGN.md's Launch Templates
+addendum) -- one change to each core covers all three creation paths
+in one pass, rather than fixing only the path that happened to trigger
+the production incident and leaving the other two with the same latent
+gap. Create EC2 Instance from Launch Template stays untouched: the
+template already bakes in its own size, and this project already
+resolved (DESIGN.md, "Launch Templates," decision A3) that this path is
+"just another way to create an instance," not a hybrid template-plus-
+override wizard -- reopening that here would undo a settled decision.
+
+**Decision 3 -- automate the OS-side growth via SSM, not just the AWS-
+side `ModifyVolume` call.** The operator's own real-world workaround
+for the production incident was exactly `aws ec2 modify-volume` +
+manual `growpart`/`resize2fs` over SSH -- automating both halves closes
+the gap the same way the operator already closed it by hand, rather
+than leaving half the workaround still manual. Accepted trade-off: this
+is clasm's first workflow that executes shell commands inside a live
+instance's OS (every prior use of `SSMAPI.SendCommand` only *checks*
+cloud-init status, never changes instance state), so the design commits
+to "detect a supported single-partition layout and act, or abort with
+the same manual instructions rather than guess" for any layout the
+`findmnt`/`lsblk` probe doesn't recognize (e.g. LVM) -- see DESIGN.md,
+"Configurable EBS Root Volume Size," Part 2.
+
+---
+
 ## 2026-07-20 — Generalize applyOneTagChange for S3's read-modify-write tag semantics
 
 **Context.** With the four EC2-backed kinds of Tag Management done and

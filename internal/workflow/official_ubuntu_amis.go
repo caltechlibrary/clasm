@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -124,11 +125,26 @@ func listOfficialUbuntuAMIs(ctx context.Context, clients map[string]awsclient.EC
 // imagesWithOfficialUbuntu appends the curated official Ubuntu AMIs to
 // images for a base-AMI pick list, best-effort: if the lookup itself
 // errors, the picker still works with just the account's own AMIs
-// rather than failing the whole launch over an enhancement.
+// rather than failing the whole launch over an enhancement. The
+// combined list is sorted by Region then Name so the pick list's order
+// is stable across runs -- both ListImages (concurrent, per-region
+// goroutines over a map) and listOfficialUbuntuAMIs (sequential but
+// still over a map) aggregate in Go's randomized map/goroutine
+// completion order, so without sorting here the same AMI could land in
+// a different position in the list every time the picker is shown,
+// which is exactly what was observed when building two launch
+// templates for comparable systems back to back.
 func imagesWithOfficialUbuntu(ctx context.Context, clients map[string]awsclient.EC2API, images []inventory.Image) []inventory.Image {
 	ubuntuImages, err := listOfficialUbuntuAMIs(ctx, clients)
 	if err != nil {
 		return images
 	}
-	return append(append([]inventory.Image{}, images...), ubuntuImages...)
+	all := append(append([]inventory.Image{}, images...), ubuntuImages...)
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Region != all[j].Region {
+			return all[i].Region < all[j].Region
+		}
+		return all[i].Name < all[j].Name
+	})
+	return all
 }

@@ -325,6 +325,9 @@ func main() {
 		TerminateEC2Instance: func(ctx context.Context) error {
 			return workflow.TerminateEC2Instance(ctx, out, ec2Clients, state.instances)
 		},
+		ResizeInstanceRootVolume: func(ctx context.Context) error {
+			return workflow.ResizeInstanceRootVolume(ctx, out, ec2Clients, ssmClients, state.instances)
+		},
 		ManageTags: func(ctx context.Context) error {
 			return workflow.ManageTags(ctx, out, ec2Clients, state.instances, state.images)
 		},

@@ -241,6 +241,7 @@ func displayLaunchTemplateVersion(w io.Writer, lt inventory.LaunchTemplate, deta
 	fmt.Fprintf(w, "  Created:              %s\n", displayOrNone(detail.CreateTime))
 	fmt.Fprintf(w, "  AMI:                  %s\n", displayOrNone(detail.ImageID))
 	fmt.Fprintf(w, "  Instance type:        %s\n", displayOrNone(detail.InstanceType))
+	fmt.Fprintf(w, "  Root volume size:     %s\n", rootVolumeSizeDisplay(detail.RootVolumeSizeGB))
 	fmt.Fprintf(w, "  Key pair:             %s\n", displayOrNone(detail.KeyName))
 	fmt.Fprintf(w, "  IAM instance profile: %s\n", displayOrNone(detail.IAMInstanceProfile))
 	fmt.Fprintf(w, "  Security groups:      %s\n", displayOrNone(strings.Join(detail.SecurityGroupIDs, ", ")))

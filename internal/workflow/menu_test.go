@@ -31,6 +31,7 @@ func testMenuActions(refreshCalls *int) MenuActions {
 		StartEC2Instance:                  noop,
 		StopEC2Instance:                   noop,
 		TerminateEC2Instance:              noop,
+		ResizeInstanceRootVolume:          noop,
 		ManageTags:                        noop,
 		CreateAMIFromInstance:             noop,
 		RemoveAMI:                         noop,
@@ -102,6 +103,23 @@ func TestRunMainMenu_ShowInstancesDispatchesToItsOwnAction(t *testing.T) {
 	}
 	if refreshCalls != 1 {
 		t.Errorf("refreshCalls = %d, want 1 (the unconditional post-action refresh still runs)", refreshCalls)
+	}
+}
+
+func TestRunMainMenu_ResizeInstanceRootVolumeDispatchesToItsOwnAction(t *testing.T) {
+	var refreshCalls, resizeCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testMenuActions(&refreshCalls)
+	actions.ResizeInstanceRootVolume = cancelingAction(&resizeCalls, cancel)
+
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("10\n"), buf) // Resize instance's root volume
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if resizeCalls != 1 {
+		t.Errorf("resizeCalls = %d, want 1", resizeCalls)
 	}
 }
 
@@ -187,8 +205,8 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestMainMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(mainMenuItems) != 20 {
-		t.Fatalf("len(mainMenuItems) = %d, want 20 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
+	if len(mainMenuItems) != 21 {
+		t.Fatalf("len(mainMenuItems) = %d, want 21 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
 	}
 	for _, item := range mainMenuItems {
 		if item.action == nil {

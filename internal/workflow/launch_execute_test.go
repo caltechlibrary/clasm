@@ -48,6 +48,11 @@ type fakeEC2Client struct {
 
 	blockDeviceMappings []types.InstanceBlockDeviceMapping // returned by DescribeInstances, for dry-run tests
 	instanceTags        []types.Tag                        // returned by DescribeInstances, for Manage Tags tests
+	// instanceRootDeviceName backs DescribeInstances' RootDeviceName
+	// field, for resize_volume.go's rootVolumeInfo lookup -- distinct
+	// from blockDeviceMappings above, which supplies the mappings
+	// rootVolumeInfo matches the root device name against.
+	instanceRootDeviceName string
 
 	describeImagesErr  error
 	describeImagesTags []types.Tag // returned by DescribeImages, for Manage Tags tests
@@ -71,6 +76,17 @@ type fakeEC2Client struct {
 	describeImagesCalls     int
 	imageAvailableAfterCall int // DescribeImages reports available starting at this call number; 0 = never
 	imageFailedAfterCall    int // DescribeImages reports failed starting at this call number; 0 = never
+
+	// describeImagesRootDeviceName/describeImagesBlockDeviceMappings back
+	// describeImageRootVolume's single-image ImageIds lookup (ebs_size.go)
+	// -- distinct from the polling-oriented fields above, which don't
+	// otherwise carry a root device or block device mappings.
+	describeImagesRootDeviceName      string
+	describeImagesBlockDeviceMappings []types.BlockDeviceMapping
+	// describeImagesNoImages, if true, makes the single-image lookup
+	// return zero images (simulating an unknown/deregistered AMI ID)
+	// instead of the usual synthesized one-image response.
+	describeImagesNoImages bool
 
 	describeVolumesOutput []types.Volume
 	describeVolumesErr    error
@@ -161,6 +177,21 @@ type fakeEC2Client struct {
 	// DeleteLaunchTemplateVersionsOutput's UnsuccessfullyDeleted list --
 	// every other version requested is reported as successfully deleted.
 	deleteLaunchTemplateVersionsUnsuccessful []types.DeleteLaunchTemplateVersionsResponseErrorItem
+
+	lastModifyVolumeInput *ec2.ModifyVolumeInput
+	modifyVolumeErr       error
+
+	describeVolumesModificationsCalls int
+	// volumeModificationUsableAfterCall makes DescribeVolumesModifications
+	// report "optimizing" starting at this call number ("modifying"
+	// before it); 0 = never (stays "modifying" forever, for timeout
+	// tests). Mutually exclusive with volumeModificationFailed below.
+	volumeModificationUsableAfterCall int
+	// volumeModificationFailed, if true, makes every
+	// DescribeVolumesModifications call report "failed" immediately.
+	volumeModificationFailed              bool
+	describeVolumesModificationsErr       error
+	lastDescribeVolumesModificationsInput *ec2.DescribeVolumesModificationsInput
 }
 
 func (f *fakeEC2Client) DescribeLaunchTemplates(ctx context.Context, params *ec2.DescribeLaunchTemplatesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplatesOutput, error) {
@@ -426,6 +457,9 @@ func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.Describe
 	if f.describeImagesErr != nil {
 		return nil, f.describeImagesErr
 	}
+	if f.describeImagesNoImages {
+		return &ec2.DescribeImagesOutput{}, nil
+	}
 	imageID := ""
 	if len(params.ImageIds) > 0 {
 		imageID = params.ImageIds[0]
@@ -437,7 +471,13 @@ func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.Describe
 	if f.imageFailedAfterCall > 0 && f.describeImagesCalls >= f.imageFailedAfterCall {
 		state = types.ImageStateFailed
 	}
-	return &ec2.DescribeImagesOutput{Images: []types.Image{{ImageId: aws.String(imageID), Tags: f.describeImagesTags, State: state}}}, nil
+	return &ec2.DescribeImagesOutput{Images: []types.Image{{
+		ImageId:             aws.String(imageID),
+		Tags:                f.describeImagesTags,
+		State:               state,
+		RootDeviceName:      aws.String(f.describeImagesRootDeviceName),
+		BlockDeviceMappings: f.describeImagesBlockDeviceMappings,
+	}}}, nil
 }
 
 func (f *fakeEC2Client) DescribeVolumes(ctx context.Context, params *ec2.DescribeVolumesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
@@ -445,6 +485,41 @@ func (f *fakeEC2Client) DescribeVolumes(ctx context.Context, params *ec2.Describ
 		return nil, f.describeVolumesErr
 	}
 	return &ec2.DescribeVolumesOutput{Volumes: f.describeVolumesOutput}, nil
+}
+
+func (f *fakeEC2Client) ModifyVolume(ctx context.Context, params *ec2.ModifyVolumeInput, optFns ...func(*ec2.Options)) (*ec2.ModifyVolumeOutput, error) {
+	f.lastModifyVolumeInput = params
+	if f.modifyVolumeErr != nil {
+		return nil, f.modifyVolumeErr
+	}
+	return &ec2.ModifyVolumeOutput{VolumeModification: &types.VolumeModification{
+		VolumeId:          params.VolumeId,
+		ModificationState: types.VolumeModificationStateModifying,
+		TargetSize:        params.Size,
+	}}, nil
+}
+
+func (f *fakeEC2Client) DescribeVolumesModifications(ctx context.Context, params *ec2.DescribeVolumesModificationsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesModificationsOutput, error) {
+	f.lastDescribeVolumesModificationsInput = params
+	if f.describeVolumesModificationsErr != nil {
+		return nil, f.describeVolumesModificationsErr
+	}
+	f.describeVolumesModificationsCalls++
+
+	volumeID := ""
+	if len(params.VolumeIds) > 0 {
+		volumeID = params.VolumeIds[0]
+	}
+	state := types.VolumeModificationStateModifying
+	switch {
+	case f.volumeModificationFailed:
+		state = types.VolumeModificationStateFailed
+	case f.volumeModificationUsableAfterCall > 0 && f.describeVolumesModificationsCalls >= f.volumeModificationUsableAfterCall:
+		state = types.VolumeModificationStateOptimizing
+	}
+	return &ec2.DescribeVolumesModificationsOutput{VolumesModifications: []types.VolumeModification{
+		{VolumeId: aws.String(volumeID), ModificationState: state, StatusMessage: aws.String("fake status")},
+	}}, nil
 }
 
 func (f *fakeEC2Client) CreateImage(ctx context.Context, params *ec2.CreateImageInput, optFns ...func(*ec2.Options)) (*ec2.CreateImageOutput, error) {
@@ -533,6 +608,7 @@ func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		State:               &types.InstanceState{Name: state},
 		BlockDeviceMappings: f.blockDeviceMappings,
 		Tags:                f.instanceTags,
+		RootDeviceName:      aws.String(f.instanceRootDeviceName),
 	}
 	if state == types.InstanceStateNameRunning && f.publicIP != "" {
 		inst.PublicIpAddress = aws.String(f.publicIP)
@@ -626,6 +702,57 @@ func TestLaunch_NoIAMProfileOmitsField(t *testing.T) {
 	}
 	if fake.lastRunInstancesInput.UserData != nil {
 		t.Errorf("UserData = %v, want nil", aws.ToString(fake.lastRunInstancesInput.UserData))
+	}
+}
+
+func TestLaunch_SetsRootVolumeSize(t *testing.T) {
+	// TODO.md's confirmed production bug: RunInstances never set
+	// BlockDeviceMappings, so every instance silently inherited the
+	// source AMI's default root volume size (8GB for stock Ubuntu)
+	// instead of the size the operator actually needed (e.g. 250GB for
+	// an InvenioRDM comparison instance).
+	fake := &fakeEC2Client{runInstancesID: "i-1"}
+	params := LaunchInstanceParams{
+		ImageID:          "ami-1",
+		InstanceType:     "t3.micro",
+		KeyName:          "k",
+		SecurityGroupIDs: []string{"sg-1"},
+		SubnetID:         "subnet-1",
+		RootDeviceName:   "/dev/xvda",
+		RootVolumeSizeGB: 250,
+	}
+
+	if _, err := Launch(context.Background(), fake, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	in := fake.lastRunInstancesInput
+	if len(in.BlockDeviceMappings) != 1 {
+		t.Fatalf("BlockDeviceMappings = %+v, want exactly one entry", in.BlockDeviceMappings)
+	}
+	bdm := in.BlockDeviceMappings[0]
+	if aws.ToString(bdm.DeviceName) != "/dev/xvda" {
+		t.Errorf("DeviceName = %q, want %q", aws.ToString(bdm.DeviceName), "/dev/xvda")
+	}
+	if bdm.Ebs == nil || aws.ToInt32(bdm.Ebs.VolumeSize) != 250 {
+		t.Errorf("Ebs.VolumeSize = %v, want 250", bdm.Ebs)
+	}
+	if bdm.Ebs.VolumeType != "" || bdm.Ebs.Iops != nil || bdm.Ebs.Encrypted != nil {
+		t.Errorf("Ebs = %+v, want only VolumeSize set (other fields inherit the AMI's own mapping)", bdm.Ebs)
+	}
+}
+
+func TestLaunch_OmitsBlockDeviceMappingsWhenSizeNotSet(t *testing.T) {
+	// RootVolumeSizeGB's zero value means "no override" -- AWS should
+	// keep inheriting the AMI's own default, exactly as before this
+	// feature existed, for any caller that hasn't collected a size.
+	fake := &fakeEC2Client{runInstancesID: "i-1"}
+	params := LaunchInstanceParams{ImageID: "ami-1", InstanceType: "t3.micro", KeyName: "k", SecurityGroupIDs: []string{"sg-1"}, SubnetID: "subnet-1"}
+
+	if _, err := Launch(context.Background(), fake, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastRunInstancesInput.BlockDeviceMappings != nil {
+		t.Errorf("BlockDeviceMappings = %+v, want nil", fake.lastRunInstancesInput.BlockDeviceMappings)
 	}
 }
 

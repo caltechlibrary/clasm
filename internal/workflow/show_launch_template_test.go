@@ -59,6 +59,44 @@ func TestShowLaunchTemplate_DisplaysCuratedFieldsAndFlagsMissingIMDSv2(t *testin
 	}
 }
 
+func TestShowLaunchTemplate_DisplaysRootVolumeSize(t *testing.T) {
+	v := sdkLaunchTemplateVersionDetail(1, true, true)
+	v.LaunchTemplateData.BlockDeviceMappings = []types.LaunchTemplateBlockDeviceMapping{
+		{DeviceName: aws.String("/dev/xvda"), Ebs: &types.LaunchTemplateEbsBlockDevice{VolumeSize: aws.Int32(250)}},
+	}
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{v}}
+	clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	lt := inventory.LaunchTemplate{TemplateID: "lt-1", Name: "rdm-app", Region: "us-east-1", DefaultVersion: 1}
+
+	w, input, buf := newPipeEditor("1\n" + "\n")
+	if err := showLaunchTemplate(context.Background(), w, clients, lt, input, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "250 GB") {
+		t.Errorf("output missing root volume size:\n%s", out)
+	}
+}
+
+func TestShowLaunchTemplate_NoRootVolumeOverrideShowsAMIDefault(t *testing.T) {
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
+		sdkLaunchTemplateVersionDetail(1, true, true),
+	}}
+	clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	lt := inventory.LaunchTemplate{TemplateID: "lt-1", Name: "rdm-app", Region: "us-east-1", DefaultVersion: 1}
+
+	w, input, buf := newPipeEditor("1\n" + "\n")
+	if err := showLaunchTemplate(context.Background(), w, clients, lt, input, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "AMI default") {
+		t.Errorf("output missing the AMI-default fallback for an unset root volume size:\n%s", out)
+	}
+}
+
 func TestShowLaunchTemplate_IMDSv2RequiredShowsNoFlag(t *testing.T) {
 	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
 		sdkLaunchTemplateVersionDetail(2, true, true),

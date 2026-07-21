@@ -37,6 +37,7 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 
 	input := "authorstest\n" + // Name tag
 		"4\n" + // instance type: t3.large
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1, sg-2\n" + // security groups (no groups fetched -> free-text fallback)
@@ -93,6 +94,7 @@ func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T)
 	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
 	input := "web\n" + // Name tag
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" + // security groups
@@ -122,6 +124,48 @@ func TestCollectLaunchInstanceParams_NamePromptedRightAfterAMIPick(t *testing.T)
 	}
 }
 
+func TestCollectLaunchInstanceParams_SetsRootVolumeSize(t *testing.T) {
+	// End-to-end coverage for the TODO.md bug fix: an explicit,
+	// larger-than-default root volume size (e.g. an InvenioRDM
+	// comparison instance needing 250GB instead of Ubuntu's 8GB
+	// default) must reach LaunchInstanceParams, along with the AMI's
+	// own root device name.
+	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
+	fake := &fakeEC2Client{
+		describeKeyPairsErr:          errNoKeyPairsConfigured,
+		describeImagesRootDeviceName: "/dev/xvda",
+		describeImagesBlockDeviceMappings: []types.BlockDeviceMapping{
+			{DeviceName: aws.String("/dev/xvda"), Ebs: &types.EbsBlockDevice{VolumeSize: aws.Int32(8)}},
+		},
+	}
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
+
+	input := "web\n" + // Name tag
+		"1\n" + // instance type: t3.micro
+		"250\n" + // Root EBS volume size in GB (explicit override)
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
+		"my-key\n" + // New key pair name
+		"sg-1\n" + // security groups
+		"subnet-1\n" + // subnet
+		"\n" + // IAM profile (blank -- free-text fallback via fakeIAMClientNoProfiles)
+		"\n" + // user data
+		"caltechdata\n" + // Project tag
+		"test\n" // Environment tag
+
+	term, menuInput, buf := newPipeEditor(input)
+	got, _, _, err := collectLaunchInstanceParams(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), image, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.RootVolumeSizeGB != 250 {
+		t.Errorf("RootVolumeSizeGB = %d, want 250", got.RootVolumeSizeGB)
+	}
+	if got.RootDeviceName != "/dev/xvda" {
+		t.Errorf("RootDeviceName = %q, want %q", got.RootDeviceName, "/dev/xvda")
+	}
+}
+
 func TestCollectLaunchInstanceParams_PicksSecurityGroupsFromList(t *testing.T) {
 	// Subnet selection converted to tui.RunPicker (DESIGN.md's full
 	// conversion punch list, Picker tier) -- a real bubbletea Program
@@ -142,6 +186,7 @@ func TestCollectLaunchInstanceParams_PicksSecurityGroupsFromList(t *testing.T) {
 
 	input := "web\n" + // Name tag
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"1,2\n" + // pick both security groups by number
@@ -172,6 +217,7 @@ func TestCollectLaunchInstanceParams_RejectsInvalidEnvironment(t *testing.T) {
 
 	input := "web\n" + // Name tag
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1\n" + // security groups
@@ -204,6 +250,7 @@ func TestCollectLaunchInstanceParams_RejectsBlankRequiredFields(t *testing.T) {
 	input := "\n" + // Name tag (blank -- rejected)
 		"web\n" + // Name tag (retry, valid)
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"\n" + // Key pair name (blank -- invalid, rejected; free-text fallback)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
@@ -257,6 +304,7 @@ func TestCollectLaunchInstanceParams_OfficialUbuntuAMIIsSelectableFromThePickLis
 
 	input := "web\n" +
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +

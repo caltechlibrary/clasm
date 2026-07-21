@@ -186,6 +186,45 @@ func TestDescribeLaunchTemplateVersion_DecodesCuratedFields(t *testing.T) {
 	}
 }
 
+func TestDescribeLaunchTemplateVersion_DecodesRootVolumeSize(t *testing.T) {
+	// DESIGN.md, "Configurable EBS Root Volume Size": a version created
+	// with an explicit root volume size override (buildRequestLaunchTemplateData)
+	// carries exactly one BlockDeviceMappings entry -- clasm never
+	// models more than the root override, so decoding just reads that
+	// one entry's Ebs.VolumeSize.
+	v := sdkLaunchTemplateVersion("lt-1", 1, true, true)
+	v.LaunchTemplateData.BlockDeviceMappings = []types.LaunchTemplateBlockDeviceMapping{
+		{DeviceName: aws.String("/dev/xvda"), Ebs: &types.LaunchTemplateEbsBlockDevice{VolumeSize: aws.Int32(250)}},
+	}
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{v}}
+
+	got, err := DescribeLaunchTemplateVersion(context.Background(), fake, "lt-1", "$Default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.RootVolumeSizeGB != 250 {
+		t.Errorf("RootVolumeSizeGB = %d, want 250", got.RootVolumeSizeGB)
+	}
+}
+
+func TestDescribeLaunchTemplateVersion_NoBlockDeviceMappingsLeavesRootVolumeSizeZero(t *testing.T) {
+	// A version created before this feature (or outside clasm) has no
+	// BlockDeviceMappings at all -- RootVolumeSizeGB stays 0, the same
+	// "no override, AMI default applies" convention LaunchInstanceParams
+	// uses.
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
+		sdkLaunchTemplateVersion("lt-1", 1, true, true),
+	}}
+
+	got, err := DescribeLaunchTemplateVersion(context.Background(), fake, "lt-1", "$Default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.RootVolumeSizeGB != 0 {
+		t.Errorf("RootVolumeSizeGB = %d, want 0", got.RootVolumeSizeGB)
+	}
+}
+
 func TestDescribeLaunchTemplateVersion_FlagsMissingIMDSv2(t *testing.T) {
 	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
 		sdkLaunchTemplateVersion("lt-1", 1, true, false),

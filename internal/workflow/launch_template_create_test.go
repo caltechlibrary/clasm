@@ -73,10 +73,40 @@ func TestBuildRequestLaunchTemplateData_NoIAMProfileOrTagsOmitsFields(t *testing
 	}
 }
 
+func TestBuildRequestLaunchTemplateData_SetsRootVolumeSize(t *testing.T) {
+	// Same TODO.md bug as Launch (launch_execute_test.go): templates
+	// created before this feature silently baked in the AMI's default
+	// root volume size with no way to override it.
+	data := buildRequestLaunchTemplateData(LaunchInstanceParams{
+		ImageID:          "ami-1",
+		SubnetID:         "subnet-1",
+		RootDeviceName:   "/dev/xvda",
+		RootVolumeSizeGB: 250,
+	})
+	if len(data.BlockDeviceMappings) != 1 {
+		t.Fatalf("BlockDeviceMappings = %+v, want exactly one entry", data.BlockDeviceMappings)
+	}
+	bdm := data.BlockDeviceMappings[0]
+	if aws.ToString(bdm.DeviceName) != "/dev/xvda" {
+		t.Errorf("DeviceName = %q, want %q", aws.ToString(bdm.DeviceName), "/dev/xvda")
+	}
+	if bdm.Ebs == nil || aws.ToInt32(bdm.Ebs.VolumeSize) != 250 {
+		t.Errorf("Ebs.VolumeSize = %v, want 250", bdm.Ebs)
+	}
+}
+
+func TestBuildRequestLaunchTemplateData_OmitsBlockDeviceMappingsWhenSizeNotSet(t *testing.T) {
+	data := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	if data.BlockDeviceMappings != nil {
+		t.Errorf("BlockDeviceMappings = %+v, want nil", data.BlockDeviceMappings)
+	}
+}
+
 func TestCreateLaunchTemplateFromCloudInit_HappyPath(t *testing.T) {
 	image := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
 	input := "web\n" +
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
@@ -114,6 +144,7 @@ func TestCreateLaunchTemplateFromCloudInit_DeclinedConfirmationDoesNotCreate(t *
 	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
 	input := "web\n" +
 		"1\n" +
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" +
 		"my-key\n" +
 		"sg-1\n" +

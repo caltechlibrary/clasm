@@ -29,6 +29,7 @@ func TestCreateInstanceFromCloudInit_HappyPath(t *testing.T) {
 	image := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
 	input := "web\n" +
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
@@ -61,6 +62,7 @@ func TestCreateInstanceFromCloudInit_DeclinedConfirmationDoesNotLaunch(t *testin
 	image := inventory.Image{ImageID: "ami-1", Region: "us-east-1"}
 	input := "web\n" +
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +

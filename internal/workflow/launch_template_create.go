@@ -42,6 +42,12 @@ func buildRequestLaunchTemplateData(params LaunchInstanceParams) *types.RequestL
 		},
 		MetadataOptions: &types.LaunchTemplateInstanceMetadataOptionsRequest{HttpTokens: types.LaunchTemplateHttpTokensStateRequired},
 	}
+	if params.RootVolumeSizeGB > 0 {
+		data.BlockDeviceMappings = []types.LaunchTemplateBlockDeviceMappingRequest{{
+			DeviceName: aws.String(params.RootDeviceName),
+			Ebs:        &types.LaunchTemplateEbsBlockDeviceRequest{VolumeSize: aws.Int32(params.RootVolumeSizeGB)},
+		}}
+	}
 	if params.UserData != "" {
 		data.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(params.UserData)))
 	}

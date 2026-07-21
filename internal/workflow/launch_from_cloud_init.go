@@ -67,6 +67,15 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
+	rootDeviceName, rootDefaultGB, err := describeImageRootVolume(ctx, ec2Client, image.ImageID)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+	rootVolumeSizeGB, err := promptRootVolumeSizeGB(rootDefaultGB, menuInput, menuOutput)
+	if err != nil {
+		return LaunchInstanceParams{}, nil, nil, err
+	}
+
 	keyName, err := promptKeyPairNameOrCreate(ctx, w, ec2Client, sshKeyDir(), menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
@@ -115,6 +124,8 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		SubnetID:           subnet.SubnetID,
 		IAMInstanceProfile: iamProfile,
 		UserData:           userData,
+		RootDeviceName:     rootDeviceName,
+		RootVolumeSizeGB:   rootVolumeSizeGB,
 		Tags: map[string]string{
 			"Name":        name,
 			"Project":     project,

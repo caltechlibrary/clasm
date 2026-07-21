@@ -201,6 +201,18 @@ func (w *loggingEC2Client) DeleteLaunchTemplateVersions(ctx context.Context, par
 	})
 }
 
+func (w *loggingEC2Client) ModifyVolume(ctx context.Context, params *ec2.ModifyVolumeInput, optFns ...func(*ec2.Options)) (*ec2.ModifyVolumeOutput, error) {
+	return logAWSCall(w.dl, "EC2.ModifyVolume", w.region, params, func() (*ec2.ModifyVolumeOutput, error) {
+		return w.inner.ModifyVolume(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DescribeVolumesModifications(ctx context.Context, params *ec2.DescribeVolumesModificationsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesModificationsOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeVolumesModifications", w.region, params, func() (*ec2.DescribeVolumesModificationsOutput, error) {
+		return w.inner.DescribeVolumesModifications(ctx, params, optFns...)
+	})
+}
+
 // CreateKeyPair does not use the shared logAWSCall helper: its output
 // carries the new key pair's unencrypted private key material, which
 // must never be written to the debug log. The rest of the output is

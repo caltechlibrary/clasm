@@ -44,6 +44,7 @@ func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
 
 	input := "newauthors\n" + // Name tag
 		"4\n" + // instance type: t3.large
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-keypair\n" + // New key pair name
 		"sg-1\n" + // security groups
@@ -78,6 +79,47 @@ func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
 	}
 }
 
+func TestCollectLaunchInstanceParamsFromCloudInit_SetsRootVolumeSize(t *testing.T) {
+	// End-to-end coverage for the TODO.md bug fix, cloud-init flow --
+	// this is also the flow Create Launch Template from Cloud-Init YAML
+	// reuses directly (launch_template_create.go), so this covers all
+	// three of DECISIONS.md's "every instance-creation flow and template
+	// creation" paths at once.
+	image := inventory.Image{ImageID: "ami-rdm", Region: "us-east-1", Project: "caltechauthors"}
+	fake := &fakeEC2Client{
+		describeKeyPairsErr:          errNoKeyPairsConfigured,
+		describeImagesRootDeviceName: "/dev/xvda",
+		describeImagesBlockDeviceMappings: []types.BlockDeviceMapping{
+			{DeviceName: aws.String("/dev/xvda"), Ebs: &types.EbsBlockDevice{VolumeSize: aws.Int32(8)}},
+		},
+	}
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
+
+	input := "rdm-compare\n" + // Name tag
+		"1\n" + // instance type: t3.micro
+		"500\n" + // Root EBS volume size in GB (explicit override, e.g. an RDM comparison instance)
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
+		"my-keypair\n" + // New key pair name
+		"sg-1\n" + // security groups
+		"subnet-abc\n" + // subnet
+		"\n" + // IAM profile (blank -- free-text fallback via fakeIAMClientNoProfiles)
+		"\n" + // Project tag (blank -> default from image)
+		"production\n" // Environment tag
+
+	term, menuInput, buf := newPipeEditor(input)
+	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.RootVolumeSizeGB != 500 {
+		t.Errorf("RootVolumeSizeGB = %d, want 500", got.RootVolumeSizeGB)
+	}
+	if got.RootDeviceName != "/dev/xvda" {
+		t.Errorf("RootDeviceName = %q, want %q", got.RootDeviceName, "/dev/xvda")
+	}
+}
+
 func TestCollectLaunchInstanceParamsFromCloudInit_OfficialUbuntuAMIIsSelectableFromThePickList(t *testing.T) {
 	// AMI selection (including imagesWithOfficialUbuntu's appended
 	// official Ubuntu entries) now happens in the exported
@@ -103,6 +145,7 @@ func TestCollectLaunchInstanceParamsFromCloudInit_OfficialUbuntuAMIIsSelectableF
 
 	input := "web\n" +
 		"1\n" + // instance type: t3.micro
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
 		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
 		"my-key\n" + // New key pair name
 		"sg-1\n" +
