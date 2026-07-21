@@ -48,6 +48,23 @@ func menuQuitKeyMap() *huh.KeyMap {
 	return keymap
 }
 
+// runMenuField's hint strings, shared by every Menu-tier huh.Select call
+// site in this package instead of each one hand-writing its own -- 'q'
+// only quits/backs out when the field isn't currently filtering
+// (quitKeyGuard, above), but that's not obvious from the picker alone
+// (there's no live "filtering: yes/no" status line the way the
+// Picker-tier's tui.RunPicker has, internal/tui/filter.go's
+// statusLine()); mentioning '/' up front here is the cheap mitigation
+// for an operator typing into what they assume is already a filter and
+// being surprised when a 'q' in their input aborts the whole picker
+// instead. Centralized as constants (not left to each call site to spell
+// out) so they can't drift out of sync with each other later.
+const (
+	hintCancel = "(/ filter, q to cancel)"
+	hintGoBack = "(/ filter, q to go back)"
+	hintExit   = "(/ filter, q to exit)"
+)
+
 // filteringField is satisfied by every Select field this package builds
 // via pickComparable/pickString/runMenuField's other call sites --
 // huh.Select's own GetFiltering, reporting whether the field is
@@ -65,7 +82,7 @@ type filteringField interface {
 // (DESIGN.md, "Full-height Menu Tier": "Reserved chrome"). Two lines,
 // confirmed empirically (not assumed) by rendering a real form at a
 // known WithHeight and counting the actual output:
-//   - 1 for runMenuField's own hint (e.g. "(q to go back)"), printed via
+//   - 1 for runMenuField's own hint (e.g. hintGoBack), printed via
 //     a plain fmt.Fprintln(w, hint) *before* the form's own bubbletea
 //     Program starts, always exactly one short, non-wrapping line.
 //   - 1 for huh.Form's own trailing help/keybindings footer line (e.g.
@@ -288,7 +305,7 @@ func pickDomainItem(w io.Writer, input io.Reader, output io.Writer) (domainItem,
 		Value(&idx)
 
 	// "Exit" (not "back") since this is the root menu.
-	if err := runMenuField(w, "(q to exit)", field, input, output); err != nil {
+	if err := runMenuField(w, hintExit, field, input, output); err != nil {
 		return domainItem{}, err
 	}
 	return domainItems[idx], nil

@@ -27,7 +27,7 @@ func ShowCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awscl
 // accessible-mode pipe path instead (DECISIONS.md, "huh fields are
 // pipe-testable...").
 func showCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image, kindInput io.Reader, kindOutput io.Writer) error {
-	kind, err := pickString(w, "Show/export cloud-init for", "An instance's cloud-init is free to read; an AMI's requires launching a temporary billable instance to extract it.", "(q to cancel)", []string{"Instance", "AMI"}, kindInput, kindOutput)
+	kind, err := pickString(w, "Show/export cloud-init for", "An instance's cloud-init is free to read; an AMI's requires launching a temporary billable instance to extract it.", hintCancel, []string{"Instance", "AMI"}, kindInput, kindOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

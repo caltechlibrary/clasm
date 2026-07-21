@@ -124,7 +124,7 @@ func pickS3MenuItem(w io.Writer, input io.Reader, output io.Writer) (s3Item, err
 		Options(opts...).
 		Value(&idx)
 
-	if err := runMenuField(w, "(q to go back)", field, input, output); err != nil {
+	if err := runMenuField(w, hintGoBack, field, input, output); err != nil {
 		return s3Item{}, err
 	}
 	return s3MenuItems[idx], nil

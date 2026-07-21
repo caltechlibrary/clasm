@@ -147,7 +147,7 @@ func ensureInstanceTypeSupportedInSubnet(ctx context.Context, w io.Writer, clien
 			fmt.Fprintf(w, "It is offered in: %s\n", strings.Join(azs, ", "))
 		}
 
-		choice, err := pickComparable(w, "How would you like to proceed?", "The instance type and subnet picked so far aren't compatible in this Availability Zone.", "(q to cancel)", instanceTypeAZIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
+		choice, err := pickComparable(w, "How would you like to proceed?", "The instance type and subnet picked so far aren't compatible in this Availability Zone.", hintCancel, instanceTypeAZIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
 		if err != nil {
 			return "", SubnetInfo{}, err
 		}

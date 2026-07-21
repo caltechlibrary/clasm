@@ -70,7 +70,7 @@ func pickKeyMgmtItem(w io.Writer, input io.Reader, output io.Writer) (keyMgmtIte
 		Options(opts...).
 		Value(&idx)
 
-	if err := runMenuField(w, "(q to go back)", field, input, output); err != nil {
+	if err := runMenuField(w, hintGoBack, field, input, output); err != nil {
 		return keyMgmtItem{}, err
 	}
 	return keyMgmtMenuItems[idx], nil

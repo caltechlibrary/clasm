@@ -152,9 +152,9 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 		}
 	}
 
-	bucket, err := promptBackupBucket(ctx, w, s3Client, newS3Client, input, output)
+	bucket, err := promptBackupBucketFunc(ctx, w, s3Client, newS3Client, input, output)
 	if err != nil {
-		return err
+		return cancelledIsNil(w, err)
 	}
 	bucketRegion, err := BucketRegion(ctx, s3Client, bucket)
 	if err != nil {
@@ -266,6 +266,18 @@ type bucketChoice struct {
 	other bool
 }
 
+// promptBackupBucketFunc indirects backupArchiveAndTrim's call to
+// promptBackupBucket through a package-level var, so a test can
+// substitute a fake that returns huh.ErrUserAborted directly --
+// promptBackupBucket's own huh.Select Quit keybinding (q/ctrl+c) can't
+// be driven from accessible mode the way every other prompt in this
+// function's pipe-testable sequence can (accessible mode has no
+// keyboard to interrupt, only a plain io.Reader/io.Writer pair -- see
+// domain_menu.go's mapMenuPickerErr doc for the same limitation), so
+// this is the only seam that can exercise backupArchiveAndTrim's own
+// handling of a cancelled bucket pick.
+var promptBackupBucketFunc = promptBackupBucket
+
 // promptBackupBucket lists this account's S3 buckets and lets the
 // operator pick one via a filterable Menu-tier huh.Select ('/' to
 // filter by name, matching every other filterable screen in this app),
@@ -294,7 +306,7 @@ func promptBackupBucket(ctx context.Context, w io.Writer, s3Client awsclient.S3A
 	}
 	choices = append(choices, bucketChoice{label: "Other (type a bucket name)", other: true})
 
-	picked, err := pickComparable(w, "Select a bucket", "Type / to filter by name, or choose Other to type any bucket name directly.", "(q to cancel)", choices, func(c bucketChoice) string { return c.label }, input, output)
+	picked, err := pickComparable(w, "Select a bucket", "Type / to filter by name, or choose Other to type any bucket name directly.", hintCancel, choices, func(c bucketChoice) string { return c.label }, input, output)
 	if err != nil {
 		return "", err
 	}

@@ -63,7 +63,7 @@ var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View ru
 // interactively on the real terminal) or supplied by tests to drive it
 // through its accessible-mode pipe path instead.
 func pickLifecycleAction(w io.Writer, input io.Reader, output io.Writer) (string, error) {
-	return pickString(w, "Choose an action", "Manage this bucket's S3 Lifecycle rules -- expiration and storage-class transition schedules.", "(q to go back)", lifecycleActions, input, output)
+	return pickString(w, "Choose an action", "Manage this bucket's S3 Lifecycle rules -- expiration and storage-class transition schedules.", hintGoBack, lifecycleActions, input, output)
 }
 
 func lifecycleRuleLabel(r types.LifecycleRule) string {
@@ -290,7 +290,7 @@ func promptGuidedBackupRule(w io.Writer, current types.LifecycleRule, menuInput 
 
 	var storageClass types.TransitionStorageClass
 	if transitionSet {
-		storageClass, err = pickComparable(w, "Select a storage class to transition to", "Objects older than the threshold above move into this cheaper storage class instead of being deleted.", "(q to cancel)", backupStorageClasses, storageClassLabel, menuInput, menuOutput)
+		storageClass, err = pickComparable(w, "Select a storage class to transition to", "Objects older than the threshold above move into this cheaper storage class instead of being deleted.", hintCancel, backupStorageClasses, storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
@@ -393,7 +393,7 @@ func promptGenericRule(w io.Writer, current types.LifecycleRule, existingRules [
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}
-		class, err := pickComparable(w, "Select a storage class", "The class matching objects transition into after the number of days you just entered.", "(q to cancel)", types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
+		class, err := pickComparable(w, "Select a storage class", "The class matching objects transition into after the number of days you just entered.", hintCancel, types.TransitionStorageClass("").Values(), storageClassLabel, menuInput, menuOutput)
 		if err != nil {
 			return types.LifecycleRule{}, err
 		}

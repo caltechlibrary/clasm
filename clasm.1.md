@@ -1,4 +1,4 @@
-%clasm(1) user manual | version 0.0.2 b2be128
+%clasm(1) user manual | version 0.0.2 92e0c21
 % R. S. Doiel
 % 2026-07-20
 

@@ -124,7 +124,7 @@ func showLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 	}
 
 	choice, err := pickString(w, fmt.Sprintf("Show for %s (%s)", lt.TemplateID, lt.Name), "",
-		"(q to cancel)", []string{"Show version detail", "List all versions", "Diff two versions"}, input, output)
+		hintCancel, []string{"Show version detail", "List all versions", "Diff two versions"}, input, output)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/charmbracelet/huh"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
@@ -564,6 +566,37 @@ func TestBackupArchiveAndTrim_BucketPickerFallsBackToFreeTextOnListError(t *test
 	}
 	if !strings.Contains(uploadCmd, "s3://my-backup-bucket/") {
 		t.Errorf("upload command = %q, want the free-text bucket name used when the bucket list can't be fetched", uploadCmd)
+	}
+}
+
+// TestBackupArchiveAndTrim_CancellingBucketPickerReturnsToMenu is a
+// regression test for a bug where hitting 'q' to cancel the bucket
+// picker exited the whole program instead of returning to the previous
+// menu, like cancelling the instance picker one step earlier already
+// does. promptBackupBucket's own huh.Select Quit keybinding can't be
+// driven through the accessible-mode pipe path (see
+// promptBackupBucketFunc's doc comment), so this substitutes a fake
+// through that seam to simulate the cancellation directly.
+func TestBackupArchiveAndTrim_CancellingBucketPickerReturnsToMenu(t *testing.T) {
+	orig := promptBackupBucketFunc
+	defer func() { promptBackupBucketFunc = orig }()
+	promptBackupBucketFunc = func(ctx context.Context, w io.Writer, s3Client awsclient.S3API, newS3Client func(context.Context, string) (awsclient.S3API, error), input io.Reader, output io.Writer) (string, error) {
+		return "", huh.ErrUserAborted
+	}
+
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	input := "/opt/rdm_sql_backups\n" // directory only -- cancelled at the bucket step
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
+	s3Client := &fakeS3Client{}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("expected cancelling the bucket picker to return nil (back to the previous menu), got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Cancelled.") {
+		t.Errorf("expected a Cancelled. message, got:\n%s", buf.String())
 	}
 }
 

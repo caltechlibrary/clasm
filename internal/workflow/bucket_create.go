@@ -21,7 +21,7 @@ import (
 var bucketPurposes = []string{"website", "backup", "internal"}
 
 func promptS3Region(w io.Writer, regions []string, input io.Reader, output io.Writer) (string, error) {
-	return pickString(w, "Select a region", "Which configured AWS region should this bucket be created in?", "(q to cancel)", regions, input, output)
+	return pickString(w, "Select a region", "Which configured AWS region should this bucket be created in?", hintCancel, regions, input, output)
 }
 
 // validateBucketName checks a bucket name against S3's naming rules
@@ -76,7 +76,7 @@ func createBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context
 		return cancelledIsNil(w, err)
 	}
 
-	purpose, err := pickString(w, "Select the bucket's purpose", "Tagged on the bucket and read back later by Manage Lifecycle Policies to decide which guided flow to offer.", "(q to cancel)", bucketPurposes, menuInput, menuOutput)
+	purpose, err := pickString(w, "Select the bucket's purpose", "Tagged on the bucket and read back later by Manage Lifecycle Policies to decide which guided flow to offer.", hintCancel, bucketPurposes, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

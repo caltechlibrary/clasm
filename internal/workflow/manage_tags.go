@@ -196,7 +196,7 @@ func ManageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.E
 // huh.Selects share one reader/writer pair, read in sequence one line
 // at a time, same as a domain menu's own loop-iteration reads.
 func manageTags(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, images []inventory.Image, menuInput io.Reader, menuOutput io.Writer) error {
-	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance or an AMI.", "(q to cancel)", []string{"Instance", "AMI"}, menuInput, menuOutput)
+	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance or an AMI.", hintCancel, []string{"Instance", "AMI"}, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -304,7 +304,7 @@ func manageTagsForResource(ctx context.Context, w io.Writer, apply tagApplyFunc,
 
 		displayTags(w, resourceLabel, tags)
 
-		action, err := pickString(w, "Choose an action", actionMenuDescription(resourceLabel, tags), "(q to cancel)", []string{"Show tags", "Add", "Update", "Remove"}, menuInput, menuOutput)
+		action, err := pickString(w, "Choose an action", actionMenuDescription(resourceLabel, tags), hintCancel, []string{"Show tags", "Add", "Update", "Remove"}, menuInput, menuOutput)
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}
@@ -371,7 +371,7 @@ func applyOneTagChange(ctx context.Context, w io.Writer, apply tagApplyFunc, res
 			fmt.Fprintln(w, "No existing tags to update.")
 			return false, nil
 		}
-		params.Key, err = pickString(w, "Select a tag to update", "You'll be prompted for the new value next.", "(q to cancel)", keys, menuInput, menuOutput)
+		params.Key, err = pickString(w, "Select a tag to update", "You'll be prompted for the new value next.", hintCancel, keys, menuInput, menuOutput)
 		if err != nil {
 			return false, err
 		}
@@ -386,7 +386,7 @@ func applyOneTagChange(ctx context.Context, w io.Writer, apply tagApplyFunc, res
 			fmt.Fprintln(w, "No existing tags to remove.")
 			return false, nil
 		}
-		params.Key, err = pickString(w, "Select a tag to remove", "This deletes the tag entirely, not just its value.", "(q to cancel)", keys, menuInput, menuOutput)
+		params.Key, err = pickString(w, "Select a tag to remove", "This deletes the tag entirely, not just its value.", hintCancel, keys, menuInput, menuOutput)
 		if err != nil {
 			return false, err
 		}

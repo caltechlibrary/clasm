@@ -21,5 +21,5 @@ func promptRegion(w io.Writer, clients map[string]awsclient.EC2API, input io.Rea
 		regions = append(regions, region)
 	}
 	sort.Strings(regions)
-	return pickString(w, "Select a region", "Which configured AWS region should this key pair be created in?", "(q to cancel)", regions, input, output)
+	return pickString(w, "Select a region", "Which configured AWS region should this key pair be created in?", hintCancel, regions, input, output)
 }

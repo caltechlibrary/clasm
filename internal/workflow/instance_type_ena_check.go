@@ -69,7 +69,7 @@ func ensureInstanceTypeENACompatible(ctx context.Context, w io.Writer, client aw
 		fmt.Fprintf(w, "Instance type %q requires Enhanced Networking (ENA), but the picked AMI is not ENA-enabled.\n", instanceType)
 		fmt.Fprintln(w, "Non-Nitro types (e.g. t2.micro, t2.medium) don't require ENA and work with this AMI as-is; permanently fixing the AMI itself requires enabling ENA on the source instance and re-creating the AMI (outside awsops).")
 
-		choice, err := pickComparable(w, "How would you like to proceed?", "The instance type requires Enhanced Networking, which the picked AMI doesn't support.", "(q to cancel)", enaIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
+		choice, err := pickComparable(w, "How would you like to proceed?", "The instance type requires Enhanced Networking, which the picked AMI doesn't support.", hintCancel, enaIncompatibilityChoices, incompatibilityChoiceLabel, menuInput, menuOutput)
 		if err != nil {
 			return "", err
 		}

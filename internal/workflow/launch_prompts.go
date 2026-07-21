@@ -186,7 +186,7 @@ func promptInstanceType(w io.Writer, input io.Reader, output io.Writer) (string,
 	choices = append(choices, curatedInstanceTypes...)
 	choices = append(choices, instanceTypeChoice{label: "Other (type a custom instance type)"})
 
-	picked, err := pickComparable(w, "Select an instance type", "Pick a curated size, or Other to type any instance type by name.", "(q to cancel)", choices, func(c instanceTypeChoice) string { return c.label }, input, output)
+	picked, err := pickComparable(w, "Select an instance type", "Pick a curated size, or Other to type any instance type by name.", hintCancel, choices, func(c instanceTypeChoice) string { return c.label }, input, output)
 	if err != nil {
 		return "", err
 	}

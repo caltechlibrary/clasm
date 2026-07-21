@@ -69,7 +69,7 @@ func ManageResourceTags(ctx context.Context, w io.Writer, clients map[string]aws
 // an automated test; manageTagsForResource (which it dispatches into)
 // already has full coverage.
 func manageResourceTags(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket, menuInput io.Reader, menuOutput io.Writer) error {
-	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance, AMI, launch template, key pair, or S3 bucket.", "(q to cancel)", tagManagementKinds, menuInput, menuOutput)
+	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance, AMI, launch template, key pair, or S3 bucket.", hintCancel, tagManagementKinds, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -285,7 +285,7 @@ func ShowAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.
 // row-building conversion functions above and tagsListViewConfig
 // (internal/ui) are unit-tested directly.
 func showAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket, menuInput io.Reader, menuOutput io.Writer) error {
-	kind, err := pickString(w, "Show all tags for", "Lists every resource of the chosen kind with its complete tag set.", "(q to cancel)", tagManagementKinds, menuInput, menuOutput)
+	kind, err := pickString(w, "Show all tags for", "Lists every resource of the chosen kind with its complete tag set.", hintCancel, tagManagementKinds, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}

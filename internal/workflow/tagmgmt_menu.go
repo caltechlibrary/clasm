@@ -63,7 +63,7 @@ func pickTagMgmtItem(w io.Writer, input io.Reader, output io.Writer) (tagMgmtIte
 		Options(opts...).
 		Value(&idx)
 
-	if err := runMenuField(w, "(q to go back)", field, input, output); err != nil {
+	if err := runMenuField(w, hintGoBack, field, input, output); err != nil {
 		return tagMgmtItem{}, err
 	}
 	return tagMgmtMenuItems[idx], nil
