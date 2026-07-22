@@ -1578,6 +1578,187 @@ missing Project/Environment specifically) – a different query shape than
 likely to be asked for later but not scoped now (see TODO.md).</p>
 <p><strong>Resolved:</strong> the domain’s own name in the picker is
 “Tag Management,” as assumed above.</p>
+<h2
+id="configurable-ebs-root-volume-size-design-addendum-2026-07-21">Configurable
+EBS Root Volume Size (Design Addendum, 2026-07-21)</h2>
+<p><strong>Status: designed 2026-07-21, targeted for the next
+release.</strong> Closes the TODO.md bug confirmed in production
+2026-07-22: a launch template built for a 250GB InvenioRDM comparison
+instance instead produced an 8GB root volume (the stock Ubuntu 24.04 AMI
+default), which silently exhausted mid-provisioning and took real
+troubleshooting to diagnose (disk, not Docker/Redis, was the actual
+cause). Worked around live via <code>aws ec2 modify-volume</code> +
+<code>growpart</code>/<code>resize2fs</code> run by hand over SSH,
+entirely outside clasm. This addendum has two parts: setting the size at
+creation time (closes the bug directly), and resizing an already-running
+instance’s root volume (automates the operator’s own manual workaround
+so it doesn’t have to happen outside clasm next time).</p>
+<p><strong>Scope decision: root volume only, not a general
+block-device-mapping editor.</strong> Matches the Launch Templates
+addendum’s existing restraint (<code>RequestLaunchTemplateData</code>’s
+full surface – network interfaces, capacity reservations, non-root
+volumes, … – stays out of scope). The confirmed real-world need is
+exactly “the root volume defaults to 8GB and I sometimes need
+250-500GB,” not additional data volumes or per-volume type/IOPS tuning.
+If a project ever needs a second data volume, that stays a manual
+post-launch step (<code>aws ec2 create-volume</code> + attach), same as
+today.</p>
+<h3 id="part-1-setting-root-volume-size-at-creation">Part 1 — Setting
+root volume size at creation</h3>
+<p><strong>New field,
+<code>LaunchInstanceParams.RootVolumeSizeGB int32</code> and
+<code>LaunchInstanceParams.RootDeviceName string</code></strong>
+(<code>launch_instance.go</code>). <code>RootDeviceName</code> is
+carried alongside the size (rather than re-resolved at
+<code>RunInstances</code>/<code>CreateLaunchTemplate</code> time)
+because the builder functions (<code>Launch</code>,
+<code>buildRequestLaunchTemplateData</code>) only ever see
+<code>LaunchInstanceParams</code>, not the source
+<code>inventory.Image</code>.</p>
+<p><strong>New helper,
+<code>describeImageRootVolume(ctx, client, imageID) (deviceName string, defaultGB int32, err error)</code></strong>
+(<code>launch_instance.go</code> or a new <code>ebs_size.go</code>): one
+<code>ec2:DescribeImages</code> call scoped to
+<code>ImageIds: [imageID]</code>, reading
+<code>Images[0].RootDeviceName</code> and the matching entry in
+<code>Images[0].BlockDeviceMappings</code> for
+<code>.Ebs.VolumeSize</code>. This is a second
+<code>DescribeImages</code> call beyond the one that built the pick list
+(<code>inventory.Image</code> doesn’t carry block device mappings, and
+adding them to a list-tier struct used everywhere else for a value only
+needed once, at the moment of collecting launch params, would be scope
+creep) – acceptable latency, matching
+<code>imagesWithOfficialUbuntu</code>’s existing per-AMI
+<code>DescribeImages</code> calls at pick-list-build time.</p>
+<p><strong>One new prompt, shared by both collection paths.</strong>
+Added to <code>collectLaunchInstanceParams</code>
+(<code>launch_instance.go</code>) and
+<code>collectLaunchInstanceParamsFromCloudInit</code>
+(<code>launch_from_cloud_init.go</code>) at the same point in both –
+right after <code>ensureInstanceTypeENACompatible</code> finalizes the
+instance type, before the key-pair prompt, grouping “compute sizing”
+(instance type + volume size) together. Prompt text: “Root EBS volume
+size in GB”, defaulting to the AMI’s own default
+(<code>describeImageRootVolume</code>’s <code>defaultGB</code>, via
+<code>ui.WithDefault</code>) but editable. Validated to be a positive
+integer no smaller than the AMI’s own default – AWS’s own
+<code>ModifyVolume</code>/<code>RunInstances</code> already reject
+shrinking below the source snapshot’s size, but failing fast at the
+prompt with a clear message beats a <code>RunInstances</code> API error
+after every other param has already been collected. Because both
+collection paths are shared: - Feature 2 (Create EC2 Instance from AMI)
+and Feature 3 (Create EC2 Instance from Cloud-Init YAML) both gain the
+prompt via <code>collectLaunchInstanceParams</code>. - Create Launch
+Template from Cloud-Init YAML gains it for free, since
+<code>createLaunchTemplateFromCloudInit</code> already calls
+<code>collectLaunchInstanceParamsFromCloudInit</code>
+(<code>launch_template_create.go:91</code>). - Create EC2 Instance from
+Launch Template (the third creation path) is deliberately
+<strong>untouched</strong> – the template already bakes in whatever root
+volume size it was created with; this stays “just another way to create
+an instance” (DESIGN.md, “Launch Templates”), not a hybrid
+template-plus-override wizard.</p>
+<p><strong>Builder changes.</strong> Both <code>Launch</code>
+(<code>launch_execute.go</code>) and
+<code>buildRequestLaunchTemplateData</code>
+(<code>launch_template_create.go</code>) gain a
+<code>BlockDeviceMappings</code>/<code>LaunchTemplateBlockDeviceMappingRequest</code>
+entry, built by a new small helper reused by both:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode go"><code class="sourceCode go"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">func</span> buildRootBlockDeviceMapping<span class="op">(</span>params LaunchInstanceParams<span class="op">)</span> <span class="op">...</span></span></code></pre></div>
+<p>Only <code>DeviceName</code> and <code>Ebs.VolumeSize</code> are set
+– every other <code>Ebs</code> field (<code>VolumeType</code>,
+<code>Iops</code>, <code>Encrypted</code>,
+<code>DeleteOnTermination</code>) is left unset, which AWS documents as
+“inherited from the source AMI’s own mapping/snapshot” for any field not
+explicitly overridden, so this stays additive and doesn’t quietly change
+volume type or encryption for existing users.</p>
+<p><strong>Data model.</strong>
+<code>inventory.LaunchTemplateVersionDetail</code>
+(<code>internal/inventory/launch_templates.go</code>) gains
+<code>RootVolumeSizeGB int32</code> (0 if the version predates this
+feature or was created outside clasm), decoded from
+<code>DescribeLaunchTemplateVersions</code>’s
+<code>LaunchTemplateData.BlockDeviceMappings</code>, surfaced in Show
+Launch Template’s existing detail display alongside
+<code>IMDSv2Required</code>.</p>
+<h3 id="part-2-resizing-an-already-running-instances-root-volume">Part 2
+— Resizing an already-running instance’s root volume</h3>
+<p><strong>New Compute-domain menu entry, “Resize Instance’s Root
+Volume.”</strong> Peer to the existing instance actions
+(Start/Stop/Terminate/Manage Tags), not nested. Flow:</p>
+<ol type="1">
+<li><code>pickInstance</code> (existing Picker-tier helper).</li>
+<li>Resolve the instance’s root EBS volume:
+<code>DescribeInstances</code> already returns
+<code>BlockDeviceMappings</code>; match the entry whose
+<code>DeviceName</code> equals the instance’s
+<code>RootDeviceName</code> for its <code>Ebs.VolumeId</code>, then
+<code>DescribeVolumes</code> for its current size (reuses
+<code>GatherVolumeInfo</code>’s shape, scoped to that one volume).</li>
+<li>Prompt the new size in GB, validated <code>&gt;=</code> current size
+(<code>ModifyVolume</code> cannot shrink a volume; AWS also enforces a
+6-hour cooldown between modifications to the <em>same</em> volume,
+surfaced as a plain error message if hit, not pre-checked
+client-side).</li>
+<li>Confirm, with the same <code>Environment=production</code>
+extra-warning gate Feature 9 (Remove AMI) established, since this
+touches a live, possibly-production instance.</li>
+<li><code>ec2:ModifyVolume</code> (new <code>EC2API</code> method), then
+poll <code>ec2:DescribeVolumesModifications</code> (new
+<code>EC2API</code> method) until <code>ModificationState</code> is
+<code>optimizing</code> or <code>completed</code> – AWS’s own guidance
+is that the volume is safely usable once it leaves
+<code>modifying</code>, not only once fully <code>completed</code>.</li>
+<li><strong>Then automate the OS-side growth via SSM</strong>, reusing
+the existing
+<code>SSMAPI.SendCommand</code>/<code>GetCommandInvocation</code>
+mechanism (<code>cloud_init_check.go</code> already polls a command this
+way for cloud-init status): run an <code>AWS-RunShellScript</code>
+document that:
+<ul>
+<li>Resolves the root filesystem’s underlying block device and partition
+number via <code>findmnt -no SOURCE /</code> (not a hardcoded
+<code>&lt;disk&gt;1</code> assumption – NVMe-backed instances name
+partitions <code>/dev/nvme0n1p1</code>, Xen-backed ones
+<code>/dev/xvda1</code>; the script splits device-vs-partition-number
+generically rather than assuming a naming scheme).</li>
+<li>Runs
+<code>growpart &lt;disk&gt; &lt;partition-number&gt;</code>.</li>
+<li>Detects the filesystem type via <code>findmnt -no FSTYPE /</code>
+and runs <code>resize2fs</code> (ext4) or <code>xfs_growfs</code> (xfs)
+accordingly.</li>
+<li>If SSM isn’t online for the instance (same “skip, don’t fail”
+precedent as <code>checkCloudInitCompletion</code>’s
+<code>result.Skipped</code>), the workflow reports the volume-level
+resize as done and prints the same manual
+<code>growpart</code>/<code>resize2fs</code> instructions the operator
+used as their real-world workaround, rather than failing the whole
+action.</li>
+<li>If <code>findmnt</code>/<code>lsblk</code> reports a layout this
+script doesn’t recognize (anything beyond a single partition directly on
+the root device – e.g. LVM, which some newer cloud images use for
+non-AWS-targeted variants, though Canonical’s official AWS EC2 Ubuntu
+AMIs are confirmed single-partition, no LVM, as of this writing), the
+script aborts with a clear message and the same manual-instructions
+fallback, rather than guessing and risking a partially-grown,
+inconsistent disk – this mirrors the original incident’s own lesson (a
+silent, hard-to-diagnose disk problem) closely enough that “fail loud,
+don’t guess” is the priority here over full automation coverage.</li>
+</ul></li>
+</ol>
+<p><strong>New <code>EC2API</code> surface:</strong>
+<code>ModifyVolume</code>, <code>DescribeVolumesModifications</code> –
+mirrored into <code>logging_ec2.go</code>’s wrapper, matching every
+existing EC2 call.</p>
+<h3 id="not-decided-yet-1">Not decided yet</h3>
+<p>Exact prompt wording/ordering details (left for the implementation
+plan); whether the resize workflow’s SSM step needs its own timeout
+constant or reuses
+<code>DefaultSSMOnlineTimeout</code>/<code>DefaultCloudInitTimeout</code>;
+test coverage shape for the <code>findmnt</code>-output-parsing logic
+(needs fixture-driven unit tests independent of any live SSM round-trip,
+same as <code>checkCloudInitCompletion</code>’s own tests fake the SSM
+client rather than hitting real infrastructure).</p>
 <h2 id="core-features">Core Features</h2>
 <h3 id="compute-domain-ec2-ami">Compute Domain (EC2 &amp; AMI)</h3>
 <p>Features 1 through 12 below are unchanged in behavior from the

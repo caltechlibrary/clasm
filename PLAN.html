@@ -4385,6 +4385,211 @@ prompts/flow differ from what’s documented</li>
 </ul>
 <p><strong>Dependency:</strong> Phase 19, 20</p>
 <hr />
+<h2 id="phase-20.31-configurable-ebs-root-volume-size">Phase 20.31 —
+Configurable EBS Root Volume Size</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-21</strong>
+(<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -timeout 60s</code> all clean; <code>gofmt -l</code>
+clean). Implements DESIGN.md, “Configurable EBS Root Volume Size” and
+DECISIONS.md, “Configurable EBS root volume size: scope, flow coverage,
+and resize automation depth.” Closes TODO.md’s “Bug (confirmed in
+production use, 2026-07-22)” entry. Built test-first throughout: every
+new behavior (the missing <code>BlockDeviceMappings</code>, each
+<code>growRootFilesystem</code> fallback branch, the menu dispatch) has
+a test that failed before the corresponding code existed. Not yet
+verified against real AWS.</p>
+<h3 id="work-items-76">Work Items</h3>
+<p><strong>Part 1 — set root volume size at creation:</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>describeImageRootVolume</code> helper
+(<code>ebs_size.go</code>): one <code>ec2:DescribeImages</code> call
+scoped to a single AMI, returning its <code>RootDeviceName</code> and
+default <code>VolumeSize</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>LaunchInstanceParams</code> gains
+<code>RootVolumeSizeGB int32</code> and
+<code>RootDeviceName string</code></label></li>
+<li><label><input type="checkbox" checked="" />New prompt
+(<code>promptRootVolumeSizeGB</code>, <code>ebs_size.go</code>) in
+<code>collectLaunchInstanceParams</code>
+(<code>launch_instance.go</code>) and
+<code>collectLaunchInstanceParamsFromCloudInit</code>
+(<code>launch_from_cloud_init.go</code>), right after
+<code>ensureInstanceTypeENACompatible</code>, defaulting to the AMI’s
+own size, validated <code>&gt;=</code> that default</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>buildRootBlockDeviceMapping</code> helper
+(<code>launch_execute.go</code>), reused by <code>Launch</code> and a
+<code>LaunchTemplateBlockDeviceMappingRequest</code> counterpart inlined
+into <code>buildRequestLaunchTemplateData</code>
+(<code>launch_template_create.go</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>inventory.LaunchTemplateVersionDetail</code> gains
+<code>RootVolumeSizeGB     int32</code>, decoded in
+<code>DescribeLaunchTemplateVersion</code> (reads the version’s first
+<code>BlockDeviceMappings</code> entry – clasm-created versions never
+carry more than one), shown in Show Launch Template’s detail display
+(<code>rootVolumeSizeDisplay</code>,
+<code>ebs_size.go</code>)</label></li>
+</ul>
+<p><strong>Part 2 — resize an already-running instance’s root
+volume:</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>EC2API</code> gains
+<code>ModifyVolume</code>, <code>DescribeVolumesModifications</code>,
+mirrored into <code>logging_ec2.go</code></label></li>
+<li><label><input type="checkbox" checked="" />New Compute-domain menu
+entry, “Resize instance’s root volume” (<code>resize_volume.go</code>):
+<code>pickInstance</code> -&gt; <code>rootVolumeInfo</code> resolves the
+root <code>Ebs.VolumeId</code> and current size from a fresh
+<code>DescribeInstances</code>+<code>DescribeVolumes</code> pair -&gt;
+<code>promptNewVolumeSizeGB</code> (strictly greater than current) -&gt;
+the same <code>Environment=production</code> + type-to-confirm gate
+Feature 9 (Remove AMI) established (<code>ConfirmDestructive</code>)
+-&gt; <code>modifyVolumeSize</code> -&gt;
+<code>waitUntilVolumeModificationUsable</code> polls
+<code>DescribeVolumesModifications</code> until
+<code>optimizing</code>/<code>completed</code> (errors immediately on
+<code>failed</code>)</label></li>
+<li><label><input type="checkbox" checked="" />SSM automation of the
+OS-side growth (<code>ssm_grow.go</code>,
+<code>growRootFilesystem</code>): two SSM round-trips via the existing
+<code>WaitForSSMOnline</code>/<code>RunShellCommand</code> primitives
+(<code>ssm.go</code>) – first <code>findmnt -no SOURCE,FSTYPE /</code>
+to detect the root device and filesystem type, parsed in Go
+(<code>parseFindmntOutput</code>, <code>splitDiskAndPartition</code>)
+rather than trusting a monolithic bash script to self-detect and bail
+out correctly; then, only if that parses to a single recognized
+partition-on-a-whole-disk layout (NVMe- or Xen/legacy-named) and a
+supported filesystem (ext2/3/4 or xfs), a second command runs
+<code>growpart</code> + <code>resize2fs</code>/ <code>xfs_growfs</code>.
+Falls back to printing the same manual
+<code>growpart</code>/<code>resize2fs</code> commands the operator ran
+by hand for the original incident
+(<code>printManualGrowInstructions</code>) whenever SSM isn’t online,
+either command fails, the layout is unrecognized (e.g. LVM), or the
+filesystem type isn’t supported – never errors the overall resize
+workflow</label></li>
+<li><label><input type="checkbox" checked="" />Fixture-driven unit tests
+for the <code>findmnt</code>-output-parsing logic
+(<code>ssm_grow_test.go</code>:
+<code>splitDiskAndPartition</code>/<code>parseFindmntOutput</code>/
+<code>rootFilesystemGrowCommand</code>), independent of any live SSM
+round-trip, plus <code>growRootFilesystem</code>’s own tests against a
+fake SSM client for every fallback branch and the success
+path</label></li>
+</ul>
+<p><strong>Tests:</strong> test-first throughout –
+<code>TestLaunch_SetsRootVolumeSize</code>/
+<code>TestBuildRequestLaunchTemplateData_SetsRootVolumeSize</code>
+reproduced the “no <code>BlockDeviceMappings</code> sent” gap (confirmed
+failing before the fix, matching this project’s established convention)
+before the fix;
+<code>TestCollectLaunchInstanceParams_SetsRootVolumeSize</code>/
+<code>TestCollectLaunchInstanceParamsFromCloudInit_SetsRootVolumeSize</code>
+cover the prompt end-to-end;
+<code>TestDescribeLaunchTemplateVersion_DecodesRootVolumeSize</code>/
+<code>TestShowLaunchTemplate_DisplaysRootVolumeSize</code> cover the
+display side;
+<code>TestRootVolumeInfo_*</code>/<code>TestPromptNewVolumeSizeGB_*</code>/
+<code>TestModifyVolumeSize_*</code>/<code>TestWaitUntilVolumeModificationUsable_*</code>/
+<code>TestResizeInstanceRootVolume_*</code> cover Part 2’s own workflow;
+<code>TestSplitDiskAndPartition_*</code>/<code>TestParseFindmntOutput_*</code>/
+<code>TestRootFilesystemGrowCommand_*</code>/<code>TestGrowRootFilesystem_*</code>
+cover the SSM automation, including every fallback branch. One real bug
+caught during this phase:
+<code>growRootFilesystem</code>/<code>resizeInstanceRootVolume</code>
+initially hardcoded production SSM timeouts (2 min/10 min), making their
+own “SSM not online” tests actually wait out those real timeouts – fixed
+by threading <code>onlineTimeout</code>/<code>commandTimeout</code>/
+<code>pollInterval</code> through explicitly
+(<code>growRootFilesystem</code>) and by configuring the fake SSM client
+to resolve immediately (<code>resizeInstanceRootVolume</code>’s own
+test), matching <code>checkCloudInitCompletion</code>’s existing
+pattern. <code>menu_test.go</code>’s hardcoded menu-item count (20 -&gt;
+21) was updated for the new entry, same maintenance cost every prior
+menu-ordering change in this project has needed.</p>
+<p><strong>Files:</strong>
+<code>internal/workflow/launch_instance.go</code>,
+<code>internal/workflow/launch_from_cloud_init.go</code>,
+<code>internal/workflow/launch_execute.go</code>,
+<code>internal/workflow/launch_template_create.go</code>,
+<code>internal/inventory/launch_templates.go</code>,
+<code>internal/workflow/show_launch_template.go</code>,
+<code>internal/awsclient/ec2.go</code>,
+<code>internal/awsclient/logging_ec2.go</code>,
+<code>internal/workflow/menu.go</code>, <code>cmd/clasm/main.go</code>,
+new <code>internal/workflow/ebs_size.go</code>,
+<code>internal/workflow/resize_volume.go</code>,
+<code>internal/workflow/ssm_grow.go</code>, plus each file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> Phase 20.27 (Launch Templates).</p>
+<hr />
+<h2
+id="phase-20.32-pause-for-acknowledgment-before-every-menu-loop-redraw">Phase
+20.32 — Pause for Acknowledgment Before Every Menu-Loop Redraw</h2>
+<p><strong>Status: revised and re-implemented 2026-07-22</strong>,
+superseding this same phase’s first pass from earlier the same day.
+First pass (error/ refresh-error prints in all four menu loops, plus a
+one-off pause inside <code>resizeInstanceRootVolume</code>) was
+implemented, unit-tested, and live-verified working for its own two
+original incidents – then live testing found a <em>third</em> incident
+the first pass didn’t cover (<code>runLaunch</code>’s cloud-init-error
+report, which returns nil, not an error, so the error-path-only pause
+never fired). See DECISIONS.md, “Widen ‘pause for acknowledgment’ to
+every action, not just errors.” Re-implemented per that revision:
+<code>go build ./...</code>, <code>go vet ./...</code>,
+<code>go test ./... -race</code> all clean; <code>gofmt -l</code> clean.
+Not yet re-verified live against real AWS a second time, or
+released.</p>
+<h3 id="work-items-77">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>pauseForAcknowledgment(input io.Reader, output io.Writer)</code>
+helper (<code>menu.go</code>): blocks on
+<code>ui.Prompt("Press Enter to     continue", ui.WithIO(input, output))</code>,
+discarding the result</label></li>
+<li><label><input type="checkbox" checked="" />Added one new call on the
+success path – right after <code>choice.action(actions, ctx)</code>
+returns nil, before <code>actions.Refresh(ctx)</code> runs – in all four
+domain menu loops (<code>runMainMenu</code> <code>menu.go</code>;
+<code>runS3Menu</code> <code>s3_menu.go</code>;
+<code>runKeyMgmtMenu</code> <code>keymgmt_menu.go</code>;
+<code>runTagMgmtMenu</code> <code>tagmgmt_menu.go</code>). The two
+existing pauses (after the action-error print, after the refresh-error
+print) are unchanged – the pause must come after text is printed and
+before the next redraw, so it can’t collapse into one unconditional call
+placed before the <code>err</code> check. Net three pause call sites per
+loop now (was two), 12 total across the four domains</label></li>
+<li><label><input type="checkbox" checked="" />Removed the one-off pause
+from the end of <code>resizeInstanceRootVolume</code>
+(<code>resize_volume.go</code>) – redundant now that the loop itself
+always pauses after dispatching it</label></li>
+</ul>
+<p><strong>Tests:</strong> test-first, per this project’s standing
+convention – every per-domain test that dispatches more than one action
+in sequence (<code>*_DispatchesToTheChosenAction</code>,
+<code>*_ShowXDispatchesToItsOwnAction</code>,
+<code>*_RefreshesAfterASuccessfulAction</code>,
+<code>*_ActionErrorDoesNotCrashLoop</code>) needed a blank input line
+inserted after <em>every</em> dispatch now, not just the error ones,
+since the pause is no longer conditional on <code>err</code>; the four
+<code>*_PausesForAcknowledgmentAfterARefreshError</code> tests added in
+the first pass still hold (a refresh error is itself dispatched via the
+same unconditional call site); removed the pause assertion from
+<code>TestResizeInstanceRootVolume_HappyPath</code> since that function
+no longer pauses itself. All widened tests confirmed failing against the
+first-pass code before the loop-placement change.</p>
+<p><strong>Files:</strong> <code>internal/workflow/menu.go</code>,
+<code>internal/workflow/s3_menu.go</code>,
+<code>internal/workflow/keymgmt_menu.go</code>,
+<code>internal/workflow/tagmgmt_menu.go</code>,
+<code>internal/workflow/resize_volume.go</code>, plus each file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> none (independent bugfix; targeted for
+v0.0.4).</p>
+<hr />
 <h2 id="deferred-to-a-later-version-phase-23-not-scheduled">Deferred to
 a Later Version (Phase 23+, not scheduled)</h2>
 <p>Not part of v1/v2 — see <code>DECISIONS.md</code>, “V1 scope: ship

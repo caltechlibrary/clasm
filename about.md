@@ -10,7 +10,7 @@ authors:
 
 
 repository_code: https://github.com/caltechlibrary/clasm
-version: 0.0.3
+version: 0.0.4
 
 operating_system:
   - POSIX
@@ -19,15 +19,15 @@ programming_language:
   - Go >= 1.26.4
 
 
-date_released: 2026-07-21
+date_released: 2026-07-22
 ---
 
 About this software
 ===================
 
-## clasm 0.0.3
+## clasm 0.0.4
 
-Bug fix release. Cancelling ('q') the S3 bucket picker inside Backup Archive & Trim exited the whole program instead of returning to the previous menu -- a regression, since cancelling the instance picker one step earlier in the same workflow already backed out correctly. backupArchiveAndTrim's bucket-selection step now maps that cancellation the same way, with a regression test covering it. Also improves every Menu-tier huh.Select picker's on-screen hint (bucket/AMI/key-pair/launch-template selection, and every domain/action menu) to mention '/' to filter alongside 'q' to cancel/go back/exit, so it's clear before typing that a bare 'q' quits rather than filters; the hint wording is now centralized as shared constants so it can't drift out of sync again. No functional changes beyond these two fixes -- all v0.0.2 functionality is unchanged.
+Adds configurable EBS root volume size: set the size when creating an instance or launch template (instead of always inheriting the AMI's default), and a new 'Resize instance's root volume' menu entry that grows a running instance's EBS volume and automates the OS-level partition/filesystem growth via SSM, falling back to printed manual instructions whenever that automation can't proceed safely. Also a bug fix, found via live testing of the above: any status or error text printed immediately before a domain menu's next full-height selection screen was getting wiped from view before it could be read -- affected every dispatched action's own output (success or failure) and every refresh error, across all four domains (Compute, S3, Key Management, Tag Management). Every menu loop now pauses for an explicit Enter before redrawing, so operators can actually read what an action reported.
 
 ## Authors
 

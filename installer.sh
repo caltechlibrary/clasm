@@ -1,11 +1,11 @@
 #!/bin/sh
-# generated with CMTools 0.0.3 ab4b5dc
+# generated with CMTools 0.0.4 454764b
 
 #
 # Set the package name and version to install
 #
 PACKAGE="clasm"
-VERSION="0.0.3"
+VERSION="0.0.4"
 GIT_GROUP="caltechlibrary"
 RELEASE="https://github.com/$GIT_GROUP/$PACKAGE/releases/tag/v$VERSION"
 if [ "$PKG_VERSION" != "" ]; then

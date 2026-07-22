@@ -31,6 +31,288 @@ interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
 <hr />
 <h2
+id="widen-pause-for-acknowledgment-to-every-action-not-just-errors">2026-07-22
+— Widen “pause for acknowledgment” to every action, not just errors</h2>
+<p><strong>Context.</strong> Live real-AWS testing of the same day’s
+“Pause for acknowledgment before every menu-loop redraw” fix (below)
+found a third instance of the underlying bug, in a place that fix didn’t
+cover. <code>runLaunch</code> (<code>launch_execute.go</code>, shared by
+“Create EC2 instance from AMI” and “from cloud-init YAML”) calls
+<code>checkCloudInitCompletion</code> after a launch; when cloud-init
+itself errors on the instance, that’s deliberately reported as a
+<em>result value</em>
+(<code>CloudInitCheckResult{Status: "error"}</code>), not a Go error –
+the instance did launch successfully, so this isn’t a workflow failure,
+just a status worth telling the operator about. <code>runLaunch</code>
+prints
+<code>"cloud-init reported an error -- check the instance before using it."</code>,
+displays connection info, and returns <strong>nil</strong>. Because the
+action succeeded (no error), the menu loop’s dispatch takes the success
+path, which – after the first pass at this fix – only paused in the one
+specific case hand-patched into <code>resizeInstanceRootVolume</code>.
+Live-tested: the operator saw the launch confirmation and connection
+info flash by with no error and no pause, landing back on the menu with
+no visible indication anything but a clean launch had happened.</p>
+<p>This generalizes: any of the ~20 dispatched actions across all four
+domains can print multi-line success-path status (launch confirmations,
+connection info, “cloud-init completed successfully,” etc.), and every
+one of those prints was still exposed to the same
+redraw-wipes-the-screen problem this session’s earlier fix only closed
+for the error/refresh-error prints plus one hand-picked success case.
+Hunting down and patching each individual success-path print site one at
+a time (the way <code>resizeInstanceRootVolume</code> was patched) would
+mean re-discovering this bug roughly once per action, the same
+diminishing-returns pattern that already justified fixing all four menu
+loops at once instead of just the one found live.</p>
+<p><strong>Decision.</strong> Add one new pause call, on the
+<em>success</em> path: right after
+<code>choice.action(actions, ctx)</code> returns nil, before calling
+<code>actions.Refresh(ctx)</code>, in all four domain menu loops. The
+pause must still come <em>after</em> whatever text needs reading and
+<em>before</em> the next redraw – so this doesn’t collapse into a single
+unconditional call placed before the <code>err</code> check (that would
+pause before the error text even prints, on the failure path). The two
+pauses from earlier the same day stay exactly as they were: after the
+<code>"Error: ..."</code> print (failure path) and after the
+<code>"Error refreshing listings: ..."</code> print. Net result, three
+pause call sites per loop (was two): the action’s own output (success or
+failure) and the refresh error are each guaranteed one pause before
+anything else redraws. The one-off pause inside
+<code>resizeInstanceRootVolume</code> is removed as redundant now that
+the loop itself always pauses after dispatching a successful action.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Patch
+<code>runLaunch</code>’s cloud-init-error branch specifically</em>,
+matching the original per-call-site approach – rejected for the same
+reason the four-menu-loop audit was: it fixes the one instance found
+live and leaves every other action’s own success-path prints (there are
+many, across four domains) equally exposed and un-discovered.</p>
+<p><strong>Consequences.</strong> Every single dispatched action now
+costs one extra Enter keypress before the menu reappears, not just the
+ones that error or explicitly opted into a pause – a bigger UX tax than
+the original narrower fix, accepted in exchange for closing the entire
+bug class in one place instead of iteratively rediscovering it. Existing
+per-domain
+<code>*_ActionErrorDoesNotCrashLoop</code>/<code>*_RefreshesAfterASuccessfulAction</code>/
+<code>*_DispatchesToTheChosenAction</code>-style tests that dispatch
+more than one action in sequence need a blank input line inserted after
+<em>every</em> dispatch now, not just after the ones that errored.</p>
+<hr />
+<h2
+id="pause-for-acknowledgment-before-every-menu-loop-redraw">2026-07-22 —
+Pause for acknowledgment before every menu-loop redraw</h2>
+<p><strong>Context.</strong> Live real-AWS testing of Resize Instance’s
+Root Volume (PLAN.md Phase 20.31) found that its printed output – the
+resize confirmation, “Volume resize is usable,” and (when SSM never
+comes online, as it didn’t for either test instance)
+<code>growRootFilesystem</code>’s manual
+<code>growpart</code>/<code>resize2fs</code> fallback instructions –
+flashed by too fast to read. Root cause:
+<code>resizeInstanceRootVolume</code> returns immediately after
+printing, and the Compute domain’s menu loop (<code>runMainMenu</code>,
+<code>menu.go</code>) redraws its full-height <code>huh.Select</code> on
+the very next iteration, which (per <code>TUI_REFERENCE.md</code> §1)
+always repaints the entire terminal – exactly the “silent-scroll” bug
+class already found and fixed once before, for Tag Management’s “Show
+tags” (PLAN.md Phase 20.29/20.30), just recurring at a new call site
+nobody had exercised live until now.</p>
+<p>Separately, in the same session, a live typo during instance cleanup
+reproduced the identical symptom on the <em>error</em> path:
+<code>runMainMenu</code> prints <code>"Error: %s\n"</code> after a
+failed action (or <code>"Error refreshing listings: %s\n"</code> after a
+failed <code>Refresh</code>) and then loops straight back into
+<code>pickMainMenuItem</code>’s full-height <code>Select</code> – wiping
+the error before it can be read. Auditing the other three domain menu
+loops (<code>s3_menu.go</code>, <code>keymgmt_menu.go</code>,
+<code>tagmgmt_menu.go</code>) found the exact same two print-then-redraw
+sites duplicated in each, verbatim – this is a systemic gap in the
+shared menu-loop shape, not one workflow’s bug.</p>
+<p><strong>Decision.</strong> A single shared helper,
+<code>pauseForAcknowledgment</code> (<code>menu.go</code>), blocks on a
+plain <code>ui.Prompt</code> (“Press Enter to continue”) until the
+operator explicitly dismisses it. Per <code>TUI_REFERENCE.md</code> §5,
+plain prompts are deliberately content-sized, not full-height, so they
+don’t themselves wipe anything already on screen – the same property
+that makes them safe to insert between “something was printed” and “the
+next full-height Select renders.” Called
+<strong>unconditionally</strong>, every time, at all of: - both print
+sites (<code>"Error: ..."</code>,
+<code>"Error refreshing listings:   ..."</code>) in all four domain menu
+loops (<code>menu.go</code>, <code>s3_menu.go</code>,
+<code>keymgmt_menu.go</code>, <code>tagmgmt_menu.go</code>) – 8 call
+sites total - the end of <code>resizeInstanceRootVolume</code>
+(<code>resize_volume.go</code>), after <code>growRootFilesystem</code>
+returns, whether or not automated growth succeeded</p>
+<p>Unconditional rather than “only pause if something was printed”:
+simpler to implement and verify, and every one of the 9 call sites above
+always prints something immediately beforehand anyway, so the
+distinction is moot in practice.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Embed the message in
+the next Select’s <code>Description</code></em>, matching the Tag
+Management fix – doesn’t fit here. That fix worked because “Show tags”
+had one static, current-state snapshot to redisplay. These call sites
+print a <em>sequence</em> of status lines building up over time (resize
+progress, growth fallback instructions, an arbitrary error string) with
+no single “current state” to re-embed. - <em>Fix only the two call sites
+found live</em> (resize’s success path, the typo’s error path) –
+rejected once the audit showed the same two-print pattern duplicated
+identically across all four menu loops; fixing one and leaving the other
+three would just mean re-discovering this bug three more times, once per
+domain.</p>
+<p><strong>Consequences.</strong> Every dispatched action’s error, every
+refresh error, and Resize Instance’s Root Volume’s own output now
+require an explicit Enter to dismiss before the menu reappears – one
+extra keypress per error/resize, in exchange for actually being able to
+read what happened. <code>huh.Input</code>’s accessible-mode path
+(<code>accessibility.PromptString</code>) never errors, even on EOF (it
+returns the field’s default value instead) – confirmed by reading huh’s
+own vendored source rather than assumed, given this project’s standing
+“check vendored source, don’t trust memory” rule for huh/bubbletea
+behavior – so the pause is safe to add inside an existing
+accessible-mode-tested loop without risking the EOF-hangs-forever
+<code>Select</code>/<code>PointerAccessor</code> gotcha from Phase
+20.29. Existing pipe-driven tests that continue a menu loop past an
+error (<code>*_ActionErrorDoesNotCrashLoop</code>, one per domain) need
+one extra blank input line inserted between the two picks, to account
+for the pause now consuming a line of input.</p>
+<hr />
+<h2
+id="root-filesystem-growth-detect-in-go-then-act-not-a-self-detecting-bash-script">2026-07-21
+— Root filesystem growth: detect-in-Go then act, not a self-detecting
+bash script</h2>
+<p><strong>Context.</strong> Implementing Part 2 of “Configurable EBS
+root volume size” (PLAN.md Phase 20.31): once
+<code>ec2:ModifyVolume</code> grows the EBS volume itself, the OS-level
+partition and filesystem still need to grow to use the extra space
+(<code>growpart</code> + <code>resize2fs</code>/<code>xfs_growfs</code>)
+– the exact manual step the operator had to do by hand for the
+production incident this phase closes. The open design question was
+<em>where</em> the “is this a layout we can safely automate, or should
+we back off” decision gets made: entirely inside one bash script sent
+via SSM, or split into a detect step (bash) plus a decide step (Go).</p>
+<p><strong>Decision.</strong> Two separate SSM round-trips, both through
+the existing <code>WaitForSSMOnline</code>/<code>RunShellCommand</code>
+primitives (<code>ssm.go</code>, already used by
+<code>checkCloudInitCompletion</code> for the cloud-init-status check –
+no new SSM plumbing needed). First,
+<code>findmnt -no SOURCE,FSTYPE /</code> reports the root partition’s
+device path and filesystem type; its output is parsed in Go
+(<code>splitDiskAndPartition</code>, <code>parseFindmntOutput</code>,
+<code>ssm_grow.go</code>), not in bash. Only if that parse succeeds – a
+single partition directly on a whole disk, NVMe- or Xen/legacy-named,
+ext2/3/4 or xfs – does a second command actually run
+<code>growpart</code>/<code>resize2fs</code>/<code>xfs_growfs</code>.
+Anything else (an LVM logical volume such as
+<code>/dev/mapper/ubuntu--vg-ubuntu--lv</code>, a device-mapper node, an
+unsupported filesystem) falls back to printing the same manual commands
+the operator already ran by hand, rather than growing anything.
+Rationale: PLAN.md’s own work-item language for this phase called for
+“fixture-driven unit tests for the <code>findmnt</code>-output-parsing
+logic, independent of any live SSM round-trip” – only achievable if that
+parsing is a plain Go function, not logic buried inside a bash string
+this project’s tests can’t introspect. It also keeps the one genuinely
+destructive step (the actual <code>growpart</code> call) gated behind
+Go-side validation of the parsed device, rather than trusting a single
+monolithic script to both detect its own layout and correctly bail out
+if it doesn’t recognize it – “fail loud, don’t guess” applies to the
+detection logic itself, not just its outcome.</p>
+<p><strong>Bug caught by this phase’s own tests.</strong>
+<code>growRootFilesystem</code> and
+<code>resizeInstanceRootVolume</code> initially hardcoded the package’s
+production <code>Default*</code> SSM timeouts (2 minutes online, 10
+minutes per command) directly, rather than taking them as parameters the
+way <code>checkCloudInitCompletion</code> already does. The first test
+run of
+<code>TestGrowRootFilesystem_SSMNotOnline_PrintsManualInstructions</code>
+actually took 120 real seconds to pass – it was genuinely waiting out
+the production timeout, not simulating it. Fixed by threading
+<code>onlineTimeout</code>/<code>commandTimeout</code>/<code>pollInterval</code>
+through <code>growRootFilesystem</code> explicitly (production call site
+in <code>resize_volume.go</code> passes the real <code>Default*</code>
+constants; tests pass millisecond-scale ones), and by configuring
+<code>resizeInstanceRootVolume</code>’s own end-to-end test’s fake SSM
+client to resolve immediately rather than shrinking the timeout further
+– matching <code>checkCloudInitCompletion</code>’s existing shape, which
+this phase should have followed from the start.</p>
+<hr />
+<h2
+id="sort-the-base-ami-pick-list-for-deterministic-ordering">2026-07-21 —
+Sort the base-AMI pick list for deterministic ordering</h2>
+<p><strong>Context.</strong> Building two launch templates for
+comparable systems back to back, the operator noticed the Ubuntu LTS
+entries in the base-AMI pick list (Feature 2/3, Create Launch Template
+from Cloud-Init YAML) came up in a different order each run, making it
+easy to pick the wrong release by muscle memory. Root cause:
+<code>inventory.ListImages</code> aggregates owned AMIs across regions
+via concurrent per-region goroutines feeding a channel, and
+<code>listOfficialUbuntuAMIs</code>
+(<code>official_ubuntu_amis.go</code>) iterates <code>clients</code>, a
+Go map – both orders are randomized by the language, not by AWS, so the
+same AMI could land in a different list position every time the picker
+opened.</p>
+<p><strong>Decision.</strong> <code>imagesWithOfficialUbuntu</code> (the
+shared function feeding <code>pickImage</code> in every one of the four
+launch flows) now sorts the combined list by Region then Name before
+returning it, using the same <code>sort.Slice</code> approach
+<code>inventory.ListBuckets</code> already established for the same
+class of problem (deterministic order after a concurrent/map
+aggregation). No new dependency, no change to what’s offered – only the
+order is now stable across runs.</p>
+<hr />
+<h2
+id="configurable-ebs-root-volume-size-scope-flow-coverage-and-resize-automation-depth">2026-07-21
+— Configurable EBS root volume size: scope, flow coverage, and resize
+automation depth</h2>
+<p><strong>Context.</strong> TODO.md’s “Bug (confirmed in production
+use, 2026-07-22)” entry: a launch template built for a 250GB InvenioRDM
+comparison instance instead produced an 8GB root volume (the stock
+Ubuntu 24.04 AMI default), because neither <code>RunInstances</code>
+(<code>launch_execute.go</code>) nor <code>CreateLaunchTemplate</code>
+(<code>launch_template_create.go</code>) has ever set
+<code>BlockDeviceMappings</code> – the Launch Templates addendum
+(DESIGN.md, 2026-07-20) explicitly deferred the entire block-device-
+mapping surface as out of scope for the curated field set. This reopens
+that specific piece of it. Three scope questions were put to the
+operator directly rather than assumed, since each has a real
+implementation-cost/flexibility trade-off:</p>
+<p><strong>Decision 1 – root volume size only, not a general
+block-device- mapping editor.</strong> The confirmed real need is “the
+default is too small, I sometimes need 250-500GB,” not additional data
+volumes or per-volume type/IOPS control. Matches the project’s existing
+curated- field-set restraint (Launch Templates addendum) rather than
+reopening the full AWS struct.</p>
+<p><strong>Decision 2 – every instance-creation flow and template
+creation, not just templates.</strong>
+<code>collectLaunchInstanceParams</code> and
+<code>collectLaunchInstanceParamsFromCloudInit</code> are the two shared
+parameter-collection cores behind Feature 2 (AMI), Feature 3
+(cloud-init), and Create Launch Template from Cloud-Init YAML (which
+already reuses the cloud-init core, per DESIGN.md’s Launch Templates
+addendum) – one change to each core covers all three creation paths in
+one pass, rather than fixing only the path that happened to trigger the
+production incident and leaving the other two with the same latent gap.
+Create EC2 Instance from Launch Template stays untouched: the template
+already bakes in its own size, and this project already resolved
+(DESIGN.md, “Launch Templates,” decision A3) that this path is “just
+another way to create an instance,” not a hybrid template-plus- override
+wizard – reopening that here would undo a settled decision.</p>
+<p><strong>Decision 3 – automate the OS-side growth via SSM, not just
+the AWS- side <code>ModifyVolume</code> call.</strong> The operator’s
+own real-world workaround for the production incident was exactly
+<code>aws ec2 modify-volume</code> + manual
+<code>growpart</code>/<code>resize2fs</code> over SSH – automating both
+halves closes the gap the same way the operator already closed it by
+hand, rather than leaving half the workaround still manual. Accepted
+trade-off: this is clasm’s first workflow that executes shell commands
+inside a live instance’s OS (every prior use of
+<code>SSMAPI.SendCommand</code> only <em>checks</em> cloud-init status,
+never changes instance state), so the design commits to “detect a
+supported single-partition layout and act, or abort with the same manual
+instructions rather than guess” for any layout the
+<code>findmnt</code>/<code>lsblk</code> probe doesn’t recognize
+(e.g. LVM) – see DESIGN.md, “Configurable EBS Root Volume Size,” Part
+2.</p>
+<hr />
+<h2
 id="generalize-applyonetagchange-for-s3s-read-modify-write-tag-semantics">2026-07-20
 — Generalize applyOneTagChange for S3’s read-modify-write tag
 semantics</h2>
