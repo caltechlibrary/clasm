@@ -3890,6 +3890,64 @@ counterpart.
 
 ---
 
+## Phase 20.32 — Pause for Acknowledgment Before Every Menu-Loop Redraw
+
+**Status: revised and re-implemented 2026-07-22**, superseding this
+same phase's first pass from earlier the same day. First pass (error/
+refresh-error prints in all four menu loops, plus a one-off pause
+inside `resizeInstanceRootVolume`) was implemented, unit-tested, and
+live-verified working for its own two original incidents -- then live
+testing found a *third* incident the first pass didn't cover
+(`runLaunch`'s cloud-init-error report, which returns nil, not an
+error, so the error-path-only pause never fired). See DECISIONS.md,
+"Widen 'pause for acknowledgment' to every action, not just errors."
+Re-implemented per that revision: `go build ./...`, `go vet ./...`,
+`go test ./... -race` all clean; `gofmt -l` clean. Not yet re-verified
+live against real AWS a second time, or released.
+
+### Work Items
+
+- [x] `pauseForAcknowledgment(input io.Reader, output io.Writer)`
+      helper (`menu.go`): blocks on `ui.Prompt("Press Enter to
+      continue", ui.WithIO(input, output))`, discarding the result
+- [x] Added one new call on the success path -- right after
+      `choice.action(actions, ctx)` returns nil, before
+      `actions.Refresh(ctx)` runs -- in all four domain menu loops
+      (`runMainMenu` `menu.go`; `runS3Menu` `s3_menu.go`;
+      `runKeyMgmtMenu` `keymgmt_menu.go`; `runTagMgmtMenu`
+      `tagmgmt_menu.go`). The two existing pauses (after the
+      action-error print, after the refresh-error print) are
+      unchanged -- the pause must come after text is printed and
+      before the next redraw, so it can't collapse into one
+      unconditional call placed before the `err` check. Net three
+      pause call sites per loop now (was two), 12 total across the
+      four domains
+- [x] Removed the one-off pause from the end of
+      `resizeInstanceRootVolume` (`resize_volume.go`) -- redundant now
+      that the loop itself always pauses after dispatching it
+
+**Tests:** test-first, per this project's standing convention -- every
+per-domain test that dispatches more than one action in sequence
+(`*_DispatchesToTheChosenAction`, `*_ShowXDispatchesToItsOwnAction`,
+`*_RefreshesAfterASuccessfulAction`, `*_ActionErrorDoesNotCrashLoop`)
+needed a blank input line inserted after *every* dispatch now, not
+just the error ones, since the pause is no longer conditional on
+`err`; the four `*_PausesForAcknowledgmentAfterARefreshError` tests
+added in the first pass still hold (a refresh error is itself
+dispatched via the same unconditional call site); removed the pause
+assertion from `TestResizeInstanceRootVolume_HappyPath` since that
+function no longer pauses itself. All widened tests confirmed failing
+against the first-pass code before the loop-placement change.
+
+**Files:** `internal/workflow/menu.go`, `internal/workflow/s3_menu.go`,
+`internal/workflow/keymgmt_menu.go`, `internal/workflow/tagmgmt_menu.go`,
+`internal/workflow/resize_volume.go`, plus each file's `_test.go`
+counterpart.
+
+**Dependency:** none (independent bugfix; targeted for v0.0.4).
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

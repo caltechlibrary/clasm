@@ -174,17 +174,40 @@ func runMainMenu(ctx context.Context, w io.Writer, actions MenuActions, menuInpu
 				return nil
 			}
 			fmt.Fprintf(w, "Error: %s\n", formatError(err))
+			pauseForAcknowledgment(menuInput, menuOutput)
 			continue
 		}
 
+		// The dispatched action succeeded and may have printed its own
+		// status output (DECISIONS.md, "Widen 'pause for acknowledgment'
+		// to every action, not just errors") -- pause before Refresh's
+		// own (silent, no-display) work and the next redraw.
+		pauseForAcknowledgment(menuInput, menuOutput)
+
 		if err := actions.Refresh(ctx); err != nil {
 			fmt.Fprintf(w, "Error refreshing listings: %s\n", formatError(err))
+			pauseForAcknowledgment(menuInput, menuOutput)
 		}
 	}
 }
 
 func printExiting(w io.Writer) {
 	fmt.Fprintln(w, "\nExiting.")
+}
+
+// pauseForAcknowledgment blocks on a plain, content-sized prompt (not
+// full-height, per TUI_REFERENCE.md's "Plain prompts" tier) until the
+// operator presses Enter -- called immediately after printing text a
+// menu loop's next full-height Select redraw would otherwise wipe from
+// the screen before it could be read (DECISIONS.md, "Pause for
+// acknowledgment before every menu-loop redraw"). Best-effort: huh.Input's
+// accessible-mode path (accessibility.PromptString) never returns an
+// error, even on EOF, so there's nothing meaningful to propagate; any
+// interactive-mode error (e.g. ctrl-C) is ignored here too -- dismissing
+// the pause is a reasonable response to it, and the loop's own
+// cancellation/exit-signal handling still applies to whatever comes next.
+func pauseForAcknowledgment(input io.Reader, output io.Writer) {
+	_, _ = ui.Prompt("Press Enter to continue", ui.WithIO(input, output))
 }
 
 func isExitSignal(err error) bool {

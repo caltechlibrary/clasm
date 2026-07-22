@@ -3,9 +3,16 @@
 
 ## Bugs 
 
+- [x] Menu-loop output-visibility bug (confirmed 2026-07-22, live real-AWS testing): any plain-printed status/error text immediately before a domain menu's next full-height `Select` redraw gets wiped before it can be read -- found via Resize Instance's Root Volume's own output, then confirmed as a systemic gap (same two print sites duplicated in all four domain menu loops) via a live typo's error message during instance cleanup. See DECISIONS.md, "Pause for acknowledgment before every menu-loop redraw," PLAN.md Phase 20.32. Implemented and unit-tested 2026-07-22, test-first throughout. Not yet re-verified live against real AWS or released. Targeted for v0.0.4.
+- [ ] SSM never came online for either real-AWS test instance during Resize Instance's Root Volume verification (2026-07-22) -- both were launched via cloud-init with `IamInstanceProfile: null` (no instance profile at all), so `growRootFilesystem`'s automated OS-level growth (Part 2 of Phase 20.31) correctly fell back to manual instructions but remains unverified end-to-end against real AWS. Root cause and fix folded into the SSM-enforcement design below, not a bug in `growRootFilesystem` itself.
+
 ## Requested features
 
-- [ ] Need to include 26.04 LTS in our Ubuntu image listed for EC2 instance, AMI and launch templates
+- [ ] Insist on SSM support (instance profile with SSM permissions) at launch time -- mirrors IMDSv2's unconditional enforcement -- across instance creation, cloud-init launch, and launch templates. Also cover associating/replacing an SSM-capable profile on an already-running instance (retrofit), since both of 2026-07-22's test instances have no profile at all and can't become SSM-manageable without relaunching otherwise. Supersedes/absorbs the IAM-instance-profile item below and the "Gap (found in production use, 2026-07-22)" entry in someday/maybe. Scoped 2026-07-22, not yet designed in DESIGN.md/PLAN.md. Targeted for v0.0.5.
+- [ ] Support arm64/aarch64 (Graviton) alongside amd64 in the curated Ubuntu LTS AMI list and instance-type list -- a parallel Graviton `curatedInstanceTypes` family (t4g/m6g/c6g/r6g etc.), arm64 variants in `curatedUbuntuReleases`, and a new AMI-arch-vs-instance-type-arch pre-flight compatibility check (mirrors `ensureInstanceTypeENACompatible`). Raised 2026-07-22 in a conversation with colleagues: cost savings using ARM instances outside RDM. Bundle with the Ubuntu 26.04 LTS item below (same files). Targeted for v0.0.6.
+
+- [ ] Need an improved way to interact with AIM profiles, see what they are, when to use them and apply them to resources (merged into the SSM-support item above, 2026-07-22)
+- [ ] Need to include 26.04 LTS in our Ubuntu image listed for EC2 instance, AMI and launch templates (merged into the arm64/Graviton item above, 2026-07-22)
 - [ ] When doing the Archive backups, the S3 target bucket should be saved as a default but I'm not sure how this works with the bucket picker approach we have now. This needs to be explored.
 - [x] Set the root EBS volume size when creating an instance/launch template (instead of always inheriting the AMI's default, e.g. 8GB), and resize a running instance's root volume after the fact.
   - Designed and scoped 2026-07-21 -- see DESIGN.md, "Configurable EBS Root Volume Size", DECISIONS.md, "Configurable EBS root volume size: scope, flow coverage, and resize automation depth", and PLAN.md Phase 20.31.
@@ -53,35 +60,27 @@
   picked back up. Phase 22 (real-AWS testing for Key Management/S3) no
   longer depends on it.
 
-- **Gap (found in production use, 2026-07-22):** no way to attach/associate
-  an IAM instance profile to an EC2 instance that's *already running* --
-  `promptIAMInstanceProfileOrCreate`/`create_instance_profile.go` is only
-  invoked from the launch workflow (`launch_instance.go`), and
-  `IAMInstanceProfile` is only ever consumed by `launch_execute.go`
-  (`RunInstancesInput`) and `launch_template_create.go` (launch-template
-  data). There is no `AssociateIamInstanceProfile` /
-  `ReplaceIamInstanceProfileAssociation` call anywhere in the codebase --
-  the only EC2 IAM-instance-profile API present is the read-only
-  `DescribeIamInstanceProfileAssociations` (`internal/awsclient/ec2.go`),
-  used just to display an instance's current profile. Separately (by
-  design, per DECISIONS.md "2026-07-02 -- Support picking or creating an
-  IAM instance profile from within awsops"): clasm only attaches an
-  *existing* IAM role to a new instance profile
-  (`iam:CreateInstanceProfile` + `iam:AddRoleToInstanceProfile`) -- it
-  never creates the role or its permissions policy itself, so even the
-  launch-time path requires the role/bucket-scoped policy to already
-  exist, authored outside clasm.
-  Surfaced when setting up an already-running InvenioRDM test instance
-  (Granian-vs-Gunicorn experiment) that needed S3 access: the AWS
-  best-practice approach (attach a role instead of putting static
-  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in a `.env` file on disk)
-  turned out to be unavailable for a running instance, so the workaround
-  was a plain IAM user access key instead. Two separate improvements,
-  either useful on its own: (1) support associating/replacing an instance
-  profile on a running instance, not just at launch; (2) optionally
-  support creating a minimal bucket-scoped role+policy from within clasm
-  (currently explicitly out of scope) so instance-profile setup doesn't
-  require a separate manual IAM detour.
+- **Gap (found in production use, 2026-07-22), merged into "Requested
+  features"' SSM-support item above:** no way to attach/associate an
+  IAM instance profile to an EC2 instance that's *already running* --
+  surfaced twice the same day (once setting up an InvenioRDM test
+  instance for S3 access, once as the reason SSM never came online
+  for either Resize Instance's Root Volume test instance). Detail
+  preserved here: `promptIAMInstanceProfileOrCreate`/
+  `create_instance_profile.go` is only invoked from the launch
+  workflow (`launch_instance.go`); `IAMInstanceProfile` is only ever
+  consumed by `launch_execute.go` (`RunInstancesInput`) and
+  `launch_template_create.go` (launch-template data); no
+  `AssociateIamInstanceProfile`/`ReplaceIamInstanceProfileAssociation`
+  call exists anywhere in the codebase, only the read-only
+  `DescribeIamInstanceProfileAssociations`. Also, by design (per
+  DECISIONS.md "2026-07-02 -- Support picking or creating an IAM
+  instance profile from within awsops"), clasm only attaches an
+  *existing* IAM role to a new instance profile -- it never creates
+  the role or its permissions policy itself, so even the launch-time
+  path requires the role/bucket-scoped policy to already exist,
+  authored outside clasm. No longer someday/maybe: promoted to
+  "Requested features" as part of the SSM-enforcement design.
 
 - A compliance/audit-style report across the Tag Management domain's
   five resource types (EC2 instance, AMI, launch template, key pair, S3

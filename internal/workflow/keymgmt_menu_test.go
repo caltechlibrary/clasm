@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -97,15 +98,80 @@ func TestRunKeyMgmtMenu_ActionErrorDoesNotCrashLoop(t *testing.T) {
 		return nil
 	}
 
-	err := runKeyMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n2\n"), buf) // Create Key Pair, twice
+	// The blank line between the two picks is the pause-for-acknowledgment
+	// prompt (DECISIONS.md, "Pause for acknowledgment before every
+	// menu-loop redraw") consuming its own line of input after the error
+	// is printed, before the loop reprompts.
+	err := runKeyMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n\n2\n"), buf) // Create Key Pair, twice
 	if err != nil {
 		t.Fatalf("expected the loop to survive a single action's error and exit cleanly once ctx is cancelled, got: %v", err)
 	}
 	if !strings.Contains(buf.String(), "boom") {
 		t.Errorf("expected the error to be shown, got:\n%s", buf.String())
 	}
+	if !strings.Contains(buf.String(), "Press Enter to continue") {
+		t.Errorf("expected a pause-for-acknowledgment prompt after the error, got:\n%s", buf.String())
+	}
 	if refreshCalls != 1 {
 		t.Errorf("refreshCalls = %d, want 1 (only after the second, successful attempt)", refreshCalls)
+	}
+}
+
+func TestRunKeyMgmtMenu_PausesForAcknowledgmentAfterARefreshError(t *testing.T) {
+	var refreshCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testKeyMgmtActions(&refreshCalls)
+	actions.CreateKeyPair = cancelingAction(new(int), cancel)
+	actions.Refresh = func(ctx context.Context) error {
+		refreshCalls++
+		return errors.New("refresh boom")
+	}
+
+	err := runKeyMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n\n"), buf) // Create Key Pair
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "refresh boom") {
+		t.Errorf("expected the refresh error to be shown, got:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Press Enter to continue") {
+		t.Errorf("expected a pause-for-acknowledgment prompt after the refresh error, got:\n%s", buf.String())
+	}
+}
+
+// TestRunKeyMgmtMenu_PausesForAcknowledgmentAfterASuccessfulAction
+// mirrors TestRunMainMenu_PausesForAcknowledgmentAfterASuccessfulAction
+// -- DECISIONS.md, "Widen 'pause for acknowledgment' to every action,
+// not just errors."
+func TestRunKeyMgmtMenu_PausesForAcknowledgmentAfterASuccessfulAction(t *testing.T) {
+	var refreshCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testKeyMgmtActions(&refreshCalls)
+	actions.CreateKeyPair = func(ctx context.Context) error {
+		fmt.Fprintln(term, "key pair created")
+		cancel()
+		return nil
+	}
+
+	err := runKeyMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n\n"), buf) // Create Key Pair
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	out := buf.String()
+	statusIdx := strings.Index(out, "key pair created")
+	pauseIdx := strings.Index(out, "Press Enter to continue")
+	if statusIdx == -1 {
+		t.Errorf("expected the successful action's own output to be shown, got:\n%s", out)
+	}
+	if pauseIdx == -1 || pauseIdx < statusIdx {
+		t.Errorf("expected a pause-for-acknowledgment prompt after the action's own output, got:\n%s", out)
+	}
+	if refreshCalls != 1 {
+		t.Errorf("refreshCalls = %d, want 1 (the pause happens before Refresh, which still runs)", refreshCalls)
 	}
 }
 

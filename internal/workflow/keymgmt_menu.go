@@ -112,11 +112,19 @@ func runKeyMgmtMenu(ctx context.Context, w io.Writer, actions KeyMgmtActions, me
 				return nil
 			}
 			fmt.Fprintf(w, "Error: %s\n", formatError(err))
+			pauseForAcknowledgment(menuInput, menuOutput)
 			continue
 		}
 
+		// The dispatched action succeeded and may have printed its own
+		// status output (DECISIONS.md, "Widen 'pause for acknowledgment'
+		// to every action, not just errors") -- pause before Refresh's
+		// own (silent, no-display) work and the next redraw.
+		pauseForAcknowledgment(menuInput, menuOutput)
+
 		if err := actions.Refresh(ctx); err != nil {
 			fmt.Fprintf(w, "Error refreshing listings: %s\n", formatError(err))
+			pauseForAcknowledgment(menuInput, menuOutput)
 		}
 	}
 }

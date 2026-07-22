@@ -177,6 +177,10 @@ func TestResizeInstanceRootVolume_HappyPath(t *testing.T) {
 	if aws.ToString(fake.lastModifyVolumeInput.VolumeId) != "vol-root" {
 		t.Errorf("ModifyVolume VolumeId = %q, want vol-root", aws.ToString(fake.lastModifyVolumeInput.VolumeId))
 	}
+	// No pause assertion here: resizeInstanceRootVolume no longer pauses
+	// itself (DECISIONS.md, "Widen 'pause for acknowledgment' to every
+	// action, not just errors") -- the menu loop that dispatches it now
+	// pauses unconditionally on its behalf.
 }
 
 func TestResizeInstanceRootVolume_DeclinedConfirmationDoesNotModify(t *testing.T) {
