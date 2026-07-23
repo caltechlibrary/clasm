@@ -4629,13 +4629,12 @@ path used to auto-tag a newly-created role, when configured).
 
 ## Phase 20.40 — Delete Role, Attach/Detach Policy (CRUD Completion for DLD-Owned Roles)
 
-**Status: designed and implemented 2026-07-23** (DESIGN.md, "CRUD
-completion for DLD-owned roles"; DECISIONS.md, "IAM Profile & Role
-Management: support CRUD for DLD-owned roles"). Targeted for v0.0.5.
-`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
-real-AWS-verified. Motivated directly by live use: testing Phase 20.39's
-templates left behind test roles with no way to remove them from within
-clasm.
+**Status: designed, implemented, and real-AWS-verified 2026-07-23**
+(DESIGN.md, "CRUD completion for DLD-owned roles"; DECISIONS.md, "IAM
+Profile & Role Management: support CRUD for DLD-owned roles"). Targeted
+for v0.0.5. `go build`/`go vet`/`go test ./... -race`/`gofmt -l` all
+clean. Motivated directly by live use: testing Phase 20.39's templates
+left behind test roles with no way to remove them from within clasm.
 
 ### Work Items
 
@@ -4706,6 +4705,18 @@ this domain (Phase 20.36/20.38/20.39's own testable-core split).
 DLD-ownership data), Phase 20.38 (`fetchIAMRoleDetail`,
 `displayIAMRoleDetail`, `IAMRoleDetail`/`IAMPolicyRef`), Phase 20.39
 (the `<role>-policy` naming convention Delete Role's cascade relies on).
+
+**Real-AWS-verified 2026-07-23** -- blocked initially by the pagination/
+throttling bugs above (both found and fixed the same day, during this
+very verification attempt), then confirmed clean once fixed: the user
+ran Delete Role against all three real test roles left over from Phase
+20.39's template testing (`test-rdm-repo-role`, `test-static-site-role`,
+`test-static-site-role-2`). Independently confirmed via `aws iam
+get-role`/`get-policy` afterward: all three roles and their dedicated
+`<role>-policy` policies are gone. This doubled as Delete Role's
+real-AWS verification and closed out the last open item from Phases
+20.36-20.40. **All five IAM phases (20.36-20.40) are now implemented,
+unit-tested, and real-AWS-verified.**
 
 ---
 
