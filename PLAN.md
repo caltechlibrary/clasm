@@ -4323,7 +4323,8 @@ sequentially. Fixed by parallelizing with a bounded worker pool (new
 `inventory.ListImages`' own concurrent per-region fan-out. See
 DECISIONS.md, "Parallelize per-resource IAM tag fetches." All existing
 correctness tests kept green; `go test -race` confirms no data race.
-Not yet released.
+**Real-AWS-verified 2026-07-23** -- user rebuilt and confirmed the IAM
+Role picker opens noticeably faster. Not yet released.
 
 ---
 
