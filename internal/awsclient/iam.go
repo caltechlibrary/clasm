@@ -111,8 +111,21 @@ type IAMAPI interface {
 // NewIAMClient constructs an IAM client from the SDK's default credential
 // chain. region only selects the signing endpoint -- IAM's data is
 // account-wide, not region-scoped.
+//
+// WithRetryMaxAttempts(8) raises the SDK's default of 3 -- confirmed
+// live, 2026-07-23 (DECISIONS.md, "Real bug: ListRoles/
+// ListInstanceProfiles/ListPolicies silently truncate past 100 items"):
+// once discovery correctly paged through all 121 of this account's
+// roles, the resulting ~121 concurrent ListRoleTags calls
+// (inventory.fetchTagsConcurrently) reliably hit `Throttling: Rate
+// exceeded` past the SDK's default 3 attempts, reproduced twice in a
+// row. The IAM domain's own N+1-calls-per-list shape (one List* plus
+// one List*Tags per resource, described in IAMAPI's own doc comments)
+// makes this client uniquely prone to bursty throttling that EC2/S3
+// clients elsewhere in this codebase never hit, so it alone gets a
+// higher retry ceiling rather than raising it globally.
 func NewIAMClient(ctx context.Context, region string) (IAMAPI, error) {
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region), config.WithRetryMaxAttempts(8))
 	if err != nil {
 		return nil, err
 	}

@@ -25,7 +25,17 @@ import (
 // roles); unbounded concurrency risks IAM API throttling, so this caps
 // it at a conservative, not-tuned value rather than firing every
 // request at once.
-const iamTagFetchConcurrency = 10
+//
+// Lowered from 10 to 4, same day: once ListRoles pagination was fixed
+// (DECISIONS.md, "Real bug: ListRoles/ListInstanceProfiles/ListPolicies
+// silently truncate past 100 items") and this account's full 121 roles
+// were fetched instead of the first 100, a burst of ~121 concurrent
+// ListRoleTags calls at concurrency 10 reliably triggered IAM's
+// `Throttling: Rate exceeded`, reproduced twice in a row even with
+// awsclient.NewIAMClient's raised retry ceiling. 4 was not
+// benchmark-tuned either, but is a meaningfully smaller burst against
+// the same not-fully-documented per-account IAM quota.
+const iamTagFetchConcurrency = 4
 
 // fetchTagsConcurrently resolves tags for n resources concurrently,
 // bounded to iamTagFetchConcurrency in flight at once -- the shared
@@ -75,6 +85,64 @@ func fetchTagsConcurrently(ctx context.Context, n int, fetch func(ctx context.Co
 		return nil, firstErr
 	}
 	return tagsByIndex, nil
+}
+
+// listAllRoles/listAllInstanceProfiles/listAllPolicies page through
+// IAM's ListRoles/ListInstanceProfiles/ListPolicies via Marker until
+// IsTruncated is false. Found necessary via live use, 2026-07-23: IAM
+// truncates ListRoles at 100 items per page, and a single un-paginated
+// call silently omitted every role past the 100th in an account with
+// 121 roles -- exactly how three just-created test roles vanished from
+// the Delete Role picker (PLAN.md Phase 20.40's own real-AWS follow-up).
+// Instance profiles/policies aren't truncated in this account today,
+// but the same bug would recur silently as either grows, so all three
+// list calls are paginated now, not just Roles.
+func listAllRoles(ctx context.Context, client awsclient.IAMAPI) ([]iamtypes.Role, error) {
+	var all []iamtypes.Role
+	var marker *string
+	for {
+		out, err := client.ListRoles(ctx, &iam.ListRolesInput{Marker: marker})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, out.Roles...)
+		if !out.IsTruncated {
+			return all, nil
+		}
+		marker = out.Marker
+	}
+}
+
+func listAllInstanceProfiles(ctx context.Context, client awsclient.IAMAPI) ([]iamtypes.InstanceProfile, error) {
+	var all []iamtypes.InstanceProfile
+	var marker *string
+	for {
+		out, err := client.ListInstanceProfiles(ctx, &iam.ListInstanceProfilesInput{Marker: marker})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, out.InstanceProfiles...)
+		if !out.IsTruncated {
+			return all, nil
+		}
+		marker = out.Marker
+	}
+}
+
+func listAllPolicies(ctx context.Context, client awsclient.IAMAPI) ([]iamtypes.Policy, error) {
+	var all []iamtypes.Policy
+	var marker *string
+	for {
+		out, err := client.ListPolicies(ctx, &iam.ListPoliciesInput{Scope: iamtypes.PolicyScopeTypeLocal, Marker: marker})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, out.Policies...)
+		if !out.IsTruncated {
+			return all, nil
+		}
+		marker = out.Marker
+	}
 }
 
 // OriginUnset is shown in the IAM domain's browse lists for a resource
@@ -183,12 +251,12 @@ type IAMRoleSummary struct {
 // other operations (e.g. GetRole), not this one. A separate
 // ListRoleTags call per role is required.
 func ListIAMRoleSummaries(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig) ([]IAMRoleSummary, error) {
-	out, err := client.ListRoles(ctx, &iam.ListRolesInput{})
+	roles, err := listAllRoles(ctx, client)
 	if err != nil {
 		return nil, err
 	}
-	tagsByIndex, err := fetchTagsConcurrently(ctx, len(out.Roles), func(ctx context.Context, i int) (map[string]string, error) {
-		tagsOut, err := client.ListRoleTags(ctx, &iam.ListRoleTagsInput{RoleName: out.Roles[i].RoleName})
+	tagsByIndex, err := fetchTagsConcurrently(ctx, len(roles), func(ctx context.Context, i int) (map[string]string, error) {
+		tagsOut, err := client.ListRoleTags(ctx, &iam.ListRoleTagsInput{RoleName: roles[i].RoleName})
 		if err != nil {
 			return nil, err
 		}
@@ -197,8 +265,8 @@ func ListIAMRoleSummaries(ctx context.Context, client awsclient.IAMAPI, originTa
 	if err != nil {
 		return nil, err
 	}
-	summaries := make([]IAMRoleSummary, 0, len(out.Roles))
-	for i, r := range out.Roles {
+	summaries := make([]IAMRoleSummary, 0, len(roles))
+	for i, r := range roles {
 		tags := tagsByIndex[i]
 		summaries = append(summaries, IAMRoleSummary{
 			Name:       aws.ToString(r.RoleName),
@@ -239,12 +307,12 @@ type IAMInstanceProfileSummary struct {
 // including the same ListInstanceProfiles-doesn't-return-Tags-inline gap
 // (a separate ListInstanceProfileTags call per profile is required).
 func ListIAMInstanceProfileSummaries(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig) ([]IAMInstanceProfileSummary, error) {
-	out, err := client.ListInstanceProfiles(ctx, &iam.ListInstanceProfilesInput{})
+	profiles, err := listAllInstanceProfiles(ctx, client)
 	if err != nil {
 		return nil, err
 	}
-	tagsByIndex, err := fetchTagsConcurrently(ctx, len(out.InstanceProfiles), func(ctx context.Context, i int) (map[string]string, error) {
-		tagsOut, err := client.ListInstanceProfileTags(ctx, &iam.ListInstanceProfileTagsInput{InstanceProfileName: out.InstanceProfiles[i].InstanceProfileName})
+	tagsByIndex, err := fetchTagsConcurrently(ctx, len(profiles), func(ctx context.Context, i int) (map[string]string, error) {
+		tagsOut, err := client.ListInstanceProfileTags(ctx, &iam.ListInstanceProfileTagsInput{InstanceProfileName: profiles[i].InstanceProfileName})
 		if err != nil {
 			return nil, err
 		}
@@ -253,8 +321,8 @@ func ListIAMInstanceProfileSummaries(ctx context.Context, client awsclient.IAMAP
 	if err != nil {
 		return nil, err
 	}
-	summaries := make([]IAMInstanceProfileSummary, 0, len(out.InstanceProfiles))
-	for i, p := range out.InstanceProfiles {
+	summaries := make([]IAMInstanceProfileSummary, 0, len(profiles))
+	for i, p := range profiles {
 		tags := tagsByIndex[i]
 		roleNames := make([]string, 0, len(p.Roles))
 		for _, r := range p.Roles {
@@ -295,12 +363,12 @@ type IAMPolicySummary struct {
 // ListPolicies-doesn't-return-Tags-inline gap as the other two list
 // functions -- a separate ListPolicyTags call per policy is required.
 func ListIAMPolicySummaries(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig) ([]IAMPolicySummary, error) {
-	out, err := client.ListPolicies(ctx, &iam.ListPoliciesInput{Scope: iamtypes.PolicyScopeTypeLocal})
+	policies, err := listAllPolicies(ctx, client)
 	if err != nil {
 		return nil, err
 	}
-	tagsByIndex, err := fetchTagsConcurrently(ctx, len(out.Policies), func(ctx context.Context, i int) (map[string]string, error) {
-		tagsOut, err := client.ListPolicyTags(ctx, &iam.ListPolicyTagsInput{PolicyArn: out.Policies[i].Arn})
+	tagsByIndex, err := fetchTagsConcurrently(ctx, len(policies), func(ctx context.Context, i int) (map[string]string, error) {
+		tagsOut, err := client.ListPolicyTags(ctx, &iam.ListPolicyTagsInput{PolicyArn: policies[i].Arn})
 		if err != nil {
 			return nil, err
 		}
@@ -309,8 +377,8 @@ func ListIAMPolicySummaries(ctx context.Context, client awsclient.IAMAPI, origin
 	if err != nil {
 		return nil, err
 	}
-	summaries := make([]IAMPolicySummary, 0, len(out.Policies))
-	for i, p := range out.Policies {
+	summaries := make([]IAMPolicySummary, 0, len(policies))
+	for i, p := range policies {
 		tags := tagsByIndex[i]
 		summaries = append(summaries, IAMPolicySummary{
 			Name:       aws.ToString(p.PolicyName),

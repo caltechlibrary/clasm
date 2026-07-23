@@ -4326,6 +4326,39 @@ correctness tests kept green; `go test -race` confirms no data race.
 **Real-AWS-verified 2026-07-23** -- user rebuilt and confirmed the IAM
 Role picker opens noticeably faster. Not yet released.
 
+**Third real bug found via live testing, same day, while testing Phase
+20.40's Delete Role: three real test roles were silently missing from
+the Delete Role picker** even though they were correctly tagged
+`origin=dld` (confirmed via `aws iam list-role-tags`). Root-caused via
+`aws iam list-roles --no-paginate` (the AWS CLI auto-paginates by
+default, which had been masking this): the account has 121 roles, IAM
+truncates `ListRoles` at 100 per page, and `ListIAMRoleSummaries` made a
+single, un-paginated call with no `IsTruncated`/`Marker` handling at
+all -- any account over 100 roles was silently missing some, with no
+error. `ListIAMInstanceProfileSummaries`/`ListIAMPolicySummaries` had the
+same gap, not yet triggered only because this account's instance
+profiles (4) and local policies (59) both stay under IAM's page size.
+Fixed by adding `listAllRoles`/`listAllInstanceProfiles`/
+`listAllPolicies` (`internal/inventory/iam.go`), each paging via
+`Marker` until `IsTruncated` is false, and switching all three
+`ListIAM*Summaries` functions to use them. See DECISIONS.md, "Real bug:
+ListRoles/ListInstanceProfiles/ListPolicies silently truncate past 100
+items." Test-first: a `TestListIAM*Summaries_PaginatesAcrossMultiplePages`
+test per kind, each confirmed failing (only the first page's item
+returned) before the fix. `go build`/`go vet`/`go test ./... -race`/
+`gofmt -l` all clean after the fix.
+
+**Real-AWS-verified 2026-07-23, immediately surfacing a follow-on real
+bug: fetching all 121 (correctly-paginated) roles' tags at concurrency
+10 reliably throttled (`Throttling: Rate exceeded`), reproduced twice in
+a row.** Fixed by lowering `iamTagFetchConcurrency` from 10 to 4 and
+raising `awsclient.NewIAMClient`'s retry ceiling to 8 attempts
+(`config.WithRetryMaxAttempts(8)`, IAM-client-only, since its
+N+1-calls-per-list shape is what makes it uniquely prone to this).
+Re-verified against real AWS after both changes: all 121 roles fetched,
+all 5 DLD-owned roles correctly recognized (including the three test
+roles that prompted this investigation), no throttling.
+
 ---
 
 ## Phase 20.37 — Tag Management Domain Extension for IAM Resources

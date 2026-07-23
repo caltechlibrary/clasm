@@ -22,12 +22,22 @@ import (
 type fakeIAMClient struct {
 	awsclient.IAMAPI
 
-	roles            []iamtypes.Role
-	listRolesErr     error
-	instanceProfiles []iamtypes.InstanceProfile
-	listInstProfsErr error
-	policies         []iamtypes.Policy
-	listPoliciesErr  error
+	roles        []iamtypes.Role
+	listRolesErr error
+	// rolesPage2/instanceProfilesPage2/policiesPage2 let a test simulate
+	// IAM's real pagination (found necessary via live use, 2026-07-23:
+	// ListRoles truncates at 100 items/page, and an account with 121
+	// roles silently lost every role past the 100th to an un-paginated
+	// single call). When set, the first ListRoles/ListInstanceProfiles/
+	// ListPolicies call returns IsTruncated=true plus a Marker; a
+	// follow-up call with that Marker returns the "page2" fixture.
+	rolesPage2            []iamtypes.Role
+	instanceProfiles      []iamtypes.InstanceProfile
+	instanceProfilesPage2 []iamtypes.InstanceProfile
+	listInstProfsErr      error
+	policies              []iamtypes.Policy
+	policiesPage2         []iamtypes.Policy
+	listPoliciesErr       error
 
 	// roleTags/instanceProfileTags/policyTags key by name (ARN for
 	// policies) -- ListRoles/ListInstanceProfiles/ListPolicies don't
@@ -47,6 +57,12 @@ func (f *fakeIAMClient) ListRoles(ctx context.Context, params *iam.ListRolesInpu
 	if f.listRolesErr != nil {
 		return nil, f.listRolesErr
 	}
+	if aws.ToString(params.Marker) == "page2" {
+		return &iam.ListRolesOutput{Roles: f.rolesPage2}, nil
+	}
+	if f.rolesPage2 != nil {
+		return &iam.ListRolesOutput{Roles: f.roles, IsTruncated: true, Marker: aws.String("page2")}, nil
+	}
 	return &iam.ListRolesOutput{Roles: f.roles}, nil
 }
 
@@ -54,12 +70,24 @@ func (f *fakeIAMClient) ListInstanceProfiles(ctx context.Context, params *iam.Li
 	if f.listInstProfsErr != nil {
 		return nil, f.listInstProfsErr
 	}
+	if aws.ToString(params.Marker) == "page2" {
+		return &iam.ListInstanceProfilesOutput{InstanceProfiles: f.instanceProfilesPage2}, nil
+	}
+	if f.instanceProfilesPage2 != nil {
+		return &iam.ListInstanceProfilesOutput{InstanceProfiles: f.instanceProfiles, IsTruncated: true, Marker: aws.String("page2")}, nil
+	}
 	return &iam.ListInstanceProfilesOutput{InstanceProfiles: f.instanceProfiles}, nil
 }
 
 func (f *fakeIAMClient) ListPolicies(ctx context.Context, params *iam.ListPoliciesInput, optFns ...func(*iam.Options)) (*iam.ListPoliciesOutput, error) {
 	if f.listPoliciesErr != nil {
 		return nil, f.listPoliciesErr
+	}
+	if aws.ToString(params.Marker) == "page2" {
+		return &iam.ListPoliciesOutput{Policies: f.policiesPage2}, nil
+	}
+	if f.policiesPage2 != nil {
+		return &iam.ListPoliciesOutput{Policies: f.policies, IsTruncated: true, Marker: aws.String("page2")}, nil
 	}
 	return &iam.ListPoliciesOutput{Policies: f.policies}, nil
 }
@@ -248,6 +276,30 @@ func TestListIAMRoleSummaries_PropagatesListRolesError(t *testing.T) {
 	}
 }
 
+// TestListIAMRoleSummaries_PaginatesAcrossMultiplePages reproduces a
+// real bug found via live use, 2026-07-23: ListRoles truncates at 100
+// items per page, and a single un-paginated call silently omitted every
+// role past the 100th in an account with 121 roles -- exactly how three
+// just-created test roles vanished from the Delete Role picker
+// (PLAN.md Phase 20.40's own real-AWS follow-up).
+func TestListIAMRoleSummaries_PaginatesAcrossMultiplePages(t *testing.T) {
+	fake := &fakeIAMClient{
+		roles:      []iamtypes.Role{{RoleName: aws.String("role-page1")}},
+		rolesPage2: []iamtypes.Role{{RoleName: aws.String("role-page2")}},
+	}
+	got, err := ListIAMRoleSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d role summaries, want 2 (one per page): %+v", len(got), got)
+	}
+	names := map[string]bool{got[0].Name: true, got[1].Name: true}
+	if !names["role-page1"] || !names["role-page2"] {
+		t.Errorf("expected both role-page1 and role-page2 present, got %+v", got)
+	}
+}
+
 func TestListIAMRoleSummaries_PropagatesListRoleTagsError(t *testing.T) {
 	fake := &fakeIAMClient{
 		roles:           []iamtypes.Role{{RoleName: aws.String("some-role"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
@@ -351,6 +403,24 @@ func TestListIAMInstanceProfileSummaries_PropagatesListInstanceProfileTagsError(
 	}
 }
 
+func TestListIAMInstanceProfileSummaries_PaginatesAcrossMultiplePages(t *testing.T) {
+	fake := &fakeIAMClient{
+		instanceProfiles:      []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("profile-page1")}},
+		instanceProfilesPage2: []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("profile-page2")}},
+	}
+	got, err := ListIAMInstanceProfileSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d instance profile summaries, want 2 (one per page): %+v", len(got), got)
+	}
+	names := map[string]bool{got[0].Name: true, got[1].Name: true}
+	if !names["profile-page1"] || !names["profile-page2"] {
+		t.Errorf("expected both profile-page1 and profile-page2 present, got %+v", got)
+	}
+}
+
 func TestListIAMPolicySummaries_ResolvesOriginAndSortsByCreateDateDescending(t *testing.T) {
 	fake := &fakeIAMClient{
 		policies: []iamtypes.Policy{
@@ -419,6 +489,24 @@ func TestListIAMPolicySummaries_PropagatesListPolicyTagsError(t *testing.T) {
 	_, err := ListIAMPolicySummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
 	if err == nil {
 		t.Fatal("expected an error to propagate from ListPolicyTags")
+	}
+}
+
+func TestListIAMPolicySummaries_PaginatesAcrossMultiplePages(t *testing.T) {
+	fake := &fakeIAMClient{
+		policies:      []iamtypes.Policy{{PolicyName: aws.String("policy-page1"), Arn: aws.String("arn:aws:iam::123456789012:policy/policy-page1")}},
+		policiesPage2: []iamtypes.Policy{{PolicyName: aws.String("policy-page2"), Arn: aws.String("arn:aws:iam::123456789012:policy/policy-page2")}},
+	}
+	got, err := ListIAMPolicySummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d policy summaries, want 2 (one per page): %+v", len(got), got)
+	}
+	names := map[string]bool{got[0].Name: true, got[1].Name: true}
+	if !names["policy-page1"] || !names["policy-page2"] {
+		t.Errorf("expected both policy-page1 and policy-page2 present, got %+v", got)
 	}
 }
 
