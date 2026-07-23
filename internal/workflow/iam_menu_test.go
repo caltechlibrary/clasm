@@ -19,6 +19,7 @@ func testIAMActions() IAMActions {
 		ShowPolicies:              noop,
 		ViewRoleDetail:            noop,
 		ViewInstanceProfileDetail: noop,
+		CreateRoleFromTemplate:    noop,
 	}
 }
 
@@ -196,9 +197,26 @@ func TestRunIAMMenu_DispatchesToViewInstanceProfileDetail(t *testing.T) {
 	}
 }
 
+func TestRunIAMMenu_DispatchesToCreateRoleFromTemplate(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.CreateRoleFromTemplate = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("6\n"), buf) // Create Role from Template
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
 func TestIAMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(iamMenuItems) != 5 {
-		t.Fatalf("len(iamMenuItems) = %d, want 5 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
+	if len(iamMenuItems) != 6 {
+		t.Fatalf("len(iamMenuItems) = %d, want 6 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
 	}
 	for _, item := range iamMenuItems {
 		if item.action == nil {

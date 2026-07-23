@@ -79,6 +79,15 @@ type IAMAPI interface {
 	// discovery view already made and discarded, mirroring GetRole's
 	// role in the Role detail view.
 	GetInstanceProfile(ctx context.Context, params *iam.GetInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.GetInstanceProfileOutput, error)
+	// CreateRole/CreatePolicy/AttachRolePolicy support Phase 20.39's
+	// curated per-use-case role/policy creation templates -- reversing
+	// the 2026-07-02 "never creates a role, only attaches an existing
+	// one" scope, deliberately and only through curated templates (see
+	// DECISIONS.md, "IAM Profile & Role Management: seven scoping
+	// decisions, bundled into v0.0.5", Decision 2).
+	CreateRole(ctx context.Context, params *iam.CreateRoleInput, optFns ...func(*iam.Options)) (*iam.CreateRoleOutput, error)
+	CreatePolicy(ctx context.Context, params *iam.CreatePolicyInput, optFns ...func(*iam.Options)) (*iam.CreatePolicyOutput, error)
+	AttachRolePolicy(ctx context.Context, params *iam.AttachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.AttachRolePolicyOutput, error)
 }
 
 // NewIAMClient constructs an IAM client from the SDK's default credential

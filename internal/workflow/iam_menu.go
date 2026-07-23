@@ -27,6 +27,11 @@ type IAMActions struct {
 	// between a single-resource detail view and a bulk list.
 	ViewRoleDetail            func(ctx context.Context) error
 	ViewInstanceProfileDetail func(ctx context.Context) error
+	// CreateRoleFromTemplate is Phase 20.39's guided creation action --
+	// the only IAM-domain action that mutates account state by creating
+	// new resources, reversing the 2026-07-02 "never creates a role"
+	// scope deliberately and only through curated templates.
+	CreateRoleFromTemplate func(ctx context.Context) error
 }
 
 // iamMenuItem pairs an IAM menu label with the IAMActions field it
@@ -45,6 +50,7 @@ var iamMenuItems = []iamMenuItem{
 	{"Show Policies", func(a IAMActions, ctx context.Context) error { return a.ShowPolicies(ctx) }},
 	{"View Role Detail", func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
 	{"View Instance Profile Detail", func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
+	{"Create Role from Template", func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
 }
 
 // pickIAMItem runs the IAM domain menu's huh.Select and returns the

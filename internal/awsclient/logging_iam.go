@@ -148,3 +148,21 @@ func (w *loggingIAMClient) GetInstanceProfile(ctx context.Context, params *iam.G
 		return w.inner.GetInstanceProfile(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingIAMClient) CreateRole(ctx context.Context, params *iam.CreateRoleInput, optFns ...func(*iam.Options)) (*iam.CreateRoleOutput, error) {
+	return logAWSCall(w.dl, "IAM.CreateRole", w.region, params, func() (*iam.CreateRoleOutput, error) {
+		return w.inner.CreateRole(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) CreatePolicy(ctx context.Context, params *iam.CreatePolicyInput, optFns ...func(*iam.Options)) (*iam.CreatePolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.CreatePolicy", w.region, params, func() (*iam.CreatePolicyOutput, error) {
+		return w.inner.CreatePolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) AttachRolePolicy(ctx context.Context, params *iam.AttachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.AttachRolePolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.AttachRolePolicy", w.region, params, func() (*iam.AttachRolePolicyOutput, error) {
+		return w.inner.AttachRolePolicy(ctx, params, optFns...)
+	})
+}

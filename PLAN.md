@@ -4407,13 +4407,20 @@ itself is never gated by Phase 20.36's read-only check).
 
 **Status: designed and implemented 2026-07-23** (DESIGN.md, "IAM Profile
 & Role Management Domain"). Targeted for v0.0.5. `go build`/`go vet`/
-`go test ./... -race`/`gofmt -l` all clean. Not yet real-AWS-verified or
-released. Two scope questions DESIGN.md left open were resolved by the
-user before implementation: policy documents render as raw,
-pretty-printed JSON (not a summarized rendering), and the "which running
-instance is associated" half of the cross-reference is deferred --
-"which instance profiles reference this role" (cheap, already-fetched
-data) ships now.
+`go test ./... -race`/`gofmt -l` all clean. Two scope questions
+DESIGN.md left open were resolved by the user before implementation:
+policy documents render as raw, pretty-printed JSON (not a summarized
+rendering), and the "which running instance is associated" half of the
+cross-reference is deferred -- "which instance profiles reference this
+role" (cheap, already-fetched data) ships now.
+
+**Real-AWS-verified 2026-07-23** -- user confirmed View Role Detail on
+`air-sampling` (trust policy, tags, all three attached policies, the
+inline policy), drilling into both an attached and the inline policy's
+actual document, View Instance Profile Detail on `ec2-granian-test-role`
+(correctly showing its one contained role as SSM-capable, no tags), and
+clean `q` exit from the policy-document drill-down back to the IAM
+menu. Not yet released.
 
 ### Work Items
 
@@ -4495,38 +4502,70 @@ discovery list).
 
 ## Phase 20.39 — Curated Per-Use-Case Role/Policy Creation Templates
 
-**Status: designed 2026-07-23, revised same day** (DESIGN.md, "IAM
-Profile & Role Management Domain"; DECISIONS.md, "IAM Profile & Role
-Management: seven scoping decisions, bundled into v0.0.5" and "...Origin
-tag revision..."). Targeted for v0.0.5. Not yet implemented. Reverses
-the 2026-07-02 "never creates a role, only attaches an existing one"
-scope (DECISIONS.md, "Support picking or creating an IAM instance
+**Status: designed and implemented 2026-07-23** (DESIGN.md, "IAM Profile
+& Role Management Domain"; DECISIONS.md, "IAM Profile & Role Management:
+seven scoping decisions, bundled into v0.0.5" and "...Origin tag
+revision..."). Targeted for v0.0.5. `go build`/`go vet`/`go test ./...
+-race`/`gofmt -l` all clean. Not yet real-AWS-verified or released.
+Reverses the 2026-07-02 "never creates a role, only attaches an existing
+one" scope (DECISIONS.md, "Support picking or creating an IAM instance
 profile from within awsops") — deliberately, and only through curated
 templates.
 
 ### Work Items
 
-- [ ] `IAMAPI` gains `CreateRole`, `CreatePolicy`, `AttachRolePolicy` —
-      mirrored into `logging_iam.go`
-- [ ] `TrustPrincipal` modeled as a small enum/type; only an EC2 value
-      is wired up for this phase, but the type itself is shaped for
-      Lambda/ECS-task principals to be added later without reshaping
-      the creation flow
-- [ ] Five template definitions, each a parametrized statement set
-      (operator supplies specific ARNs — a bucket name, a distribution
-      ID, a secret name — at creation time): Static Website (S3 +
-      CloudFront), RDM Repository Instance, Bridge Service, Patron-Facing
-      Service, Data Processing — draft shapes in DESIGN.md's table under
-      this addendum, all flagged as needing review before implementation
-- [ ] Guided creation flow: pick a template, prompt for its required
-      ARN parameters, create the role + policy, attach. If the config's
-      `origin_tag.dld_value` (Phase 20.36) is set, tag the new role
-      `<origin_tag.key>=<dld_value>` automatically (reusing Phase
-      20.37's tag-write path); if unset, leave it untagged
-- [ ] Picker UI distinguishes the two more fully-scoped templates
-      (Static Website, RDM Repository) from the three thinner ones
-      (Bridge Service, Patron-Facing, Data Processing) — exact wording
-      left for implementation
+- [x] `IAMAPI` gains `CreateRole`, `CreatePolicy`, `AttachRolePolicy` —
+      mirrored into `logging_iam.go`. Confirmed via the vendored SDK
+      that `CreateRoleInput`/`CreatePolicyInput` both accept `Tags`
+      directly, so the newly-created role/policy are auto-tagged at
+      creation time -- no separate `TagRole`/`TagPolicy` call needed
+- [x] `TrustPrincipal` modeled as a small string type (`internal/workflow/iam_templates.go`);
+      only `TrustPrincipalEC2` is wired up, shaped so Lambda/ECS-task
+      principals can be added later without reshaping the creation flow
+- [x] Five template definitions (`IAMRoleTemplate`, `iamRoleTemplates`),
+      each a parametrized statement set (operator supplies specific
+      ARNs at creation time): Static Website (S3 + CloudFront) --
+      read-only by default, becomes a publish role if a
+      `distribution_arn` is also supplied (no separate yes/no prompt
+      needed); RDM Repository Instance -- scoped S3 read/write, plus
+      `AmazonSSMManagedInstanceCore` attached via `ManagedPolicyARNs`;
+      Bridge Service, Patron-Facing Service, Data Processing -- all
+      three share a `cloudWatchLogsStatements` helper for their
+      baseline CloudWatch Logs access (scoped to an operator-supplied
+      log group ARN, since there's no way to know a future service's
+      naming convention in advance), with Patron-Facing's Secrets
+      Manager/S3 read added only when their optional params are
+      non-blank
+- [x] Guided creation flow (`CreateIAMRoleFromTemplate`/
+      `createIAMRoleFromTemplate`): pick a template, prompt role name +
+      each param, confirm, `CreateRole` (tagged if `origin_tag.dld_value`
+      is configured) → attach each `ManagedPolicyARNs` entry → if the
+      template produced any statements, `CreatePolicy` (also tagged) +
+      attach it. **Fully pipe-testable end to end** -- unlike this
+      domain's other actions, template selection uses a Menu-tier
+      `huh.Select` (a small, fixed list) rather than a Picker-tier
+      `tui.RunPicker`, since there's no existing-resource list to browse
+      here, so no Picker-tier step blocks automated testing of the whole
+      flow
+- [x] Picker UI distinguishes the two more fully-scoped templates from
+      the three thinner ones via `iamRoleTemplateLabel`, which appends
+      "(starting point, review before use)" to `Thin`-flagged templates'
+      display label only -- the underlying `Label` field stays the clean
+      base name
+
+**Tests:** test-first throughout, including the full guided flow
+(template pick → role name → params → confirm → create/attach) driven
+end to end via accessible-mode pipe input -- auto-tagging when
+`origin_tag.dld_value` is set (and its absence when unset), the SSM
+managed policy attaching alongside the custom policy for RDM Repository,
+declined confirmation skipping creation entirely, and `CreateRole`'s
+error propagating before any `AttachRolePolicy` call is attempted.
+
+**Files:** `internal/awsclient/iam.go`, `internal/awsclient/logging_iam.go`,
+`internal/workflow/create_instance_profile_test.go` (shared
+`fakeIAMClient` gained `CreateRole`/`CreatePolicy`/`AttachRolePolicy`),
+new `internal/workflow/iam_templates.go`, `internal/workflow/iam_menu.go`,
+`cmd/clasm/main.go`, plus each changed file's `_test.go` counterpart.
 
 **Dependency:** Phase 20.36 (`origin_tag` config), Phase 20.37 (tag-write
 path used to auto-tag a newly-created role, when configured).

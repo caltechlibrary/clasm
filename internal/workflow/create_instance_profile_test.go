@@ -82,6 +82,19 @@ type fakeIAMClient struct {
 	getPolicyErr          error
 	policyVersions        map[string]string // key: policyArn+"/"+versionId
 	getPolicyVersionErr   error
+
+	// createRoleErr/lastCreateRoleInput, createPolicyErr/lastCreatePolicyInput,
+	// attachRolePolicyErr/lastAttachRolePolicyInputs support the
+	// curated role/policy creation templates (iam_templates_test.go,
+	// PLAN.md Phase 20.39).
+	createRoleErr              error
+	lastCreateRoleInput        *iam.CreateRoleInput
+	createRoleArn              string // used to populate CreateRoleOutput.Role.Arn if set
+	createPolicyErr            error
+	lastCreatePolicyInput      *iam.CreatePolicyInput
+	createPolicyArn            string // used to populate CreatePolicyOutput.Policy.Arn if set
+	attachRolePolicyErr        error
+	lastAttachRolePolicyInputs []*iam.AttachRolePolicyInput
 }
 
 func (f *fakeIAMClient) GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
@@ -102,6 +115,38 @@ func (f *fakeIAMClient) GetInstanceProfile(ctx context.Context, params *iam.GetI
 		return f.getInstanceProfileOut, nil
 	}
 	return &iam.GetInstanceProfileOutput{InstanceProfile: &iamtypes.InstanceProfile{InstanceProfileName: params.InstanceProfileName}}, nil
+}
+
+func (f *fakeIAMClient) CreateRole(ctx context.Context, params *iam.CreateRoleInput, optFns ...func(*iam.Options)) (*iam.CreateRoleOutput, error) {
+	f.lastCreateRoleInput = params
+	if f.createRoleErr != nil {
+		return nil, f.createRoleErr
+	}
+	arn := f.createRoleArn
+	if arn == "" {
+		arn = "arn:aws:iam::123456789012:role/" + aws.ToString(params.RoleName)
+	}
+	return &iam.CreateRoleOutput{Role: &iamtypes.Role{RoleName: params.RoleName, Arn: aws.String(arn)}}, nil
+}
+
+func (f *fakeIAMClient) CreatePolicy(ctx context.Context, params *iam.CreatePolicyInput, optFns ...func(*iam.Options)) (*iam.CreatePolicyOutput, error) {
+	f.lastCreatePolicyInput = params
+	if f.createPolicyErr != nil {
+		return nil, f.createPolicyErr
+	}
+	arn := f.createPolicyArn
+	if arn == "" {
+		arn = "arn:aws:iam::123456789012:policy/" + aws.ToString(params.PolicyName)
+	}
+	return &iam.CreatePolicyOutput{Policy: &iamtypes.Policy{PolicyName: params.PolicyName, Arn: aws.String(arn)}}, nil
+}
+
+func (f *fakeIAMClient) AttachRolePolicy(ctx context.Context, params *iam.AttachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.AttachRolePolicyOutput, error) {
+	f.lastAttachRolePolicyInputs = append(f.lastAttachRolePolicyInputs, params)
+	if f.attachRolePolicyErr != nil {
+		return nil, f.attachRolePolicyErr
+	}
+	return &iam.AttachRolePolicyOutput{}, nil
 }
 
 func (f *fakeIAMClient) ListRolePolicies(ctx context.Context, params *iam.ListRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListRolePoliciesOutput, error) {
