@@ -131,17 +131,52 @@ func TestDataProcessingStatements(t *testing.T) {
 	}
 }
 
+func TestS3BucketArn(t *testing.T) {
+	if got := s3BucketArn("", "", "my-site"); got != "arn:aws:s3:::my-site" {
+		t.Errorf("got %q, want arn:aws:s3:::my-site", got)
+	}
+}
+
+func TestCloudFrontDistributionArn(t *testing.T) {
+	got := cloudfrontDistributionArn("123456789012", "", "E123")
+	want := "arn:aws:cloudfront::123456789012:distribution/E123"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestLogGroupArn(t *testing.T) {
+	got := logGroupArn("123456789012", "us-west-2", "/bridge/app")
+	want := "arn:aws:logs:us-west-2:123456789012:log-group:/bridge/app"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestSecretArnPattern(t *testing.T) {
+	// Secrets Manager appends a random 6-character suffix to every
+	// secret's real ARN, which the operator can't know or type in
+	// advance -- a trailing wildcard is the standard, idiomatic way to
+	// scope a policy to a secret by name without hardcoding that
+	// suffix.
+	got := secretArnPattern("123456789012", "us-west-2", "patron-api-key")
+	want := "arn:aws:secretsmanager:us-west-2:123456789012:secret:patron-api-key-*"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestCreateIAMRoleFromTemplate_StaticWebsiteReadOnly(t *testing.T) {
 	term, menuInput, buf := newPipeEditor(
 		"1\n" + // template: Static Website (S3 + CloudFront)
 			"my-static-site-role\n" + // role name
-			"arn:aws:s3:::my-site\n" + // bucket_arn
-			"\n" + // distribution_arn (skip -- read-only)
+			"my-site\n" + // bucket name (not an ARN)
+			"\n" + // distribution ID (skip -- read-only)
 			"y\n", // confirm
 	)
 	fake := &fakeIAMClient{}
 
-	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, menuInput, buf)
+	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, "123456789012", "us-west-2", menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,8 +200,11 @@ func TestCreateIAMRoleFromTemplate_StaticWebsiteReadOnly(t *testing.T) {
 	if !strings.Contains(aws.ToString(fake.lastCreatePolicyInput.PolicyDocument), "s3:GetObject") {
 		t.Errorf("expected read-only S3 policy content, got: %s", aws.ToString(fake.lastCreatePolicyInput.PolicyDocument))
 	}
+	if !strings.Contains(aws.ToString(fake.lastCreatePolicyInput.PolicyDocument), "arn:aws:s3:::my-site") {
+		t.Errorf("expected the bare bucket name to be built into a full ARN, got: %s", aws.ToString(fake.lastCreatePolicyInput.PolicyDocument))
+	}
 	if strings.Contains(aws.ToString(fake.lastCreatePolicyInput.PolicyDocument), "cloudfront:CreateInvalidation") {
-		t.Errorf("did not expect publish permissions (distribution_arn was skipped), got: %s", aws.ToString(fake.lastCreatePolicyInput.PolicyDocument))
+		t.Errorf("did not expect publish permissions (distribution ID was skipped), got: %s", aws.ToString(fake.lastCreatePolicyInput.PolicyDocument))
 	}
 
 	if len(fake.lastAttachRolePolicyInputs) != 1 {
@@ -181,13 +219,13 @@ func TestCreateIAMRoleFromTemplate_AutoTagsWhenOriginConfigured(t *testing.T) {
 	term, menuInput, buf := newPipeEditor(
 		"1\n" +
 			"my-static-site-role\n" +
-			"arn:aws:s3:::my-site\n" +
+			"my-site\n" +
 			"\n" +
 			"y\n",
 	)
 	fake := &fakeIAMClient{}
 
-	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"}, menuInput, buf)
+	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"}, "123456789012", "us-west-2", menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,12 +241,12 @@ func TestCreateIAMRoleFromTemplate_AttachesManagedPolicyForRDMTemplate(t *testin
 	term, menuInput, buf := newPipeEditor(
 		"2\n" + // template: RDM Repository Instance
 			"my-rdm-role\n" +
-			"arn:aws:s3:::rdm-backups\n" +
+			"rdm-backups\n" +
 			"y\n",
 	)
 	fake := &fakeIAMClient{}
 
-	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, menuInput, buf)
+	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, "123456789012", "us-west-2", menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,13 +268,13 @@ func TestCreateIAMRoleFromTemplate_DeclinedConfirmationSkipsCreation(t *testing.
 	term, menuInput, buf := newPipeEditor(
 		"1\n" +
 			"my-static-site-role\n" +
-			"arn:aws:s3:::my-site\n" +
+			"my-site\n" +
 			"\n" +
 			"n\n", // decline
 	)
 	fake := &fakeIAMClient{}
 
-	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, menuInput, buf)
+	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, "123456789012", "us-west-2", menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,13 +290,13 @@ func TestCreateIAMRoleFromTemplate_PropagatesCreateRoleError(t *testing.T) {
 	term, menuInput, buf := newPipeEditor(
 		"1\n" +
 			"my-static-site-role\n" +
-			"arn:aws:s3:::my-site\n" +
+			"my-site\n" +
 			"\n" +
 			"y\n",
 	)
 	fake := &fakeIAMClient{createRoleErr: errors.New("boom")}
 
-	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, menuInput, buf)
+	err := createIAMRoleFromTemplate(context.Background(), term, fake, config.OriginTagConfig{Key: "Origin"}, "123456789012", "us-west-2", menuInput, buf)
 	if err == nil {
 		t.Fatal("expected an error to propagate")
 	}

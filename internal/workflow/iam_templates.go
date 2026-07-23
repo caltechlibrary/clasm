@@ -65,14 +65,61 @@ func marshalPolicyDocument(statements []policyStatement) (string, error) {
 	return string(b), nil
 }
 
-// IAMRoleTemplateParam is one ARN (or similar identifier) a template
-// needs from the operator at creation time -- DESIGN.md's "parametrized
-// statement set": the operator supplies specific ARNs rather than clasm
+// IAMRoleTemplateParam is one resource identifier a template needs from
+// the operator at creation time -- DESIGN.md's "parametrized statement
+// set": the operator supplies specific resources rather than clasm
 // guessing account specifics.
+//
+// The operator supplies a plain name/ID (a bucket name, a CloudFront
+// distribution ID, a log group name, a secret name), not a full ARN --
+// found via live testing, 2026-07-23, that requiring hand-typed ARNs was
+// real friction: it forces a cognitive reformatting step, and for
+// CloudFront specifically there's no easy way to find a distribution's
+// ARN without the AWS Console or a separate CLI lookup, breaking the
+// workflow. clasm already resolves the account ID once at startup
+// (sts:GetCallerIdentity, awsclient.CheckCredentials) and already knows
+// the region, so it can build the ARN itself.
 type IAMRoleTemplateParam struct {
 	Key      string // internal key BuildPolicy reads from its params map
-	Prompt   string // shown to the operator
+	Prompt   string // shown to the operator -- describes a name/ID, not an ARN
 	Required bool   // if false, an empty answer means "skip this capability"
+	// BuildARN converts the operator's plain name/ID into the full ARN
+	// stored under Key, once collected -- nil skips construction (no
+	// param currently needs that, but left as an escape hatch rather
+	// than assuming every future param is ARN-shaped).
+	BuildARN func(accountID, region, value string) string
+}
+
+// s3BucketArn builds an S3 bucket's ARN from its bare name -- S3
+// bucket ARNs are global (no account ID or region segment), so both
+// parameters are accepted only for signature symmetry with the other
+// BuildARN functions.
+func s3BucketArn(_, _, bucketName string) string {
+	return "arn:aws:s3:::" + bucketName
+}
+
+// cloudfrontDistributionArn builds a CloudFront distribution's ARN from
+// its ID (e.g. "E1234567890ABC") -- CloudFront ARNs omit the region
+// segment (CloudFront is a global service), unlike logGroupArn/
+// secretArnPattern below.
+func cloudfrontDistributionArn(accountID, _, distributionID string) string {
+	return fmt.Sprintf("arn:aws:cloudfront::%s:distribution/%s", accountID, distributionID)
+}
+
+// logGroupArn builds a CloudWatch Logs log group's ARN from its plain
+// name (e.g. "/bridge/app").
+func logGroupArn(accountID, region, logGroupName string) string {
+	return fmt.Sprintf("arn:aws:logs:%s:%s:log-group:%s", region, accountID, logGroupName)
+}
+
+// secretArnPattern builds a Secrets Manager ARN *pattern* from a
+// secret's plain name, with a trailing wildcard -- Secrets Manager
+// appends a random 6-character suffix to every secret's real ARN, which
+// the operator can't know or type in advance, so a trailing "-*" is the
+// standard, idiomatic way IAM policies scope access to a secret by name
+// without hardcoding that suffix.
+func secretArnPattern(accountID, region, secretName string) string {
+	return fmt.Sprintf("arn:aws:secretsmanager:%s:%s:secret:%s-*", region, accountID, secretName)
 }
 
 // IAMRoleTemplate is one of the five curated per-use-case templates
@@ -180,8 +227,8 @@ var iamRoleTemplates = []IAMRoleTemplate{
 	{
 		Label: "Static Website (S3 + CloudFront)",
 		Params: []IAMRoleTemplateParam{
-			{Key: "bucket_arn", Prompt: "S3 bucket ARN this role serves content from", Required: true},
-			{Key: "distribution_arn", Prompt: "CloudFront distribution ARN (leave blank for read-only serving; fill in to also grant publish + cache invalidation)", Required: false},
+			{Key: "bucket_arn", Prompt: "S3 bucket name this role serves content from (just the name, e.g. my-bucket)", Required: true, BuildARN: s3BucketArn},
+			{Key: "distribution_arn", Prompt: "CloudFront distribution ID (leave blank for read-only serving; fill in, e.g. E1234567890ABC, to also grant publish + cache invalidation)", Required: false, BuildARN: cloudfrontDistributionArn},
 		},
 		BuildPolicy: staticWebsiteStatements,
 	},
@@ -189,7 +236,7 @@ var iamRoleTemplates = []IAMRoleTemplate{
 		Label:             "RDM Repository Instance",
 		ManagedPolicyARNs: []string{ssmManagedInstanceCorePolicyArn},
 		Params: []IAMRoleTemplateParam{
-			{Key: "backup_bucket_arn", Prompt: "S3 backup bucket ARN this role reads/writes", Required: true},
+			{Key: "backup_bucket_arn", Prompt: "S3 backup bucket name this role reads/writes (just the name)", Required: true, BuildARN: s3BucketArn},
 		},
 		BuildPolicy: rdmRepositoryStatements,
 	},
@@ -198,7 +245,7 @@ var iamRoleTemplates = []IAMRoleTemplate{
 		Thin:              true,
 		ManagedPolicyARNs: []string{ssmManagedInstanceCorePolicyArn},
 		Params: []IAMRoleTemplateParam{
-			{Key: "log_group_arn", Prompt: "CloudWatch log group ARN this role writes to", Required: true},
+			{Key: "log_group_arn", Prompt: "CloudWatch log group name this role writes to (e.g. /bridge/app)", Required: true, BuildARN: logGroupArn},
 		},
 		BuildPolicy: bridgeServiceStatements,
 	},
@@ -207,9 +254,9 @@ var iamRoleTemplates = []IAMRoleTemplate{
 		Thin:              true,
 		ManagedPolicyARNs: []string{ssmManagedInstanceCorePolicyArn},
 		Params: []IAMRoleTemplateParam{
-			{Key: "log_group_arn", Prompt: "CloudWatch log group ARN this role writes to", Required: true},
-			{Key: "secret_arn", Prompt: "Secrets Manager secret ARN this role can read (optional, leave blank to skip)", Required: false},
-			{Key: "bucket_arn", Prompt: "S3 bucket ARN this role can read from (optional, leave blank to skip)", Required: false},
+			{Key: "log_group_arn", Prompt: "CloudWatch log group name this role writes to (e.g. /patron/app)", Required: true, BuildARN: logGroupArn},
+			{Key: "secret_arn", Prompt: "Secrets Manager secret name this role can read (optional, leave blank to skip -- matches any version suffix automatically)", Required: false, BuildARN: secretArnPattern},
+			{Key: "bucket_arn", Prompt: "S3 bucket name this role can read from (optional, leave blank to skip)", Required: false, BuildARN: s3BucketArn},
 		},
 		BuildPolicy: patronFacingStatements,
 	},
@@ -218,8 +265,8 @@ var iamRoleTemplates = []IAMRoleTemplate{
 		Thin:              true,
 		ManagedPolicyARNs: []string{ssmManagedInstanceCorePolicyArn},
 		Params: []IAMRoleTemplateParam{
-			{Key: "log_group_arn", Prompt: "CloudWatch log group ARN this role writes to", Required: true},
-			{Key: "data_bucket_arn", Prompt: "S3 data bucket ARN this role reads/writes", Required: true},
+			{Key: "log_group_arn", Prompt: "CloudWatch log group name this role writes to (e.g. /data/app)", Required: true, BuildARN: logGroupArn},
+			{Key: "data_bucket_arn", Prompt: "S3 data bucket name this role reads/writes (just the name)", Required: true, BuildARN: s3BucketArn},
 		},
 		BuildPolicy: dataProcessingStatements,
 	},
@@ -267,8 +314,8 @@ func pickIAMRoleTemplate(w io.Writer, input io.Reader, output io.Writer) (IAMRol
 // Template" action (DESIGN.md, "IAM Profile & Role Management Domain";
 // PLAN.md Phase 20.39): pick a template, collect its required/optional
 // ARN parameters, confirm, then create the role (+policy, +attachments).
-func CreateIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig) error {
-	return createIAMRoleFromTemplate(ctx, w, client, originTag, nil, nil)
+func CreateIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, accountID, region string) error {
+	return createIAMRoleFromTemplate(ctx, w, client, originTag, accountID, region, nil, nil)
 }
 
 // createIAMRoleFromTemplate is CreateIAMRoleFromTemplate's testable
@@ -277,8 +324,10 @@ func CreateIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclien
 // -- every step here is a Menu-tier huh.Select, a ui.Prompt, or Confirm,
 // none of them Picker-tier, so unlike this domain's other actions the
 // entire flow (not just an early-return slice of it) is pipe-tested
-// end to end.
-func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, menuInput io.Reader, menuOutput io.Writer) error {
+// end to end. accountID/region are used only to build each collected
+// param into its full ARN via IAMRoleTemplateParam.BuildARN -- resolved
+// once at startup (sts:GetCallerIdentity) rather than re-fetched here.
+func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, accountID, region string, menuInput io.Reader, menuOutput io.Writer) error {
 	tmpl, err := pickIAMRoleTemplate(w, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
@@ -298,6 +347,9 @@ func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclien
 		val, err := ui.Prompt(p.Prompt, opts...)
 		if err != nil {
 			return cancelledIsNil(w, err)
+		}
+		if val != "" && p.BuildARN != nil {
+			val = p.BuildARN(accountID, region, val)
 		}
 		params[p.Key] = val
 	}

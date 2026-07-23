@@ -4567,6 +4567,28 @@ error propagating before any `AttachRolePolicy` call is attempted.
 new `internal/workflow/iam_templates.go`, `internal/workflow/iam_menu.go`,
 `cmd/clasm/main.go`, plus each changed file's `_test.go` counterpart.
 
+**Real-AWS testing in progress, 2026-07-23.** RDM Repository Instance
+confirmed fully -- role created, tagged `origin=dld` automatically,
+`AmazonSSMManagedInstanceCore` + a correctly-scoped custom policy both
+attached (`s3:ListBucket` on the bucket, `s3:GetObject`/`s3:PutObject`
+on `<bucket>/*`, nothing broader). Static Website confirmed in read-only
+mode (bucket-only, no distribution).
+
+**Real bug (usability) found via that same live testing, fixed same
+day: templates originally required hand-typed ARNs.** Typing a full S3
+ARN forces an unnecessary mental reformatting step, and CloudFront ARNs
+specifically can't be found without leaving the tool (Console or a
+separate CLI call) -- breaking the interactive workflow. Fixed by having
+each template param collect a plain name/ID (bucket name, distribution
+ID, log group name, secret name) and having clasm construct the ARN
+itself via a new `BuildARN` field, using the account ID already resolved
+at startup (`sts:GetCallerIdentity`) and the configured region. See
+DECISIONS.md, "Phase 20.39 templates collect resource names/IDs, not
+ARNs." `BuildPolicy` functions themselves needed no changes -- only the
+collection step and prompt wording. Publish-mode Static Website (with a
+distribution ID) and the thin templates (Bridge Service, Patron-Facing,
+Data Processing) not yet real-AWS-verified.
+
 **Dependency:** Phase 20.36 (`origin_tag` config), Phase 20.37 (tag-write
 path used to auto-tag a newly-created role, when configured).
 

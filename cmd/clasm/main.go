@@ -438,7 +438,7 @@ func main() {
 			return workflow.ViewIAMInstanceProfileDetail(ctx, out, iamClient, cfg.OriginTag)
 		},
 		CreateRoleFromTemplate: func(ctx context.Context) error {
-			return workflow.CreateIAMRoleFromTemplate(ctx, out, iamClient, cfg.OriginTag)
+			return workflow.CreateIAMRoleFromTemplate(ctx, out, iamClient, cfg.OriginTag, account, cfg.Regions[0])
 		},
 	}
 
