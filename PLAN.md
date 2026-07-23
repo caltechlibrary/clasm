@@ -4201,12 +4201,17 @@ interleaving) still pass unchanged.
 
 ## Phase 20.36 — IAM Domain: Discovery, Categorization, and the Read-Only Guard
 
-**Status: designed 2026-07-23, implemented and unit-tested 2026-07-23**
-(DESIGN.md, "IAM Profile & Role Management Domain"; DECISIONS.md, "IAM
-Profile & Role Management: Origin tag revision..."). Targeted for
-v0.0.5, bundled alongside Phases 20.33-20.35 (already implemented)
-rather than deferred to v0.0.6. `go build`/`go vet`/`go test ./...
--race`/`gofmt -l` all clean. Not yet real-AWS-verified or released.
+**Status: designed 2026-07-23, implemented 2026-07-23, real-bug found and
+fixed via live testing 2026-07-23** (DESIGN.md, "IAM Profile & Role
+Management Domain"; DECISIONS.md, "IAM Profile & Role Management: Origin
+tag revision..." and "Real bug: ListRoles/ListInstanceProfiles/
+ListPolicies don't return tags inline"). Targeted for v0.0.5, bundled
+alongside Phases 20.33-20.35 (already implemented) rather than deferred
+to v0.0.6. `go build`/`go vet`/`go test ./... -race`/`gofmt -l` all
+clean. The user tagged a real role (`air-sampling`, `Origin=DLD` in
+their own casing) and found Show Roles still reported it `(unset)` --
+root-caused to a wrong assumption in the original design (below), not
+the config layer (verified separately and independently correct).
 
 ### Work Items
 
@@ -4222,11 +4227,21 @@ rather than deferred to v0.0.6. `go build`/`go vet`/`go test ./...
       Management/S3/Tag Management
 - [x] `IAMAPI` gains `ListPolicies` (scoped to `PolicyScopeTypeLocal`,
       i.e. customer-managed only) — mirrored into `logging_iam.go`.
-      **Revised from the original plan:** no separate `GetRole` or
-      tag-read call was needed — `ListRoles`/`ListInstanceProfiles`/
-      `ListPolicies` all already return each resource's full `Tags`
-      inline (confirmed against the vendored SDK types before writing
-      code), so no additional AWS call was required to resolve `Origin`
+      **Original plan assumed no separate `GetRole`/tag-read call was
+      needed, reasoning that `ListRoles`/`ListInstanceProfiles`/
+      `ListPolicies` already return each resource's full `Tags` inline
+      based on the vendored SDK response structs all declaring a `Tags`
+      field — confirmed live, 2026-07-23, that this assumption was
+      wrong for all three** (DECISIONS.md, "Real bug: ListRoles/
+      ListInstanceProfiles/ListPolicies don't return tags inline"): none
+      of the three list operations populate `Tags`, regardless of the
+      shared struct declaring the field. Fixed by adding `ListRoleTags`/
+      `ListInstanceProfileTags`/`ListPolicyTags` to `IAMAPI` (mirrored
+      into `logging_iam.go`) and calling the appropriate one once per
+      resource inside each `ListIAM*Summaries` function
+      (`internal/inventory/iam.go`) — N+1 IAM calls per list instead of
+      1, accepted as the only way to get per-resource tags via these
+      APIs
 - [x] **Layering correction, mid-implementation:** the discovery/
       categorization core (`IAMRoleSummary`/`IAMInstanceProfileSummary`/
       `IAMPolicySummary`, `ResolveOrigin`, `IsDLDOwned`, and the three
@@ -4281,41 +4296,105 @@ any other tag.)
 
 **Files:** `internal/config/config.go`, `internal/awsclient/iam.go`,
 `internal/awsclient/logging_iam.go`, `internal/workflow/create_instance_profile_test.go`
-(shared `fakeIAMClient` gained `ListPolicies`), new `internal/inventory/iam.go`,
-new `internal/ui/iam_display.go`, new `internal/workflow/iam_domain.go`,
-new `internal/workflow/iam_menu.go`, `internal/workflow/domain_menu.go`,
-`cmd/clasm/main.go`, plus each new file's `_test.go` counterpart.
+(shared `fakeIAMClient` gained `ListPolicies`/`ListRoleTags`/
+`ListInstanceProfileTags`/`ListPolicyTags` stubs), new
+`internal/inventory/iam.go`, new `internal/ui/iam_display.go`, new
+`internal/workflow/iam_domain.go`, new `internal/workflow/iam_menu.go`,
+`internal/workflow/domain_menu.go`, `cmd/clasm/main.go`, plus each new
+file's `_test.go` counterpart.
+
+**Status update, same day:** live-testing bug (tags-not-inline, above)
+found and fixed after the initial implementation; `go build`/`go vet`/
+`go test ./... -race`/`gofmt -l` re-confirmed clean after the fix.
+**Real-AWS-verified 2026-07-23** -- user confirmed `air-sampling` now
+shows `dld` in the Origin column after rebuilding, and ran all six
+manual test items suggested after Phase 20.36's initial implementation
+(config end-to-end with a non-default key/value, Show Policies scoped
+to customer-managed only, SSM-capable column accuracy, sort order,
+filter/back-navigation/fresh-refetch, regression check on the other
+four domains) -- all passed.
+
+**Second real bug found via live testing, same day, while testing Phase
+20.37: the IAM Role picker took several seconds to open** in an account
+with dozens of roles -- `ListIAMRoleSummaries`/`ListIAMInstanceProfileSummaries`/
+`ListIAMPolicySummaries` fetched each resource's tags one at a time,
+sequentially. Fixed by parallelizing with a bounded worker pool (new
+`fetchTagsConcurrently`, `iamTagFetchConcurrency = 10`), mirroring
+`inventory.ListImages`' own concurrent per-region fan-out. See
+DECISIONS.md, "Parallelize per-resource IAM tag fetches." All existing
+correctness tests kept green; `go test -race` confirms no data race.
+Not yet released.
 
 ---
 
 ## Phase 20.37 — Tag Management Domain Extension for IAM Resources
 
-**Status: designed 2026-07-23** (DESIGN.md, "IAM Profile & Role
-Management Domain"). Targeted for v0.0.5. Not yet implemented.
+**Status: designed 2026-07-23, implemented and unit-tested 2026-07-23**
+(DESIGN.md, "IAM Profile & Role Management Domain"). Targeted for
+v0.0.5. `go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean.
+Not yet real-AWS-verified or released.
 
 ### Work Items
 
-- [ ] `IAMAPI` gains `TagRole`, `TagInstanceProfile`, `TagPolicy`,
+- [x] `IAMAPI` gains `TagRole`, `TagInstanceProfile`, `TagPolicy`,
       `UntagRole`, `UntagInstanceProfile`, `UntagPolicy` — mirrored into
-      `logging_iam.go`
-- [ ] `tagManagementKinds` (`tag_management.go`, currently `Instance`/
-      `AMI`/`Launch Template`/`Key Pair`/`S3 Bucket`) gains `IAM Role`,
-      `IAM Instance Profile`, `IAM Policy`
-- [ ] New fetch/apply closures per IAM kind, reusing the generalized
-      `tagApplyFunc`-closure pattern the S3 Bucket slice established
-      (Phase 20.30) — no new tag-editing mechanism, only new per-kind
-      fetch/apply plumbing. This is also how `Origin` gets set/edited —
-      no dedicated action, per DECISIONS.md's revision entry
-- [ ] "Show all tags" extended to the three new kinds, same shape as
-      the existing five (a List-tier table with a flattened "Tags"
-      column)
-- [ ] New Picker-tier helpers for selecting a role/instance
-      profile/policy by name, matching `pickInstance`/`pickImage`/
-      `pickBucket`'s existing shape
-- [ ] Tagging works identically regardless of the resource's current
+      `logging_iam.go`. Confirmed via the vendored SDK (not assumed,
+      given Phase 20.36's tags-not-inline lesson) that these are
+      fine-grained, one-tag-at-a-time calls (`TagRoleInput{RoleName,
+      Tags}`/`UntagRoleInput{RoleName, TagKeys}`, same shape for
+      InstanceProfile/Policy addressed by ARN) -- closer to EC2's
+      `CreateTags`/`DeleteTags` shape than S3's whole-set-replace
+      `PutBucketTagging`
+- [x] `tagManagementKinds` (`tag_management.go`) gains `IAM Role`,
+      `IAM Instance Profile`, `IAM Policy`, appended after the existing
+      five (not interleaved) so every existing numeric-index test for
+      Instance/AMI/Launch Template/Key Pair/S3 Bucket stayed valid
+      unchanged -- new tests use indices 6/7/8
+- [x] New fetch/apply closures per IAM kind (`internal/workflow/iam_tags.go`:
+      `fetchIAMRoleTags`/`applyIAMRoleTagChange` and Instance-Profile/
+      Policy equivalents), reusing the generalized `tagApplyFunc`-closure
+      pattern the S3 Bucket slice established (Phase 20.30) -- no new
+      tag-editing mechanism, only new per-kind fetch/apply plumbing.
+      This is also how `Origin` gets set/edited -- no dedicated action,
+      per DECISIONS.md's revision entry. `iam_tags_test.go`
+- [x] `inventory.IAMRoleSummary`/`IAMInstanceProfileSummary`/
+      `IAMPolicySummary` gained a `Tags map[string]string` field, at no
+      extra API cost (the per-resource `ListRoleTags`/etc. call Phase
+      20.36 already makes to resolve `Origin` already has the full map
+      in hand) -- lets "Show all tags"/"Manage tags" for the three IAM
+      kinds reuse Phase 20.36's existing listing functions directly
+      rather than fetching twice
+- [x] "Show all tags" extended to the three new kinds via
+      `iamRoleTaggedResources`/`iamInstanceProfileTaggedResources`/
+      `iamPolicyTaggedResources` (pure conversions, unlike
+      `bucketTaggedResources`' on-demand per-bucket fetch -- no extra
+      API cost needed here since Tags is already populated)
+- [x] New Picker-tier helpers `pickIAMRole`/`pickIAMInstanceProfile`/
+      `pickIAMPolicy`, matching `pickInstance`/`pickImage`/`pickBucket`'s
+      existing shape; IAM Role/Instance Profile/Policy fetch their
+      resource list fresh via `iamClient`/`originTag` on every dispatch
+      into `ManageResourceTags`/`ShowAllTags` (new parameters on both),
+      rather than accepting a pre-fetched slice like the other five
+      kinds -- matching Phase 20.36's deliberate no-caching-of-IAM-data
+      convention, not an inconsistency
+- [x] Tagging works identically regardless of the resource's current
       `Origin` value or the read-only guard's state (Phase 20.36) — no
       gating logic is shared between the two phases; a role read-only
-      for permission changes is still fully taggable
+      for permission changes is still fully taggable (the guard, per
+      Phase 20.36, has no caller anywhere yet, including here)
+
+**Tests:** test-first throughout -- fetch/apply closures tested against
+the shared `fakeIAMClient` (extended with configurable per-name/ARN tag
+maps and last-input capture for Tag/Untag calls); `iamXxxTaggedResources`
+conversions and three new "No IAM X found" early-return paths tested
+directly, matching the existing five kinds' test shape.
+
+**Files:** `internal/awsclient/iam.go`, `internal/awsclient/logging_iam.go`,
+`internal/workflow/create_instance_profile_test.go` (shared
+`fakeIAMClient` gained configurable Tag/Untag fields), new
+`internal/workflow/iam_tags.go`, `internal/inventory/iam.go`
+(`Tags` field), `internal/workflow/tag_management.go`, `cmd/clasm/main.go`,
+plus each changed file's `_test.go` counterpart.
 
 **Dependency:** Phase 20.36 (shares the IAM domain's resource-listing
 plumbing and the `origin_tag` config, though the tagging mechanism

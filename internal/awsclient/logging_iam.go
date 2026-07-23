@@ -58,3 +58,57 @@ func (w *loggingIAMClient) ListPolicies(ctx context.Context, params *iam.ListPol
 		return w.inner.ListPolicies(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingIAMClient) ListRoleTags(ctx context.Context, params *iam.ListRoleTagsInput, optFns ...func(*iam.Options)) (*iam.ListRoleTagsOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListRoleTags", w.region, params, func() (*iam.ListRoleTagsOutput, error) {
+		return w.inner.ListRoleTags(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) ListInstanceProfileTags(ctx context.Context, params *iam.ListInstanceProfileTagsInput, optFns ...func(*iam.Options)) (*iam.ListInstanceProfileTagsOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListInstanceProfileTags", w.region, params, func() (*iam.ListInstanceProfileTagsOutput, error) {
+		return w.inner.ListInstanceProfileTags(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) ListPolicyTags(ctx context.Context, params *iam.ListPolicyTagsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyTagsOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListPolicyTags", w.region, params, func() (*iam.ListPolicyTagsOutput, error) {
+		return w.inner.ListPolicyTags(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) TagRole(ctx context.Context, params *iam.TagRoleInput, optFns ...func(*iam.Options)) (*iam.TagRoleOutput, error) {
+	return logAWSCall(w.dl, "IAM.TagRole", w.region, params, func() (*iam.TagRoleOutput, error) {
+		return w.inner.TagRole(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) UntagRole(ctx context.Context, params *iam.UntagRoleInput, optFns ...func(*iam.Options)) (*iam.UntagRoleOutput, error) {
+	return logAWSCall(w.dl, "IAM.UntagRole", w.region, params, func() (*iam.UntagRoleOutput, error) {
+		return w.inner.UntagRole(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) TagInstanceProfile(ctx context.Context, params *iam.TagInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.TagInstanceProfileOutput, error) {
+	return logAWSCall(w.dl, "IAM.TagInstanceProfile", w.region, params, func() (*iam.TagInstanceProfileOutput, error) {
+		return w.inner.TagInstanceProfile(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) UntagInstanceProfile(ctx context.Context, params *iam.UntagInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.UntagInstanceProfileOutput, error) {
+	return logAWSCall(w.dl, "IAM.UntagInstanceProfile", w.region, params, func() (*iam.UntagInstanceProfileOutput, error) {
+		return w.inner.UntagInstanceProfile(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) TagPolicy(ctx context.Context, params *iam.TagPolicyInput, optFns ...func(*iam.Options)) (*iam.TagPolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.TagPolicy", w.region, params, func() (*iam.TagPolicyOutput, error) {
+		return w.inner.TagPolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) UntagPolicy(ctx context.Context, params *iam.UntagPolicyInput, optFns ...func(*iam.Options)) (*iam.UntagPolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.UntagPolicy", w.region, params, func() (*iam.UntagPolicyOutput, error) {
+		return w.inner.UntagPolicy(ctx, params, optFns...)
+	})
+}

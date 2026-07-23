@@ -4,6 +4,117 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-23 — Parallelize per-resource IAM tag fetches
+
+**Context.** Found via live usage while testing Phase 20.37 (Tag
+Management's IAM extension): "Manage tags -> IAM Role" took several
+seconds just to open the resource picker, in an account with dozens of
+roles (several AWS-service-linked, e.g. SageMaker/CloudTrail roles).
+Root cause: `ListIAMRoleSummaries`/`ListIAMInstanceProfileSummaries`/
+`ListIAMPolicySummaries` (Phase 20.36) fetch each resource's tags one at
+a time, sequentially, via `ListRoleTags`/`ListInstanceProfileTags`/
+`ListPolicyTags` (required per-resource calls -- see "ListRoles/
+ListInstanceProfiles/ListPolicies don't return tags inline," above) --
+with N roles/profiles/policies, that's N sequential network round-trips
+before any of Show Roles, Show Instance Profiles, Show Policies, Manage
+Tags, or Show All Tags can render anything.
+
+**Decision.** Parallelize the per-resource tag fetch with a bounded
+worker pool (new `fetchTagsConcurrently` in `internal/inventory/iam.go`,
+capped at `iamTagFetchConcurrency = 10` in flight at once), mirroring
+`inventory.ListImages`' own concurrent per-region fan-out pattern
+(`images.go`) -- generalized here to fan out over resource index rather
+than region. All three `ListIAM*Summaries` functions now call this
+shared helper instead of looping sequentially.
+
+**Rejected alternative.** *Unbounded concurrency* (fire all N requests
+at once, no cap) -- rejected: an account can plausibly have 100+ roles
+between service-linked roles and Lambda/SageMaker-created ones (observed
+directly in the account this was tested against), and firing that many
+concurrent IAM API calls risks throttling. 10 in flight at once is a
+conservative, not-tuned starting value -- worth revisiting if it proves
+too slow or too aggressive in practice.
+
+**Consequences.** Wall-clock time drops from roughly N x per-call
+latency to roughly (N / 10) x per-call latency (plus the fixed cost of
+the initial `ListRoles`/`ListInstanceProfiles`/`ListPolicies` call) --
+not measured precisely, but expected to turn a multi-second delay into
+something close to imperceptible for typical account sizes. Error
+handling changes subtly: with sequential fetches, the *first* resource
+(in `ListRoles`' own return order) to error would stop the loop
+immediately; with concurrent fetches, the first error *observed* (not
+necessarily the first resource in list order) is returned, only after
+every in-flight fetch has completed -- behaviorally equivalent for
+callers (an error is an error), but worth noting if debug-log call
+ordering ever looks unexpected. All existing correctness tests
+(Origin resolution, sorting, tag-map retention, error propagation) were
+kept green through the refactor, and `go test -race` confirms no data
+race was introduced.
+
+---
+
+## 2026-07-23 — Real bug: ListRoles/ListInstanceProfiles/ListPolicies don't return tags inline
+
+**Context.** Found via live usage, not a test: the user tagged the real
+`air-sampling` role `Origin=DLD` (values actually cased `origin`/`dld`,
+matching their own `~/.clasm` `origin_tag` config exactly) from the AWS
+Console, restarted clasm, and Show Roles still displayed `(unset)`.
+Config loading itself was verified correct in isolation (a throwaway
+`go run` confirmed `config.Load` resolved `OriginTag.Key="origin"`,
+`OriginTag.DLDValue="dld"` from `~/.clasm` exactly as expected) --
+ruling out the config layer entirely. The actual cause: Phase 20.36's
+design (DESIGN.md, "IAM Profile & Role Management Domain") assumed
+`iam:ListRoles`/`iam:ListInstanceProfiles`/`iam:ListPolicies` return each
+resource's `Tags` inline, based on the vendored SDK's `Role`/
+`InstanceProfile`/`Policy` response structs all declaring a `Tags []Tag`
+field. Confirmed live against the real account that this assumption was
+wrong for all three: `aws iam list-roles`, `aws iam
+list-instance-profiles`, and `aws iam list-policies --scope Local` all
+omit `Tags` entirely from their JSON output, even for resources
+confirmed (via `aws iam list-role-tags`) to actually have tags. The SDK's
+shared `Tags` field is populated by other operations (`GetRole`,
+`CreateRole`, etc.), not these three List calls -- reusing one response
+struct across multiple API operations doesn't mean every operation
+populates every field.
+
+**This is the same class of mistake this project has hit before**
+(DECISIONS.md, "Offer official Ubuntu LTS AMIs..." -- getting AMI name
+patterns wrong when not checked against real AWS) and the ARM64 addendum
+explicitly checked live *because* of that history. This time the
+equivalent live check wasn't done before writing the design -- worth
+re-flagging as a standing lesson: an SDK type's field existing is not
+evidence a *specific operation* populates it; when a design leans on a
+list response including something beyond the obviously-basic fields
+(here, tags), verify against a real, already-tagged resource before
+writing the design, not just by reading vendored struct definitions.
+
+**Decision.** Add a per-resource tag fetch after each list call: new
+`IAMAPI` methods `ListRoleTags`, `ListInstanceProfileTags`,
+`ListPolicyTags` (mirrored into `logging_iam.go`), called once per
+role/profile/policy returned by `ListRoles`/`ListInstanceProfiles`/
+`ListPolicies` respectively, inside `internal/inventory/iam.go`'s three
+`ListIAM*Summaries` functions. Every existing "resolves Origin" test in
+`internal/inventory/iam_test.go` was rewritten first to supply tags via
+the fake's new per-name/per-ARN tag maps (matching the real API shape)
+instead of via the list-response structs' `Tags` field, confirmed
+failing against the pre-fix code, then the fix made them pass -- per
+[[feedback-test-before-fix]].
+
+**Rejected alternative.** *Keep relying on the list response's `Tags`
+field* -- not actually an alternative, just the bug; there was never a
+real code path where this could have worked, since AWS itself doesn't
+return the data.
+
+**Consequences.** Discovery for each of Roles/Instance Profiles/Policies
+now costs N+1 IAM calls (one list + one tag-fetch per resource) instead
+of 1 -- accepted, since IAM is a low-volume, non-rate-limited-in-practice
+control-plane API for an account this size, and there's no way to get
+per-resource tags in fewer calls via these APIs. `iamTagsToMap` and
+`ResolveOrigin`/`IsDLDOwned` themselves needed no changes -- the bug was
+entirely in what was fed to them, not in the tag-matching logic itself.
+
+---
+
 ## 2026-07-23 — IAM Profile & Role Management: Origin tag revision (IMSS naming, no hardcoded vocabulary, tagging exempt from the read-only guard)
 
 **Context.** Same-day follow-up to "IAM Profile & Role Management: seven

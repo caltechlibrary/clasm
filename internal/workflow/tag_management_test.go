@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -24,7 +25,7 @@ import (
 
 func TestManageResourceTags_NoInstancesFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("1\n") // kind = Instance
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, config.OriginTagConfig{}, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +36,7 @@ func TestManageResourceTags_NoInstancesFound(t *testing.T) {
 
 func TestManageResourceTags_NoAMIsFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("2\n") // kind = AMI
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, config.OriginTagConfig{}, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestManageResourceTags_NoAMIsFound(t *testing.T) {
 
 func TestManageResourceTags_NoLaunchTemplatesFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("3\n") // kind = Launch Template
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, config.OriginTagConfig{}, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestManageResourceTags_NoLaunchTemplatesFound(t *testing.T) {
 
 func TestManageResourceTags_NoKeyPairsFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("4\n") // kind = Key Pair
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, config.OriginTagConfig{}, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,12 +69,45 @@ func TestManageResourceTags_NoKeyPairsFound(t *testing.T) {
 
 func TestManageResourceTags_NoBucketsFound(t *testing.T) {
 	term, menuInput, buf := newPipeEditor("5\n") // kind = S3 Bucket
-	err := manageResourceTags(context.Background(), term, nil, nil, nil, nil, nil, nil, nil, menuInput, buf)
+	err := manageResourceTags(context.Background(), term, nil, nil, nil, config.OriginTagConfig{}, nil, nil, nil, nil, nil, menuInput, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "No buckets found") {
 		t.Errorf("expected a no-buckets message, got:\n%s", buf.String())
+	}
+}
+
+func TestManageResourceTags_NoIAMRolesFound(t *testing.T) {
+	term, menuInput, buf := newPipeEditor("6\n") // kind = IAM Role
+	err := manageResourceTags(context.Background(), term, nil, nil, &fakeIAMClient{}, config.OriginTagConfig{Key: "Origin"}, nil, nil, nil, nil, nil, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No IAM roles found") {
+		t.Errorf("expected a no-IAM-roles message, got:\n%s", buf.String())
+	}
+}
+
+func TestManageResourceTags_NoIAMInstanceProfilesFound(t *testing.T) {
+	term, menuInput, buf := newPipeEditor("7\n") // kind = IAM Instance Profile
+	err := manageResourceTags(context.Background(), term, nil, nil, &fakeIAMClient{}, config.OriginTagConfig{Key: "Origin"}, nil, nil, nil, nil, nil, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No IAM instance profiles found") {
+		t.Errorf("expected a no-IAM-instance-profiles message, got:\n%s", buf.String())
+	}
+}
+
+func TestManageResourceTags_NoIAMPoliciesFound(t *testing.T) {
+	term, menuInput, buf := newPipeEditor("8\n") // kind = IAM Policy
+	err := manageResourceTags(context.Background(), term, nil, nil, &fakeIAMClient{}, config.OriginTagConfig{Key: "Origin"}, nil, nil, nil, nil, nil, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No IAM policies found") {
+		t.Errorf("expected a no-IAM-policies message, got:\n%s", buf.String())
 	}
 }
 
@@ -129,6 +163,49 @@ func TestKeyPairTaggedResources(t *testing.T) {
 	got := keyPairTaggedResources(keyPairs)
 	want := []ui.TaggedResource{
 		{ID: "key-1", Label: keyPairLabel(keyPairs[0]), Tags: map[string]string{"Owner": "rsdoiel"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// iamRoleTaggedResources/iamInstanceProfileTaggedResources/
+// iamPolicyTaggedResources are also pure data transforms -- no extra
+// API call needed, unlike bucketTaggedResources below, since each
+// summary's Tags field is already populated by inventory.ListIAM*Summaries.
+func TestIAMRoleTaggedResources(t *testing.T) {
+	roles := []inventory.IAMRoleSummary{
+		{Name: "air-sampling", Origin: "DLD", Tags: map[string]string{"origin": "dld"}},
+	}
+	got := iamRoleTaggedResources(roles)
+	want := []ui.TaggedResource{
+		{ID: "air-sampling", Label: iamRoleLabel(roles[0]), Tags: map[string]string{"origin": "dld"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestIAMInstanceProfileTaggedResources(t *testing.T) {
+	profiles := []inventory.IAMInstanceProfileSummary{
+		{Name: "air-sampling-profile", Origin: inventory.OriginUnset, Tags: map[string]string{}},
+	}
+	got := iamInstanceProfileTaggedResources(profiles)
+	want := []ui.TaggedResource{
+		{ID: "air-sampling-profile", Label: iamInstanceProfileLabel(profiles[0]), Tags: map[string]string{}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestIAMPolicyTaggedResources(t *testing.T) {
+	policies := []inventory.IAMPolicySummary{
+		{Name: "s3-backup-access", ARN: "arn:aws:iam::123456789012:policy/s3-backup-access", Origin: "DLD", Tags: map[string]string{"origin": "dld"}},
+	}
+	got := iamPolicyTaggedResources(policies)
+	want := []ui.TaggedResource{
+		{ID: "arn:aws:iam::123456789012:policy/s3-backup-access", Label: iamPolicyLabel(policies[0]), Tags: map[string]string{"origin": "dld"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)

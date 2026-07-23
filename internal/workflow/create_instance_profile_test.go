@@ -39,8 +39,101 @@ type fakeIAMClient struct {
 	listPoliciesErr       error
 	lastListPoliciesInput *iam.ListPoliciesInput
 
+	// roleTags/instanceProfileTags/policyTags key by name (ARN for
+	// policies) and back ListRoleTags/ListInstanceProfileTags/
+	// ListPolicyTags -- support the Tag Management IAM fetch/apply
+	// closures (iam_tags_test.go, PLAN.md Phase 20.37).
+	roleTags            map[string][]iamtypes.Tag
+	listRoleTagsErr     error
+	instanceProfileTags map[string][]iamtypes.Tag
+	listInstProfTagsErr error
+	policyTags          map[string][]iamtypes.Tag
+	listPolicyTagsErr   error
+
+	tagRoleErr                    error
+	lastTagRoleInput              *iam.TagRoleInput
+	untagRoleErr                  error
+	lastUntagRoleInput            *iam.UntagRoleInput
+	tagInstanceProfileErr         error
+	lastTagInstanceProfileInput   *iam.TagInstanceProfileInput
+	untagInstanceProfileErr       error
+	lastUntagInstanceProfileInput *iam.UntagInstanceProfileInput
+	tagPolicyErr                  error
+	lastTagPolicyInput            *iam.TagPolicyInput
+	untagPolicyErr                error
+	lastUntagPolicyInput          *iam.UntagPolicyInput
+
 	lastCreateInstanceProfileInput    *iam.CreateInstanceProfileInput
 	lastAddRoleToInstanceProfileInput *iam.AddRoleToInstanceProfileInput
+}
+
+func (f *fakeIAMClient) ListRoleTags(ctx context.Context, params *iam.ListRoleTagsInput, optFns ...func(*iam.Options)) (*iam.ListRoleTagsOutput, error) {
+	if f.listRoleTagsErr != nil {
+		return nil, f.listRoleTagsErr
+	}
+	return &iam.ListRoleTagsOutput{Tags: f.roleTags[aws.ToString(params.RoleName)]}, nil
+}
+
+func (f *fakeIAMClient) ListInstanceProfileTags(ctx context.Context, params *iam.ListInstanceProfileTagsInput, optFns ...func(*iam.Options)) (*iam.ListInstanceProfileTagsOutput, error) {
+	if f.listInstProfTagsErr != nil {
+		return nil, f.listInstProfTagsErr
+	}
+	return &iam.ListInstanceProfileTagsOutput{Tags: f.instanceProfileTags[aws.ToString(params.InstanceProfileName)]}, nil
+}
+
+func (f *fakeIAMClient) ListPolicyTags(ctx context.Context, params *iam.ListPolicyTagsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyTagsOutput, error) {
+	if f.listPolicyTagsErr != nil {
+		return nil, f.listPolicyTagsErr
+	}
+	return &iam.ListPolicyTagsOutput{Tags: f.policyTags[aws.ToString(params.PolicyArn)]}, nil
+}
+
+func (f *fakeIAMClient) TagRole(ctx context.Context, params *iam.TagRoleInput, optFns ...func(*iam.Options)) (*iam.TagRoleOutput, error) {
+	f.lastTagRoleInput = params
+	if f.tagRoleErr != nil {
+		return nil, f.tagRoleErr
+	}
+	return &iam.TagRoleOutput{}, nil
+}
+
+func (f *fakeIAMClient) UntagRole(ctx context.Context, params *iam.UntagRoleInput, optFns ...func(*iam.Options)) (*iam.UntagRoleOutput, error) {
+	f.lastUntagRoleInput = params
+	if f.untagRoleErr != nil {
+		return nil, f.untagRoleErr
+	}
+	return &iam.UntagRoleOutput{}, nil
+}
+
+func (f *fakeIAMClient) TagInstanceProfile(ctx context.Context, params *iam.TagInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.TagInstanceProfileOutput, error) {
+	f.lastTagInstanceProfileInput = params
+	if f.tagInstanceProfileErr != nil {
+		return nil, f.tagInstanceProfileErr
+	}
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+
+func (f *fakeIAMClient) UntagInstanceProfile(ctx context.Context, params *iam.UntagInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.UntagInstanceProfileOutput, error) {
+	f.lastUntagInstanceProfileInput = params
+	if f.untagInstanceProfileErr != nil {
+		return nil, f.untagInstanceProfileErr
+	}
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+
+func (f *fakeIAMClient) TagPolicy(ctx context.Context, params *iam.TagPolicyInput, optFns ...func(*iam.Options)) (*iam.TagPolicyOutput, error) {
+	f.lastTagPolicyInput = params
+	if f.tagPolicyErr != nil {
+		return nil, f.tagPolicyErr
+	}
+	return &iam.TagPolicyOutput{}, nil
+}
+
+func (f *fakeIAMClient) UntagPolicy(ctx context.Context, params *iam.UntagPolicyInput, optFns ...func(*iam.Options)) (*iam.UntagPolicyOutput, error) {
+	f.lastUntagPolicyInput = params
+	if f.untagPolicyErr != nil {
+		return nil, f.untagPolicyErr
+	}
+	return &iam.UntagPolicyOutput{}, nil
 }
 
 func (f *fakeIAMClient) ListPolicies(ctx context.Context, params *iam.ListPoliciesInput, optFns ...func(*iam.Options)) (*iam.ListPoliciesOutput, error) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,6 +15,67 @@ import (
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 )
+
+// iamTagFetchConcurrency bounds how many per-resource tag fetches
+// (ListRoleTags/ListInstanceProfileTags/ListPolicyTags) run at once in
+// fetchTagsConcurrently, below. An account can hold dozens to hundreds
+// of IAM roles/profiles/policies (confirmed live, 2026-07-23 -- fetching
+// tags one at a time made the IAM domain's discovery visibly slow to
+// open, several seconds, in an account with many AWS-service-linked
+// roles); unbounded concurrency risks IAM API throttling, so this caps
+// it at a conservative, not-tuned value rather than firing every
+// request at once.
+const iamTagFetchConcurrency = 10
+
+// fetchTagsConcurrently resolves tags for n resources concurrently,
+// bounded to iamTagFetchConcurrency in flight at once -- the shared
+// fan-out core for ListIAMRoleSummaries/ListIAMInstanceProfileSummaries/
+// ListIAMPolicySummaries, mirroring inventory.ListImages' own
+// concurrent per-region fan-out pattern (images.go), generalized here
+// to per-resource-index rather than per-region. fetch(ctx, i) is called
+// once for each index in [0,n); the returned slice is indexed the same
+// way, so callers can zip it back against their own already-fetched
+// list by position. The first error encountered (order not guaranteed
+// under concurrency) is returned once every in-flight fetch has
+// completed -- no goroutine is left running after this returns.
+func fetchTagsConcurrently(ctx context.Context, n int, fetch func(ctx context.Context, i int) (map[string]string, error)) ([]map[string]string, error) {
+	type result struct {
+		index int
+		tags  map[string]string
+		err   error
+	}
+	results := make(chan result, n)
+	sem := make(chan struct{}, iamTagFetchConcurrency)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			tags, err := fetch(ctx, i)
+			results <- result{index: i, tags: tags, err: err}
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	tagsByIndex := make([]map[string]string, n)
+	var firstErr error
+	for res := range results {
+		if res.err != nil {
+			if firstErr == nil {
+				firstErr = res.err
+			}
+			continue
+		}
+		tagsByIndex[res.index] = res.tags
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return tagsByIndex, nil
+}
 
 // OriginUnset is shown in the IAM domain's browse lists for a resource
 // whose Origin tag isn't set -- itself informative, signaling that
@@ -101,25 +163,49 @@ type IAMRoleSummary struct {
 	CreateDate time.Time
 	Origin     string
 	DLDOwned   bool
+	// Tags is the role's full tag set, kept at no extra API cost --
+	// ListRoleTags is already called per role to resolve Origin above,
+	// so retaining the full map costs nothing further and lets Tag
+	// Management's "Show all tags"/"Manage tags" for IAM Role (PLAN.md
+	// Phase 20.37) reuse this same summary rather than re-fetching.
+	Tags map[string]string
 }
 
 // ListIAMRoleSummaries lists every IAM role in the account, resolving
 // each one's Origin tag and DLD-ownership (per originTag), sorted by
 // CreateDate descending -- answers "what's recently added" directly
 // from the IAM API, no separate tracking mechanism.
+//
+// ListRoles does NOT return each role's Tags inline, despite the SDK's
+// Role struct declaring a Tags field -- confirmed live against a real
+// account, 2026-07-23 (DECISIONS.md, "ListRoles/ListInstanceProfiles/
+// ListPolicies don't return tags inline"): that field is populated by
+// other operations (e.g. GetRole), not this one. A separate
+// ListRoleTags call per role is required.
 func ListIAMRoleSummaries(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig) ([]IAMRoleSummary, error) {
 	out, err := client.ListRoles(ctx, &iam.ListRolesInput{})
 	if err != nil {
 		return nil, err
 	}
+	tagsByIndex, err := fetchTagsConcurrently(ctx, len(out.Roles), func(ctx context.Context, i int) (map[string]string, error) {
+		tagsOut, err := client.ListRoleTags(ctx, &iam.ListRoleTagsInput{RoleName: out.Roles[i].RoleName})
+		if err != nil {
+			return nil, err
+		}
+		return iamTagsToMap(tagsOut.Tags), nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	summaries := make([]IAMRoleSummary, 0, len(out.Roles))
-	for _, r := range out.Roles {
-		tags := iamTagsToMap(r.Tags)
+	for i, r := range out.Roles {
+		tags := tagsByIndex[i]
 		summaries = append(summaries, IAMRoleSummary{
 			Name:       aws.ToString(r.RoleName),
 			CreateDate: aws.ToTime(r.CreateDate),
 			Origin:     ResolveOrigin(tags, originTag.Key),
 			DLDOwned:   IsDLDOwned(tags, originTag),
+			Tags:       tags,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
@@ -135,24 +221,40 @@ type IAMInstanceProfileSummary struct {
 	CreateDate time.Time
 	Origin     string
 	DLDOwned   bool
+	// Tags is the profile's full tag set -- see IAMRoleSummary.Tags' doc
+	// comment.
+	Tags map[string]string
 }
 
 // ListIAMInstanceProfileSummaries lists every IAM instance profile in
 // the account, resolving each one's Origin tag and DLD-ownership,
-// sorted by CreateDate descending -- same shape as ListIAMRoleSummaries.
+// sorted by CreateDate descending -- same shape as ListIAMRoleSummaries,
+// including the same ListInstanceProfiles-doesn't-return-Tags-inline gap
+// (a separate ListInstanceProfileTags call per profile is required).
 func ListIAMInstanceProfileSummaries(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig) ([]IAMInstanceProfileSummary, error) {
 	out, err := client.ListInstanceProfiles(ctx, &iam.ListInstanceProfilesInput{})
 	if err != nil {
 		return nil, err
 	}
+	tagsByIndex, err := fetchTagsConcurrently(ctx, len(out.InstanceProfiles), func(ctx context.Context, i int) (map[string]string, error) {
+		tagsOut, err := client.ListInstanceProfileTags(ctx, &iam.ListInstanceProfileTagsInput{InstanceProfileName: out.InstanceProfiles[i].InstanceProfileName})
+		if err != nil {
+			return nil, err
+		}
+		return iamTagsToMap(tagsOut.Tags), nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	summaries := make([]IAMInstanceProfileSummary, 0, len(out.InstanceProfiles))
-	for _, p := range out.InstanceProfiles {
-		tags := iamTagsToMap(p.Tags)
+	for i, p := range out.InstanceProfiles {
+		tags := tagsByIndex[i]
 		summaries = append(summaries, IAMInstanceProfileSummary{
 			Name:       aws.ToString(p.InstanceProfileName),
 			CreateDate: aws.ToTime(p.CreateDate),
 			Origin:     ResolveOrigin(tags, originTag.Key),
 			DLDOwned:   IsDLDOwned(tags, originTag),
+			Tags:       tags,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
@@ -168,27 +270,43 @@ type IAMPolicySummary struct {
 	CreateDate time.Time
 	Origin     string
 	DLDOwned   bool
+	// Tags is the policy's full tag set -- see IAMRoleSummary.Tags' doc
+	// comment.
+	Tags map[string]string
 }
 
 // ListIAMPolicySummaries lists customer-managed ("Local" scope) IAM
 // policies in the account -- AWS-managed policies are a separate,
 // larger catalog offered behind its own toggle (DESIGN.md, "IAM Profile
 // & Role Management Domain"), not fetched here -- resolving each one's
-// Origin tag and DLD-ownership, sorted by CreateDate descending.
+// Origin tag and DLD-ownership, sorted by CreateDate descending. Same
+// ListPolicies-doesn't-return-Tags-inline gap as the other two list
+// functions -- a separate ListPolicyTags call per policy is required.
 func ListIAMPolicySummaries(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig) ([]IAMPolicySummary, error) {
 	out, err := client.ListPolicies(ctx, &iam.ListPoliciesInput{Scope: iamtypes.PolicyScopeTypeLocal})
 	if err != nil {
 		return nil, err
 	}
+	tagsByIndex, err := fetchTagsConcurrently(ctx, len(out.Policies), func(ctx context.Context, i int) (map[string]string, error) {
+		tagsOut, err := client.ListPolicyTags(ctx, &iam.ListPolicyTagsInput{PolicyArn: out.Policies[i].Arn})
+		if err != nil {
+			return nil, err
+		}
+		return iamTagsToMap(tagsOut.Tags), nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	summaries := make([]IAMPolicySummary, 0, len(out.Policies))
-	for _, p := range out.Policies {
-		tags := iamTagsToMap(p.Tags)
+	for i, p := range out.Policies {
+		tags := tagsByIndex[i]
 		summaries = append(summaries, IAMPolicySummary{
 			Name:       aws.ToString(p.PolicyName),
 			ARN:        aws.ToString(p.Arn),
 			CreateDate: aws.ToTime(p.CreateDate),
 			Origin:     ResolveOrigin(tags, originTag.Key),
 			DLDOwned:   IsDLDOwned(tags, originTag),
+			Tags:       tags,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {

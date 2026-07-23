@@ -28,6 +28,19 @@ type fakeIAMClient struct {
 	listInstProfsErr error
 	policies         []iamtypes.Policy
 	listPoliciesErr  error
+
+	// roleTags/instanceProfileTags/policyTags key by name (ARN for
+	// policies) -- ListRoles/ListInstanceProfiles/ListPolicies don't
+	// return Tags inline (confirmed live against a real account,
+	// 2026-07-23: DECISIONS.md, "ListRoles/ListInstanceProfiles/
+	// ListPolicies don't return tags inline"), so each resource's tags
+	// must come from its own List*Tags call instead.
+	roleTags            map[string][]iamtypes.Tag
+	instanceProfileTags map[string][]iamtypes.Tag
+	policyTags          map[string][]iamtypes.Tag
+	listRoleTagsErr     error
+	listInstProfTagsErr error
+	listPolicyTagsErr   error
 }
 
 func (f *fakeIAMClient) ListRoles(ctx context.Context, params *iam.ListRolesInput, optFns ...func(*iam.Options)) (*iam.ListRolesOutput, error) {
@@ -49,6 +62,27 @@ func (f *fakeIAMClient) ListPolicies(ctx context.Context, params *iam.ListPolici
 		return nil, f.listPoliciesErr
 	}
 	return &iam.ListPoliciesOutput{Policies: f.policies}, nil
+}
+
+func (f *fakeIAMClient) ListRoleTags(ctx context.Context, params *iam.ListRoleTagsInput, optFns ...func(*iam.Options)) (*iam.ListRoleTagsOutput, error) {
+	if f.listRoleTagsErr != nil {
+		return nil, f.listRoleTagsErr
+	}
+	return &iam.ListRoleTagsOutput{Tags: f.roleTags[aws.ToString(params.RoleName)]}, nil
+}
+
+func (f *fakeIAMClient) ListInstanceProfileTags(ctx context.Context, params *iam.ListInstanceProfileTagsInput, optFns ...func(*iam.Options)) (*iam.ListInstanceProfileTagsOutput, error) {
+	if f.listInstProfTagsErr != nil {
+		return nil, f.listInstProfTagsErr
+	}
+	return &iam.ListInstanceProfileTagsOutput{Tags: f.instanceProfileTags[aws.ToString(params.InstanceProfileName)]}, nil
+}
+
+func (f *fakeIAMClient) ListPolicyTags(ctx context.Context, params *iam.ListPolicyTagsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyTagsOutput, error) {
+	if f.listPolicyTagsErr != nil {
+		return nil, f.listPolicyTagsErr
+	}
+	return &iam.ListPolicyTagsOutput{Tags: f.policyTags[aws.ToString(params.PolicyArn)]}, nil
 }
 
 func iamFixtureTime(t *testing.T, s string) *time.Time {
@@ -154,12 +188,14 @@ func TestListIAMRoleSummaries_ResolvesOriginAndSortsByCreateDateDescending(t *te
 			{
 				RoleName:   aws.String("older-role"),
 				CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z"),
-				Tags:       []iamtypes.Tag{{Key: aws.String("Origin"), Value: aws.String("DLD")}},
 			},
 			{
 				RoleName:   aws.String("newer-role"),
 				CreateDate: iamFixtureTime(t, "2026-06-01T00:00:00Z"),
 			},
+		},
+		roleTags: map[string][]iamtypes.Tag{
+			"older-role": {{Key: aws.String("Origin"), Value: aws.String("DLD")}},
 		},
 	}
 	originTag := config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"}
@@ -179,11 +215,47 @@ func TestListIAMRoleSummaries_ResolvesOriginAndSortsByCreateDateDescending(t *te
 	}
 }
 
+func TestListIAMRoleSummaries_RetainsFullTagMap(t *testing.T) {
+	// Tag Management's "Show all tags"/"Manage tags" for IAM Role
+	// (Phase 20.37) reuses this same summary rather than re-fetching --
+	// the full tag map (not just Origin) must be retained, at no extra
+	// API cost since ListRoleTags is already called per role to resolve
+	// Origin.
+	fake := &fakeIAMClient{
+		roles: []iamtypes.Role{{RoleName: aws.String("some-role"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
+		roleTags: map[string][]iamtypes.Tag{
+			"some-role": {
+				{Key: aws.String("Origin"), Value: aws.String("DLD")},
+				{Key: aws.String("Project"), Value: aws.String("newauthors")},
+			},
+		},
+	}
+	got, err := ListIAMRoleSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]string{"Origin": "DLD", "Project": "newauthors"}
+	if len(got) != 1 || got[0].Tags["Origin"] != want["Origin"] || got[0].Tags["Project"] != want["Project"] {
+		t.Errorf("Tags = %v, want %v", got[0].Tags, want)
+	}
+}
+
 func TestListIAMRoleSummaries_PropagatesListRolesError(t *testing.T) {
 	fake := &fakeIAMClient{listRolesErr: errors.New("boom")}
 	_, err := ListIAMRoleSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
 	if err == nil {
 		t.Fatal("expected an error to propagate from ListRoles")
+	}
+}
+
+func TestListIAMRoleSummaries_PropagatesListRoleTagsError(t *testing.T) {
+	fake := &fakeIAMClient{
+		roles:           []iamtypes.Role{{RoleName: aws.String("some-role"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
+		listRoleTagsErr: errors.New("boom"),
+	}
+	_, err := ListIAMRoleSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err == nil {
+		t.Fatal("expected an error to propagate from ListRoleTags")
 	}
 }
 
@@ -193,12 +265,14 @@ func TestListIAMInstanceProfileSummaries_ResolvesOriginAndSortsByCreateDateDesce
 			{
 				InstanceProfileName: aws.String("older-profile"),
 				CreateDate:          iamFixtureTime(t, "2026-01-01T00:00:00Z"),
-				Tags:                []iamtypes.Tag{{Key: aws.String("Origin"), Value: aws.String("IMSS")}},
 			},
 			{
 				InstanceProfileName: aws.String("newer-profile"),
 				CreateDate:          iamFixtureTime(t, "2026-06-01T00:00:00Z"),
 			},
+		},
+		instanceProfileTags: map[string][]iamtypes.Tag{
+			"older-profile": {{Key: aws.String("Origin"), Value: aws.String("IMSS")}},
 		},
 	}
 	originTag := config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"}
@@ -215,11 +289,42 @@ func TestListIAMInstanceProfileSummaries_ResolvesOriginAndSortsByCreateDateDesce
 	}
 }
 
+func TestListIAMInstanceProfileSummaries_RetainsFullTagMap(t *testing.T) {
+	fake := &fakeIAMClient{
+		instanceProfiles: []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("some-profile"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
+		instanceProfileTags: map[string][]iamtypes.Tag{
+			"some-profile": {
+				{Key: aws.String("Origin"), Value: aws.String("DLD")},
+				{Key: aws.String("Project"), Value: aws.String("newauthors")},
+			},
+		},
+	}
+	got, err := ListIAMInstanceProfileSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]string{"Origin": "DLD", "Project": "newauthors"}
+	if len(got) != 1 || got[0].Tags["Origin"] != want["Origin"] || got[0].Tags["Project"] != want["Project"] {
+		t.Errorf("Tags = %v, want %v", got[0].Tags, want)
+	}
+}
+
 func TestListIAMInstanceProfileSummaries_PropagatesListInstanceProfilesError(t *testing.T) {
 	fake := &fakeIAMClient{listInstProfsErr: errors.New("boom")}
 	_, err := ListIAMInstanceProfileSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
 	if err == nil {
 		t.Fatal("expected an error to propagate from ListInstanceProfiles")
+	}
+}
+
+func TestListIAMInstanceProfileSummaries_PropagatesListInstanceProfileTagsError(t *testing.T) {
+	fake := &fakeIAMClient{
+		instanceProfiles:    []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("some-profile"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
+		listInstProfTagsErr: errors.New("boom"),
+	}
+	_, err := ListIAMInstanceProfileSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err == nil {
+		t.Fatal("expected an error to propagate from ListInstanceProfileTags")
 	}
 }
 
@@ -230,13 +335,15 @@ func TestListIAMPolicySummaries_ResolvesOriginAndSortsByCreateDateDescending(t *
 				PolicyName: aws.String("older-policy"),
 				Arn:        aws.String("arn:aws:iam::123456789012:policy/older-policy"),
 				CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z"),
-				Tags:       []iamtypes.Tag{{Key: aws.String("Origin"), Value: aws.String("DLD")}},
 			},
 			{
 				PolicyName: aws.String("newer-policy"),
 				Arn:        aws.String("arn:aws:iam::123456789012:policy/newer-policy"),
 				CreateDate: iamFixtureTime(t, "2026-06-01T00:00:00Z"),
 			},
+		},
+		policyTags: map[string][]iamtypes.Tag{
+			"arn:aws:iam::123456789012:policy/older-policy": {{Key: aws.String("Origin"), Value: aws.String("DLD")}},
 		},
 	}
 	originTag := config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"}
@@ -253,11 +360,42 @@ func TestListIAMPolicySummaries_ResolvesOriginAndSortsByCreateDateDescending(t *
 	}
 }
 
+func TestListIAMPolicySummaries_RetainsFullTagMap(t *testing.T) {
+	fake := &fakeIAMClient{
+		policies: []iamtypes.Policy{{PolicyName: aws.String("some-policy"), Arn: aws.String("arn:aws:iam::123456789012:policy/some-policy"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
+		policyTags: map[string][]iamtypes.Tag{
+			"arn:aws:iam::123456789012:policy/some-policy": {
+				{Key: aws.String("Origin"), Value: aws.String("DLD")},
+				{Key: aws.String("Project"), Value: aws.String("newauthors")},
+			},
+		},
+	}
+	got, err := ListIAMPolicySummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]string{"Origin": "DLD", "Project": "newauthors"}
+	if len(got) != 1 || got[0].Tags["Origin"] != want["Origin"] || got[0].Tags["Project"] != want["Project"] {
+		t.Errorf("Tags = %v, want %v", got[0].Tags, want)
+	}
+}
+
 func TestListIAMPolicySummaries_PropagatesListPoliciesError(t *testing.T) {
 	fake := &fakeIAMClient{listPoliciesErr: errors.New("boom")}
 	_, err := ListIAMPolicySummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
 	if err == nil {
 		t.Fatal("expected an error to propagate from ListPolicies")
+	}
+}
+
+func TestListIAMPolicySummaries_PropagatesListPolicyTagsError(t *testing.T) {
+	fake := &fakeIAMClient{
+		policies:          []iamtypes.Policy{{PolicyName: aws.String("some-policy"), Arn: aws.String("arn:aws:iam::123456789012:policy/some-policy"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")}},
+		listPolicyTagsErr: errors.New("boom"),
+	}
+	_, err := ListIAMPolicySummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err == nil {
+		t.Fatal("expected an error to propagate from ListPolicyTags")
 	}
 }
 
