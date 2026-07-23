@@ -32,6 +32,14 @@ type IAMActions struct {
 	// new resources, reversing the 2026-07-02 "never creates a role"
 	// scope deliberately and only through curated templates.
 	CreateRoleFromTemplate func(ctx context.Context) error
+	// DeleteRole/AttachPolicyToRole/DetachPolicyFromRole are Phase
+	// 20.40's CRUD-completion actions (DECISIONS.md, "IAM Profile & Role
+	// Management: support CRUD for DLD-owned roles"): every one of them
+	// is scoped to DLD-owned roles only (RequireDLDOwned), matching this
+	// domain's "IMSS/AWS-provided is read-only" boundary everywhere else.
+	DeleteRole           func(ctx context.Context) error
+	AttachPolicyToRole   func(ctx context.Context) error
+	DetachPolicyFromRole func(ctx context.Context) error
 }
 
 // iamMenuItem pairs an IAM menu label with the IAMActions field it
@@ -51,6 +59,9 @@ var iamMenuItems = []iamMenuItem{
 	{"View Role Detail", func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
 	{"View Instance Profile Detail", func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
 	{"Create Role from Template", func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
+	{"Delete Role", func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
+	{"Attach Policy to Role", func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
+	{"Detach Policy from Role", func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
 }
 
 // pickIAMItem runs the IAM domain menu's huh.Select and returns the

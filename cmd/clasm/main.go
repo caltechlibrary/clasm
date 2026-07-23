@@ -440,6 +440,15 @@ func main() {
 		CreateRoleFromTemplate: func(ctx context.Context) error {
 			return workflow.CreateIAMRoleFromTemplate(ctx, out, iamClient, cfg.OriginTag, account, cfg.Regions[0])
 		},
+		DeleteRole: func(ctx context.Context) error {
+			return workflow.DeleteIAMRole(ctx, out, iamClient, cfg.OriginTag)
+		},
+		AttachPolicyToRole: func(ctx context.Context) error {
+			return workflow.AttachPolicyToRole(ctx, out, iamClient, cfg.OriginTag)
+		},
+		DetachPolicyFromRole: func(ctx context.Context) error {
+			return workflow.DetachPolicyFromRole(ctx, out, iamClient, cfg.OriginTag)
+		},
 	}
 
 	domains := workflow.DomainActions{

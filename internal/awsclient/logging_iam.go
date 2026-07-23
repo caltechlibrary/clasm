@@ -166,3 +166,45 @@ func (w *loggingIAMClient) AttachRolePolicy(ctx context.Context, params *iam.Att
 		return w.inner.AttachRolePolicy(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingIAMClient) DeleteRole(ctx context.Context, params *iam.DeleteRoleInput, optFns ...func(*iam.Options)) (*iam.DeleteRoleOutput, error) {
+	return logAWSCall(w.dl, "IAM.DeleteRole", w.region, params, func() (*iam.DeleteRoleOutput, error) {
+		return w.inner.DeleteRole(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) DeleteRolePolicy(ctx context.Context, params *iam.DeleteRolePolicyInput, optFns ...func(*iam.Options)) (*iam.DeleteRolePolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.DeleteRolePolicy", w.region, params, func() (*iam.DeleteRolePolicyOutput, error) {
+		return w.inner.DeleteRolePolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) DetachRolePolicy(ctx context.Context, params *iam.DetachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.DetachRolePolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.DetachRolePolicy", w.region, params, func() (*iam.DetachRolePolicyOutput, error) {
+		return w.inner.DetachRolePolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) DeletePolicy(ctx context.Context, params *iam.DeletePolicyInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.DeletePolicy", w.region, params, func() (*iam.DeletePolicyOutput, error) {
+		return w.inner.DeletePolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) DeletePolicyVersion(ctx context.Context, params *iam.DeletePolicyVersionInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyVersionOutput, error) {
+	return logAWSCall(w.dl, "IAM.DeletePolicyVersion", w.region, params, func() (*iam.DeletePolicyVersionOutput, error) {
+		return w.inner.DeletePolicyVersion(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) ListPolicyVersions(ctx context.Context, params *iam.ListPolicyVersionsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyVersionsOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListPolicyVersions", w.region, params, func() (*iam.ListPolicyVersionsOutput, error) {
+		return w.inner.ListPolicyVersions(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) ListEntitiesForPolicy(ctx context.Context, params *iam.ListEntitiesForPolicyInput, optFns ...func(*iam.Options)) (*iam.ListEntitiesForPolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListEntitiesForPolicy", w.region, params, func() (*iam.ListEntitiesForPolicyOutput, error) {
+		return w.inner.ListEntitiesForPolicy(ctx, params, optFns...)
+	})
+}

@@ -88,6 +88,24 @@ type IAMAPI interface {
 	CreateRole(ctx context.Context, params *iam.CreateRoleInput, optFns ...func(*iam.Options)) (*iam.CreateRoleOutput, error)
 	CreatePolicy(ctx context.Context, params *iam.CreatePolicyInput, optFns ...func(*iam.Options)) (*iam.CreatePolicyOutput, error)
 	AttachRolePolicy(ctx context.Context, params *iam.AttachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.AttachRolePolicyOutput, error)
+	// DeleteRole/DeleteRolePolicy/DetachRolePolicy/DeletePolicy/
+	// DeletePolicyVersion/ListPolicyVersions/ListEntitiesForPolicy
+	// support Phase 20.40's Delete Role and Attach/Detach Policy
+	// actions -- confirmed live against the vendored SDK's own doc
+	// comments that DeleteRole requires inline policies deleted and
+	// managed policies detached first (and the role removed from any
+	// instance profile, which this project handles by refusing to
+	// proceed rather than automating -- see DECISIONS.md), and that
+	// DeletePolicy requires every non-default version deleted first via
+	// DeletePolicyVersion, and detaching from every remaining entity
+	// (checked via ListEntitiesForPolicy) before that.
+	DeleteRole(ctx context.Context, params *iam.DeleteRoleInput, optFns ...func(*iam.Options)) (*iam.DeleteRoleOutput, error)
+	DeleteRolePolicy(ctx context.Context, params *iam.DeleteRolePolicyInput, optFns ...func(*iam.Options)) (*iam.DeleteRolePolicyOutput, error)
+	DetachRolePolicy(ctx context.Context, params *iam.DetachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.DetachRolePolicyOutput, error)
+	DeletePolicy(ctx context.Context, params *iam.DeletePolicyInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyOutput, error)
+	DeletePolicyVersion(ctx context.Context, params *iam.DeletePolicyVersionInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyVersionOutput, error)
+	ListPolicyVersions(ctx context.Context, params *iam.ListPolicyVersionsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyVersionsOutput, error)
+	ListEntitiesForPolicy(ctx context.Context, params *iam.ListEntitiesForPolicyInput, optFns ...func(*iam.Options)) (*iam.ListEntitiesForPolicyOutput, error)
 }
 
 // NewIAMClient constructs an IAM client from the SDK's default credential

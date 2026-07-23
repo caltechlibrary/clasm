@@ -20,6 +20,9 @@ func testIAMActions() IAMActions {
 		ViewRoleDetail:            noop,
 		ViewInstanceProfileDetail: noop,
 		CreateRoleFromTemplate:    noop,
+		DeleteRole:                noop,
+		AttachPolicyToRole:        noop,
+		DetachPolicyFromRole:      noop,
 	}
 }
 
@@ -214,9 +217,60 @@ func TestRunIAMMenu_DispatchesToCreateRoleFromTemplate(t *testing.T) {
 	}
 }
 
+func TestRunIAMMenu_DispatchesToDeleteRole(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.DeleteRole = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Delete Role
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRunIAMMenu_DispatchesToAttachPolicyToRole(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.AttachPolicyToRole = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("8\n"), buf) // Attach Policy to Role
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRunIAMMenu_DispatchesToDetachPolicyFromRole(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.DetachPolicyFromRole = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Detach Policy from Role
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
 func TestIAMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(iamMenuItems) != 6 {
-		t.Fatalf("len(iamMenuItems) = %d, want 6 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
+	if len(iamMenuItems) != 9 {
+		t.Fatalf("len(iamMenuItems) = %d, want 9 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
 	}
 	for _, item := range iamMenuItems {
 		if item.action == nil {

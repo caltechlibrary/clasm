@@ -1662,6 +1662,54 @@ policy should be gated (the existing `Environment=production` +
 type-to-confirm tier, Feature 9, or a new gate specific to IAM given the
 blast radius of a bad delete) -- all left for the implementation plan.
 
+### CRUD completion for DLD-owned roles (Design Addendum, 2026-07-23, PLAN.md Phase 20.40)
+
+**Status: designed and implemented 2026-07-23**, same day as the rest of
+this domain -- motivated directly by live use: testing the Phase 20.39
+creation templates left behind test roles (`test-rdm-repo-role`,
+`test-static-site-role`, etc.) with no way to remove them from within
+clasm. See DECISIONS.md, "IAM Profile & Role Management: support CRUD
+for DLD-owned roles," for the three scoping decisions (delete +
+attach/detach, not just delete; cascade-delete the dedicated policy;
+type-to-confirm gate).
+
+**Delete Role.** Pick a DLD-owned role (the picker is filtered to
+DLD-owned roles only -- there's no legitimate reason to offer deleting a
+role clasm doesn't recognize as DLD's), see its full detail (reusing
+Phase 20.38's detail view), and delete it. Refuses upfront, before any
+confirmation prompt, if the role is still referenced by an instance
+profile -- detaching a role from an instance profile is already Phase
+20.33's own "Associate/replace IAM instance profile" action, and
+automating that cross-cutting side effect here would be scope creep into
+a workflow that already exists. Order follows AWS's own documented
+precondition list for `DeleteRole`: delete inline policies
+(`DeleteRolePolicy`), detach managed policies (`DetachRolePolicy`), then
+delete the role. If the role has a dedicated customer-managed policy
+created alongside it by a Phase 20.39 template (named `<role>-policy`,
+matching `createIAMRoleFromTemplate`'s own naming convention), that
+policy is deleted too, but only if nothing else still uses it (checked
+via `ListEntitiesForPolicy`, not assumed from the naming convention
+alone) -- this avoids leaving an orphaned policy as new clutter, the
+same problem this feature exists to solve. Gated behind
+`ConfirmDestructive` (type-to-confirm the role's own name), matching this
+project's existing destructive-operation tier (Terminate Instance,
+Remove AMI) rather than a plain yes/no -- deleting a role is
+irreversible and the blast radius (anything still assuming it) isn't
+always fully visible to the operator.
+
+**Attach Policy to Role / Detach Policy from Role.** Pick a DLD-owned
+role, then either pick any customer-managed policy to attach (not
+filtered to DLD-owned policies -- attaching an IMSS- or AWS-authored
+policy to a DLD-owned role is a legitimate, expected case) or pick one of
+the role's currently-attached policies to detach. Both gated behind a
+plain `Confirm`, not `ConfirmDestructive` -- unlike deleting a role,
+attaching or detaching a single policy is trivially reversible via the
+paired action. Detaching a policy never also deletes it (unlike Delete
+Role's cascade) -- that cascade is specific to Delete Role's own
+dedicated-policy convention, not a general rule, since a detached policy
+may still be in use elsewhere or may never have been clasm's to manage
+in the first place.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

@@ -95,6 +95,29 @@ type fakeIAMClient struct {
 	createPolicyArn            string // used to populate CreatePolicyOutput.Policy.Arn if set
 	attachRolePolicyErr        error
 	lastAttachRolePolicyInputs []*iam.AttachRolePolicyInput
+
+	// deleteRoleErr/lastDeleteRoleInput, deleteRolePolicyErr/
+	// lastDeleteRolePolicyInputs, detachRolePolicyErr/
+	// lastDetachRolePolicyInputs, deletePolicyErr/lastDeletePolicyInputs,
+	// deletePolicyVersionErr/lastDeletePolicyVersionInputs,
+	// policyVersionsByArn/listPolicyVersionsErr,
+	// entitiesByPolicyArn/listEntitiesForPolicyErr support Phase 20.40's
+	// Delete Role and Attach/Detach Policy actions
+	// (iam_lifecycle_test.go).
+	deleteRoleErr                 error
+	lastDeleteRoleInput           *iam.DeleteRoleInput
+	deleteRolePolicyErr           error
+	lastDeleteRolePolicyInputs    []*iam.DeleteRolePolicyInput
+	detachRolePolicyErr           error
+	lastDetachRolePolicyInputs    []*iam.DetachRolePolicyInput
+	deletePolicyErr               error
+	lastDeletePolicyInputs        []*iam.DeletePolicyInput
+	deletePolicyVersionErr        error
+	lastDeletePolicyVersionInputs []*iam.DeletePolicyVersionInput
+	policyVersionsByArn           map[string][]iamtypes.PolicyVersion
+	listPolicyVersionsErr         error
+	entitiesByPolicyArn           map[string]iam.ListEntitiesForPolicyOutput
+	listEntitiesForPolicyErr      error
 }
 
 func (f *fakeIAMClient) GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
@@ -147,6 +170,61 @@ func (f *fakeIAMClient) AttachRolePolicy(ctx context.Context, params *iam.Attach
 		return nil, f.attachRolePolicyErr
 	}
 	return &iam.AttachRolePolicyOutput{}, nil
+}
+
+func (f *fakeIAMClient) DeleteRole(ctx context.Context, params *iam.DeleteRoleInput, optFns ...func(*iam.Options)) (*iam.DeleteRoleOutput, error) {
+	f.lastDeleteRoleInput = params
+	if f.deleteRoleErr != nil {
+		return nil, f.deleteRoleErr
+	}
+	return &iam.DeleteRoleOutput{}, nil
+}
+
+func (f *fakeIAMClient) DeleteRolePolicy(ctx context.Context, params *iam.DeleteRolePolicyInput, optFns ...func(*iam.Options)) (*iam.DeleteRolePolicyOutput, error) {
+	f.lastDeleteRolePolicyInputs = append(f.lastDeleteRolePolicyInputs, params)
+	if f.deleteRolePolicyErr != nil {
+		return nil, f.deleteRolePolicyErr
+	}
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+
+func (f *fakeIAMClient) DetachRolePolicy(ctx context.Context, params *iam.DetachRolePolicyInput, optFns ...func(*iam.Options)) (*iam.DetachRolePolicyOutput, error) {
+	f.lastDetachRolePolicyInputs = append(f.lastDetachRolePolicyInputs, params)
+	if f.detachRolePolicyErr != nil {
+		return nil, f.detachRolePolicyErr
+	}
+	return &iam.DetachRolePolicyOutput{}, nil
+}
+
+func (f *fakeIAMClient) DeletePolicy(ctx context.Context, params *iam.DeletePolicyInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyOutput, error) {
+	f.lastDeletePolicyInputs = append(f.lastDeletePolicyInputs, params)
+	if f.deletePolicyErr != nil {
+		return nil, f.deletePolicyErr
+	}
+	return &iam.DeletePolicyOutput{}, nil
+}
+
+func (f *fakeIAMClient) DeletePolicyVersion(ctx context.Context, params *iam.DeletePolicyVersionInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyVersionOutput, error) {
+	f.lastDeletePolicyVersionInputs = append(f.lastDeletePolicyVersionInputs, params)
+	if f.deletePolicyVersionErr != nil {
+		return nil, f.deletePolicyVersionErr
+	}
+	return &iam.DeletePolicyVersionOutput{}, nil
+}
+
+func (f *fakeIAMClient) ListPolicyVersions(ctx context.Context, params *iam.ListPolicyVersionsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyVersionsOutput, error) {
+	if f.listPolicyVersionsErr != nil {
+		return nil, f.listPolicyVersionsErr
+	}
+	return &iam.ListPolicyVersionsOutput{Versions: f.policyVersionsByArn[aws.ToString(params.PolicyArn)]}, nil
+}
+
+func (f *fakeIAMClient) ListEntitiesForPolicy(ctx context.Context, params *iam.ListEntitiesForPolicyInput, optFns ...func(*iam.Options)) (*iam.ListEntitiesForPolicyOutput, error) {
+	if f.listEntitiesForPolicyErr != nil {
+		return nil, f.listEntitiesForPolicyErr
+	}
+	out := f.entitiesByPolicyArn[aws.ToString(params.PolicyArn)]
+	return &out, nil
 }
 
 func (f *fakeIAMClient) ListRolePolicies(ctx context.Context, params *iam.ListRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListRolePoliciesOutput, error) {

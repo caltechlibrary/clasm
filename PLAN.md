@@ -4594,6 +4594,88 @@ path used to auto-tag a newly-created role, when configured).
 
 ---
 
+## Phase 20.40 — Delete Role, Attach/Detach Policy (CRUD Completion for DLD-Owned Roles)
+
+**Status: designed and implemented 2026-07-23** (DESIGN.md, "CRUD
+completion for DLD-owned roles"; DECISIONS.md, "IAM Profile & Role
+Management: support CRUD for DLD-owned roles"). Targeted for v0.0.5.
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
+real-AWS-verified. Motivated directly by live use: testing Phase 20.39's
+templates left behind test roles with no way to remove them from within
+clasm.
+
+### Work Items
+
+- [x] `IAMAPI` gains `DeleteRole`, `DeleteRolePolicy`,
+      `DetachRolePolicy`, `DeletePolicy`, `DeletePolicyVersion`,
+      `ListPolicyVersions`, `ListEntitiesForPolicy` — mirrored into
+      `logging_iam.go`. Confirmed via the vendored SDK's own doc
+      comments that `DeleteRole` requires inline policies deleted and
+      managed policies detached first, and that `DeletePolicy` requires
+      every non-default version deleted first and detaching from every
+      remaining entity beforehand
+- [x] Core delete logic (`internal/workflow/iam_lifecycle.go`):
+      `deleteIAMRole` (refuses if `ReferencedByProfiles` is non-empty;
+      deletes inline policies, detaches managed policies, deletes the
+      role, then deletes its dedicated `<role>-policy` if unused
+      elsewhere) and `deleteIAMPolicyIfUnused` (checks
+      `ListEntitiesForPolicy` before deleting, deletes non-default
+      versions via `ListPolicyVersions`/`DeletePolicyVersion` first,
+      never touches an AWS-managed policy ARN — `isAWSManagedPolicyArn`)
+- [x] Guided Delete Role flow (`DeleteIAMRole`/`deleteIAMRoleWorkflow`/
+      `deleteIAMRoleConfirmed`): picker filtered to DLD-owned roles only
+      (`filterDLDOwnedRoles`), shows the role's full detail (reusing
+      Phase 20.38's `fetchIAMRoleDetail`/`displayIAMRoleDetail`),
+      refuses upfront if still referenced by an instance profile,
+      defensively re-checks `RequireDLDOwned`, gated behind
+      `ConfirmDestructive` (type-to-confirm the role's own name, this
+      project's existing destructive-operation tier)
+- [x] Attach Policy to Role (`AttachPolicyToRole`/
+      `attachPolicyToRoleWorkflow`/`attachPolicyToRoleConfirmed`): pick a
+      DLD-owned role, pick any customer-managed policy (not filtered to
+      DLD-owned — attaching an IMSS-/AWS-authored policy to a DLD role is
+      legitimate), plain `Confirm`, `AttachRolePolicy`
+- [x] Detach Policy from Role (`DetachPolicyFromRole`/
+      `detachPolicyFromRoleWorkflow`/`detachPolicyFromRoleConfirmed`):
+      pick a DLD-owned role, refuse cleanly if it has no attached
+      policies, pick one via `pickComparable` (Menu-tier, since
+      `IAMPolicyRef` is comparable — pipe-testable, unlike the
+      Picker-tier role/policy selection steps), plain `Confirm`,
+      `DetachRolePolicy`. Never cascades into deleting the detached
+      policy — that's specific to Delete Role's own dedicated-policy
+      convention
+- [x] All three actions wired into `IAMActions`/`iamMenuItems` (`Delete
+      Role`, `Attach Policy to Role`, `Detach Policy from Role`, appended
+      after `Create Role from Template` so existing numeric-index tests
+      for prior entries stay valid unchanged) and `cmd/clasm/main.go`
+
+**Tests:** test-first for the core delete logic (`deleteIAMRole`,
+`deleteIAMPolicyIfUnused`) — every AWS-call failure point covered via
+subtests, plus never-deletes-an-AWS-managed-policy and
+leaves-the-dedicated-policy-if-used-elsewhere. Menu-tier flows
+(`*Confirmed` cores) driven end to end via accessible-mode pipe input:
+confirmed/declined/mismatched confirmation, `RequireDLDOwned` blocking a
+non-DLD-owned role, each AWS-call error propagating, and the
+no-DLD-owned-roles/no-attached-policies early-return messages. The
+Picker-tier entry points (`pickIAMRole`/`pickIAMPolicy`) remain untested
+directly, same accepted limitation as every other Picker-tier flow in
+this domain (Phase 20.36/20.38/20.39's own testable-core split).
+
+**Files:** `internal/awsclient/iam.go`, `internal/awsclient/logging_iam.go`,
+`internal/workflow/create_instance_profile_test.go` (shared
+`fakeIAMClient` gained `DeleteRole`/`DeleteRolePolicy`/
+`DetachRolePolicy`/`DeletePolicy`/`DeletePolicyVersion`/
+`ListPolicyVersions`/`ListEntitiesForPolicy`), new
+`internal/workflow/iam_lifecycle.go`, `internal/workflow/iam_menu.go`,
+`cmd/clasm/main.go`, plus each changed file's `_test.go` counterpart.
+
+**Dependency:** Phase 20.36 (`RequireDLDOwned`, `filterDLDOwnedRoles`'
+DLD-ownership data), Phase 20.38 (`fetchIAMRoleDetail`,
+`displayIAMRoleDetail`, `IAMRoleDetail`/`IAMPolicyRef`), Phase 20.39
+(the `<role>-policy` naming convention Delete Role's cascade relies on).
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
