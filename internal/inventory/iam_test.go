@@ -309,6 +309,29 @@ func TestListIAMInstanceProfileSummaries_RetainsFullTagMap(t *testing.T) {
 	}
 }
 
+func TestListIAMInstanceProfileSummaries_RetainsRoleNames(t *testing.T) {
+	// RoleNames is populated at no extra API cost -- ListInstanceProfiles
+	// already returns each profile's attached Roles, for the Role
+	// detail view's "referenced by instance profiles" cross-reference
+	// (PLAN.md Phase 20.38).
+	fake := &fakeIAMClient{
+		instanceProfiles: []iamtypes.InstanceProfile{
+			{
+				InstanceProfileName: aws.String("air-sampling-profile"),
+				CreateDate:          iamFixtureTime(t, "2026-01-01T00:00:00Z"),
+				Roles:               []iamtypes.Role{{RoleName: aws.String("air-sampling")}},
+			},
+		},
+	}
+	got, err := ListIAMInstanceProfileSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].RoleNames) != 1 || got[0].RoleNames[0] != "air-sampling" {
+		t.Errorf("RoleNames = %v, want [air-sampling]", got[0].RoleNames)
+	}
+}
+
 func TestListIAMInstanceProfileSummaries_PropagatesListInstanceProfilesError(t *testing.T) {
 	fake := &fakeIAMClient{listInstProfsErr: errors.New("boom")}
 	_, err := ListIAMInstanceProfileSummaries(context.Background(), fake, config.OriginTagConfig{Key: "Origin"})

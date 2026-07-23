@@ -19,6 +19,14 @@ type IAMActions struct {
 	ShowRoles            func(ctx context.Context) error
 	ShowInstanceProfiles func(ctx context.Context) error
 	ShowPolicies         func(ctx context.Context) error
+	// ViewRoleDetail/ViewInstanceProfileDetail are the detail-view
+	// actions (PLAN.md Phase 20.38): pick one role/profile and show its
+	// full detail (trust policy, attached/inline policies, tags,
+	// SSM-capability, cross-references), matching Compute's own
+	// "Show a launch template" vs. "Show launch templates" split
+	// between a single-resource detail view and a bulk list.
+	ViewRoleDetail            func(ctx context.Context) error
+	ViewInstanceProfileDetail func(ctx context.Context) error
 }
 
 // iamMenuItem pairs an IAM menu label with the IAMActions field it
@@ -35,6 +43,8 @@ var iamMenuItems = []iamMenuItem{
 	{"Show Roles", func(a IAMActions, ctx context.Context) error { return a.ShowRoles(ctx) }},
 	{"Show Instance Profiles", func(a IAMActions, ctx context.Context) error { return a.ShowInstanceProfiles(ctx) }},
 	{"Show Policies", func(a IAMActions, ctx context.Context) error { return a.ShowPolicies(ctx) }},
+	{"View Role Detail", func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
+	{"View Instance Profile Detail", func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
 }
 
 // pickIAMItem runs the IAM domain menu's huh.Select and returns the

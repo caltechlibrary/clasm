@@ -112,3 +112,39 @@ func (w *loggingIAMClient) UntagPolicy(ctx context.Context, params *iam.UntagPol
 		return w.inner.UntagPolicy(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingIAMClient) GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetRole", w.region, params, func() (*iam.GetRoleOutput, error) {
+		return w.inner.GetRole(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) ListRolePolicies(ctx context.Context, params *iam.ListRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListRolePoliciesOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListRolePolicies", w.region, params, func() (*iam.ListRolePoliciesOutput, error) {
+		return w.inner.ListRolePolicies(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) GetRolePolicy(ctx context.Context, params *iam.GetRolePolicyInput, optFns ...func(*iam.Options)) (*iam.GetRolePolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetRolePolicy", w.region, params, func() (*iam.GetRolePolicyOutput, error) {
+		return w.inner.GetRolePolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) GetPolicy(ctx context.Context, params *iam.GetPolicyInput, optFns ...func(*iam.Options)) (*iam.GetPolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetPolicy", w.region, params, func() (*iam.GetPolicyOutput, error) {
+		return w.inner.GetPolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) GetPolicyVersion(ctx context.Context, params *iam.GetPolicyVersionInput, optFns ...func(*iam.Options)) (*iam.GetPolicyVersionOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetPolicyVersion", w.region, params, func() (*iam.GetPolicyVersionOutput, error) {
+		return w.inner.GetPolicyVersion(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) GetInstanceProfile(ctx context.Context, params *iam.GetInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.GetInstanceProfileOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetInstanceProfile", w.region, params, func() (*iam.GetInstanceProfileOutput, error) {
+		return w.inner.GetInstanceProfile(ctx, params, optFns...)
+	})
+}

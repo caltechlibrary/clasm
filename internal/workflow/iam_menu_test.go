@@ -14,9 +14,11 @@ import (
 func testIAMActions() IAMActions {
 	noop := func(ctx context.Context) error { return nil }
 	return IAMActions{
-		ShowRoles:            noop,
-		ShowInstanceProfiles: noop,
-		ShowPolicies:         noop,
+		ShowRoles:                 noop,
+		ShowInstanceProfiles:      noop,
+		ShowPolicies:              noop,
+		ViewRoleDetail:            noop,
+		ViewInstanceProfileDetail: noop,
 	}
 }
 
@@ -160,9 +162,43 @@ func TestRunIAMMenu_CleanExitOnEOF(t *testing.T) {
 	}
 }
 
+func TestRunIAMMenu_DispatchesToViewRoleDetail(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.ViewRoleDetail = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("4\n"), buf) // View Role Detail
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRunIAMMenu_DispatchesToViewInstanceProfileDetail(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.ViewInstanceProfileDetail = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // View Instance Profile Detail
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
 func TestIAMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(iamMenuItems) != 3 {
-		t.Fatalf("len(iamMenuItems) = %d, want 3 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
+	if len(iamMenuItems) != 5 {
+		t.Fatalf("len(iamMenuItems) = %d, want 5 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
 	}
 	for _, item := range iamMenuItems {
 		if item.action == nil {

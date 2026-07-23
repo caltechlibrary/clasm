@@ -65,6 +65,76 @@ type fakeIAMClient struct {
 
 	lastCreateInstanceProfileInput    *iam.CreateInstanceProfileInput
 	lastAddRoleToInstanceProfileInput *iam.AddRoleToInstanceProfileInput
+
+	// getRoleOut/getRoleErr, rolePolicyNames/listRolePoliciesErr,
+	// rolePolicyDocuments/getRolePolicyErr, policiesByArn/getPolicyErr,
+	// policyVersions/getPolicyVersionErr support the Role detail view
+	// (iam_detail_test.go, PLAN.md Phase 20.38).
+	getRoleOut            *iam.GetRoleOutput
+	getRoleErr            error
+	getInstanceProfileOut *iam.GetInstanceProfileOutput
+	getInstanceProfileErr error
+	rolePolicyNames       map[string][]string
+	listRolePoliciesErr   error
+	rolePolicyDocuments   map[string]string // key: roleName+"/"+policyName
+	getRolePolicyErr      error
+	policiesByArn         map[string]iamtypes.Policy
+	getPolicyErr          error
+	policyVersions        map[string]string // key: policyArn+"/"+versionId
+	getPolicyVersionErr   error
+}
+
+func (f *fakeIAMClient) GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
+	if f.getRoleErr != nil {
+		return nil, f.getRoleErr
+	}
+	if f.getRoleOut != nil {
+		return f.getRoleOut, nil
+	}
+	return &iam.GetRoleOutput{Role: &iamtypes.Role{RoleName: params.RoleName}}, nil
+}
+
+func (f *fakeIAMClient) GetInstanceProfile(ctx context.Context, params *iam.GetInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.GetInstanceProfileOutput, error) {
+	if f.getInstanceProfileErr != nil {
+		return nil, f.getInstanceProfileErr
+	}
+	if f.getInstanceProfileOut != nil {
+		return f.getInstanceProfileOut, nil
+	}
+	return &iam.GetInstanceProfileOutput{InstanceProfile: &iamtypes.InstanceProfile{InstanceProfileName: params.InstanceProfileName}}, nil
+}
+
+func (f *fakeIAMClient) ListRolePolicies(ctx context.Context, params *iam.ListRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListRolePoliciesOutput, error) {
+	if f.listRolePoliciesErr != nil {
+		return nil, f.listRolePoliciesErr
+	}
+	return &iam.ListRolePoliciesOutput{PolicyNames: f.rolePolicyNames[aws.ToString(params.RoleName)]}, nil
+}
+
+func (f *fakeIAMClient) GetRolePolicy(ctx context.Context, params *iam.GetRolePolicyInput, optFns ...func(*iam.Options)) (*iam.GetRolePolicyOutput, error) {
+	if f.getRolePolicyErr != nil {
+		return nil, f.getRolePolicyErr
+	}
+	key := aws.ToString(params.RoleName) + "/" + aws.ToString(params.PolicyName)
+	doc := f.rolePolicyDocuments[key]
+	return &iam.GetRolePolicyOutput{RoleName: params.RoleName, PolicyName: params.PolicyName, PolicyDocument: aws.String(doc)}, nil
+}
+
+func (f *fakeIAMClient) GetPolicy(ctx context.Context, params *iam.GetPolicyInput, optFns ...func(*iam.Options)) (*iam.GetPolicyOutput, error) {
+	if f.getPolicyErr != nil {
+		return nil, f.getPolicyErr
+	}
+	p := f.policiesByArn[aws.ToString(params.PolicyArn)]
+	return &iam.GetPolicyOutput{Policy: &p}, nil
+}
+
+func (f *fakeIAMClient) GetPolicyVersion(ctx context.Context, params *iam.GetPolicyVersionInput, optFns ...func(*iam.Options)) (*iam.GetPolicyVersionOutput, error) {
+	if f.getPolicyVersionErr != nil {
+		return nil, f.getPolicyVersionErr
+	}
+	key := aws.ToString(params.PolicyArn) + "/" + aws.ToString(params.VersionId)
+	doc := f.policyVersions[key]
+	return &iam.GetPolicyVersionOutput{PolicyVersion: &iamtypes.PolicyVersion{VersionId: params.VersionId, Document: aws.String(doc)}}, nil
 }
 
 func (f *fakeIAMClient) ListRoleTags(ctx context.Context, params *iam.ListRoleTagsInput, optFns ...func(*iam.Options)) (*iam.ListRoleTagsOutput, error) {
@@ -151,9 +221,26 @@ func (f *fakeIAMClient) ListAttachedRolePolicies(ctx context.Context, params *ia
 	arns := f.attachedPolicyArns[aws.ToString(params.RoleName)]
 	out := &iam.ListAttachedRolePoliciesOutput{}
 	for _, arn := range arns {
-		out.AttachedPolicies = append(out.AttachedPolicies, iamtypes.AttachedPolicy{PolicyArn: aws.String(arn)})
+		out.AttachedPolicies = append(out.AttachedPolicies, iamtypes.AttachedPolicy{
+			PolicyArn:  aws.String(arn),
+			PolicyName: aws.String(policyNameFromArn(arn)),
+		})
 	}
 	return out, nil
+}
+
+// policyNameFromArn derives a policy's name from its ARN's last path
+// segment, matching real AWS ARN structure (e.g.
+// "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" ->
+// "AWSLambdaBasicExecutionRole") -- attachedPolicyArns (used by
+// roleHasSSMPermissions tests) only ever needed the ARN itself before
+// this, so the fake never derived a name; iam_detail_test.go's Role
+// detail tests need both.
+func policyNameFromArn(arn string) string {
+	if i := strings.LastIndex(arn, "/"); i != -1 {
+		return arn[i+1:]
+	}
+	return arn
 }
 
 func (f *fakeIAMClient) ListInstanceProfiles(ctx context.Context, params *iam.ListInstanceProfilesInput, optFns ...func(*iam.Options)) (*iam.ListInstanceProfilesOutput, error) {

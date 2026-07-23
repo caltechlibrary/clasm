@@ -4405,22 +4405,88 @@ itself is never gated by Phase 20.36's read-only check).
 
 ## Phase 20.38 — IAM Detail View
 
-**Status: designed 2026-07-23** (DESIGN.md, "IAM Profile & Role
-Management Domain"). Targeted for v0.0.5. Not yet implemented.
+**Status: designed and implemented 2026-07-23** (DESIGN.md, "IAM Profile
+& Role Management Domain"). Targeted for v0.0.5. `go build`/`go vet`/
+`go test ./... -race`/`gofmt -l` all clean. Not yet real-AWS-verified or
+released. Two scope questions DESIGN.md left open were resolved by the
+user before implementation: policy documents render as raw,
+pretty-printed JSON (not a summarized rendering), and the "which running
+instance is associated" half of the cross-reference is deferred --
+"which instance profiles reference this role" (cheap, already-fetched
+data) ships now.
 
 ### Work Items
 
-- [ ] `IAMAPI` gains `GetPolicy`/`GetPolicyVersion` (policy document
-      content), building on `ListAttachedRolePolicies` (already
-      present, Phase 20.33)
-- [ ] Detail screen for a role/instance profile: trust policy, attached
-      managed + inline policies (with a way to view the policy
-      document — raw JSON vs. summarized rendering left as an
-      implementation-time choice), all tags, SSM-capability
-- [ ] Best-effort cross-reference: which instance profiles reference
-      this role, and which are currently associated with a running
-      instance, via `DescribeIamInstanceProfileAssociations` (already
-      used by Phase 20.33's associate/replace workflow)
+- [x] `IAMAPI` gains `GetRole`, `GetInstanceProfile`, `ListRolePolicies`,
+      `GetRolePolicy`, `GetPolicy`, `GetPolicyVersion` — mirrored into
+      `logging_iam.go`. `GetRole`/`GetInstanceProfile` each cover their
+      resource's tags *and* (trust policy / contained roles) in one
+      call — confirmed live, 2026-07-22, that both single-resource Get*
+      calls include `Tags` inline, unlike the bulk `List*` calls (Phase
+      20.36's "don't return tags inline" finding)
+- [x] All three policy-document-bearing fields
+      (`AssumeRolePolicyDocument`, `PolicyVersion.Document`,
+      `GetRolePolicyOutput.PolicyDocument`) confirmed live, 2026-07-23,
+      to be URL-encoded per RFC 3986 — `decodePolicyDocument`
+      (`internal/workflow/iam_detail.go`) URL-decodes and pretty-prints;
+      falls back to the plain decoded text (not an error) if the
+      decoded content isn't valid JSON
+- [x] Role detail (`fetchIAMRoleDetail`/`displayIAMRoleDetail`): trust
+      policy, attached managed policies (name + ARN, via
+      `ListAttachedRolePolicies`) and inline policy names (via
+      `ListRolePolicies`) — policy *documents* aren't fetched upfront,
+      only on demand (see below) — all tags, SSM-capability (reusing
+      `roleHasSSMPermissions`, Phase 20.33), and the cheap
+      cross-reference ("referenced by instance profiles", via the
+      existing `listInstanceProfiles`, `resource_lists.go` — no
+      per-profile tag fetch needed for this, unlike
+      `inventory.ListIAMInstanceProfileSummaries`)
+- [x] `runPolicyDocLoop`: pick one of the role's already-listed
+      attached/inline policies, fetch and decode its document on demand
+      (`fetchAttachedPolicyDocument` via `GetPolicy`+`GetPolicyVersion`;
+      `fetchInlinePolicyDocument` via `GetRolePolicy`), display, repeat
+      until cancelled — avoids the N-policies-per-role API cost of
+      fetching every document upfront just to list names
+- [x] `inventory.IAMInstanceProfileSummary` gains `RoleNames []string`,
+      at no extra API cost (`ListInstanceProfiles` already returns each
+      profile's attached `Roles` inline)
+- [x] Instance Profile detail (`fetchIAMInstanceProfileDetail`/
+      `displayIAMInstanceProfileDetail`): deliberately simpler than Role
+      detail — an instance profile has no trust policy or policies of
+      its own — shows tags, contained role(s), and each role's
+      SSM-capability; points to View Role Detail for policy content
+- [x] Wired into two new IAM domain menu entries, "View Role Detail" and
+      "View Instance Profile Detail" (`IAMActions`/`iamMenuItems`,
+      alongside the three Show actions), `cmd/clasm/main.go`
+- [ ] Deferred (per the 2026-07-23 scoping discussion): "which running
+      instance is currently using this instance profile" — no direct
+      API filter (`DescribeIamInstanceProfileAssociations` only filters
+      by instance-id/state, not instance-profile-arn), would require a
+      per-region scan of active associations matched client-side
+
+**Tests:** test-first throughout. **Real bug caught in the test suite
+itself, not production code:** `runPolicyDocLoop`'s tests initially
+relied on exhausted accessible-mode input to end the loop after a
+single pick, which hung indefinitely — huh's accessible-mode `Select`
+has no way to signal "input exhausted" as an error (the same documented
+gotcha as `manageTagsForResource`'s own tests, Phase 20.29), so it
+silently re-picks the default option forever rather than erroring.
+Fixed by having the fake client's relevant method (`GetPolicy`/
+`GetPolicyVersion`/`GetRolePolicy`, via three small wrapper types)
+cancel the context as a side effect, matching
+`domain_menu_test.go`'s `cancelingAction` pattern exactly. Caught before
+ever reaching the user by running tests with an explicit `-timeout 30s`
+after the first hang.
+
+**Files:** `internal/awsclient/iam.go`, `internal/awsclient/logging_iam.go`,
+`internal/workflow/create_instance_profile_test.go` (shared
+`fakeIAMClient` gained `GetRole`/`GetInstanceProfile`/`ListRolePolicies`/
+`GetRolePolicy`/`GetPolicy`/`GetPolicyVersion`, plus a `PolicyName`
+derived from ARN in `ListAttachedRolePolicies` -- a test-fixture gap,
+not a production bug, since nothing needed the name before), new
+`internal/workflow/iam_detail.go`, `internal/inventory/iam.go`
+(`RoleNames` field), `internal/workflow/iam_menu.go`,
+`cmd/clasm/main.go`, plus each changed file's `_test.go` counterpart.
 
 **Dependency:** Phase 20.36 (the detail view is reached from the
 discovery list).

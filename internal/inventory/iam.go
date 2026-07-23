@@ -224,6 +224,13 @@ type IAMInstanceProfileSummary struct {
 	// Tags is the profile's full tag set -- see IAMRoleSummary.Tags' doc
 	// comment.
 	Tags map[string]string
+	// RoleNames is the role(s) this instance profile contains,
+	// populated at no extra API cost -- ListInstanceProfiles already
+	// returns each profile's attached Roles inline (unlike Tags, which
+	// requires a separate per-resource call). Used by the Role detail
+	// view's "referenced by instance profiles" cross-reference
+	// (PLAN.md Phase 20.38).
+	RoleNames []string
 }
 
 // ListIAMInstanceProfileSummaries lists every IAM instance profile in
@@ -249,12 +256,17 @@ func ListIAMInstanceProfileSummaries(ctx context.Context, client awsclient.IAMAP
 	summaries := make([]IAMInstanceProfileSummary, 0, len(out.InstanceProfiles))
 	for i, p := range out.InstanceProfiles {
 		tags := tagsByIndex[i]
+		roleNames := make([]string, 0, len(p.Roles))
+		for _, r := range p.Roles {
+			roleNames = append(roleNames, aws.ToString(r.RoleName))
+		}
 		summaries = append(summaries, IAMInstanceProfileSummary{
 			Name:       aws.ToString(p.InstanceProfileName),
 			CreateDate: aws.ToTime(p.CreateDate),
 			Origin:     ResolveOrigin(tags, originTag.Key),
 			DLDOwned:   IsDLDOwned(tags, originTag),
 			Tags:       tags,
+			RoleNames:  roleNames,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {

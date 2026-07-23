@@ -51,6 +51,34 @@ type IAMAPI interface {
 	UntagInstanceProfile(ctx context.Context, params *iam.UntagInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.UntagInstanceProfileOutput, error)
 	TagPolicy(ctx context.Context, params *iam.TagPolicyInput, optFns ...func(*iam.Options)) (*iam.TagPolicyOutput, error)
 	UntagPolicy(ctx context.Context, params *iam.UntagPolicyInput, optFns ...func(*iam.Options)) (*iam.UntagPolicyOutput, error)
+	// GetRole supports the IAM Role detail view (DESIGN.md, "IAM Profile
+	// & Role Management Domain"; PLAN.md Phase 20.38) -- a single,
+	// dedicated fetch for the trust policy (AssumeRolePolicyDocument)
+	// and tags of the one role being inspected, rather than reusing the
+	// bulk ListRoles/ListRoleTags calls the discovery view already made
+	// and discarded. GetRole's response includes both AssumeRolePolicyDocument
+	// and Tags (confirmed live, 2026-07-23), so this single call covers
+	// both.
+	GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error)
+	// ListRolePolicies/GetRolePolicy support the Role detail view's
+	// inline-policy listing/content. GetPolicy/GetPolicyVersion support
+	// viewing an attached managed policy's content (DefaultVersionId,
+	// then the actual document). All three policy-document-bearing
+	// fields (AssumeRolePolicyDocument, PolicyVersion.Document,
+	// GetRolePolicyOutput.PolicyDocument) are URL-encoded per RFC 3986 --
+	// confirmed live for all three, 2026-07-23 -- see
+	// internal/workflow/iam_detail.go's decodePolicyDocument.
+	ListRolePolicies(ctx context.Context, params *iam.ListRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListRolePoliciesOutput, error)
+	GetRolePolicy(ctx context.Context, params *iam.GetRolePolicyInput, optFns ...func(*iam.Options)) (*iam.GetRolePolicyOutput, error)
+	GetPolicy(ctx context.Context, params *iam.GetPolicyInput, optFns ...func(*iam.Options)) (*iam.GetPolicyOutput, error)
+	GetPolicyVersion(ctx context.Context, params *iam.GetPolicyVersionInput, optFns ...func(*iam.Options)) (*iam.GetPolicyVersionOutput, error)
+	// GetInstanceProfile supports the IAM Instance Profile detail view
+	// (PLAN.md Phase 20.38) -- a single, dedicated fetch (Tags and Roles
+	// both included, confirmed live 2026-07-22) rather than reusing the
+	// bulk ListInstanceProfiles/ListInstanceProfileTags calls the
+	// discovery view already made and discarded, mirroring GetRole's
+	// role in the Role detail view.
+	GetInstanceProfile(ctx context.Context, params *iam.GetInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.GetInstanceProfileOutput, error)
 }
 
 // NewIAMClient constructs an IAM client from the SDK's default credential

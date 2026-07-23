@@ -431,6 +431,12 @@ func main() {
 		ShowPolicies: func(ctx context.Context) error {
 			return workflow.ShowIAMPolicies(ctx, iamClient, cfg.OriginTag)
 		},
+		ViewRoleDetail: func(ctx context.Context) error {
+			return workflow.ViewIAMRoleDetail(ctx, out, iamClient, cfg.OriginTag)
+		},
+		ViewInstanceProfileDetail: func(ctx context.Context) error {
+			return workflow.ViewIAMInstanceProfileDetail(ctx, out, iamClient, cfg.OriginTag)
+		},
 	}
 
 	domains := workflow.DomainActions{
