@@ -90,6 +90,62 @@ func TestLoad_ParsesBackupDirectories(t *testing.T) {
 	}
 }
 
+func TestLoad_MissingFileReturnsDefaultOriginTag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OriginTag.Key != DefaultOriginTagKey {
+		t.Errorf("OriginTag.Key = %q, want default %q", cfg.OriginTag.Key, DefaultOriginTagKey)
+	}
+	if cfg.OriginTag.DLDValue != "" {
+		t.Errorf("OriginTag.DLDValue = %q, want empty (unset) until the operator configures a real vocabulary", cfg.OriginTag.DLDValue)
+	}
+}
+
+func TestLoad_ParsesOriginTag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "awsops-config")
+	content := "origin_tag:\n  key: \"Owner\"\n  dld_value: \"DLD\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OriginTag.Key != "Owner" {
+		t.Errorf("OriginTag.Key = %q, want %q", cfg.OriginTag.Key, "Owner")
+	}
+	if cfg.OriginTag.DLDValue != "DLD" {
+		t.Errorf("OriginTag.DLDValue = %q, want %q", cfg.OriginTag.DLDValue, "DLD")
+	}
+}
+
+func TestLoad_OriginTagKeyEmptyFallsBackToDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "awsops-config")
+	// dld_value set, but key deliberately omitted -- each field defaults
+	// independently, matching Regions/BackupDirectories' existing
+	// per-field-default behavior, not all-or-nothing.
+	content := "origin_tag:\n  dld_value: \"DLD\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OriginTag.Key != DefaultOriginTagKey {
+		t.Errorf("OriginTag.Key = %q, want default %q", cfg.OriginTag.Key, DefaultOriginTagKey)
+	}
+	if cfg.OriginTag.DLDValue != "DLD" {
+		t.Errorf("OriginTag.DLDValue = %q, want %q", cfg.OriginTag.DLDValue, "DLD")
+	}
+}
+
 func TestBackupDirectoryFor_MatchesGlobPattern(t *testing.T) {
 	rules := []BackupDirectoryRule{
 		{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"},

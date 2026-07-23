@@ -79,6 +79,37 @@ func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
 	}
 }
 
+// TestCollectLaunchInstanceParamsFromCloudInit_FiltersInstanceTypeByImageArchitecture
+// -- DESIGN.md, "ARM64 (Graviton) Support + Ubuntu 26.04 LTS": mirrors
+// launch_instance_test.go's own version of this test for the cloud-init
+// collection path.
+func TestCollectLaunchInstanceParamsFromCloudInit_FiltersInstanceTypeByImageArchitecture(t *testing.T) {
+	image := inventory.Image{ImageID: "ami-2", Name: "invenio-rdm", Region: "us-east-1", Architecture: "arm64"}
+
+	input := "newauthors\n" + // Name tag
+		"1\n" + // instance type: first arm64 entry (t4g.micro)
+		"\n" + // Root EBS volume size in GB (blank -> AMI default of 0 in this fake)
+		"new\n" + // key pair: create new (free-text fallback forced via describeKeyPairsErr)
+		"my-keypair\n" + // New key pair name
+		"sg-1\n" + // security groups
+		"subnet-abc\n" + // subnet
+		"\n" + // IAM profile (blank -- free-text fallback via fakeIAMClientNoProfiles)
+		"\n" + // Project tag
+		"development\n" // Environment tag
+
+	term, menuInput, buf := newPipeEditor(input)
+	ec2Clients := map[string]awsclient.EC2API{"us-east-1": &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured}}
+	ssmClients := map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}
+
+	got, _, _, err := collectLaunchInstanceParamsFromCloudInit(context.Background(), term, ec2Clients, ssmClients, fakeIAMClientNoProfiles(), "#cloud-config", image, menuInput, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.InstanceType != "t4g.micro" {
+		t.Errorf("InstanceType = %q, want %q (first arm64 entry, confirming the arm64 AMI's architecture filtered the list)", got.InstanceType, "t4g.micro")
+	}
+}
+
 func TestCollectLaunchInstanceParamsFromCloudInit_SetsRootVolumeSize(t *testing.T) {
 	// End-to-end coverage for the TODO.md bug fix, cloud-init flow --
 	// this is also the flow Create Launch Template from Cloud-Init YAML

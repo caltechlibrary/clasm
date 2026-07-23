@@ -135,10 +135,14 @@ func promptSecurityGroupIDs(ctx context.Context, w io.Writer, client awsclient.E
 }
 
 // instanceTypeChoice is one entry in promptInstanceType's pick list;
-// value is empty for the "Other" entry.
+// value is empty for the "Other" entry. arch is the type's CPU
+// architecture ("x86_64" or "arm64"), matching inventory.Image.Architecture
+// -- what promptInstanceType's arch filtering keys off of (DESIGN.md,
+// "ARM64 (Graviton) Support + Ubuntu 26.04 LTS").
 type instanceTypeChoice struct {
 	value string
 	label string
+	arch  string
 }
 
 // curatedInstanceTypes is a short, hand-picked list of instance types
@@ -159,18 +163,35 @@ type instanceTypeChoice struct {
 // specifically as non-Nitro, no-ENA-required options for that case (see
 // DECISIONS.md, "Add non-ENA-required options to the curated instance
 // type list").
+//
+// t4g/m6g/c6g/r6g (DESIGN.md, "ARM64 (Graviton) Support + Ubuntu 26.04
+// LTS") mirror the t3/m5/c5/r5 family 1:1, appended rather than
+// interleaved so existing numeric-index test fixtures for the amd64
+// entries stay valid unchanged. No Graviton equivalent of t2's
+// non-ENA-required escape hatch -- every Graviton type is Nitro-based
+// and requires ENA (confirmed live via ec2:DescribeInstanceTypes),
+// same as t3/m5/c5/r5.
 var curatedInstanceTypes = []instanceTypeChoice{
-	{value: "t3.micro", label: "t3.micro (2 vCPU, 1 GiB) -- low-cost testing (requires ENA)"},
-	{value: "t3.small", label: "t3.small (2 vCPU, 2 GiB) (requires ENA)"},
-	{value: "t3.medium", label: "t3.medium (2 vCPU, 4 GiB) (requires ENA)"},
-	{value: "t3.large", label: "t3.large (2 vCPU, 8 GiB) -- typical small Invenio RDM instance (requires ENA)"},
-	{value: "t3.xlarge", label: "t3.xlarge (4 vCPU, 16 GiB) (requires ENA)"},
-	{value: "m5.large", label: "m5.large (2 vCPU, 8 GiB) -- steady-state, non-burstable (requires ENA)"},
-	{value: "m5.xlarge", label: "m5.xlarge (4 vCPU, 16 GiB) (requires ENA)"},
-	{value: "c5.large", label: "c5.large (2 vCPU, 4 GiB) -- compute-optimized (requires ENA)"},
-	{value: "r5.large", label: "r5.large (2 vCPU, 16 GiB) -- memory-optimized (requires ENA)"},
-	{value: "t2.micro", label: "t2.micro (1 vCPU, 1 GiB) -- no ENA required, works with older/legacy AMIs"},
-	{value: "t2.medium", label: "t2.medium (2 vCPU, 4 GiB) -- no ENA required, works with older/legacy AMIs"},
+	{value: "t3.micro", label: "t3.micro (2 vCPU, 1 GiB) -- low-cost testing (requires ENA)", arch: "x86_64"},
+	{value: "t3.small", label: "t3.small (2 vCPU, 2 GiB) (requires ENA)", arch: "x86_64"},
+	{value: "t3.medium", label: "t3.medium (2 vCPU, 4 GiB) (requires ENA)", arch: "x86_64"},
+	{value: "t3.large", label: "t3.large (2 vCPU, 8 GiB) -- typical small Invenio RDM instance (requires ENA)", arch: "x86_64"},
+	{value: "t3.xlarge", label: "t3.xlarge (4 vCPU, 16 GiB) (requires ENA)", arch: "x86_64"},
+	{value: "m5.large", label: "m5.large (2 vCPU, 8 GiB) -- steady-state, non-burstable (requires ENA)", arch: "x86_64"},
+	{value: "m5.xlarge", label: "m5.xlarge (4 vCPU, 16 GiB) (requires ENA)", arch: "x86_64"},
+	{value: "c5.large", label: "c5.large (2 vCPU, 4 GiB) -- compute-optimized (requires ENA)", arch: "x86_64"},
+	{value: "r5.large", label: "r5.large (2 vCPU, 16 GiB) -- memory-optimized (requires ENA)", arch: "x86_64"},
+	{value: "t2.micro", label: "t2.micro (1 vCPU, 1 GiB) -- no ENA required, works with older/legacy AMIs", arch: "x86_64"},
+	{value: "t2.medium", label: "t2.medium (2 vCPU, 4 GiB) -- no ENA required, works with older/legacy AMIs", arch: "x86_64"},
+	{value: "t4g.micro", label: "t4g.micro (2 vCPU, 1 GiB) -- low-cost testing, Graviton (requires ENA)", arch: "arm64"},
+	{value: "t4g.small", label: "t4g.small (2 vCPU, 2 GiB), Graviton (requires ENA)", arch: "arm64"},
+	{value: "t4g.medium", label: "t4g.medium (2 vCPU, 4 GiB), Graviton (requires ENA)", arch: "arm64"},
+	{value: "t4g.large", label: "t4g.large (2 vCPU, 8 GiB) -- typical small Invenio RDM instance, Graviton (requires ENA)", arch: "arm64"},
+	{value: "t4g.xlarge", label: "t4g.xlarge (4 vCPU, 16 GiB), Graviton (requires ENA)", arch: "arm64"},
+	{value: "m6g.large", label: "m6g.large (2 vCPU, 8 GiB) -- steady-state, non-burstable, Graviton (requires ENA)", arch: "arm64"},
+	{value: "m6g.xlarge", label: "m6g.xlarge (4 vCPU, 16 GiB), Graviton (requires ENA)", arch: "arm64"},
+	{value: "c6g.large", label: "c6g.large (2 vCPU, 4 GiB) -- compute-optimized, Graviton (requires ENA)", arch: "arm64"},
+	{value: "r6g.large", label: "r6g.large (2 vCPU, 16 GiB) -- memory-optimized, Graviton (requires ENA)", arch: "arm64"},
 }
 
 // promptInstanceType offers curatedInstanceTypes as a huh.Select, plus
@@ -178,12 +199,21 @@ var curatedInstanceTypes = []instanceTypeChoice{
 // "Instance type"; DESIGN.md's full conversion punch list). No AWS call
 // is made here -- the list is static; the instance-type-vs-subnet-
 // Availability-Zone pre-flight check (instance_type_az_check.go) is what
-// actually validates the chosen value against AWS. input/output are nil
-// in production (interactive, real terminal) and supplied by tests for
-// the accessible-mode pipe path.
-func promptInstanceType(w io.Writer, input io.Reader, output io.Writer) (string, error) {
+// actually validates the chosen value against AWS. arch filters the
+// curated entries to the given architecture ("x86_64"/"arm64") -- ""
+// means no filter, show every curated entry (DESIGN.md, "ARM64
+// (Graviton) Support + Ubuntu 26.04 LTS"; DECISIONS.md, "ARM64/Ubuntu
+// 26.04: filter the instance-type list by AMI architecture, no new
+// pre-flight check"); "Other" is always offered regardless of arch.
+// input/output are nil in production (interactive, real terminal) and
+// supplied by tests for the accessible-mode pipe path.
+func promptInstanceType(w io.Writer, arch string, input io.Reader, output io.Writer) (string, error) {
 	choices := make([]instanceTypeChoice, 0, len(curatedInstanceTypes)+1)
-	choices = append(choices, curatedInstanceTypes...)
+	for _, c := range curatedInstanceTypes {
+		if arch == "" || c.arch == arch {
+			choices = append(choices, c)
+		}
+	}
 	choices = append(choices, instanceTypeChoice{label: "Other (type a custom instance type)"})
 
 	picked, err := pickComparable(w, "Select an instance type", "Pick a curated size, or Other to type any instance type by name.", hintCancel, choices, func(c instanceTypeChoice) string { return c.label }, input, output)

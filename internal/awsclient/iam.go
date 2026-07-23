@@ -19,6 +19,15 @@ type IAMAPI interface {
 	ListRoles(ctx context.Context, params *iam.ListRolesInput, optFns ...func(*iam.Options)) (*iam.ListRolesOutput, error)
 	CreateInstanceProfile(ctx context.Context, params *iam.CreateInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.CreateInstanceProfileOutput, error)
 	AddRoleToInstanceProfile(ctx context.Context, params *iam.AddRoleToInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.AddRoleToInstanceProfileOutput, error)
+	// ListAttachedRolePolicies supports roleHasSSMPermissions
+	// (ssm_iam_check.go, DESIGN.md "SSM-Capable Instance Profile
+	// Enforcement + Retrofit"): checking whether a role has
+	// AmazonSSMManagedInstanceCore attached.
+	ListAttachedRolePolicies(ctx context.Context, params *iam.ListAttachedRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListAttachedRolePoliciesOutput, error)
+	// ListPolicies supports the IAM domain's Policies discovery view
+	// (DESIGN.md, "IAM Profile & Role Management Domain") -- listing
+	// customer-managed ("Local" scope) policies by default.
+	ListPolicies(ctx context.Context, params *iam.ListPoliciesInput, optFns ...func(*iam.Options)) (*iam.ListPoliciesOutput, error)
 }
 
 // NewIAMClient constructs an IAM client from the SDK's default credential

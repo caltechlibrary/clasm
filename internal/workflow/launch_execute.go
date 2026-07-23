@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -83,7 +82,7 @@ func Launch(ctx context.Context, client awsclient.EC2API, params LaunchInstanceP
 		MetadataOptions: &types.InstanceMetadataOptionsRequest{HttpTokens: types.HttpTokensStateRequired},
 	}
 	if params.UserData != "" {
-		input.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(params.UserData)))
+		input.UserData = aws.String(encodeUserData(params.UserData))
 	}
 	if params.IAMInstanceProfile != "" {
 		input.IamInstanceProfile = &types.IamInstanceProfileSpecification{Name: aws.String(params.IAMInstanceProfile)}

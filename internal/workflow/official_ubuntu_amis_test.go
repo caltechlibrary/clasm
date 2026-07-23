@@ -75,6 +75,27 @@ func TestListOfficialUbuntuAMIsInRegion_SkipsReleasesWithNoMatch(t *testing.T) {
 	}
 }
 
+// TestListOfficialUbuntuAMIsInRegion_CarriesArchitecture -- DESIGN.md,
+// "ARM64 (Graviton) Support + Ubuntu 26.04 LTS": Architecture must
+// carry through the same way EnaSupport already does, above, so
+// promptInstanceType's arch filtering works for official Ubuntu AMIs
+// too, not just owned ones.
+func TestListOfficialUbuntuAMIsInRegion_CarriesArchitecture(t *testing.T) {
+	fake := &fakeEC2Client{officialUbuntuImages: map[string][]types.Image{
+		nobleNamePattern: {
+			{ImageId: aws.String("ami-noble"), CreationDate: aws.String("2026-06-01T00:00:00.000Z"), Architecture: types.ArchitectureValuesX8664},
+		},
+	}}
+
+	got, err := listOfficialUbuntuAMIsInRegion(context.Background(), fake, "us-west-2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Architecture != "x86_64" {
+		t.Fatalf("got %+v, want Architecture=x86_64", got)
+	}
+}
+
 func TestListOfficialUbuntuAMIsInRegion_PropagatesError(t *testing.T) {
 	fake := &fakeEC2Client{describeUbuntuImagesErr: errors.New("boom")}
 
@@ -126,5 +147,31 @@ func TestImagesWithOfficialUbuntu_FallsBackOnError(t *testing.T) {
 	got := imagesWithOfficialUbuntu(context.Background(), clients, owned)
 	if len(got) != 1 || got[0].ImageID != "ami-owned" {
 		t.Errorf("got %+v, want just the owned image unchanged when the lookup fails", got)
+	}
+}
+
+// TestCuratedUbuntuReleases_IncludesArm64And2604 -- DESIGN.md, "ARM64
+// (Graviton) Support + Ubuntu 26.04 LTS": naming patterns confirmed
+// live via a real ec2:DescribeImages call before writing this, per
+// this project's "fail loud, don't guess" convention (this project has
+// a documented history of getting AMI name patterns wrong when not
+// checked -- DECISIONS.md, "Offer official Ubuntu LTS AMIs...").
+func TestCuratedUbuntuReleases_IncludesArm64And2604(t *testing.T) {
+	wantPatterns := []string{
+		"ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-amd64-server-*",
+		"ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-arm64-server-*",
+		"ubuntu/images/hvm-ssd*/ubuntu-jammy-22.04-amd64-server-*",
+		"ubuntu/images/hvm-ssd*/ubuntu-jammy-22.04-arm64-server-*",
+		"ubuntu/images/hvm-ssd*/ubuntu-resolute-26.04-amd64-server-*",
+		"ubuntu/images/hvm-ssd*/ubuntu-resolute-26.04-arm64-server-*",
+	}
+	got := make(map[string]bool, len(curatedUbuntuReleases))
+	for _, rel := range curatedUbuntuReleases {
+		got[rel.namePattern] = true
+	}
+	for _, want := range wantPatterns {
+		if !got[want] {
+			t.Errorf("curatedUbuntuReleases missing pattern %q", want)
+		}
 	}
 }

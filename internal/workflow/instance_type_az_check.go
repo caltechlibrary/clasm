@@ -154,7 +154,11 @@ func ensureInstanceTypeSupportedInSubnet(ctx context.Context, w io.Writer, clien
 
 		switch choice.kind {
 		case incompatibilityChangeInstanceType:
-			newType, err := promptInstanceType(w, menuInput, menuOutput)
+			// "" -- unfiltered by architecture, same reasoning as the ENA
+			// check's own remediation call (DECISIONS.md, "ARM64/Ubuntu
+			// 26.04: filter the instance-type list by AMI architecture, no
+			// new pre-flight check").
+			newType, err := promptInstanceType(w, "", menuInput, menuOutput)
 			if err != nil {
 				return "", SubnetInfo{}, err
 			}

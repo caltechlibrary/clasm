@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 
@@ -49,7 +48,7 @@ func buildRequestLaunchTemplateData(params LaunchInstanceParams) *types.RequestL
 		}}
 	}
 	if params.UserData != "" {
-		data.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(params.UserData)))
+		data.UserData = aws.String(encodeUserData(params.UserData))
 	}
 	if params.IAMInstanceProfile != "" {
 		data.IamInstanceProfile = &types.LaunchTemplateIamInstanceProfileSpecificationRequest{Name: aws.String(params.IAMInstanceProfile)}

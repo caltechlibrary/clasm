@@ -33,6 +33,7 @@ func testMenuActions(refreshCalls *int) MenuActions {
 		StopEC2Instance:                   noop,
 		TerminateEC2Instance:              noop,
 		ResizeInstanceRootVolume:          noop,
+		AssociateOrReplaceInstanceProfile: noop,
 		ManageTags:                        noop,
 		CreateAMIFromInstance:             noop,
 		RemoveAMI:                         noop,
@@ -121,6 +122,23 @@ func TestRunMainMenu_ResizeInstanceRootVolumeDispatchesToItsOwnAction(t *testing
 	}
 	if resizeCalls != 1 {
 		t.Errorf("resizeCalls = %d, want 1", resizeCalls)
+	}
+}
+
+func TestRunMainMenu_AssociateOrReplaceInstanceProfileDispatchesToItsOwnAction(t *testing.T) {
+	var refreshCalls, associateCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testMenuActions(&refreshCalls)
+	actions.AssociateOrReplaceInstanceProfile = cancelingAction(&associateCalls, cancel)
+
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Associate/replace IAM instance profile
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if associateCalls != 1 {
+		t.Errorf("associateCalls = %d, want 1", associateCalls)
 	}
 }
 
@@ -273,8 +291,8 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestMainMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(mainMenuItems) != 21 {
-		t.Fatalf("len(mainMenuItems) = %d, want 21 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
+	if len(mainMenuItems) != 22 {
+		t.Fatalf("len(mainMenuItems) = %d, want 22 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
 	}
 	for _, item := range mainMenuItems {
 		if item.action == nil {

@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -30,9 +29,9 @@ func ShowCloudInitFromInstance(ctx context.Context, client awsclient.EC2API, ins
 		return "", false, nil
 	}
 
-	decoded, err := base64.StdEncoding.DecodeString(aws.ToString(out.UserData.Value))
+	decoded, err := decodeUserData(aws.ToString(out.UserData.Value))
 	if err != nil {
 		return "", false, fmt.Errorf("decoding user-data: %w", err)
 	}
-	return string(decoded), true, nil
+	return decoded, true, nil
 }

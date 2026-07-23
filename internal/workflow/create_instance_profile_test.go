@@ -26,8 +26,41 @@ type fakeIAMClient struct {
 	createInstanceProfileCalls   int
 	addRoleToInstanceProfile     error
 
+	// attachedPolicyArns maps a role name to the policy ARNs
+	// ListAttachedRolePolicies should report for it -- supports
+	// roleHasSSMPermissions (ssm_iam_check_test.go).
+	attachedPolicyArns          map[string][]string
+	listAttachedRolePoliciesErr error
+
+	// policies/listPoliciesErr support the IAM domain's Policies
+	// discovery view (iam_domain_test.go, DESIGN.md "IAM Profile & Role
+	// Management Domain").
+	policies              []iamtypes.Policy
+	listPoliciesErr       error
+	lastListPoliciesInput *iam.ListPoliciesInput
+
 	lastCreateInstanceProfileInput    *iam.CreateInstanceProfileInput
 	lastAddRoleToInstanceProfileInput *iam.AddRoleToInstanceProfileInput
+}
+
+func (f *fakeIAMClient) ListPolicies(ctx context.Context, params *iam.ListPoliciesInput, optFns ...func(*iam.Options)) (*iam.ListPoliciesOutput, error) {
+	f.lastListPoliciesInput = params
+	if f.listPoliciesErr != nil {
+		return nil, f.listPoliciesErr
+	}
+	return &iam.ListPoliciesOutput{Policies: f.policies}, nil
+}
+
+func (f *fakeIAMClient) ListAttachedRolePolicies(ctx context.Context, params *iam.ListAttachedRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListAttachedRolePoliciesOutput, error) {
+	if f.listAttachedRolePoliciesErr != nil {
+		return nil, f.listAttachedRolePoliciesErr
+	}
+	arns := f.attachedPolicyArns[aws.ToString(params.RoleName)]
+	out := &iam.ListAttachedRolePoliciesOutput{}
+	for _, arn := range arns {
+		out.AttachedPolicies = append(out.AttachedPolicies, iamtypes.AttachedPolicy{PolicyArn: aws.String(arn)})
+	}
+	return out, nil
 }
 
 func (f *fakeIAMClient) ListInstanceProfiles(ctx context.Context, params *iam.ListInstanceProfilesInput, optFns ...func(*iam.Options)) (*iam.ListInstanceProfilesOutput, error) {
@@ -86,16 +119,21 @@ func fakeIAMClientNoProfiles() *fakeIAMClient {
 // The instance-profile and role pickers converted to tui.RunPicker
 // (DESIGN.md's full conversion punch list, Picker tier): real bubbletea
 // Programs that can't be pipe-tested. promptIAMInstanceProfileOrCreate
-// always builds a choices list of at least ["(none)", "Create new..."],
-// so it reaches the picker on every path except the list-fetch-error
-// free-text fallback -- the tests below that used to pick from that list
-// ("PicksFromList", "NoneSkipsIt") are retired; createInstanceProfile
-// ForRole (the create-new sub-flow once a role is resolved) and
+// always builds a choices list of at least ["Create new..."] (no
+// "(none)" entry as of "SSM-Capable Instance Profile Enforcement +
+// Retrofit" -- an instance profile is now mandatory), so it reaches the
+// picker on every path except the list-fetch-error free-text fallback
+// -- the tests below that used to pick from that list ("PicksFromList",
+// "NoneSkipsIt") are retired; createInstanceProfileForRole (the
+// create-new sub-flow once a role is resolved) and
 // createInstanceProfileInteractive's own no-roles-found short-circuit
 // (which returns before ever reaching the role picker) still exercise
-// their own logic directly below. Covered only by manual/interactive
-// verification otherwise, the same accepted limitation this session's
-// other Picker-tier conversions already have.
+// their own logic directly below, alongside
+// buildInstanceProfileChoices/buildRoleChoices (the SSM-capability
+// annotation logic, also directly testable since it runs before either
+// picker). Actual picker selection is covered only by manual/interactive
+// verification, the same accepted limitation this session's other
+// Picker-tier conversions already have.
 
 func TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails(t *testing.T) {
 	fake := &fakeIAMClient{listInstanceProfilesErr: errors.New("access denied")}
@@ -143,6 +181,27 @@ func TestCreateInstanceProfileInteractive_NoRolesReturnsWithoutError(t *testing.
 	}
 	if !strings.Contains(buf.String(), "No IAM roles found") {
 		t.Errorf("expected a no-roles message, got:\n%s", buf.String())
+	}
+}
+
+// TestCreateInstanceProfileInteractive_NoSSMCapableRolesReturnsWithoutError
+// covers the case buildRoleChoices' filtering introduces: roles exist,
+// but none are SSM-capable (DECISIONS.md, "Filter non-SSM-capable
+// profiles/roles from the picker, don't just annotate them") --
+// distinct from the no-roles-at-all case above.
+func TestCreateInstanceProfileInteractive_NoSSMCapableRolesReturnsWithoutError(t *testing.T) {
+	fake := &fakeIAMClient{roles: []iamtypes.Role{{RoleName: aws.String("not-capable-role")}}}
+	term, le, buf := newPipeEditor("")
+
+	got, created, err := createInstanceProfileInteractive(context.Background(), term, fake, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if created || got != "" {
+		t.Errorf("got name=%q created=%v, want empty/false when no roles are SSM-capable", got, created)
+	}
+	if !strings.Contains(buf.String(), "No SSM-capable IAM roles found") {
+		t.Errorf("expected a no-SSM-capable-roles message, got:\n%s", buf.String())
 	}
 }
 
@@ -200,6 +259,117 @@ func TestCreateInstanceProfileFromRole_PropagatesAddRoleError(t *testing.T) {
 	fake := &fakeIAMClient{addRoleToInstanceProfile: errors.New("boom")}
 	err := createInstanceProfileFromRole(context.Background(), fake, "my-profile", "my-role")
 	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// buildInstanceProfileChoices/buildRoleChoices (DESIGN.md, "SSM-Capable
+// Instance Profile Enforcement + Retrofit"; DECISIONS.md, "Filter
+// non-SSM-capable profiles/roles from the picker, don't just annotate
+// them") -- the testable core of the picker filtering logic,
+// independent of the Picker-tier UI.
+
+func TestBuildInstanceProfileChoices_NoNoneEntry(t *testing.T) {
+	fake := &fakeIAMClient{}
+	choices, err := buildInstanceProfileChoices(context.Background(), fake, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, c := range choices {
+		if c.label == "(none)" {
+			t.Errorf("expected no \"(none)\" entry, got %+v", choices)
+		}
+	}
+	if len(choices) != 1 || !choices[0].createNew {
+		t.Errorf("expected exactly one \"create new\" entry with no profiles, got %+v", choices)
+	}
+}
+
+func TestBuildInstanceProfileChoices_FiltersOutNonCapableProfiles(t *testing.T) {
+	profiles := []InstanceProfileInfo{
+		{Name: "capable-profile", Roles: []string{"capable-role"}},
+		{Name: "not-capable-profile", Roles: []string{"other-role"}},
+	}
+	fake := &fakeIAMClient{
+		attachedPolicyArns: map[string][]string{
+			"capable-role": {ssmManagedInstanceCorePolicyArn},
+		},
+	}
+	choices, err := buildInstanceProfileChoices(context.Background(), fake, profiles)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(choices) != 2 { // capable-profile + "create new" -- not-capable-profile excluded
+		t.Fatalf("got %d choices, want 2: %+v", len(choices), choices)
+	}
+	if choices[0].name != "capable-profile" {
+		t.Errorf("got %+v, want capable-profile first", choices[0])
+	}
+	if !choices[1].createNew {
+		t.Errorf("expected the last choice to be \"create new\", got %+v", choices[1])
+	}
+}
+
+func TestBuildInstanceProfileChoices_PropagatesError(t *testing.T) {
+	fake := &fakeIAMClient{listAttachedRolePoliciesErr: errors.New("boom")}
+	profiles := []InstanceProfileInfo{{Name: "p", Roles: []string{"r"}}}
+	if _, err := buildInstanceProfileChoices(context.Background(), fake, profiles); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestBuildRoleChoices_FiltersOutNonCapableRoles(t *testing.T) {
+	roles := []RoleInfo{{Name: "capable-role"}, {Name: "other-role"}}
+	fake := &fakeIAMClient{
+		attachedPolicyArns: map[string][]string{
+			"capable-role": {ssmManagedInstanceCorePolicyArn},
+		},
+	}
+	choices, err := buildRoleChoices(context.Background(), fake, roles)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(choices) != 1 {
+		t.Fatalf("got %d choices, want 1: %+v", len(choices), choices)
+	}
+	if choices[0].role.Name != "capable-role" {
+		t.Errorf("got %+v, want capable-role", choices[0])
+	}
+}
+
+func TestBuildRoleChoices_PropagatesError(t *testing.T) {
+	fake := &fakeIAMClient{listAttachedRolePoliciesErr: errors.New("boom")}
+	roles := []RoleInfo{{Name: "r"}}
+	if _, err := buildRoleChoices(context.Background(), fake, roles); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// The picker itself (pickInstanceProfileChoice/pickRole) can't be
+// pipe-tested (Picker tier, DESIGN.md's full conversion punch list),
+// but buildInstanceProfileChoices/buildRoleChoices run *before* the
+// picker in both promptIAMInstanceProfileOrCreate and
+// createInstanceProfileInteractive, so an error from the SSM-capability
+// check itself is reachable and testable without ever touching the UI.
+
+func TestPromptIAMInstanceProfileOrCreate_PropagatesSSMCheckError(t *testing.T) {
+	fake := &fakeIAMClient{
+		instanceProfiles:            []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("p"), Roles: []iamtypes.Role{{RoleName: aws.String("r")}}}},
+		listAttachedRolePoliciesErr: errors.New("boom"),
+	}
+	term, le, buf := newPipeEditor("")
+	if _, err := promptIAMInstanceProfileOrCreate(context.Background(), term, fake, le, buf); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestCreateInstanceProfileInteractive_PropagatesSSMCheckError(t *testing.T) {
+	fake := &fakeIAMClient{
+		roles:                       []iamtypes.Role{{RoleName: aws.String("r")}},
+		listAttachedRolePoliciesErr: errors.New("boom"),
+	}
+	term, le, buf := newPipeEditor("")
+	if _, _, err := createInstanceProfileInteractive(context.Background(), term, fake, le, buf); err == nil {
 		t.Fatal("expected an error")
 	}
 }

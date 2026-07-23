@@ -1292,6 +1292,376 @@ fixture-driven unit tests independent of any live SSM round-trip, same
 as `checkCloudInitCompletion`'s own tests fake the SSM client rather
 than hitting real infrastructure).
 
+## SSM-Capable Instance Profile Enforcement + Retrofit (Design Addendum, 2026-07-22)
+
+**Status: designed 2026-07-22, targeted for v0.0.5 alongside arm64/Graviton
+support.** Closes two related gaps confirmed the same day during live
+real-AWS verification of "Configurable EBS Root Volume Size" (above):
+both test instances launched via cloud-init had `IamInstanceProfile:
+null` in their `RunInstances` call -- no instance profile at all --
+so `growRootFilesystem`'s SSM-based OS-level growth automation could
+never come online, silently degrading to its printed-manual-instructions
+fallback every time. Separately, the same day (and once before, setting
+up an InvenioRDM test instance for S3 access), there was no way to
+attach/associate an IAM instance profile to an instance *already
+running* -- only at launch. Today, `promptIAMInstanceProfileOrCreate`
+(`create_instance_profile.go`) offers a `"(none)"` choice and never
+checks what permissions a picked/created role actually grants, so an
+operator can launch (or already has launched) an instance clasm itself
+can't manage via SSM -- undermining Resize Instance's Root Volume,
+`checkCloudInitCompletion`, and anything else this project builds on
+SSM going forward.
+
+**Decision, mirroring IMDSv2 enforcement's precedent (above):** SSM
+manageability becomes a hard requirement at launch, not an operator
+choice -- same posture as `HttpTokens: required`, just enforced via a
+picker instead of a silent parameter flip, since (unlike IMDSv2) an
+actual IAM role has to exist and be selected. Three parts:
+
+### Part 1 — `roleHasSSMPermissions` (shared verification helper)
+
+**New helper, `roleHasSSMPermissions(ctx, iamClient, roleName) (bool,
+error)`** (new `ssm_iam_check.go` or similar): calls
+`iam:ListAttachedRolePolicies` for `roleName` and checks for AWS's own
+managed policy, `arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore`,
+by ARN. This is a **known, deliberate limitation, not an oversight**:
+it does not parse inline policies (`iam:ListRolePolicies`/
+`GetRolePolicy`) for functionally-equivalent custom permissions --
+doing so would mean interpreting arbitrary IAM policy JSON to decide
+whether it grants "enough" SSM access, which is exactly the kind of
+guessing this project's "fail loud, don't guess" convention (Phase
+20.31's own `growRootFilesystem`) argues against. A role with a
+custom, non-managed-policy path to the same permissions will be
+(correctly, if inconveniently) reported as not SSM-capable; the
+operator can still attach the managed policy via the IAM console
+outside clasm, matching the existing "clasm attaches existing roles,
+never authors policies" scope boundary (DECISIONS.md, "2026-07-02 --
+Support picking or creating an IAM instance profile from within
+awsops").
+
+**New `IAMAPI` surface:** `ListAttachedRolePolicies` -- mirrored into
+`logging_iam.go`'s existing wrapper, matching every other AWS call's
+logging convention.
+
+### Part 2 — Enforcement at launch
+
+`promptIAMInstanceProfileOrCreate`'s picker changes in two ways:
+
+1. **The `"(none)"` choice is removed.** An instance profile is now
+   mandatory, same as IMDSv2's `required` has no `optional` escape
+   hatch.
+2. **Every entry in the picker -- existing profiles and the "create
+   new" flow -- is annotated/checked via `roleHasSSMPermissions`**,
+   resolving each profile's attached role(s) first. An existing
+   profile whose role isn't SSM-capable is shown but not selectable
+   (or selectable only after a clear inline explanation of why it's
+   flagged -- exact picker-row wording left for the implementation
+   plan); `createInstanceProfileForRole`'s role picker (`pickRole`)
+   gets the same annotation before a role can be attached to a new
+   profile. This applies everywhere `promptIAMInstanceProfileOrCreate`
+   is already called: Create EC2 Instance from AMI, from Cloud-Init
+   YAML, and Create Launch Template from Cloud-Init YAML (all three
+   funnel through the same collection path, per the EBS root-volume-size
+   addendum's own note about this shared surface).
+
+### Part 3 — Retrofit: associate/replace an instance profile on a running instance
+
+**General-purpose, not SSM-specific** (per the 2026-07-22 scoping
+decision): a new Compute-domain menu entry, "Associate/replace IAM
+instance profile," lets an operator attach *any* instance profile
+(picked or created via the same `promptIAMInstanceProfileOrCreate`
+flow, SSM-capability shown but not gated here -- a running instance
+might legitimately need a profile for S3 access alone, the exact case
+that originally surfaced this gap) to an already-running instance.
+Resolves the instance's current association first via the existing
+`DescribeIamInstanceProfileAssociations` (`internal/awsclient/ec2.go`
+-- declared in the `EC2API` interface already, though not actually
+called anywhere in the workflow package until this feature) to decide
+which underlying API to call:
+
+- **No existing association:** `ec2:AssociateIamInstanceProfile`.
+- **An existing association:** `ec2:ReplaceIamInstanceProfileAssociation`
+  (AWS allows only one active association per instance -- calling
+  `AssociateIamInstanceProfile` again would error).
+
+**New `EC2API` surface:** `AssociateIamInstanceProfile`,
+`ReplaceIamInstanceProfileAssociation` -- mirrored into
+`logging_ec2.go`.
+
+### Not decided yet
+
+Exact picker-row wording for a non-SSM-capable existing profile
+(shown-but-blocked vs. shown-with-a-confirm-override); whether the
+`Environment=production` + type-to-confirm gate (Feature 9's
+established pattern, already reused by Resize Instance's Root Volume)
+applies to the retrofit workflow; whether `roleHasSSMPermissions`
+needs to handle a profile with more than one role (today's
+`create_instance_profile.go` always attaches exactly one, but
+`InstanceProfileInfo.Roles` is already a slice); test coverage shape
+for the IAM-policy-check helper (fixture-driven against a fake IAM
+client, matching every other AWS-API-backed helper in this project) --
+all left for the implementation plan.
+
+## ARM64 (Graviton) Support + Ubuntu 26.04 LTS (Design Addendum, 2026-07-22)
+
+**Status: designed 2026-07-22, targeted for v0.0.5** alongside Phase
+20.33/20.34 (already implemented). Raised in a colleague conversation:
+cost savings using ARM instances outside RDM. Real AWS facts confirmed
+live (not assumed) before writing this, since this project has a
+documented history of getting AMI name patterns wrong when not checked
+(DECISIONS.md, "Offer official Ubuntu LTS AMIs..."): Canonical
+publishes arm64 Ubuntu AMIs under the exact same naming convention as
+the existing amd64 entries, just with `arm64` swapped for `amd64`
+(confirmed via a live `ec2:DescribeImages` call, both 24.04/"noble" and
+22.04/"jammy"); Ubuntu 26.04 LTS ("resolute") AMIs are already
+published in both architectures as of today; and instance types'
+`ec2:DescribeInstanceTypes` `ProcessorInfo.SupportedArchitectures`
+values (`"arm64"`/`"x86_64"`) match AMI `Architecture` values exactly,
+confirmed for the specific Graviton types below.
+
+**Scope, simplified from an initial larger design.** The first pass at
+this addendum proposed a new architecture-compatibility pre-flight
+check mirroring `ensureInstanceTypeENACompatible` (query, then offer
+"change instance type or abort" if mismatched). Reconsidered smaller:
+filter the instance-type picker's choices by the already-picked AMI's
+architecture instead, matching the filtering approach just adopted for
+the IAM-profile/role picker (DECISIONS.md, "Filter non-SSM-capable
+profiles/roles from the picker, don't just annotate them") -- there's
+no need for a reject-and-retry mechanism if the wrong choice is never
+offered in the first place. No new pre-flight check, no new
+`incompatibilityChoice` variant.
+
+**Changes:**
+
+1. `inventory.Image` gains an `Architecture string` field, populated
+   the same way `EnaSupport` already is: `imageFromSDK`
+   (`internal/inventory/images.go`, owned AMIs) and
+   `listOfficialUbuntuAMIsInRegion` (`official_ubuntu_amis.go`, curated
+   Ubuntu AMIs) both set it directly from the SDK's own `Architecture`
+   field (`types.ArchitectureValues`, a string type -- no `aws.To*`
+   needed).
+2. `curatedUbuntuReleases` gains arm64 variants of the existing 24.04/
+   22.04 entries, plus new 26.04 entries for both architectures --
+   `ubuntu-resolute-26.04-{amd64,arm64}-server-*` and
+   `ubuntu-{noble,jammy}-{24.04,22.04}-arm64-server-*`, confirmed
+   patterns as above.
+3. `instanceTypeChoice` (`launch_prompts.go`) gains an `arch` field.
+   Existing t3/m5/c5/r5/t2 entries are tagged `"x86_64"`; new Graviton
+   entries (`t4g.micro/small/medium/large/xlarge`, `m6g.large/xlarge`,
+   `c6g.large`, `r6g.large` -- mirroring the existing family shapes 1:1)
+   are tagged `"arm64"`. No Graviton equivalent of t2's "no-ENA-required
+   escape hatch" -- every Graviton type is Nitro-based and requires ENA
+   (confirmed live), same as t3/m5/c5/r5.
+4. `promptInstanceType` gains an `arch string` parameter: `""` means "no
+   filter, show everything" (preserves current behavior exactly);
+   otherwise the choice list is filtered to entries whose `arch` matches
+   (plus the "Other" free-text escape hatch, always shown regardless).
+   The two top-level collection functions
+   (`collectLaunchInstanceParams`/`collectLaunchInstanceParamsFromCloudInit`)
+   pass `image.Architecture` at their initial call, so the instance-type
+   list only ever offers types compatible with the already-picked AMI.
+   The two remediation call sites inside `ensureInstanceTypeENACompatible`/
+   the AZ-incompatibility "change instance type" choice pass `""`
+   (unfiltered) -- deliberately not threaded through further, since
+   Graviton didn't exist when older non-ENA AMIs did and the two
+   concerns essentially never interact in practice.
+
+### Not decided yet
+
+Whether `curatedUbuntuReleases`' entries need reordering/grouping now
+that the list roughly doubles in size (currently flat, sorted by
+region/name at pick-list-build time via `imagesWithOfficialUbuntu`) --
+left for the implementation plan to assess once the list is actually
+built.
+
+## IAM Profile & Role Management Domain (Design Addendum, 2026-07-23)
+
+**Status: designed 2026-07-23, targeted for v0.0.5** alongside Phases
+20.33-20.35 (already implemented) -- explicitly bundled into the same
+release rather than deferred, per the user's direction. Motivated by two
+questions the AWS Console makes hard to answer quickly: what
+roles/profiles/policies already exist and where they came from (Caltech
+Library DLD's own, ones opened up by IMSS -- Caltech's central IT
+organization, whose security team is one component of IMSS, not a
+separate category -- for cross-team tooling such as CrowdStrike, or
+AWS's own huge managed-policy catalog, all interleaved in one flat list
+today), and whether an existing one is safe to reuse or a new one is
+actually needed. See `aim_management_and_support_proposal.md` for the
+full problem statement, the paths considered for each open question, and
+the trade-offs of paths not taken -- this addendum records the paths
+selected.
+
+**Revised same day**, after further discussion once the initial design
+pass had already gone into DESIGN.md/DECISIONS.md/PLAN.md: the original
+pass modeled categorization as a fixed `Owner` tag with a hardcoded
+`DLD`/`CentralIT` vocabulary. The actual vocabulary isn't decided yet --
+it's pending a demo of this feature and feedback from the user's group --
+so DLD-vs-not is now determined by a general, **config-driven `Origin`
+tag** instead (below), and functionally there's no separate treatment for
+IMSS vs. AWS-managed: both are equally "not DLD's to modify."
+
+**A fifth Domain Picker entry**, alongside Compute/Key Management/S3/Tag
+Management -- matching Tag Management's own precedent (Phase 20.30) of
+introducing a new domain rather than nesting cross-cutting IAM concerns
+inside Compute. Three List-tier sub-views: **Roles**, **Instance
+Profiles**, **Policies** (customer-managed by default; AWS-managed
+policies behind a separate "show AWS-managed" toggle, since that catalog
+is large and mostly irrelevant to this team's day-to-day questions).
+Each list sorts by `CreateDate` descending by default -- answers "what's
+recently added" directly from the IAM API, no separate tracking
+mechanism. Policies are a full top-level kind, symmetric with Role and
+Instance Profile, not merely something surfaced from inside a role's
+detail screen -- the "what already exists" question applies to policies
+just as much as to roles.
+
+**Categorization: a new `Origin` tag, general and config-driven, no
+hardcoded vocabulary.** `Origin` joins `Project`/`Environment` (Feature
+12) as a third tag clasm treats as a first-class convention -- but unlike
+those two, neither `Origin`'s tag-key name nor which value means
+"DLD-owned" is hardcoded in source. Both are read from a new config
+section (see "Configuration," below), mirroring `regions`/
+`backup_directories`'s existing pattern, left unset by default. clasm
+reads/writes `Origin` exactly like any other tag -- no new tag-entry
+mechanism, since `manageTags`/`applyOneTagChange` (Phase 20.29/20.30)
+already accept arbitrary key/value pairs. An absent `Origin` tag is
+itself informative: it signals "nobody's made a categorization call on
+this resource yet," which is more useful to the group than silently
+defaulting it one way or the other.
+
+**Read-only guard, enforced by clasm itself, independent of what the
+active AWS credentials would technically permit -- but tagging is
+explicitly exempt.** Any IAM-domain action that would change a role's,
+profile's, or policy's actual permissions (attach/detach a managed
+policy, edit a trust policy, delete) checks whether the resource's
+`Origin` tag matches the configured DLD value first, and refuses with a
+clear message otherwise. **Tagging itself is never gated** -- DLD must
+still be able to set `Origin` (or any other tag, e.g. a future
+support-contact tag) on an IMSS- or AWS-owned resource, since recording
+who to contact for support is the concrete reason DLD needs to touch
+these resources at all. An IMSS- or AWS-managed resource's actual
+permissions are never one accidental menu selection away from being
+modified by this tool, but labeling/annotating it is always available.
+
+**No dedicated backfill action.** Since `Origin` is an ordinary tag,
+setting it on a legacy DLD resource that predates this scheme (e.g.
+`ec2-granian-test-role`, roles behind current launch templates) is just
+a normal Tag Management edit (Phase 20.37) -- add `Origin=<value>` the
+same way any other tag gets added. A dedicated one-click "tag as
+DLD-owned" action was considered in the initial pass but dropped once
+the tag stopped being a clasm-hardcoded `Owner=DLD` value and became a
+general, freeform tag with no built-in vocabulary to shortcut.
+
+**Browse-list display: the `Origin` tag's actual value, or an explicit
+"(unset)" -- not a fixed category enum, not collapsed to editable/
+read-only.** Each Roles/Instance Profiles/Policies row shows whatever
+`Origin` actually holds, filterable via the existing List-tier filter
+("/"). This is deliberately **IAM-domain-only for v0.0.5** -- the same
+column could extend to the other five taggable kinds (instances, AMIs,
+launch templates, key pairs, buckets) once the vocabulary's been proven
+out here and reacted to by the group, but that's a later, separate
+extension: those resources don't have the same "is this even ours to
+touch" ambiguity IAM roles do, so the need there is weaker today.
+
+**Tag Management domain extension.** `tagManagementKinds` (currently
+`Instance`/`AMI`/`Launch Template`/`Key Pair`/`S3 Bucket`) gains three
+more entries -- **`IAM Role`, `IAM Instance Profile`, `IAM Policy`** --
+using the same generalized `tagApplyFunc`-closure pattern the S3 Bucket
+slice established (Phase 20.30), so full add/update/remove/show-all-tags
+works on IAM resources through the existing domain, not a new mechanism.
+This directly answers the requirement that profiles, policies, and roles
+must be taggable in clasm, not just readable -- and is also how `Origin`
+itself gets set, since there is no separate, dedicated action for it.
+
+**Detail view.** Picking a role or instance profile shows: trust policy
+(which principals can assume it), attached managed + inline policies
+(with a way to view the policy document -- raw JSON vs. a summarized
+rendering left for the implementation plan), all tags, SSM-capability
+(reusing `instanceProfileIsSSMCapable`/`roleHasSSMPermissions`, Phase
+20.33), and a best-effort cross-reference to instance profiles/running
+instances currently using it (via `DescribeIamInstanceProfileAssociations`,
+already used by Phase 20.33's associate/replace workflow).
+
+**Role/policy creation: curated per-use-case templates, reversing the
+2026-07-02 "never creates a role, only attaches an existing one" scope**
+(DECISIONS.md, "Support picking or creating an IAM instance profile from
+within awsops") -- deliberately, and only through curated templates
+rather than free-form policy authoring. Each template is a **parametrized
+statement set**: the operator supplies specific ARNs at creation time (a
+bucket name, a distribution ID, a secret name) rather than clasm guessing
+account specifics. **Trust principal is EC2 only for now**, modeled as a
+small `TrustPrincipal` enum/type from the start so Lambda/ECS-task
+principals can be added later without reshaping the creation flow -- this
+team isn't making heavy use of either today, but some of the use cases
+below are plausible future serverless candidates. If the config's
+DLD-match value (see "Categorization," above) is set at creation time,
+the newly-created role is tagged `Origin=<that value>` automatically;
+if unset, it's left untagged, same as anything else clasm hasn't been
+told how to categorize yet.
+
+Five templates, drafted from the motivating use cases (not from existing
+policy documents -- no reference documents were available), all flagged
+as needing review before implementation:
+
+| Template | Draft least-privilege shape |
+|---|---|
+| **Static Website (S3 + CloudFront)** | `s3:GetObject`/`s3:ListBucket` on one bucket ARN; optionally `s3:PutObject`/`s3:DeleteObject` + `cloudfront:CreateInvalidation` scoped to one distribution ARN, if the role is for a publish process rather than read-only serving |
+| **RDM Repository Instance** | `AmazonSSMManagedInstanceCore` (already enforced at launch, Phase 20.33) + scoped S3 read/write on one backup-bucket ARN -- directly closes the gap that caused the 2026-07-22 granian-testing incident (a running instance needing S3 access with no instance-role option available, falling back to a plain IAM user access key) |
+| **Bridge Service** (internal systems) | Baseline only: SSM + CloudWatch Logs. Too varied across actual services to template further; flagged in the picker as "starting point, review before use" |
+| **Patron-Facing Service** | SSM + CloudWatch Logs + optional Secrets Manager read (`secretsmanager:GetSecretValue`) scoped to one secret ARN + optional S3 read on one bucket |
+| **Data Processing** (metadata extraction/curation) | SSM + CloudWatch Logs + S3 read/write on one data-bucket ARN |
+
+The three thinnest templates (Bridge Service, Patron-Facing, Data
+Processing) are accepted as v0.0.5 starting points, not finished
+least-privilege policies -- refine once real usage surfaces what these
+services actually need, not before.
+
+**Non-goal, unchanged from the rest of this project's IAM scope: clasm
+never creates, modifies, or deletes IAM *users***. This addendum is
+scoped entirely to roles, instance profiles, and policies.
+
+### New Configuration: `origin_tag`
+
+Following the existing `regions`/`backup_directories` pattern (see
+"Configuration," above): a new, optional YAML section in `~/.clasm`.
+
+```yaml
+origin_tag:
+  key: "Origin"
+  dld_value: ""
+```
+
+- `key` defaults to `"Origin"` if unset -- the tag key clasm treats as
+  the categorization convention. Configurable (not hardcoded) since this
+  team's actual tagging vocabulary, including the key name itself, isn't
+  settled yet.
+- `dld_value` defaults to `""` (empty) if unset, meaning **no value is
+  recognized as DLD-owned yet** -- every resource reads as "not
+  recognized as DLD's" for the read-only guard until this is set, and
+  every browse-list row shows `Origin`'s literal value (or "(unset)")
+  regardless. Once the user's group settles on a real value (e.g.
+  `"DLD"`) and sets it here, resources already tagged `Origin=<that
+  value>` become recognized without any further clasm changes.
+- Per this project's config-loading convention (`internal/config`): a
+  missing or malformed `origin_tag` section falls back to these
+  defaults per-field, not all-or-nothing; a malformed config file overall
+  still fails loudly, same as every other setting.
+
+### Not decided yet
+
+Exact `IAMAPI` surface additions (`TagRole`, `TagInstanceProfile`,
+`TagPolicy`, `ListRoleTags`, `ListInstanceProfileTags`,
+`ListPolicyTags`, `CreateRole`, `CreatePolicy`, `AttachRolePolicy`,
+`ListPolicies`, `GetRole`, `GetPolicy`/`GetPolicyVersion`, etc.); whether
+`Origin` is the right default tag-key name to propose in a demo, given
+the real vocabulary is still pending group feedback (easy to change
+later, since it's a config default, not hardcoded); whether the three
+thin templates should visually warn differently from the two more
+fully-scoped ones in the picker UI; raw JSON vs. summarized rendering
+for policy documents in the detail view; how deletion of a role/profile/
+policy should be gated (the existing `Environment=production` +
+type-to-confirm tier, Feature 9, or a new gate specific to IAM given the
+blast radius of a bad delete) -- all left for the implementation plan.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

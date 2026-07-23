@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
@@ -66,11 +65,10 @@ func syncLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 		return err
 	}
 
-	oldYAMLBytes, err := base64.StdEncoding.DecodeString(detail.UserData)
+	oldYAML, err := decodeUserData(detail.UserData)
 	if err != nil {
 		return fmt.Errorf("decoding existing user-data: %w", err)
 	}
-	oldYAML := string(oldYAMLBytes)
 
 	if oldYAML == newYAML {
 		fmt.Fprintln(w, "No changes -- nothing to sync.")
@@ -147,7 +145,7 @@ func createLaunchTemplateVersion(ctx context.Context, client awsclient.EC2API, t
 		LaunchTemplateId: aws.String(templateID),
 		SourceVersion:    aws.String(sourceVersion),
 		LaunchTemplateData: &types.RequestLaunchTemplateData{
-			UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(newYAML))),
+			UserData: aws.String(encodeUserData(newYAML)),
 		},
 	})
 	if err != nil {

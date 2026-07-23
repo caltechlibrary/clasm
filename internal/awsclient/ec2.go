@@ -44,6 +44,12 @@ type EC2API interface {
 	DeleteLaunchTemplateVersions(ctx context.Context, params *ec2.DeleteLaunchTemplateVersionsInput, optFns ...func(*ec2.Options)) (*ec2.DeleteLaunchTemplateVersionsOutput, error)
 	ModifyVolume(ctx context.Context, params *ec2.ModifyVolumeInput, optFns ...func(*ec2.Options)) (*ec2.ModifyVolumeOutput, error)
 	DescribeVolumesModifications(ctx context.Context, params *ec2.DescribeVolumesModificationsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesModificationsOutput, error)
+	// AssociateIamInstanceProfile and ReplaceIamInstanceProfileAssociation
+	// support the "Associate/replace IAM instance profile" retrofit
+	// workflow (DESIGN.md, "SSM-Capable Instance Profile Enforcement +
+	// Retrofit", Part 3).
+	AssociateIamInstanceProfile(ctx context.Context, params *ec2.AssociateIamInstanceProfileInput, optFns ...func(*ec2.Options)) (*ec2.AssociateIamInstanceProfileOutput, error)
+	ReplaceIamInstanceProfileAssociation(ctx context.Context, params *ec2.ReplaceIamInstanceProfileAssociationInput, optFns ...func(*ec2.Options)) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error)
 }
 
 // NewEC2Client constructs a region-scoped EC2 client from the SDK's

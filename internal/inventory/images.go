@@ -27,6 +27,11 @@ type Image struct {
 	// check (see internal/workflow/instance_type_ena_check.go). False
 	// when the SDK doesn't report a value, matching AWS's own default.
 	EnaSupport bool
+	// Architecture is the AMI's CPU architecture ("x86_64" or "arm64"),
+	// for filtering the instance-type pick list to compatible types
+	// (DESIGN.md, "ARM64 (Graviton) Support + Ubuntu 26.04 LTS";
+	// internal/workflow/launch_prompts.go's promptInstanceType).
+	Architecture string
 	// Tags is the AMI's full tag set -- see Instance.Tags' doc comment.
 	Tags map[string]string
 }
@@ -97,6 +102,7 @@ func imageFromSDK(img types.Image, region string) Image {
 		Project:      project,
 		Environment:  environment,
 		EnaSupport:   aws.ToBool(img.EnaSupport),
+		Architecture: string(img.Architecture),
 		Tags:         tagsToMap(img.Tags),
 	}
 }

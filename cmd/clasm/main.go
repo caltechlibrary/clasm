@@ -328,6 +328,9 @@ func main() {
 		ResizeInstanceRootVolume: func(ctx context.Context) error {
 			return workflow.ResizeInstanceRootVolume(ctx, out, ec2Clients, ssmClients, state.instances)
 		},
+		AssociateOrReplaceInstanceProfile: func(ctx context.Context) error {
+			return workflow.AssociateOrReplaceInstanceProfile(ctx, out, ec2Clients, iamClient, state.instances)
+		},
 		ManageTags: func(ctx context.Context) error {
 			return workflow.ManageTags(ctx, out, ec2Clients, state.instances, state.images)
 		},
@@ -418,6 +421,18 @@ func main() {
 		Refresh: refreshTagMgmt,
 	}
 
+	iamActions := workflow.IAMActions{
+		ShowRoles: func(ctx context.Context) error {
+			return workflow.ShowIAMRoles(ctx, iamClient, cfg.OriginTag)
+		},
+		ShowInstanceProfiles: func(ctx context.Context) error {
+			return workflow.ShowIAMInstanceProfiles(ctx, iamClient, cfg.OriginTag)
+		},
+		ShowPolicies: func(ctx context.Context) error {
+			return workflow.ShowIAMPolicies(ctx, iamClient, cfg.OriginTag)
+		},
+	}
+
 	domains := workflow.DomainActions{
 		Compute: func(ctx context.Context) error {
 			// Fetch and display the Compute listing on every entry into
@@ -452,6 +467,9 @@ func main() {
 				return err
 			}
 			return workflow.RunTagMgmtMenu(ctx, out, tagMgmtActions)
+		},
+		IAM: func(ctx context.Context) error {
+			return workflow.RunIAMMenu(ctx, out, iamActions)
 		},
 	}
 

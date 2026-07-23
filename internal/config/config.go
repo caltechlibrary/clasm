@@ -22,6 +22,14 @@ import (
 // to us-west-1/us-west-2".
 var DefaultRegions = []string{"us-west-1", "us-west-2"}
 
+// DefaultOriginTagKey is used when no config file exists, or one exists
+// but doesn't set origin_tag.key -- see DESIGN.md, "New Configuration:
+// origin_tag". There is deliberately no default for DLDValue: which tag
+// value means "DLD-owned" isn't decided yet, so it stays empty until an
+// operator configures it (see DECISIONS.md, "IAM Profile & Role
+// Management: Origin tag revision...").
+const DefaultOriginTagKey = "Origin"
+
 // Config is clasm' own settings, loaded from an optional YAML file.
 // One field per setting; a new setting is added here, given a default
 // below, and wired into whatever consumes it -- no versioning or
@@ -30,6 +38,16 @@ var DefaultRegions = []string{"us-west-1", "us-west-2"}
 type Config struct {
 	Regions           []string              `yaml:"regions"`
 	BackupDirectories []BackupDirectoryRule `yaml:"backup_directories"`
+	OriginTag         OriginTagConfig       `yaml:"origin_tag"`
+}
+
+// OriginTagConfig names the tag clasm treats as the IAM
+// categorization convention (DESIGN.md, "IAM Profile & Role Management
+// Domain") -- neither the tag key nor which value means "DLD-owned" is
+// hardcoded, since this team's actual vocabulary isn't decided yet.
+type OriginTagConfig struct {
+	Key      string `yaml:"key"`
+	DLDValue string `yaml:"dld_value"`
 }
 
 // BackupDirectoryRule maps a glob-style pattern (path.Match syntax: *,
@@ -82,7 +100,7 @@ func DefaultPath() string {
 // left unset in an otherwise-valid file falls back to its own default
 // independently, not all-or-nothing.
 func Load(path string) (Config, error) {
-	cfg := Config{Regions: DefaultRegions}
+	cfg := Config{Regions: DefaultRegions, OriginTag: OriginTagConfig{Key: DefaultOriginTagKey}}
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -97,6 +115,9 @@ func Load(path string) (Config, error) {
 	}
 	if len(cfg.Regions) == 0 {
 		cfg.Regions = DefaultRegions
+	}
+	if cfg.OriginTag.Key == "" {
+		cfg.OriginTag.Key = DefaultOriginTagKey
 	}
 	return cfg, nil
 }

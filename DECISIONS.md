@@ -4,6 +4,411 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-23 — IAM Profile & Role Management: Origin tag revision (IMSS naming, no hardcoded vocabulary, tagging exempt from the read-only guard)
+
+**Context.** Same-day follow-up to "IAM Profile & Role Management: seven
+scoping decisions, bundled into v0.0.5" (below), after further
+discussion. Three corrections surfaced: (1) "central IT" was the wrong
+name -- Caltech's central IT organization is IMSS, and the security team
+is one component *within* IMSS, not a separate category; (2) DLD
+operates as an independent group, so functionally AWS-provided and
+IMSS-provided resources get identical treatment (both "not DLD's"), not
+a three-way split with different rules; (3) the actual tag vocabulary
+(key name and which value means "DLD-owned") isn't decided yet -- it's
+pending a demo of this feature and feedback from the user's group -- so
+nothing about it should be hardcoded in clasm's source.
+
+**Decision 1 (revises the prior entry's Decision 1): `Owner` with a
+fixed `DLD`/`CentralIT` vocabulary is replaced by a general, config-driven
+`Origin` tag.** Both the tag's key name and which value means "DLD-owned"
+move to a new `origin_tag` config section (`~/.clasm`, mirroring
+`regions`/`backup_directories`), left unset by default (see DESIGN.md,
+"New Configuration: `origin_tag`"). Until the user's group settles on
+real values and the config is updated, nothing is recognized as
+DLD-owned via tag -- accepted, since guessing at a vocabulary that isn't
+decided would just create rework once it is.
+
+**Rejected alternative.** *Keep `Owner` as a fixed, clasm-hardcoded
+enum* (the prior entry's original decision) -- rejected once it became
+clear the actual vocabulary is still an open question for the user's
+group, not something clasm should presume to answer for them.
+
+**Decision 2 (revises the prior entry's Decision 4): the read-only guard
+exempts tagging.** The guard still blocks anything that changes a role's/
+profile's/policy's actual permissions (attach/detach a managed policy,
+edit a trust policy, delete) on a resource not recognized as DLD-owned --
+but tagging itself is never gated. DLD needs to record who to contact
+for support on IMSS- and AWS-owned resources too; blocking that would
+defeat the reason for touching those resources in the first place.
+
+**Rejected alternative.** *Read-only for everything, including tags* --
+simpler (one gate, no exception), but directly blocks the concrete,
+stated need (support-contact recording) that motivated allowing any
+interaction with non-DLD resources at all.
+
+**Decision 3 (revises the prior entry's Decision 5): drop the dedicated
+"Tag as DLD-owned" action.** It made sense when `Owner=DLD` was a
+clasm-hardcoded value; once the vocabulary moved to "TBD, decided by the
+user's group," a bespoke shortcut for one specific, not-yet-known value
+no longer made sense. Setting `Origin` on a legacy resource is now just
+an ordinary Tag Management edit (Phase 20.37) -- no special-cased action.
+
+**Decision 4 (new): the browse list shows `Origin`'s literal value, or
+an explicit "(unset)" -- not a fixed multi-way category, not collapsed to
+a simple editable/read-only label.** An unset `Origin` tag is itself
+useful information -- it tells the group "this one still needs a call
+made on it" -- which a binary or pre-categorized display would hide.
+Filterable via the existing List-tier filter ("/").
+
+**Rejected alternatives.** *A fixed DLD/IMSS/AWS/Unknown category label*
+-- rejected because clasm has no reliable way to distinguish IMSS from
+AWS-managed before the vocabulary exists; the label would be a guess
+dressed up as a category. *Collapse to binary editable/read-only* --
+considered and initially favored earlier the same day, but reversed once
+it was clear this throws away the "nobody's decided yet" signal that
+makes an unset tag valuable to surface at all.
+
+**Decision 5 (new): this is a general mechanism, but IAM-only in
+display for v0.0.5.** `Origin` is designed as a tool-wide convention
+(joining `Project`/`Environment`), not IAM-specific, so it costs little
+extra to build generally now. But the column is only added to the IAM
+domain's three list views this release -- not to the five existing
+taggable kinds (instances, AMIs, launch templates, key pairs, buckets).
+
+**Rejected alternative.** *Surface `Origin` everywhere immediately* --
+rejected for this release: those five resource kinds don't share IAM's
+"is this even ours to touch" ambiguity, so the need there is weaker, and
+proving the convention out in one place before a group demo is safer
+than rolling it out unproven everywhere at once.
+
+**Consequences.** The IAM-domain implementation phases (PLAN.md Phases
+20.36/20.37) gain a config-loading dependency (`internal/config` needs
+an `OriginTag` struct with `Key`/`DLDValue` fields, both defaulting to
+their documented values) that the prior pass hadn't scoped; the
+previously-planned "Tag as DLD-owned" menu action is removed from Phase
+20.36's work items, since Decision 3 makes it redundant with Phase
+20.37's general tagging. No change to Decisions 2, 3, 6, 7 from the
+prior entry (creation-capability scope, trust-principal scope, template
+source, Policy-as-top-level-kind) -- those stand as originally recorded.
+
+---
+
+## 2026-07-23 — IAM Profile & Role Management: seven scoping decisions, bundled into v0.0.5
+
+**Context.** The AWS Console makes two questions hard to answer quickly:
+what roles/profiles/policies already exist and where they came from
+(Caltech Library DLD's own, ones opened up by central IT for cross-team
+tooling such as CrowdStrike, or AWS's own huge managed-policy catalog,
+all interleaved in one flat list), and whether an existing one is safe to
+reuse or a new one is actually needed. Seven scoping decisions were
+needed before design work could start (see DESIGN.md, "IAM Profile &
+Role Management Domain," for the full design built on top of them, and
+`aim_management_and_support_proposal.md` for the paths considered and
+rejected for each). Also decided the same day: this work is bundled into
+the still-unreleased v0.0.5 rather than deferred to v0.0.6, holding back
+the already-verified Phases 20.33-20.35 until IAM work is also done —
+a deliberate trade-off, not an oversight.
+
+**Decision 1: categorize origin via a new `Owner` tag, tag-based going
+forward.** Fixed vocabulary (`DLD`/`CentralIT`/absent), matching the
+existing `Project`/`Environment` convention style. clasm tags what it
+creates from here on; it does not infer category from naming or
+maintain a separate curated allow-list.
+
+**Rejected alternatives.** *A curated allow-list in clasm config*
+(name→category mapping maintained by hand) — works immediately for
+legacy/central-IT resources that can't be tagged, but is a config file
+that silently drifts as new resources appear. *Naming-convention
+inference* — needs no new tagging, but depends on a consistent
+account-wide convention that isn't confirmed to exist. *Hybrid
+(tag+fallback list)* — covers both cases but is two mechanisms to keep
+in sync, rejected as unnecessary complexity for a v0.0.5-scale first
+pass.
+
+**Decision 2: v0.0.5 adds real role/policy creation, reversing the
+2026-07-02 "never creates a role" scope** (DECISIONS.md, "Support
+picking or creating an IAM instance profile from within awsops") — via
+curated per-use-case templates, scoped as parametrized statement sets
+(operator supplies ARNs at creation time), not free-form policy
+authoring.
+
+**Rejected alternatives.** *Attach-only, no new policy JSON* — lower
+risk, but doesn't solve "I need a new role and none of the existing
+policies fit," which is exactly the gap the 2026-07-22 granian incident
+exposed. *Defer to a later version* — would ship the discovery half
+sooner, but the operator-facing problem ("is there a role I can use for
+this new service") isn't solved by discovery alone.
+
+**Decision 3: trust principal is EC2 only for now, modeled for
+extension.** `TrustPrincipal` is a small enum/type from the start so
+Lambda/ECS-task principals can be added later without reshaping the
+creation flow.
+
+**Rejected alternative.** *EC2 + Lambda now* — this team isn't making
+heavy use of Lambda or ECS today; adding it now would be speculative
+scope with no concrete use case yet.
+
+**Decision 4: non-DLD-owned resources are read-only in clasm, always** —
+enforced by clasm itself, independent of what the active AWS credentials
+would technically permit.
+
+**Rejected alternatives.** *Configurable per-category* (DLD editable,
+CentralIT flagged read-only, AWS-managed always read-only) — same idea,
+more moving parts, rejected as unneeded granularity for a first pass.
+*Rely on IAM permissions only* — simplest, but removes a guardrail that
+costs little to keep; a central-IT or AWS-managed resource should never
+be one accidental menu selection away from modification by this tool.
+
+**Decision 5: legacy/untagged DLD resources get a dedicated "Tag as
+DLD-owned" action**, not a default-to-editable posture.
+
+**Rejected alternatives.** *Untagged defaults to DLD-owned (editable)* —
+safer for day-one usability, but weakens Decision 4's guardrail until
+backfilling actually happens (an untagged central-IT resource would also
+read as editable). *Accept the gap, backfill outside clasm* (AWS
+CLI/Console) — no new clasm code, but moves the backfill step outside
+the tool this whole effort is about.
+
+**Decision 6: the five per-use-case policy templates are drafted from
+scratch** (Static Website, RDM Repository, Bridge Service, Patron-Facing,
+Data Processing), not sourced from existing policy documents — none were
+available. The three thinnest (Bridge Service, Patron-Facing, Data
+Processing) are accepted as v0.0.5 starting points, refined once real
+usage surfaces what these services actually need, not held back until
+they're fully scoped.
+
+**Decision 7: IAM Policy is a full top-level browsable/taggable kind**,
+symmetric with Role and Instance Profile — not secondary, viewed only
+from inside a role's detail screen. The "what already exists" question
+this whole effort opens with applies to policies just as much as to
+roles.
+
+**Rejected alternative.** *Policy as secondary, role-detail-only* — less
+to build, but doesn't answer "what customer-managed policies exist
+account-wide" as a standalone question, which was one of the two
+motivating problems from the start.
+
+**Consequences.** v0.0.5's release is held back until this design is
+implemented, tested, and (where practical) real-AWS-verified alongside
+Phases 20.33-20.35 — a real schedule cost, accepted deliberately.
+`tagManagementKinds` grows from five entries to eight (`IAM Role`,
+`IAM Instance Profile`, `IAM Policy` added), reusing Phase 20.30's
+generalized `tagApplyFunc`-closure pattern rather than a new tagging
+mechanism. A new fifth Domain Picker entry, IAM, is added alongside
+Compute/Key Management/S3/Tag Management. clasm's IAM surface grows from
+"pick or attach an existing role" to "create a role from a curated
+template," a genuine scope expansion that needs its own test coverage
+and (per this project's established practice) real-AWS verification
+before release, not just unit tests.
+
+---
+
+## 2026-07-22 — ARM64/Ubuntu 26.04: filter the instance-type list by AMI architecture, no new pre-flight check
+
+**Context.** Adding arm64 (Graviton) support to the curated AMI and
+instance-type lists raised the same question the IAM-profile picker
+just answered: how to keep an operator from picking an
+architecture-incompatible combination. The initial design proposed a
+new pre-flight check mirroring `ensureInstanceTypeENACompatible` --
+query, then offer "change instance type or abort" if the picked
+instance type doesn't match the AMI's architecture.
+
+**Decision.** Simplified: filter the instance-type picker's own choice
+list by the already-picked AMI's architecture, the same approach just
+adopted for the IAM-profile/role picker (see "Filter non-SSM-capable
+profiles/roles from the picker, don't just annotate them," above) --
+don't offer an instance type that would just be wrong, rather than
+offering it and rejecting the pick afterward. `promptInstanceType`
+gains an `arch string` parameter (`""` = no filter); the two top-level
+launch-param collection functions pass the picked AMI's architecture,
+the two ENA/AZ-incompatibility remediation call sites pass `""`
+(unfiltered, matching their current behavior unchanged).
+
+**Rejected alternative.** *A new architecture-compatibility pre-flight
+check*, structurally cloning the ENA check -- rejected once the
+IAM-profile picker's own live-testing feedback (same day) established
+that filtering beats "show everything, reject on pick" whenever
+there's no legitimate reason to show the invalid option in the first
+place. There's no case where picking an arm64 instance type for an
+x86_64 AMI (or vice versa) is ever valid, exactly the same shape of
+argument that justified filtering there.
+
+**Consequences.** Simpler than the rejected alternative: no new
+`incompatibilityChoice` variant, no new remediation loop, no new tests
+for a reject-then-retry flow. The two remediation call sites
+(ENA/AZ "change instance type") deliberately stay unfiltered rather
+than threading the AMI's architecture further through
+`ensureInstanceTypeENACompatible`/the AZ check's own signatures --
+accepted as a real but very unlikely gap (a non-ENA-required AMI old
+enough to need that remediation path predates Graviton's existence in
+practice).
+
+---
+
+## 2026-07-22 — Always gzip-compress user-data before base64-encoding it
+
+**Context.** Live testing hit `InvalidUserData.Malformed: User data is
+limited to 16384 bytes` creating a launch template from
+`invenio-rdm-13-granian-init.yaml` (16976 bytes raw, already over the
+limit before clasm even touches it -- `invenio-rdm-13-gunicorn-init.yaml`
+is in the same boat at 16996 bytes). clasm currently just
+base64-encodes the raw cloud-init text as-is at every write site
+(`Launch`, `buildRequestLaunchTemplateData`,
+`createLaunchTemplateVersion`) with no compression. cloud-init itself
+auto-detects gzip-compressed user-data (checks the gzip magic bytes)
+and transparently decompresses it before running -- a standard,
+documented AWS/cloud-init pattern, not a hack. Gzipping the actual
+16976-byte file (confirmed via plain `gzip -c | wc -c`, not assumed)
+brings it to 5628 bytes, comfortably under the limit.
+
+**Decision.** Two new shared helpers (`userdata_gzip.go`):
+`encodeUserData(plainText string) string` gzip-compresses then
+base64-encodes, used at all three write sites; `decodeUserData(encoded
+string) (string, error)` base64-decodes then checks for the gzip magic
+bytes (`0x1f 0x8b`) -- gunzips if present, returns the raw bytes
+as-is otherwise -- used at all four read sites
+(`ShowCloudInitFromInstance`, `syncLaunchTemplate`'s existing-version
+read, `show_launch_template.go`'s two-version diff). The as-is fallback
+is what keeps this backward compatible with every already-existing
+instance/template whose user-data was written before this change, in
+plain (non-gzip) form -- both old and new content read correctly
+without needing to know which one a given resource has.
+
+**Rejected alternative.** *Only gzip when the raw content is close to
+or over the limit* -- rejected in favor of always gzipping: cloud-init
+handles both forms identically, so there's no behavioral reason to
+special-case small files, and a size-threshold decision is one more
+thing to get wrong (and test) for no benefit. The only cost is a minor
+readability regression for someone manually inspecting raw user-data
+outside clasm (`aws ec2 describe-instance-attribute` returns gzip'd
+bytes now, not readable YAML directly) -- accepted, since clasm's own
+"Show/export cloud-init" already exists specifically to make this
+readable again through the tool.
+
+**Consequences.** `encodeUserData` has no error return -- gzip-writing
+to an in-memory `bytes.Buffer` cannot fail in practice, so there's
+nothing meaningful to propagate (avoids threading an error path for a
+scenario that can't happen). `decodeUserData` does return an error
+(malformed base64 or a corrupt/truncated gzip stream both remain
+genuinely possible on read).
+
+---
+
+## 2026-07-22 — Filter non-SSM-capable profiles/roles from the picker, don't just annotate them
+
+**Context.** Live testing of Phase 20.33 Part 2 (SSM-capable instance
+profile enforcement): creating a launch template from cloud-init YAML
+for the Granian test instance, the operator hit "Create new instance
+profile" and was shown the account's full IAM role list, annotated per
+role with SSM-capability -- but with real accounts holding many roles
+for unrelated services (Lambda execution roles, service-linked roles,
+...), a long annotated list that's mostly "cannot be selected" entries
+was harder to use than no annotation at all, not easier. Since SSM
+support is now a hard, unconditional requirement (no opt-out, same as
+IMDSv2), there's no scenario where picking a non-capable entry is ever
+valid -- showing it at all just adds noise to scan past.
+
+**Decision.** `buildInstanceProfileChoices`/`buildRoleChoices`
+(`create_instance_profile.go`) now filter out non-capable profiles/roles
+entirely rather than including them with a `" -- NOT SSM-capable..."`
+label suffix. The `ssmCapable` field and the post-pick rejection branch
+in `promptIAMInstanceProfileOrCreate`/`createInstanceProfileInteractive`
+are removed as dead code -- filtering guarantees every remaining choice
+is already capable, so there's nothing left to reject. If filtering
+empties the role list entirely, `createInstanceProfileInteractive`
+reports it the same way it already reports "no roles at all in this
+account" (a clear message, `created=false`, not an error) -- same shape,
+new reason.
+
+**Rejected alternative (superseded).** *Show every profile/role,
+annotated, reject on selection* -- this session's original Part 2
+design. Chosen at the time because DESIGN.md's own "Not decided yet"
+note explicitly left "shown-but-blocked vs. ... " open; live usage
+answered it: for a list of any real size, annotation-without-filtering
+just makes the operator read past irrelevant entries to find the ones
+that matter, providing no benefit over not showing them at all (there's
+no "pick anyway" override to explain, since SSM support isn't
+optional).
+
+**Consequences.** Simpler code (fewer fields, fewer branches) and a
+shorter, more usable list matching what the enforcement itself already
+requires. If an account has zero SSM-capable roles, the operator now
+sees a single clear "none found" message instead of a long list of
+entries none of which can be selected.
+
+---
+
+## 2026-07-22 — SSM-Capable Instance Profile Enforcement + Retrofit: three scoping decisions
+
+**Context.** Live real-AWS verification of "Configurable EBS Root
+Volume Size" (PLAN.md Phase 20.31) found that both test instances had
+`IamInstanceProfile: null` -- no instance profile at all -- so
+`growRootFilesystem`'s SSM-based OS-level growth automation could
+never come online. Separately, the same day (and once before, setting
+up an InvenioRDM test instance), there was no way to attach an IAM
+instance profile to an instance already running, only at launch. Three
+scoping decisions were needed before design work could start (see
+DESIGN.md, "SSM-Capable Instance Profile Enforcement + Retrofit," for
+the full design built on top of them).
+
+**Decision 1: how to verify a role is "SSM-capable."** Check for AWS's
+own managed policy, `AmazonSSMManagedInstanceCore`, attached via
+`iam:ListAttachedRolePolicies` -- not an inline-policy content check.
+
+**Rejected alternative.** *Parse inline policies
+(`iam:ListRolePolicies`/`GetRolePolicy`) for functionally-equivalent
+custom permissions* -- rejected: this means interpreting arbitrary IAM
+policy JSON to decide whether it grants "enough" SSM access, which is
+exactly the kind of guessing Phase 20.31's own "fail loud, don't
+guess" convention (`growRootFilesystem`'s device/filesystem detection)
+argues against. A role with a custom, non-managed-policy path to
+equivalent permissions will be reported as not SSM-capable -- a known,
+accepted limitation, not an oversight. clasm still never authors IAM
+policies itself (DECISIONS.md, "2026-07-02 -- Support picking or
+creating an IAM instance profile from within awsops"), so the fix for
+a flagged role is an IAM-console change outside clasm, same boundary
+as always.
+
+**Decision 2: the retrofit workflow (associate/replace a profile on a
+running instance) is general-purpose, not SSM-specific.** A new
+"Associate/replace IAM instance profile" menu entry lets an operator
+attach *any* instance profile to a running instance; SSM-capability is
+shown but not gated there.
+
+**Rejected alternative.** *A narrower, dedicated "enable SSM"
+workflow* that only allows attaching an SSM-capable profile --
+rejected because the incident that first surfaced this gap (setting up
+an already-running InvenioRDM test instance) needed a profile for S3
+access, not SSM at all. Gating the retrofit path to SSM-capable
+profiles only would have left that exact original use case unsolved.
+
+**Decision 3: launch-time enforcement checks every profile shown in
+the picker, existing and newly-created, not just newly-created
+ones.** `promptIAMInstanceProfileOrCreate`'s existing-profile list and
+`createInstanceProfileForRole`'s role list both get SSM-capability
+annotation/gating, and the `"(none)"` choice is removed entirely --
+same posture as IMDSv2's `required` having no `optional` escape hatch.
+
+**Rejected alternative.** *Only verify newly-created profiles*,
+trusting whatever's already in the account -- rejected as inconsistent
+with "insist on SSM support": an operator picking an existing,
+non-SSM-capable profile from the list would hit exactly the same
+silent-degradation problem Phase 20.31's live testing just surfaced,
+just via a different picker branch.
+
+**Consequences.** An instance profile is now mandatory at launch
+(instance creation, cloud-init launch, launch templates all share the
+same collection path, so all three gain enforcement together); an
+operator without any SSM-capable role in their account is blocked at
+launch until one exists, with no clasm-driven remediation path (by
+design -- clasm doesn't author policies). The retrofit workflow adds a
+new `EC2API` surface (`AssociateIamInstanceProfile`,
+`ReplaceIamInstanceProfileAssociation`) and reuses
+`promptIAMInstanceProfileOrCreate` rather than inventing a second
+profile-picking UI.
+
+---
+
 ## 2026-07-22 — Widen "pause for acknowledgment" to every action, not just errors
 
 **Context.** Live real-AWS testing of the same day's "Pause for

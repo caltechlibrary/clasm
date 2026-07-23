@@ -261,6 +261,11 @@ type DomainActions struct {
 	// from Compute's/Key Management's own narrower, resource-scoped tag
 	// entry points.
 	TagManagement func(ctx context.Context) error
+	// IAM is the fifth domain (DESIGN.md, "IAM Profile & Role Management
+	// Domain"): browse Roles/Instance Profiles/Policies, each annotated
+	// with its Origin tag and DLD-ownership, distinct from Tag
+	// Management's own cross-resource tag-editing entry point.
+	IAM func(ctx context.Context) error
 }
 
 // domainItem pairs a domain-picker label with the DomainActions field it
@@ -282,6 +287,7 @@ var domainItems = []domainItem{
 	{"Key Management", func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
 	{"S3 (Buckets & Static Websites)", func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
 	{"Tag Management", func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
+	{"IAM", func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
 }
 
 // pickDomainItem runs the domain picker's huh.Select and returns the

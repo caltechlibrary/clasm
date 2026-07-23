@@ -110,7 +110,7 @@ func TestPromptSecurityGroupIDs_FallsBackToFreeTextWhenEmpty(t *testing.T) {
 func TestPromptInstanceType_PicksFromCuratedList(t *testing.T) {
 	term, input, buf := newPipeEditor("1\n")
 
-	got, err := promptInstanceType(term, input, buf)
+	got, err := promptInstanceType(term, "", input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestPromptInstanceType_PicksFromCuratedList(t *testing.T) {
 func TestPromptInstanceType_PicksALaterCuratedEntry(t *testing.T) {
 	term, input, buf := newPipeEditor("4\n")
 
-	got, err := promptInstanceType(term, input, buf)
+	got, err := promptInstanceType(term, "", input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestPromptInstanceType_IncludesNonENARequiredEntries(t *testing.T) {
 	// without ENA support needs one of these to launch at all.
 	term, input, buf := newPipeEditor("10\n")
 
-	got, err := promptInstanceType(term, input, buf)
+	got, err := promptInstanceType(term, "", input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,9 +154,9 @@ func TestPromptInstanceType_IncludesNonENARequiredEntries(t *testing.T) {
 }
 
 func TestPromptInstanceType_OtherFallsBackToFreeText(t *testing.T) {
-	term, input, buf := newPipeEditor("12\nc6g.medium\n") // 12) Other
+	term, input, buf := newPipeEditor("21\nc6g.medium\n") // 21) Other, unfiltered (20 curated entries + Other)
 
-	got, err := promptInstanceType(term, input, buf)
+	got, err := promptInstanceType(term, "", input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,9 +166,9 @@ func TestPromptInstanceType_OtherFallsBackToFreeText(t *testing.T) {
 }
 
 func TestPromptInstanceType_OtherRejectsBlank(t *testing.T) {
-	term, input, buf := newPipeEditor("12\n\nt4g.nano\n") // 12) Other, blank (rejected), retry
+	term, input, buf := newPipeEditor("21\n\nt4g.nano\n") // 21) Other, blank (rejected), retry
 
-	got, err := promptInstanceType(term, input, buf)
+	got, err := promptInstanceType(term, "", input, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,5 +177,55 @@ func TestPromptInstanceType_OtherRejectsBlank(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "invalid input") {
 		t.Errorf("expected a validation error message, got:\n%s", buf.String())
+	}
+}
+
+// TestPromptInstanceType_FiltersToArm64 / _FiltersToX8664 -- DESIGN.md,
+// "ARM64 (Graviton) Support + Ubuntu 26.04 LTS": filtering by the
+// already-picked AMI's architecture, not a post-hoc reject-and-retry
+// check (DECISIONS.md, "ARM64/Ubuntu 26.04: filter the instance-type
+// list by AMI architecture, no new pre-flight check").
+
+func TestPromptInstanceType_FiltersToArm64(t *testing.T) {
+	term, input, buf := newPipeEditor("1\n")
+
+	got, err := promptInstanceType(term, "arm64", input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "t4g.micro" {
+		t.Errorf("got %q, want %q (first arm64 entry)", got, "t4g.micro")
+	}
+	if strings.Contains(buf.String(), "t3.micro") {
+		t.Errorf("expected x86_64 entries to be filtered out, got:\n%s", buf.String())
+	}
+}
+
+func TestPromptInstanceType_FiltersToX8664(t *testing.T) {
+	term, input, buf := newPipeEditor("1\n")
+
+	got, err := promptInstanceType(term, "x86_64", input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "t3.micro" {
+		t.Errorf("got %q, want %q (first x86_64 entry)", got, "t3.micro")
+	}
+	if strings.Contains(buf.String(), "t4g.micro") {
+		t.Errorf("expected arm64 entries to be filtered out, got:\n%s", buf.String())
+	}
+}
+
+func TestPromptInstanceType_OtherAlwaysAvailableWhenFiltered(t *testing.T) {
+	// 9 arm64 curated entries + "Other" -- confirmed by picking the last
+	// (10th) row when filtered to arm64.
+	term, input, buf := newPipeEditor("10\nc6g.medium\n")
+
+	got, err := promptInstanceType(term, "arm64", input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "c6g.medium" {
+		t.Errorf("got %q, want %q", got, "c6g.medium")
 	}
 }

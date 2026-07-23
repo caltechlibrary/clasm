@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
@@ -207,21 +206,21 @@ func showLaunchTemplateVersionDiff(ctx context.Context, w io.Writer, client awsc
 		return err
 	}
 
-	yaml1, err := base64.StdEncoding.DecodeString(d1.UserData)
+	yaml1, err := decodeUserData(d1.UserData)
 	if err != nil {
 		return fmt.Errorf("decoding version %d's user-data: %w", d1.VersionNumber, err)
 	}
-	yaml2, err := base64.StdEncoding.DecodeString(d2.UserData)
+	yaml2, err := decodeUserData(d2.UserData)
 	if err != nil {
 		return fmt.Errorf("decoding version %d's user-data: %w", d2.VersionNumber, err)
 	}
 
-	if string(yaml1) == string(yaml2) {
+	if yaml1 == yaml2 {
 		fmt.Fprintf(w, "Versions %d and %d have identical cloud-init content.\n", d1.VersionNumber, d2.VersionNumber)
 		return nil
 	}
 
-	diff := udiff.Unified(fmt.Sprintf("version %d", d1.VersionNumber), fmt.Sprintf("version %d", d2.VersionNumber), string(yaml1), string(yaml2))
+	diff := udiff.Unified(fmt.Sprintf("version %d", d1.VersionNumber), fmt.Sprintf("version %d", d2.VersionNumber), yaml1, yaml2)
 	return displayDiff(ctx, w, fmt.Sprintf("Diff: %s version %d vs version %d", lt.TemplateID, d1.VersionNumber, d2.VersionNumber), diff, input)
 }
 

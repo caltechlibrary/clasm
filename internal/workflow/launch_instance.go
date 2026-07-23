@@ -95,7 +95,7 @@ func collectLaunchInstanceParams(ctx context.Context, w io.Writer, ec2Clients ma
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := promptInstanceType(w, menuInput, menuOutput)
+	instanceType, err := promptInstanceType(w, image.Architecture, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

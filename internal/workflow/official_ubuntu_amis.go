@@ -21,14 +21,16 @@ const ubuntuAMIOwnerID = "099720109477"
 // curatedUbuntuReleases is a short, hand-picked list of official Ubuntu
 // LTS releases offered alongside the account's own AMIs when picking a
 // base AMI to launch from (DESIGN.md, Feature 2/3: "Select an AMI") --
-// not a general public-AMI browser. amd64/x86_64 only, matching the
-// curated instance-type list's architecture (DECISIONS.md, "Instance
-// type pick list: curated shortlist, not the full AWS catalog"). See
-// DECISIONS.md, "Offer official Ubuntu LTS AMIs alongside owned AMIs
-// when picking a base AMI" -- anything more exotic (arm64/Graviton, a
-// different distribution, a specific non-LTS release) means copying the
-// specific public AMI into the account first (outside awsops), same as
-// before this addition.
+// not a general public-AMI browser. See DECISIONS.md, "Offer official
+// Ubuntu LTS AMIs alongside owned AMIs when picking a base AMI" --
+// anything more exotic (a different distribution, a specific non-LTS
+// release) means copying the specific public AMI into the account
+// first (outside awsops), same as before this addition.
+//
+// Both amd64/x86_64 and arm64/Graviton as of DESIGN.md, "ARM64
+// (Graviton) Support + Ubuntu 26.04 LTS" -- Image.Architecture (carried
+// through from the real AMI, not this list) is what
+// promptInstanceType's arch filtering actually keys off of.
 //
 // namePattern must match Canonical's full published AMI Name, which is
 // prefixed with a path-like "ubuntu/images/hvm-ssd/" or newer
@@ -38,12 +40,19 @@ const ubuntuAMIOwnerID = "099720109477"
 // the leading wildcard) matched zero real AMIs in every region, every
 // time, silently, per DECISIONS.md, "Offer official Ubuntu LTS AMIs..."
 // (fix logged in "Fix official Ubuntu AMI name filter pattern", below).
+// The arm64 and 26.04/"resolute" patterns were confirmed the same way,
+// live, before being added here (DESIGN.md, "ARM64 (Graviton)
+// Support..." -- not assumed from Canonical's naming convention alone).
 var curatedUbuntuReleases = []struct {
 	label       string
 	namePattern string
 }{
+	{"Ubuntu 26.04 LTS (Resolute Raccoon), amd64 -- official", "ubuntu/images/hvm-ssd*/ubuntu-resolute-26.04-amd64-server-*"},
+	{"Ubuntu 26.04 LTS (Resolute Raccoon), arm64 -- official", "ubuntu/images/hvm-ssd*/ubuntu-resolute-26.04-arm64-server-*"},
 	{"Ubuntu 24.04 LTS (Noble Numbat), amd64 -- official", "ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-amd64-server-*"},
+	{"Ubuntu 24.04 LTS (Noble Numbat), arm64 -- official", "ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-arm64-server-*"},
 	{"Ubuntu 22.04 LTS (Jammy Jellyfish), amd64 -- official", "ubuntu/images/hvm-ssd*/ubuntu-jammy-22.04-amd64-server-*"},
+	{"Ubuntu 22.04 LTS (Jammy Jellyfish), arm64 -- official", "ubuntu/images/hvm-ssd*/ubuntu-jammy-22.04-arm64-server-*"},
 }
 
 // latestUbuntuAMI finds the most recently published AMI matching
@@ -79,10 +88,13 @@ func latestUbuntuAMI(ctx context.Context, client awsclient.EC2API, namePattern s
 
 // listOfficialUbuntuAMIsInRegion resolves curatedUbuntuReleases to real
 // AMIs in one region, skipping any release not published there. Carries
-// EnaSupport through exactly like inventory.imageFromSDK does for owned
-// AMIs -- without it, the instance-type-vs-AMI-ENA-support pre-flight
-// check would wrongly flag a modern, actually-ENA-enabled official AMI
-// as incompatible with every Nitro-based curated instance type.
+// EnaSupport and Architecture through exactly like inventory.imageFromSDK
+// does for owned AMIs -- without EnaSupport, the instance-type-vs-AMI-
+// ENA-support pre-flight check would wrongly flag a modern, actually-
+// ENA-enabled official AMI as incompatible with every Nitro-based
+// curated instance type; without Architecture, promptInstanceType's
+// arch filtering (DESIGN.md, "ARM64 (Graviton) Support...") couldn't
+// tell an official arm64 AMI apart from an amd64 one.
 func listOfficialUbuntuAMIsInRegion(ctx context.Context, client awsclient.EC2API, region string) ([]inventory.Image, error) {
 	var out []inventory.Image
 	for _, rel := range curatedUbuntuReleases {
@@ -99,6 +111,7 @@ func listOfficialUbuntuAMIsInRegion(ctx context.Context, client awsclient.EC2API
 			CreationDate: aws.ToString(img.CreationDate),
 			Region:       region,
 			EnaSupport:   aws.ToBool(img.EnaSupport),
+			Architecture: string(img.Architecture),
 		})
 	}
 	return out, nil

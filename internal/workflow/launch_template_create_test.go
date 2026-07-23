@@ -48,9 +48,12 @@ func TestBuildRequestLaunchTemplateData_SetsIMDSv2RequiredAndSubnetViaNetworkInt
 	if data.IamInstanceProfile == nil || aws.ToString(data.IamInstanceProfile.Name) != "my-profile" {
 		t.Errorf("IamInstanceProfile = %v, want Name=my-profile", data.IamInstanceProfile)
 	}
-	wantUserData := "I2Nsb3VkLWNvbmZpZw==" // base64("#cloud-config")
-	if aws.ToString(data.UserData) != wantUserData {
-		t.Errorf("UserData = %q, want %q", aws.ToString(data.UserData), wantUserData)
+	gotUserData, err := decodeUserData(aws.ToString(data.UserData))
+	if err != nil {
+		t.Fatalf("unexpected error decoding UserData: %v", err)
+	}
+	if gotUserData != "#cloud-config" {
+		t.Errorf("UserData decodes to %q, want %q", gotUserData, "#cloud-config")
 	}
 	if len(data.TagSpecifications) != 1 || data.TagSpecifications[0].ResourceType != types.ResourceTypeInstance {
 		t.Fatalf("TagSpecifications = %+v, want one instance-scoped spec", data.TagSpecifications)

@@ -185,3 +185,24 @@ func TestImageFromSDK_CarriesEnaSupport(t *testing.T) {
 		t.Error("EnaSupport = true, want false when the SDK field is nil")
 	}
 }
+
+// TestImageFromSDK_CarriesArchitecture -- DESIGN.md, "ARM64 (Graviton)
+// Support + Ubuntu 26.04 LTS": Architecture is what
+// promptInstanceType's arch filtering keys off of.
+func TestImageFromSDK_CarriesArchitecture(t *testing.T) {
+	arm := imageFromSDK(types.Image{
+		ImageId:      aws.String("ami-1"),
+		Architecture: types.ArchitectureValuesArm64,
+	}, "us-east-1")
+	if arm.Architecture != "arm64" {
+		t.Errorf("Architecture = %q, want arm64", arm.Architecture)
+	}
+
+	x86 := imageFromSDK(types.Image{
+		ImageId:      aws.String("ami-2"),
+		Architecture: types.ArchitectureValuesX8664,
+	}, "us-east-1")
+	if x86.Architecture != "x86_64" {
+		t.Errorf("Architecture = %q, want x86_64", x86.Architecture)
+	}
+}

@@ -58,9 +58,12 @@ func TestCreateLaunchTemplateVersion_SetsSourceVersionAndUserData(t *testing.T) 
 	if aws.ToString(in.SourceVersion) != "2" {
 		t.Errorf("SourceVersion = %q, want 2", aws.ToString(in.SourceVersion))
 	}
-	wantUserData := base64.StdEncoding.EncodeToString([]byte("#cloud-config\nnew content"))
-	if aws.ToString(in.LaunchTemplateData.UserData) != wantUserData {
-		t.Errorf("UserData = %q, want %q", aws.ToString(in.LaunchTemplateData.UserData), wantUserData)
+	gotUserData, err := decodeUserData(aws.ToString(in.LaunchTemplateData.UserData))
+	if err != nil {
+		t.Fatalf("unexpected error decoding UserData: %v", err)
+	}
+	if gotUserData != "#cloud-config\nnew content" {
+		t.Errorf("UserData decodes to %q, want %q", gotUserData, "#cloud-config\nnew content")
 	}
 	if in.LaunchTemplateData.ImageId != nil {
 		t.Error("expected ImageId to be left unset -- only UserData should be overridden, everything else inherited via SourceVersion")

@@ -57,7 +57,7 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	instanceType, err := promptInstanceType(w, menuInput, menuOutput)
+	instanceType, err := promptInstanceType(w, image.Architecture, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

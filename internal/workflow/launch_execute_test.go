@@ -192,6 +192,20 @@ type fakeEC2Client struct {
 	volumeModificationFailed              bool
 	describeVolumesModificationsErr       error
 	lastDescribeVolumesModificationsInput *ec2.DescribeVolumesModificationsInput
+
+	// currentInstanceProfileAssociationID, if non-empty, makes
+	// DescribeIamInstanceProfileAssociations report one active
+	// association with this ID -- empty means no current association
+	// (associateOrReplaceInstanceProfile's associate-vs-replace branch,
+	// associate_instance_profile.go).
+	currentInstanceProfileAssociationID       string
+	describeIamInstanceProfileAssociationsErr error
+
+	lastAssociateIamInstanceProfileInput *ec2.AssociateIamInstanceProfileInput
+	associateIamInstanceProfileErr       error
+
+	lastReplaceIamInstanceProfileAssociationInput *ec2.ReplaceIamInstanceProfileAssociationInput
+	replaceIamInstanceProfileAssociationErr       error
 }
 
 func (f *fakeEC2Client) DescribeLaunchTemplates(ctx context.Context, params *ec2.DescribeLaunchTemplatesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplatesOutput, error) {
@@ -522,6 +536,36 @@ func (f *fakeEC2Client) DescribeVolumesModifications(ctx context.Context, params
 	}}, nil
 }
 
+func (f *fakeEC2Client) DescribeIamInstanceProfileAssociations(ctx context.Context, params *ec2.DescribeIamInstanceProfileAssociationsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
+	if f.describeIamInstanceProfileAssociationsErr != nil {
+		return nil, f.describeIamInstanceProfileAssociationsErr
+	}
+	if f.currentInstanceProfileAssociationID == "" {
+		return &ec2.DescribeIamInstanceProfileAssociationsOutput{}, nil
+	}
+	return &ec2.DescribeIamInstanceProfileAssociationsOutput{
+		IamInstanceProfileAssociations: []types.IamInstanceProfileAssociation{
+			{AssociationId: aws.String(f.currentInstanceProfileAssociationID), State: types.IamInstanceProfileAssociationStateAssociated},
+		},
+	}, nil
+}
+
+func (f *fakeEC2Client) AssociateIamInstanceProfile(ctx context.Context, params *ec2.AssociateIamInstanceProfileInput, optFns ...func(*ec2.Options)) (*ec2.AssociateIamInstanceProfileOutput, error) {
+	f.lastAssociateIamInstanceProfileInput = params
+	if f.associateIamInstanceProfileErr != nil {
+		return nil, f.associateIamInstanceProfileErr
+	}
+	return &ec2.AssociateIamInstanceProfileOutput{}, nil
+}
+
+func (f *fakeEC2Client) ReplaceIamInstanceProfileAssociation(ctx context.Context, params *ec2.ReplaceIamInstanceProfileAssociationInput, optFns ...func(*ec2.Options)) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
+	f.lastReplaceIamInstanceProfileAssociationInput = params
+	if f.replaceIamInstanceProfileAssociationErr != nil {
+		return nil, f.replaceIamInstanceProfileAssociationErr
+	}
+	return &ec2.ReplaceIamInstanceProfileAssociationOutput{}, nil
+}
+
 func (f *fakeEC2Client) CreateImage(ctx context.Context, params *ec2.CreateImageInput, optFns ...func(*ec2.Options)) (*ec2.CreateImageOutput, error) {
 	f.lastCreateImageInput = params
 	if f.createImageErr != nil {
@@ -659,9 +703,12 @@ func TestLaunch_Success(t *testing.T) {
 	if in.IamInstanceProfile == nil || aws.ToString(in.IamInstanceProfile.Name) != "my-profile" {
 		t.Errorf("IamInstanceProfile = %v, want Name=my-profile", in.IamInstanceProfile)
 	}
-	wantUserData := "I2Nsb3VkLWNvbmZpZw==" // base64("#cloud-config")
-	if aws.ToString(in.UserData) != wantUserData {
-		t.Errorf("UserData = %q, want %q", aws.ToString(in.UserData), wantUserData)
+	gotUserData, err := decodeUserData(aws.ToString(in.UserData))
+	if err != nil {
+		t.Fatalf("unexpected error decoding UserData: %v", err)
+	}
+	if gotUserData != "#cloud-config" {
+		t.Errorf("UserData decodes to %q, want %q", gotUserData, "#cloud-config")
 	}
 	if len(in.TagSpecifications) != 1 || in.TagSpecifications[0].ResourceType != types.ResourceTypeInstance {
 		t.Fatalf("TagSpecifications = %+v, want one instance-scoped spec", in.TagSpecifications)

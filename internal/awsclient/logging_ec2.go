@@ -213,6 +213,18 @@ func (w *loggingEC2Client) DescribeVolumesModifications(ctx context.Context, par
 	})
 }
 
+func (w *loggingEC2Client) AssociateIamInstanceProfile(ctx context.Context, params *ec2.AssociateIamInstanceProfileInput, optFns ...func(*ec2.Options)) (*ec2.AssociateIamInstanceProfileOutput, error) {
+	return logAWSCall(w.dl, "EC2.AssociateIamInstanceProfile", w.region, params, func() (*ec2.AssociateIamInstanceProfileOutput, error) {
+		return w.inner.AssociateIamInstanceProfile(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) ReplaceIamInstanceProfileAssociation(ctx context.Context, params *ec2.ReplaceIamInstanceProfileAssociationInput, optFns ...func(*ec2.Options)) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
+	return logAWSCall(w.dl, "EC2.ReplaceIamInstanceProfileAssociation", w.region, params, func() (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
+		return w.inner.ReplaceIamInstanceProfileAssociation(ctx, params, optFns...)
+	})
+}
+
 // CreateKeyPair does not use the shared logAWSCall helper: its output
 // carries the new key pair's unencrypted private key material, which
 // must never be written to the debug log. The rest of the output is

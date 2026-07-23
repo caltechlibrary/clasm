@@ -46,3 +46,15 @@ func (w *loggingIAMClient) AddRoleToInstanceProfile(ctx context.Context, params 
 		return w.inner.AddRoleToInstanceProfile(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingIAMClient) ListAttachedRolePolicies(ctx context.Context, params *iam.ListAttachedRolePoliciesInput, optFns ...func(*iam.Options)) (*iam.ListAttachedRolePoliciesOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListAttachedRolePolicies", w.region, params, func() (*iam.ListAttachedRolePoliciesOutput, error) {
+		return w.inner.ListAttachedRolePolicies(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) ListPolicies(ctx context.Context, params *iam.ListPoliciesInput, optFns ...func(*iam.Options)) (*iam.ListPoliciesOutput, error) {
+	return logAWSCall(w.dl, "IAM.ListPolicies", w.region, params, func() (*iam.ListPoliciesOutput, error) {
+		return w.inner.ListPolicies(ctx, params, optFns...)
+	})
+}

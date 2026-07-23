@@ -17,12 +17,66 @@ import (
 )
 
 // instanceProfileChoice is one entry in promptIAMInstanceProfileOrCreate's
-// pick list: either an existing instance profile, the "(none)" entry
-// that leaves the field blank, or "create new".
+// pick list: either an existing instance profile or "create new". No
+// "(none)" entry -- an instance profile is mandatory (DESIGN.md,
+// "SSM-Capable Instance Profile Enforcement + Retrofit"). Every existing
+// profile shown is already known SSM-capable -- buildInstanceProfileChoices
+// filters non-capable ones out rather than showing and rejecting them
+// (DECISIONS.md, "Filter non-SSM-capable profiles/roles from the picker,
+// don't just annotate them").
 type instanceProfileChoice struct {
 	label     string
 	name      string
 	createNew bool
+}
+
+// roleChoice is one entry in createInstanceProfileInteractive's role
+// pick list -- same filtering as instanceProfileChoice above.
+type roleChoice struct {
+	label string
+	role  RoleInfo
+}
+
+// buildInstanceProfileChoices resolves SSM-capability for each of
+// profiles and returns promptIAMInstanceProfileOrCreate's pick list,
+// filtering out any that aren't SSM-capable -- independent of the
+// Picker-tier UI so it's directly unit-testable (DESIGN.md, "SSM-Capable
+// Instance Profile Enforcement + Retrofit"; DECISIONS.md, "Filter
+// non-SSM-capable profiles/roles from the picker, don't just annotate
+// them").
+func buildInstanceProfileChoices(ctx context.Context, client awsclient.IAMAPI, profiles []InstanceProfileInfo) ([]instanceProfileChoice, error) {
+	choices := make([]instanceProfileChoice, 0, len(profiles)+1)
+	for _, p := range profiles {
+		capable, err := instanceProfileIsSSMCapable(ctx, client, p)
+		if err != nil {
+			return nil, err
+		}
+		if !capable {
+			continue
+		}
+		choices = append(choices, instanceProfileChoice{label: instanceProfileLabel(p), name: p.Name})
+	}
+	choices = append(choices, instanceProfileChoice{label: "Create new instance profile (attach an existing role)", createNew: true})
+	return choices, nil
+}
+
+// buildRoleChoices resolves SSM-capability for each of roles and
+// returns createInstanceProfileInteractive's role pick list, filtering
+// out any that aren't SSM-capable -- same shape as
+// buildInstanceProfileChoices above.
+func buildRoleChoices(ctx context.Context, client awsclient.IAMAPI, roles []RoleInfo) ([]roleChoice, error) {
+	choices := make([]roleChoice, 0, len(roles))
+	for _, r := range roles {
+		capable, err := roleHasSSMPermissions(ctx, client, r.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !capable {
+			continue
+		}
+		choices = append(choices, roleChoice{label: roleLabel(r), role: r})
+	}
+	return choices, nil
 }
 
 // pickInstanceProfileChoice runs a Picker-tier tui.RunPicker (DESIGN.md's
@@ -46,12 +100,12 @@ func pickInstanceProfileChoice(ctx context.Context, title string, choices []inst
 	return choices[idx], nil
 }
 
-// pickRole runs a Picker-tier tui.RunPicker over roles and returns the
+// pickRole runs a Picker-tier tui.RunPicker over choices and returns the
 // chosen one -- same limitation as pickInstanceProfileChoice above.
-func pickRole(ctx context.Context, title string, roles []RoleInfo) (RoleInfo, error) {
-	rows := make([]string, len(roles))
-	for i, r := range roles {
-		rows[i] = roleLabel(r)
+func pickRole(ctx context.Context, title string, choices []roleChoice) (roleChoice, error) {
+	rows := make([]string, len(choices))
+	for i, c := range choices {
+		rows[i] = c.label
 	}
 	idx, err := tui.RunPicker(ctx, tui.PickerConfig{
 		Title:        title,
@@ -60,9 +114,9 @@ func pickRole(ctx context.Context, title string, roles []RoleInfo) (RoleInfo, er
 		ColorEnabled: ui.ColorEnabled(),
 	})
 	if err != nil {
-		return RoleInfo{}, err
+		return roleChoice{}, err
 	}
-	return roles[idx], nil
+	return choices[idx], nil
 }
 
 func instanceProfileLabel(p InstanceProfileInfo) string {
@@ -80,32 +134,40 @@ func roleLabel(r RoleInfo) string {
 }
 
 // promptIAMInstanceProfileOrCreate lists existing IAM instance profiles
-// (DESIGN.md, Feature 2: "IAM instance profile (optional)") and offers
-// creating a new one attached to an existing IAM role, for operators who
-// don't have a profile yet (see DECISIONS.md, "Support picking or
-// creating an IAM instance profile from within awsops"). This replaces a
-// free-text prompt that pointed operators at "IAM console > Roles" for a
-// field that actually needs the *instance profile* name -- the two are
-// only the same by convention, not by requirement, and real-AWS testing
-// hit exactly that mismatch as AWS's own "Invalid IAM Instance Profile
+// (DESIGN.md, Feature 2: "IAM instance profile") and offers creating a
+// new one attached to an existing IAM role, for operators who don't
+// have a profile yet (see DECISIONS.md, "Support picking or creating an
+// IAM instance profile from within awsops"). This replaces a free-text
+// prompt that pointed operators at "IAM console > Roles" for a field
+// that actually needs the *instance profile* name -- the two are only
+// the same by convention, not by requirement, and real-AWS testing hit
+// exactly that mismatch as AWS's own "Invalid IAM Instance Profile
 // name" error. Falls back to the original free-text prompt only if the
 // list itself can't be fetched (e.g. missing iam:ListInstanceProfiles
-// permission) -- an empty-but-successful list still offers "create new",
-// unlike promptSecurityGroupIDs/promptSubnetID, since this field's whole
-// point is to also cover the "I don't have one yet" case.
+// permission) -- an empty-but-successful list still offers "create
+// new". An instance profile is now mandatory, no "(none)" choice
+// (DESIGN.md, "SSM-Capable Instance Profile Enforcement + Retrofit"):
+// every profile shown, existing or newly created, must have an
+// SSM-capable role attached. buildInstanceProfileChoices filters out
+// non-capable profiles rather than showing and rejecting them
+// (DECISIONS.md, "Filter non-SSM-capable profiles/roles from the
+// picker, don't just annotate them") -- live testing found that
+// annotating a long list of mostly-irrelevant entries was harder to use
+// than filtering. The free-text fallback path (list fetch itself
+// failed) can't verify SSM-capability at all and is left unchanged --
+// enforcing it there isn't possible without the ability to query IAM in
+// the first place.
 func promptIAMInstanceProfileOrCreate(ctx context.Context, w io.Writer, client awsclient.IAMAPI, input io.Reader, output io.Writer) (string, error) {
 	profiles, err := listInstanceProfiles(ctx, client)
 	if err != nil {
-		return ui.Prompt("IAM instance profile (optional; the instance profile name, not the IAM role name -- see IAM console > Roles > <role> > Instance profile ARNs)", ui.WithIO(input, output))
+		return ui.Prompt("IAM instance profile (the instance profile name, not the IAM role name -- see IAM console > Roles > <role> > Instance profile ARNs)", ui.WithIO(input, output))
 	}
 
 	for {
-		choices := make([]instanceProfileChoice, 0, len(profiles)+2)
-		choices = append(choices, instanceProfileChoice{label: "(none)"})
-		for _, p := range profiles {
-			choices = append(choices, instanceProfileChoice{label: instanceProfileLabel(p), name: p.Name})
+		choices, err := buildInstanceProfileChoices(ctx, client, profiles)
+		if err != nil {
+			return "", err
 		}
-		choices = append(choices, instanceProfileChoice{label: "Create new instance profile (attach an existing role)", createNew: true})
 
 		picked, err := pickInstanceProfileChoice(ctx, "Select an IAM instance profile", choices)
 		if err != nil {
@@ -122,15 +184,17 @@ func promptIAMInstanceProfileOrCreate(ctx context.Context, w io.Writer, client a
 		if created {
 			return name, nil
 		}
-		// No roles were available to attach -- redisplay the picker
-		// instead of failing the whole launch over it.
+		// No SSM-capable roles were available to attach -- redisplay
+		// the picker instead of failing the whole launch over it.
 	}
 }
 
-// createInstanceProfileInteractive picks an existing IAM role and creates
-// a new instance profile attached to it. Returns created=false (not an
-// error) if there are no roles to attach, so the caller can redisplay
-// the instance-profile picker.
+// createInstanceProfileInteractive picks an existing SSM-capable IAM
+// role and creates a new instance profile attached to it. Returns
+// created=false (not an error) if there are no roles at all, or none
+// that are SSM-capable (DESIGN.md, "SSM-Capable Instance Profile
+// Enforcement + Retrofit") -- either way the caller redisplays the
+// instance-profile picker rather than failing the whole launch.
 func createInstanceProfileInteractive(ctx context.Context, w io.Writer, client awsclient.IAMAPI, input io.Reader, output io.Writer) (name string, created bool, err error) {
 	roles, err := listRoles(ctx, client)
 	if err != nil {
@@ -141,11 +205,20 @@ func createInstanceProfileInteractive(ctx context.Context, w io.Writer, client a
 		return "", false, nil
 	}
 
-	role, err := pickRole(ctx, "Select a role to attach", roles)
+	choices, err := buildRoleChoices(ctx, client, roles)
 	if err != nil {
 		return "", false, err
 	}
-	return createInstanceProfileForRole(ctx, w, client, role, input, output)
+	if len(choices) == 0 {
+		fmt.Fprintf(w, "No SSM-capable IAM roles found in this account -- attach %s to a role in the IAM console, then try again.\n", ssmManagedInstanceCorePolicyArn)
+		return "", false, nil
+	}
+
+	picked, err := pickRole(ctx, "Select a role to attach", choices)
+	if err != nil {
+		return "", false, err
+	}
+	return createInstanceProfileForRole(ctx, w, client, picked.role, input, output)
 }
 
 // createInstanceProfileForRole is createInstanceProfileInteractive's

@@ -76,7 +76,12 @@ func ensureInstanceTypeENACompatible(ctx context.Context, w io.Writer, client aw
 
 		switch choice.kind {
 		case incompatibilityChangeInstanceType:
-			instanceType, err = promptInstanceType(w, menuInput, menuOutput)
+			// "" -- unfiltered by architecture, deliberately (DECISIONS.md,
+			// "ARM64/Ubuntu 26.04: filter the instance-type list by AMI
+			// architecture, no new pre-flight check"): a non-ENA-required
+			// AMI old enough to need this remediation path predates
+			// Graviton's existence in practice.
+			instanceType, err = promptInstanceType(w, "", menuInput, menuOutput)
 			if err != nil {
 				return "", err
 			}

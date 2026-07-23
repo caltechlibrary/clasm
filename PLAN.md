@@ -3948,6 +3948,445 @@ counterpart.
 
 ---
 
+## Phase 20.33 — SSM-Capable Instance Profile Enforcement + Retrofit
+
+**Status: designed 2026-07-22** (DESIGN.md, "SSM-Capable Instance
+Profile Enforcement + Retrofit"; DECISIONS.md, same title). Targeted
+for v0.0.5, alongside the not-yet-started arm64/Graviton + Ubuntu 26.04 LTS work.
+Not yet implemented.
+
+### Work Items
+
+**Part 1 — SSM-capability verification helper: done, 2026-07-22.**
+
+- [x] `IAMAPI` gains `ListAttachedRolePolicies`, mirrored into
+      `logging_iam.go`
+- [x] `roleHasSSMPermissions(ctx, iamClient, roleName) (bool, error)`
+      (new `ssm_iam_check.go`): calls `iam:ListAttachedRolePolicies`
+      for `roleName`, returns true iff
+      `arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore` is
+      attached. Does not inspect inline policies (see DESIGN.md's
+      "known, deliberate limitation" note)
+- [x] `instanceProfileIsSSMCapable(ctx, iamClient, profile
+      InstanceProfileInfo) (bool, error)` (`ssm_iam_check.go`): checks
+      every role attached to profile (a profile conventionally holds
+      one, but `InstanceProfileInfo.Roles` is a slice), true if any one
+      is SSM-capable. Test-first: 8 tests (4 per helper) confirmed
+      failing to compile before the implementation existed, all
+      passing after. `go build`/`vet`/`test -race`/`gofmt` all clean.
+
+**Part 2 — Enforcement at launch: done, 2026-07-22, revised same day
+after live testing.**
+
+- [x] Removed the `"(none)"` choice from `instanceProfileChoice`/
+      `promptIAMInstanceProfileOrCreate`'s picker
+      (`create_instance_profile.go`) -- an instance profile is now
+      mandatory
+- [x] `buildInstanceProfileChoices`/`buildRoleChoices` **filter out**
+      non-SSM-capable profiles/roles entirely (revised from the
+      original same-day design of annotating them with a
+      `" -- NOT SSM-capable..."` suffix and rejecting on selection --
+      see DECISIONS.md, "Filter non-SSM-capable profiles/roles from the
+      picker, don't just annotate them": live testing, creating a
+      launch template from cloud-init YAML for the Granian test
+      instance, found a long annotated role list harder to use than
+      filtering, since a non-capable entry is never valid to pick once
+      SSM support is a hard requirement). The `ssmCapable` field and
+      the post-pick rejection branches are removed as dead code --
+      filtering guarantees everything shown is already capable
+- [x] `createInstanceProfileInteractive` reports an empty-after-filter
+      role list ("No SSM-capable IAM roles found...") the same way it
+      already reports "no roles at all" -- same shape, new reason
+- [x] No changes needed to the call sites themselves
+      (`collectLaunchInstanceParams`, `collectLaunchInstanceParamsFromCloudInit`)
+      -- confirmed: Create EC2 Instance from AMI, from Cloud-Init YAML,
+      and Create Launch Template from Cloud-Init YAML all gain
+      enforcement for free, same shared-surface pattern as Phase
+      20.31's root-volume-size prompt
+
+**Tests (Part 2):** test-first for the two builder functions --
+`buildInstanceProfileChoices`/`buildRoleChoices` are independent of
+the Picker-tier UI (same "testable core" split as every other
+Picker-tier conversion in this project) and got direct unit tests
+covering the no-profiles/no-none-entry case, filtering out non-capable
+entries (confirmed failing against the pre-revision annotate-only code
+first), and IAM-error propagation. A new
+`TestCreateInstanceProfileInteractive_NoSSMCapableRolesReturnsWithoutError`
+covers the empty-after-filter case. Two more tests
+(`TestPromptIAMInstanceProfileOrCreate_PropagatesSSMCheckError`,
+`TestCreateInstanceProfileInteractive_PropagatesSSMCheckError`) confirm
+the SSM-check runs *before* the (untestable) picker call, so an IAM
+error there is still reachable and testable without touching the UI.
+All existing tests (including the free-text-fallback and no-roles-found
+paths) still pass unchanged. `go build`/`vet`/`test -race`/`gofmt` all
+clean.
+
+**Part 3 — Retrofit (general-purpose associate/replace): done, 2026-07-22.**
+
+- [x] `EC2API` gains `AssociateIamInstanceProfile`,
+      `ReplaceIamInstanceProfileAssociation`, mirrored into
+      `logging_ec2.go`
+- [x] New Compute-domain menu entry, "Associate/replace IAM instance
+      profile" (new `associate_instance_profile.go`):
+      `pickInstance` -> `resolveCurrentInstanceProfileAssociation`
+      (`ec2:DescribeIamInstanceProfileAssociations` filtered by
+      `instance-id`/`state` -- the existing call, previously declared
+      but never actually called anywhere) -> reuse
+      `promptIAMInstanceProfileOrCreate` to pick/create a profile
+      (SSM-capability shown, not gated here) -> `AssociateIamInstanceProfile`
+      if no existing association, else `ReplaceIamInstanceProfileAssociation`.
+      Wired into `MenuActions`/`mainMenuItems` (22 items now, was 21)
+      and `cmd/clasm/main.go`
+
+**Status: Phase 20.33 (all three parts) fully implemented, unit-tested,
+and real-AWS-verified 2026-07-22.** `go build`/`go vet`/`go test ./...
+-race`/`gofmt -l` all clean. Verified live: created `ec2-granian-test-role`
+(EC2 trust policy + `AmazonSSMManagedInstanceCore` attached) via AWS
+CLI since the account had no other general-purpose SSM-capable role;
+Part 2's filtered picker correctly showed only SSM-capable
+profiles/roles (confirmed both before and after the new role existed);
+launched `test-clasm-granian` successfully using it, alongside Phase
+20.34's gzip fix (below) in the same launch-template-from-cloud-init
+flow. Not yet released -- targeted for v0.0.5 alongside the
+not-yet-started arm64/Graviton + Ubuntu 26.04 LTS work.
+
+**Tests:** test-first throughout, per this project's standing
+convention -- every new test confirmed failing (compile error, the Go
+equivalent of a failing test) before its corresponding implementation
+existed. Fixture-driven unit tests for `roleHasSSMPermissions`/
+`instanceProfileIsSSMCapable` against a fake IAM client (Part 1, no
+real AWS round-trip); `buildInstanceProfileChoices`/`buildRoleChoices`
+tests covering the no-profiles-still-offers-create-new case,
+SSM-capability annotation, and IAM-error propagation, plus two
+integration tests confirming the SSM-check runs *before* the
+(untestable) Picker-tier call so an IAM error there is still reachable
+without touching the UI (Part 2); `associate_instance_profile.go` tests
+covering both the associate-path and replace-path branches, resolve-error
+propagation, associate-error propagation, and the missing-region-client
+case (fake EC2 client, `DescribeIamInstanceProfileAssociations`
+returning empty vs. non-empty) (Part 3).
+
+**Files:** `internal/awsclient/iam.go`, `internal/awsclient/logging_iam.go`,
+`internal/awsclient/ec2.go`, `internal/awsclient/logging_ec2.go`,
+`internal/workflow/create_instance_profile.go`, new
+`internal/workflow/ssm_iam_check.go`, new
+`internal/workflow/associate_instance_profile.go`,
+`internal/workflow/menu.go`, `cmd/clasm/main.go`, plus each file's
+`_test.go` counterpart.
+
+**Dependency:** none (independent of the not-yet-started arm64/Graviton phase, though both target
+v0.0.5).
+
+---
+
+## Phase 20.34 — Gzip-Compress User-Data Before Base64-Encoding
+
+**Status: designed, implemented, and real-AWS-verified 2026-07-22**,
+live-testing-driven (see DECISIONS.md, "Always gzip-compress user-data
+before base64-encoding it"). Closes `InvalidUserData.Malformed: User
+data is limited to 16384 bytes`, hit creating a launch template from
+`invenio-rdm-13-granian-init.yaml` (16976 raw bytes, already over the
+limit). Verified live: `test-clasm-granian` launch template created
+successfully and an instance launched from it. Targeted for v0.0.5.
+
+### Work Items
+
+- [x] New `encodeUserData(plainText string) string` and
+      `decodeUserData(encoded string) (string, error)` (new
+      `userdata_gzip.go`)
+- [x] All three write sites switched from bare
+      `base64.StdEncoding.EncodeToString` to `encodeUserData`: `Launch`
+      (`launch_execute.go`), `buildRequestLaunchTemplateData`
+      (`launch_template_create.go`), `createLaunchTemplateVersion`
+      (`launch_template_sync.go`)
+- [x] All four read sites switched from bare
+      `base64.StdEncoding.DecodeString` to `decodeUserData`:
+      `ShowCloudInitFromInstance` (`cloud_init_instance.go`),
+      `syncLaunchTemplate`'s existing-version read
+      (`launch_template_sync.go`), both sides of the version-diff in
+      `show_launch_template.go`
+
+**Tests:** test-first -- `encodeUserData`/`decodeUserData` round-trip
+tests (encode then decode returns the original text), a
+decode-plain-base64-without-gzip-magic test (backward compatibility
+with every resource created before this change), and decode-error
+tests for malformed base64/corrupt gzip. All new tests confirmed
+failing (undefined function, the Go equivalent of a failing test)
+before the helpers existed. Existing tests at every read/write call
+site still pass unchanged, since encode-then-decode round-trips to the
+same plain text. `go build`/`vet`/`test -race`/`gofmt` all clean.
+Manually confirmed the real 16976-byte granian file gzips to 5628
+bytes via plain `gzip -c | wc -c`, not assumed.
+
+**Files:** new `internal/workflow/userdata_gzip.go`,
+`internal/workflow/launch_execute.go`,
+`internal/workflow/launch_template_create.go`,
+`internal/workflow/launch_template_sync.go`,
+`internal/workflow/cloud_init_instance.go`,
+`internal/workflow/show_launch_template.go`, plus each file's
+`_test.go` counterpart.
+
+**Dependency:** none.
+
+---
+
+## Phase 20.35 — ARM64 (Graviton) Support + Ubuntu 26.04 LTS
+
+**Status: designed, implemented, and real-AWS-verified 2026-07-22**
+(DESIGN.md, "ARM64 (Graviton) Support + Ubuntu 26.04 LTS"; DECISIONS.md,
+"ARM64/Ubuntu 26.04: filter the instance-type list by AMI architecture,
+no new pre-flight check"). Targeted for v0.0.5 alongside Phase
+20.33/20.34 (also real-AWS-verified). `go build`/`go vet`/`go test
+./... -race`/`gofmt -l` all clean. All three Phase 20.33/20.34/20.35
+work targeted for v0.0.5 is now implemented, unit-tested, and
+real-AWS-verified. Not yet released.
+
+### Work Items
+
+- [x] `inventory.Image` gains `Architecture string`, populated in
+      `imageFromSDK` (`internal/inventory/images.go`) and
+      `listOfficialUbuntuAMIsInRegion` (`official_ubuntu_amis.go`) from
+      the SDK's own `Architecture` field (`types.ArchitectureValues`)
+- [x] `curatedUbuntuReleases` gains arm64 variants of 24.04/22.04 plus
+      new 26.04 entries for both architectures (confirmed naming
+      patterns live via `ec2:DescribeImages`, not assumed:
+      `ubuntu-{noble,jammy}-{24.04,22.04}-arm64-server-*`,
+      `ubuntu-resolute-26.04-{amd64,arm64}-server-*`)
+- [x] `instanceTypeChoice` (`launch_prompts.go`) gains an `arch` field;
+      existing entries tagged `"x86_64"`, new Graviton entries
+      (`t4g.micro/small/medium/large/xlarge`, `m6g.large/xlarge`,
+      `c6g.large`, `r6g.large`) tagged `"arm64"` -- no t2-style
+      non-ENA-required Graviton equivalent (every Graviton type
+      requires ENA, confirmed live via `ec2:DescribeInstanceTypes`).
+      Appended after the existing amd64 entries (not interleaved), so
+      every existing numeric-index test for the amd64 entries stayed
+      valid unchanged
+- [x] `promptInstanceType` gains an `arch string` parameter (`""` = no
+      filter); filters `curatedInstanceTypes` to matching-arch entries
+      plus "Other" always included
+- [x] `collectLaunchInstanceParams`/`collectLaunchInstanceParamsFromCloudInit`
+      pass `image.Architecture` at their initial `promptInstanceType`
+      call; the ENA-check and AZ-check remediation call sites pass `""`
+      (unfiltered, unchanged behavior)
+
+**Tests:** test-first, per this project's standing convention, every
+new test confirmed failing (compile error -- undefined field/wrong arg
+count, the Go equivalent of a failing test) before its implementation
+existed. `imageFromSDK`/`listOfficialUbuntuAMIsInRegion`
+architecture-population tests; a `curatedUbuntuReleases` test asserting
+every expected arm64/26.04 name pattern is present; `promptInstanceType`
+filtering tests (arm64-only list when filtered to arm64, x86_64-only
+when filtered to x86_64, "Other" always present even when filtered,
+unfiltered when `arch == ""`, including the two existing "Other"
+free-text tests whose numeric index shifted from 12 to 21 once the
+Graviton entries were appended); two integration tests
+(`TestCollectLaunchInstanceParams_FiltersInstanceTypeByImageArchitecture`,
+the cloud-init path's own mirror of it) confirming both collection
+functions actually thread the picked AMI's `Architecture` through to
+the filter, not just that the filter works in isolation. All prior
+existing tests (including the five original `promptInstanceType` tests
+using positions 1/4/10, unaffected by appending rather than
+interleaving) still pass unchanged.
+
+**Files:** `internal/inventory/images.go`,
+`internal/workflow/official_ubuntu_amis.go`,
+`internal/workflow/launch_prompts.go`,
+`internal/workflow/launch_instance.go`,
+`internal/workflow/launch_from_cloud_init.go`, plus each file's
+`_test.go` counterpart.
+
+**Dependency:** none.
+
+---
+
+## Phase 20.36 — IAM Domain: Discovery, Categorization, and the Read-Only Guard
+
+**Status: designed 2026-07-23, implemented and unit-tested 2026-07-23**
+(DESIGN.md, "IAM Profile & Role Management Domain"; DECISIONS.md, "IAM
+Profile & Role Management: Origin tag revision..."). Targeted for
+v0.0.5, bundled alongside Phases 20.33-20.35 (already implemented)
+rather than deferred to v0.0.6. `go build`/`go vet`/`go test ./...
+-race`/`gofmt -l` all clean. Not yet real-AWS-verified or released.
+
+### Work Items
+
+- [x] New `internal/config.Config` field, `OriginTag OriginTagConfig`
+      (`Key`, `DLDValue`), YAML section `origin_tag` (`key`/`dld_value`),
+      defaulting to `Key: "Origin"`, `DLDValue: ""` if unset or the
+      config file doesn't exist — mirrors `Regions`/`BackupDirectories`'
+      existing per-field-default pattern. No fixed tag vocabulary is
+      hardcoded; `DLDValue` empty means nothing is recognized as
+      DLD-owned yet. `internal/config/config_test.go`
+- [x] New fifth Domain Picker entry, "IAM" (`DomainActions.IAM`/
+      `domainItems`, `domain_menu.go`), alongside Compute/Key
+      Management/S3/Tag Management
+- [x] `IAMAPI` gains `ListPolicies` (scoped to `PolicyScopeTypeLocal`,
+      i.e. customer-managed only) — mirrored into `logging_iam.go`.
+      **Revised from the original plan:** no separate `GetRole` or
+      tag-read call was needed — `ListRoles`/`ListInstanceProfiles`/
+      `ListPolicies` all already return each resource's full `Tags`
+      inline (confirmed against the vendored SDK types before writing
+      code), so no additional AWS call was required to resolve `Origin`
+- [x] **Layering correction, mid-implementation:** the discovery/
+      categorization core (`IAMRoleSummary`/`IAMInstanceProfileSummary`/
+      `IAMPolicySummary`, `ResolveOrigin`, `IsDLDOwned`, and the three
+      `ListIAM*Summaries` fetch functions) was initially written in
+      `internal/workflow`, then moved to `internal/inventory/iam.go`
+      once it became clear `internal/ui` would need to import these
+      types to build the List-tier display, and `internal/workflow`
+      already imports `internal/ui` — a cycle. Matches the existing
+      `inventory.Image`/`ListImages` convention: `inventory` holds
+      "fetch AWS data + shape it," `ui` displays `inventory` types,
+      `workflow` orchestrates. SSM-capability stays a workflow-layer
+      concern (`iamRoleRows`, `internal/workflow/iam_domain.go`),
+      layered on top of `inventory.IAMRoleSummary` rather than fetched
+      as part of it, since `roleHasSSMPermissions` is workflow-owned.
+      `internal/inventory/iam_test.go`, `internal/workflow/
+      iam_domain_test.go`
+- [x] Three List-tier sub-views (`internal/ui/iam_display.go`:
+      `DisplayIAMRoles`/`DisplayIAMInstanceProfiles`/`DisplayIAMPolicies`,
+      built on `iamRoleListViewConfig`/`iamInstanceProfileListViewConfig`/
+      `iamPolicyListViewConfig` — the testable cores, per
+      `imageListViewConfig`'s established extraction pattern), each
+      sorted by `CreateDate` descending, each row showing the resource's
+      `Origin` tag value verbatim or `"(unset)"` if absent — not a fixed
+      category enum — and, for roles, SSM-capability. Filterable for
+      free via `tui.RunListView`'s existing shared filter ("/"), no new
+      filtering code needed. Wired into a new `IAMActions`/`iamMenuItems`/
+      `RunIAMMenu` menu loop (`internal/workflow/iam_menu.go`), deliberately
+      with no `Refresh` field (unlike the other three domains) since each
+      Show action fetches fresh, account-wide, un-fanned-out data on
+      every dispatch — there's no per-region cached state to refresh.
+      `internal/ui/iam_display_test.go`, `internal/workflow/iam_menu_test.go`
+- [x] Read-only guard, built as a reusable predicate ahead of any actual
+      caller (deliberate, not an oversight — see below): `inventory.
+      RequireDLDOwned(tags, originTag, kind, name) error`, wrapping a new
+      `inventory.ErrNotDLDOwned` sentinel, built on `IsDLDOwned`. **No
+      call site exists yet** — Phases 20.36-20.39 don't add any action
+      that mutates an existing role's/profile's/policy's actual
+      permissions (attach/detach a managed policy, edit a trust policy,
+      delete), only discovery, tagging (exempt — see below), and
+      creating brand-new roles from templates (Phase 20.39). Whichever
+      future phase adds the first real mutating action calls this
+      function rather than re-deriving the check. **Tagging is exempt
+      from this guard** — see Phase 20.37, which handles all tag reads/
+      writes including `Origin` itself, with no separate gating.
+      `internal/inventory/iam_test.go`
+
+**Dependency:** none. (The previously-planned "Tag as DLD-owned" menu
+action is dropped — see DECISIONS.md, Decision 3 of the revision entry —
+so this phase no longer depends on Phase 20.37 for a dedicated action;
+it still shares Phase 20.37's tag-write path for editing `Origin` like
+any other tag.)
+
+**Files:** `internal/config/config.go`, `internal/awsclient/iam.go`,
+`internal/awsclient/logging_iam.go`, `internal/workflow/create_instance_profile_test.go`
+(shared `fakeIAMClient` gained `ListPolicies`), new `internal/inventory/iam.go`,
+new `internal/ui/iam_display.go`, new `internal/workflow/iam_domain.go`,
+new `internal/workflow/iam_menu.go`, `internal/workflow/domain_menu.go`,
+`cmd/clasm/main.go`, plus each new file's `_test.go` counterpart.
+
+---
+
+## Phase 20.37 — Tag Management Domain Extension for IAM Resources
+
+**Status: designed 2026-07-23** (DESIGN.md, "IAM Profile & Role
+Management Domain"). Targeted for v0.0.5. Not yet implemented.
+
+### Work Items
+
+- [ ] `IAMAPI` gains `TagRole`, `TagInstanceProfile`, `TagPolicy`,
+      `UntagRole`, `UntagInstanceProfile`, `UntagPolicy` — mirrored into
+      `logging_iam.go`
+- [ ] `tagManagementKinds` (`tag_management.go`, currently `Instance`/
+      `AMI`/`Launch Template`/`Key Pair`/`S3 Bucket`) gains `IAM Role`,
+      `IAM Instance Profile`, `IAM Policy`
+- [ ] New fetch/apply closures per IAM kind, reusing the generalized
+      `tagApplyFunc`-closure pattern the S3 Bucket slice established
+      (Phase 20.30) — no new tag-editing mechanism, only new per-kind
+      fetch/apply plumbing. This is also how `Origin` gets set/edited —
+      no dedicated action, per DECISIONS.md's revision entry
+- [ ] "Show all tags" extended to the three new kinds, same shape as
+      the existing five (a List-tier table with a flattened "Tags"
+      column)
+- [ ] New Picker-tier helpers for selecting a role/instance
+      profile/policy by name, matching `pickInstance`/`pickImage`/
+      `pickBucket`'s existing shape
+- [ ] Tagging works identically regardless of the resource's current
+      `Origin` value or the read-only guard's state (Phase 20.36) — no
+      gating logic is shared between the two phases; a role read-only
+      for permission changes is still fully taggable
+
+**Dependency:** Phase 20.36 (shares the IAM domain's resource-listing
+plumbing and the `origin_tag` config, though the tagging mechanism
+itself is never gated by Phase 20.36's read-only check).
+
+---
+
+## Phase 20.38 — IAM Detail View
+
+**Status: designed 2026-07-23** (DESIGN.md, "IAM Profile & Role
+Management Domain"). Targeted for v0.0.5. Not yet implemented.
+
+### Work Items
+
+- [ ] `IAMAPI` gains `GetPolicy`/`GetPolicyVersion` (policy document
+      content), building on `ListAttachedRolePolicies` (already
+      present, Phase 20.33)
+- [ ] Detail screen for a role/instance profile: trust policy, attached
+      managed + inline policies (with a way to view the policy
+      document — raw JSON vs. summarized rendering left as an
+      implementation-time choice), all tags, SSM-capability
+- [ ] Best-effort cross-reference: which instance profiles reference
+      this role, and which are currently associated with a running
+      instance, via `DescribeIamInstanceProfileAssociations` (already
+      used by Phase 20.33's associate/replace workflow)
+
+**Dependency:** Phase 20.36 (the detail view is reached from the
+discovery list).
+
+---
+
+## Phase 20.39 — Curated Per-Use-Case Role/Policy Creation Templates
+
+**Status: designed 2026-07-23, revised same day** (DESIGN.md, "IAM
+Profile & Role Management Domain"; DECISIONS.md, "IAM Profile & Role
+Management: seven scoping decisions, bundled into v0.0.5" and "...Origin
+tag revision..."). Targeted for v0.0.5. Not yet implemented. Reverses
+the 2026-07-02 "never creates a role, only attaches an existing one"
+scope (DECISIONS.md, "Support picking or creating an IAM instance
+profile from within awsops") — deliberately, and only through curated
+templates.
+
+### Work Items
+
+- [ ] `IAMAPI` gains `CreateRole`, `CreatePolicy`, `AttachRolePolicy` —
+      mirrored into `logging_iam.go`
+- [ ] `TrustPrincipal` modeled as a small enum/type; only an EC2 value
+      is wired up for this phase, but the type itself is shaped for
+      Lambda/ECS-task principals to be added later without reshaping
+      the creation flow
+- [ ] Five template definitions, each a parametrized statement set
+      (operator supplies specific ARNs — a bucket name, a distribution
+      ID, a secret name — at creation time): Static Website (S3 +
+      CloudFront), RDM Repository Instance, Bridge Service, Patron-Facing
+      Service, Data Processing — draft shapes in DESIGN.md's table under
+      this addendum, all flagged as needing review before implementation
+- [ ] Guided creation flow: pick a template, prompt for its required
+      ARN parameters, create the role + policy, attach. If the config's
+      `origin_tag.dld_value` (Phase 20.36) is set, tag the new role
+      `<origin_tag.key>=<dld_value>` automatically (reusing Phase
+      20.37's tag-write path); if unset, leave it untagged
+- [ ] Picker UI distinguishes the two more fully-scoped templates
+      (Static Website, RDM Repository) from the three thinner ones
+      (Bridge Service, Patron-Facing, Data Processing) — exact wording
+      left for implementation
+
+**Dependency:** Phase 20.36 (`origin_tag` config), Phase 20.37 (tag-write
+path used to auto-tag a newly-created role, when configured).
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
