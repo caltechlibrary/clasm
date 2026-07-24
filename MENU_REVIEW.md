@@ -6,7 +6,10 @@ on closer inspection not to need a change (see DECISIONS.md, "Regroup the
 Compute menu, and a terminology cleanup across every domain menu," and
 PLAN.md Phase 20.43, for what actually happened). The terminology
 question below was answered with the "S3 rename + unify verbs" scope, not
-the broader capitalization pass. This document is left as-is below as the
+the broader capitalization pass. `user_manual.md` and `TUI_REFERENCE.md`
+(flagged below as already stale, independent of this review) were also
+brought current as part of the same-day v0.0.5 release review, alongside
+this file's own status note. This document is left as-is below as the
 original review; treat the DECISIONS.md/PLAN.md entries as authoritative
 for final state.
 

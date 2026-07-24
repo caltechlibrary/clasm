@@ -89,8 +89,8 @@ bubbletea `Model`.
 ## 3. List tier — `tui.RunListView`/`ListViewModel`
 
 **Where:** `internal/tui/listview.go`. Read-only tabular listings --
-"Show instances," "Show AMIs," "Show launch templates," "List S3
-Buckets," Key Management's "Show resource lists."
+"Show instances," "Show AMIs," "Show launch templates," S3's "Show
+Buckets," Key Management's "Show Key Pairs."
 
 **Distinguishing features:** identical shape to the Picker tier (same
 shared chrome, `internal/tui/box.go`), minus selection -- the legend
@@ -170,26 +170,43 @@ level of detail; it changes too often to keep a full tree in sync
 here).
 
 ```
-Domain Picker [Menu]
-├─ Compute (EC2 & AMI) [Menu, 20 items]
-│  ├─ Show instances / Show AMIs / Show launch templates   [List]
+Domain Picker [Menu, 6 items]
+├─ Compute (EC2 & AMI) [Menu, 24 items -- grouped View/Inspect -> Instance -> AMI -> Launch Template -> Maintenance]
+│  ├─ Show instances / Show instance detail                    [List / Picker + plain prompts]
+│  ├─ Show AMIs / Show AMI detail                                [List / Picker + plain prompts]
+│  ├─ Show launch templates / Show launch template detail         [List / Picker + Menu + List]
+│  ├─ Show/export cloud-init for an instance or AMI                 [Menu + Picker]
 │  ├─ Create EC2 instance from AMI / cloud-init YAML / launch template
-│  │                                                        [Picker + plain prompts]
-│  ├─ Start / Stop / Terminate EC2 instance                 [Picker + plain prompt/Confirm]
-│  ├─ Manage tags for an instance or AMI                     [Menu + Picker + plain prompts]
-│  ├─ Create AMI from EC2 instance / Remove AMI               [Picker + plain prompts]
-│  ├─ Show/export cloud-init for an instance or AMI            [Menu + Picker]
-│  ├─ Show a launch template (detail / list versions / diff two) [Picker + Menu + List]
-│  ├─ Create/Sync/Promote/Delete launch template (version(s))  [Picker + plain prompts + List (diff)]
-│  └─ Archive stale backups to S3 and trim disk space           [Picker + Menu (bucket) + plain prompts]
+│  │                                                                  [Picker + plain prompts]
+│  ├─ Start / Stop / Terminate EC2 instance                            [Picker + plain prompt/Confirm]
+│  ├─ Resize instance's root volume                                     [Picker + plain prompts]
+│  ├─ Associate/replace IAM instance profile                              [Picker + Menu (profile)]
+│  ├─ Manage tags for an instance or AMI                                    [Menu + Picker + plain prompts]
+│  ├─ Create AMI from EC2 instance / Remove AMI                               [Picker + plain prompts]
+│  ├─ Create/Sync/Promote/Delete launch template (version(s))                  [Picker + plain prompts + List (diff)]
+│  └─ Archive stale backups to S3 and trim disk space                            [Picker + Menu (bucket) + plain prompts]
 ├─ Key Management [Menu, 4 items]
-│  ├─ Show resource lists (key pairs)                          [List]
-│  ├─ Create / Import Key Pair                                  [plain prompts]
-│  └─ Delete Key Pair                                            [Picker]
-└─ S3 (Buckets & Static Websites) [Menu, 6 items]
-   ├─ List S3 Buckets                                            [List]
-   ├─ Create Bucket / Configure Static Website Hosting             [Menu (region) + plain prompts]
-   ├─ Browse & Manage Objects                                       [Picker (bucket) + Manager]
-   ├─ Manage Bucket Lifecycle Policies                               [Picker + Menu (storage class)]
-   └─ Delete Bucket                                                   [Picker + plain prompts]
+│  ├─ Show Key Pairs                                            [List]
+│  ├─ Create / Import Key Pair                                   [plain prompts]
+│  └─ Delete Key Pair                                             [Picker]
+├─ S3 (Buckets & Static Websites) [Menu, 6 items]
+│  ├─ Show Buckets                                              [List]
+│  ├─ Create Bucket / Configure Static Website Hosting            [Menu (region) + plain prompts]
+│  ├─ Browse & Manage Objects                                      [Picker (bucket) + Manager]
+│  ├─ Manage Bucket Lifecycle Policies                              [Picker + Menu (action/storage class)]
+│  └─ Delete Bucket                                                  [Picker + plain prompts]
+├─ Tag Management [Menu, 2 items]
+│  ├─ Show all tags                                             [Menu (kind) + List]
+│  └─ Manage tags                                                [Menu (kind) + Picker (resource) + Menu (action) + plain prompts]
+├─ IAM [Menu, 9 items -- List -> Detail -> Create -> Attach/Detach -> Delete]
+│  ├─ Show Roles / Show Instance Profiles / Show Policies       [List]
+│  ├─ Show Role Detail / Show Instance Profile Detail             [Picker + List/plain]
+│  ├─ Create Role from Template                                     [Menu (template) + plain prompts]
+│  ├─ Attach Policy to Role / Detach Policy from Role                 [Picker + Menu + Confirm]
+│  └─ Delete Role                                                       [Picker + Confirm (type-to-confirm)]
+└─ Configuration [Menu, 5 items]
+   ├─ Show current config                                       [plain print]
+   ├─ Edit regions / Edit backup directory rules                  [Menu (Add/Remove/Done) + plain prompts]
+   ├─ Edit Origin tag config                                        [plain prompts]
+   └─ Save                                                            [plain print]
 ```
