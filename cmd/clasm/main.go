@@ -375,6 +375,12 @@ func main() {
 		ShowInstances:       showInstances,
 		ShowAMIs:            showAMIs,
 		ShowLaunchTemplates: showLaunchTemplatesList,
+		ShowInstanceDetail: func(ctx context.Context) error {
+			return workflow.ShowInstanceDetail(ctx, out, ec2Clients, state.instances)
+		},
+		ShowAMIDetail: func(ctx context.Context) error {
+			return workflow.ShowAMIDetail(ctx, out, ec2Clients, state.images)
+		},
 	}
 
 	s3Actions := workflow.S3Actions{

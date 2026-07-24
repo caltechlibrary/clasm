@@ -4720,6 +4720,159 @@ unit-tested, and real-AWS-verified.**
 
 ---
 
+## Phase 20.41 — Instance/AMI Detail Views
+
+**Status: designed, implemented, and unit-tested 2026-07-24, targeted for
+v0.0.5** (DESIGN.md, "Instance/AMI Detail Views"; DECISIONS.md,
+"Instance/AMI Detail Views: on-demand describe calls, appended menu
+placement"). Closes the outstanding TODO.md item left over since Launch
+Templates gained its own detail view. `go build`/`go vet`/`go test
+./... -race`/`gofmt -l` all clean. Not yet real-AWS-verified.
+
+### Work Items
+
+- [x] `inventory.InstanceDetail` (new `internal/inventory/instance_detail.go`):
+      InstanceID, Name, State, InstanceType, ImageID, Region, VPCID,
+      SubnetID, SecurityGroupIDs, IAMInstanceProfile, KeyName, PublicIP,
+      PrivateIP, Project, Environment, Tags. Volume sizes deliberately
+      left out of this struct -- combined at the workflow layer instead
+      (see `showInstanceDetail` below), since `GatherVolumeInfo` already
+      lives in `internal/workflow` and inventory can't import it without
+      a circular dependency
+- [x] `inventory.DescribeInstanceDetail(ctx, client, region, instanceID) (InstanceDetail, error)`
+      -- single `ec2:DescribeInstances` call with `InstanceIds:
+      []string{instanceID}`, erroring clearly if not found (mirrors
+      `DescribeLaunchTemplateVersion`'s not-found handling). IAM instance
+      profile name is parsed from the ARN (`instanceProfileNameFromARN`)
+      since `ec2.types.IamInstanceProfile` only ever carries an Arn/Id,
+      never a Name, on a running instance (unlike the launch-template
+      specification type)
+- [x] `inventory.ImageDetail`/`BlockDeviceMappingDetail` (new
+      `internal/inventory/image_detail.go`): ImageID, Name, CreationDate,
+      Region, Architecture, EnaSupport, RootDeviceName,
+      BlockDeviceMappings ([]BlockDeviceMappingDetail{DeviceName,
+      VolumeSizeGB, SnapshotID}), Project, Environment, Tags
+- [x] `inventory.DescribeImageDetail(ctx, client, region, imageID) (ImageDetail, error)`
+      -- single `ec2:DescribeImages` call with `ImageIds: []string{imageID}`
+- [x] New `internal/workflow/show_instance_detail.go`: `ShowInstanceDetail`
+      (pick via existing `pickInstance`) -> `showInstanceDetail` testable
+      core -> `displayInstanceDetail`, following `show_launch_template.go`'s
+      entry-point/testable-core/display split. `showInstanceDetail` calls
+      both `inventory.DescribeInstanceDetail` and the already-existing
+      `GatherVolumeInfo` against the same resolved client, then passes
+      both results to the display function
+- [x] New `internal/workflow/show_ami_detail.go`: `ShowAMIDetail` (pick
+      via existing `pickImage`) -> `showAMIDetail` testable core ->
+      `displayAMIDetail`, same split
+- [x] `MenuActions` gains `ShowInstanceDetail`/`ShowAMIDetail`;
+      `mainMenuItems` gains "Show instance detail"/"Show AMI detail",
+      appended at the end (DECISIONS.md, Decision 2) so existing
+      numeric-index tests for prior entries stay valid unchanged (the
+      "no Back to domain picker entry" test's hardcoded count was
+      updated 22 -> 24); wired into `cmd/clasm/main.go`
+
+### Tests
+
+Test-first throughout, confirmed failing (undefined symbols) before each
+implementation existed, per this project's convention
+([[feedback-test-before-fix]] applies to new-feature work the same way
+it applies to bug fixes). `DescribeInstanceDetail`/`DescribeImageDetail`
+covered via a fake `EC2API` client: found case (full field mapping,
+including empty-tags/no-public-IP/no-IAM-profile edge cases) and
+not-found/client-error cases. `showInstanceDetail`/`showAMIDetail`
+testable cores covered directly against the shared `internal/workflow`
+`fakeEC2Client` (extended with a handful of new fields --
+`instanceDetail*`/`describeImages{Name,CreationDate,Architecture,
+EnaSupport}` -- to synthesize the fuller field set this view needed; no
+existing test's behavior changed) for: full curated-field display,
+no-volumes/no-block-device-mappings, unknown-region error, and each AWS
+call's error propagating. `ShowInstanceDetail`/`ShowAMIDetail`'s
+no-resources-found early return covered directly (no Picker-tier driving
+needed, matching `showLaunchTemplate`'s own accepted limitation).
+
+### Files
+
+`internal/inventory/instances.go` (or new `instance_detail.go`),
+`internal/inventory/images.go` (or new `image_detail.go`), new
+`internal/workflow/show_instance_detail.go`,
+`internal/workflow/show_ami_detail.go`, `internal/workflow/menu.go`,
+`cmd/clasm/main.go`, plus each new/changed file's `_test.go` counterpart.
+
+### Dependency
+
+Existing `pickInstance`/`pickImage` (Picker-tier), `GatherVolumeInfo`
+(`internal/workflow/volume_info.go`), `displayOrNone`.
+
+---
+
+## Phase 20.42 — Configure clasm Domain
+
+**Status: designed 2026-07-24, targeted for v0.0.5, not yet implemented**
+(DESIGN.md, "Configure clasm Domain"; DECISIONS.md, "Configure clasm
+domain: explicit Save, region changes deferred to next launch").
+
+### Work Items
+
+- [ ] `config.Save(path string, cfg Config) error` (`internal/config/config.go`)
+      -- `yaml.Marshal(cfg)`, `os.WriteFile(path, data, 0644)`. First
+      write path in this package; `Load` only reads today
+- [ ] New `internal/workflow/configure_menu.go`: `ConfigureActions`
+      struct + `configMenuItems` (Show current config, Edit regions,
+      Edit backup directory rules, Edit Origin tag config, Save),
+      following `tagmgmt_menu.go`'s loop-until-'q' shape. The loop holds
+      a working `config.Config` copy plus a `dirty bool`; 'q' with
+      `dirty == true` shows the unsaved-changes warning (DECISIONS.md,
+      Decision 1) before exiting
+- [ ] `displayConfig(w io.Writer, cfg Config)` -- Show current config,
+      curated-field style matching `displayLaunchTemplateVersion`
+- [ ] Edit regions: list current (`tui` List-tier or plain numbered
+      list, matching this domain's existing "list + pick to remove"
+      shape elsewhere), add one via a plain prompt (free-text,
+      DECISIONS.md Decision 2 -- no AWS region validation), remove one
+      via `pickString`/`pickComparable` (Menu-tier, since a region name
+      is a plain comparable string)
+- [ ] Edit backup directory rules: list current `pattern -> directory`
+      pairs in order, add one (two prompts, appended to the end -- first
+      match wins per `config.BackupDirectoryFor`), remove one via a
+      picker
+- [ ] Edit Origin tag config: two prompts (`key`, `dld_value`) pre-filled
+      with the working copy's current values, via `ui.Prompt`/
+      `ui.WithDefault`
+- [ ] Save action calls `config.Save` against the resolved config path
+      (threaded in from `cmd/clasm/main.go`'s existing `configPath`
+      flag/`config.DefaultPath()`), clears `dirty`, confirms success in
+      the UI, and explicitly notes region changes take effect next
+      launch (DECISIONS.md, Decision 3)
+- [ ] `domainItems` (`internal/workflow/domain_menu.go`) gains a sixth
+      entry, "Configuration", appended after "IAM"; `DomainActions`
+      gains a `Configuration func(ctx context.Context) error` field;
+      wired into `cmd/clasm/main.go`
+
+### Tests
+
+Test-first throughout. `config.Save` covered directly (round-trips a
+`Config` through `Save` then `Load`, confirms `0644` permissions,
+confirms a malformed path errors cleanly). The domain's menu-loop
+actions (add/remove region, add/remove backup rule, edit origin tag,
+Save, the dirty/'q' warning) driven end to end via accessible-mode pipe
+input, matching `tagmgmt_menu.go`'s own test shape. `displayConfig`
+covered via captured-output assertions.
+
+### Files
+
+`internal/config/config.go`, new `internal/workflow/configure_menu.go`,
+`internal/workflow/domain_menu.go`, `cmd/clasm/main.go`, plus each
+new/changed file's `_test.go` counterpart.
+
+### Dependency
+
+Existing `config.Load`/`config.Config`/`config.BackupDirectoryFor`,
+`ui.Prompt`/`ui.WithDefault`, this project's Menu-tier `pickString`/
+`pickComparable` primitives, `tagmgmt_menu.go`'s loop-until-'q' shape as
+the direct structural model.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

@@ -68,6 +68,14 @@ type MenuActions struct {
 	ShowInstances       func(ctx context.Context) error
 	ShowAMIs            func(ctx context.Context) error
 	ShowLaunchTemplates func(ctx context.Context) error
+	// ShowInstanceDetail/ShowAMIDetail each show one resource's curated
+	// detail fields (DESIGN.md, "Instance/AMI Detail Views") -- appended
+	// at the end of mainMenuItems, not placed near ShowInstances/ShowAMIs
+	// above, so existing numeric-index tests for prior entries stay
+	// valid unchanged (DECISIONS.md, "Instance/AMI Detail Views:
+	// on-demand describe calls, appended menu placement").
+	ShowInstanceDetail func(ctx context.Context) error
+	ShowAMIDetail      func(ctx context.Context) error
 }
 
 // menuItem pairs a main-menu label with the MenuActions field it
@@ -111,6 +119,8 @@ var mainMenuItems = []menuItem{
 	{"Delete launch template version(s)", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
 	{"Delete a launch template", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},
 	{"Archive stale backups to S3 and trim disk space", func(a MenuActions, ctx context.Context) error { return a.BackupArchiveAndTrim(ctx) }},
+	{"Show instance detail", func(a MenuActions, ctx context.Context) error { return a.ShowInstanceDetail(ctx) }},
+	{"Show AMI detail", func(a MenuActions, ctx context.Context) error { return a.ShowAMIDetail(ctx) }},
 }
 
 // pickMainMenuItem runs the Compute main menu's huh.Select and returns

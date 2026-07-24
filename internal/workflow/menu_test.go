@@ -50,6 +50,8 @@ func testMenuActions(refreshCalls *int) MenuActions {
 		ShowInstances:                     noop,
 		ShowAMIs:                          noop,
 		ShowLaunchTemplates:               noop,
+		ShowInstanceDetail:                noop,
+		ShowAMIDetail:                     noop,
 	}
 }
 
@@ -291,8 +293,8 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestMainMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(mainMenuItems) != 22 {
-		t.Fatalf("len(mainMenuItems) = %d, want 22 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
+	if len(mainMenuItems) != 24 {
+		t.Fatalf("len(mainMenuItems) = %d, want 24 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
 	}
 	for _, item := range mainMenuItems {
 		if item.action == nil {

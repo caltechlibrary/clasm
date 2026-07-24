@@ -87,6 +87,13 @@ type fakeEC2Client struct {
 	// return zero images (simulating an unknown/deregistered AMI ID)
 	// instead of the usual synthesized one-image response.
 	describeImagesNoImages bool
+	// The following back DescribeImages' synthesized image for Show AMI
+	// Detail (show_ami_detail.go) -- distinct from the polling-oriented
+	// fields above.
+	describeImagesName         string
+	describeImagesCreationDate string
+	describeImagesArchitecture string
+	describeImagesEnaSupport   bool
 
 	describeVolumesOutput []types.Volume
 	describeVolumesErr    error
@@ -206,6 +213,20 @@ type fakeEC2Client struct {
 
 	lastReplaceIamInstanceProfileAssociationInput *ec2.ReplaceIamInstanceProfileAssociationInput
 	replaceIamInstanceProfileAssociationErr       error
+
+	// The following back DescribeInstances' synthesized instance for
+	// Show Instance Detail (show_instance_detail.go) -- distinct from
+	// instanceRootDeviceName/blockDeviceMappings/instanceTags/publicIP
+	// above, which predate this detail view and cover a narrower field
+	// set for their own callers.
+	instanceDetailImageID       string
+	instanceDetailInstanceType  string
+	instanceDetailVpcID         string
+	instanceDetailSubnetID      string
+	instanceDetailSecurityGroup []string
+	instanceDetailIAMProfileARN string
+	instanceDetailKeyName       string
+	instanceDetailPrivateIP     string
 }
 
 func (f *fakeEC2Client) DescribeLaunchTemplates(ctx context.Context, params *ec2.DescribeLaunchTemplatesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplatesOutput, error) {
@@ -487,6 +508,10 @@ func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.Describe
 	}
 	return &ec2.DescribeImagesOutput{Images: []types.Image{{
 		ImageId:             aws.String(imageID),
+		Name:                aws.String(f.describeImagesName),
+		CreationDate:        aws.String(f.describeImagesCreationDate),
+		Architecture:        types.ArchitectureValues(f.describeImagesArchitecture),
+		EnaSupport:          aws.Bool(f.describeImagesEnaSupport),
 		Tags:                f.describeImagesTags,
 		State:               state,
 		RootDeviceName:      aws.String(f.describeImagesRootDeviceName),
@@ -653,6 +678,18 @@ func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		BlockDeviceMappings: f.blockDeviceMappings,
 		Tags:                f.instanceTags,
 		RootDeviceName:      aws.String(f.instanceRootDeviceName),
+		ImageId:             aws.String(f.instanceDetailImageID),
+		InstanceType:        types.InstanceType(f.instanceDetailInstanceType),
+		VpcId:               aws.String(f.instanceDetailVpcID),
+		SubnetId:            aws.String(f.instanceDetailSubnetID),
+		KeyName:             aws.String(f.instanceDetailKeyName),
+		PrivateIpAddress:    aws.String(f.instanceDetailPrivateIP),
+	}
+	for _, sg := range f.instanceDetailSecurityGroup {
+		inst.SecurityGroups = append(inst.SecurityGroups, types.GroupIdentifier{GroupId: aws.String(sg)})
+	}
+	if f.instanceDetailIAMProfileARN != "" {
+		inst.IamInstanceProfile = &types.IamInstanceProfile{Arn: aws.String(f.instanceDetailIAMProfileARN)}
 	}
 	if state == types.InstanceStateNameRunning && f.publicIP != "" {
 		inst.PublicIpAddress = aws.String(f.publicIP)

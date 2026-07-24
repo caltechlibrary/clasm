@@ -1710,6 +1710,128 @@ dedicated-policy convention, not a general rule, since a detached policy
 may still be in use elsewhere or may never have been clasm's to manage
 in the first place.
 
+## Instance/AMI Detail Views (Design Addendum, 2026-07-24, PLAN.md Phase 20.41)
+
+**Status: designed 2026-07-24, targeted for v0.0.5**, motivated by
+TODO.md's outstanding "show instance/AMI details" item -- Show Launch
+Template (Phase 20.27/20.28) already gives this shape of single-resource
+detail view for launch templates; instances and AMIs are still only ever
+seen as a row in the List-tier table (Show instances/Show AMIs), never a
+dedicated detail screen.
+
+Two new Compute-domain menu entries, **Show instance detail** and **Show
+AMI detail**, appended at the end of `mainMenuItems` (after "Archive
+stale backups to S3 and trim disk space") rather than placed near the
+existing "Show instances"/"Show AMIs" List-tier entries -- appending,
+not reordering, is this project's established convention for adding a
+menu entry without invalidating existing numeric-index tests (see Phase
+20.40's own placement rationale for its three new IAM actions).
+
+Each workflow: pick one resource (reusing the existing Picker-tier
+`pickInstance`/`pickImage`), then run a single-resource AWS describe
+call for the fuller field set -- not adding these fields to the
+aggregate `Instance`/`Image` structs `ListInstances`/`ListImages`
+already populate for every other call site (the list views, pickers,
+Tag Management, etc.), since most of those call sites have no use for
+them and every additional field means one more thing every existing
+caller has to construct in tests. This mirrors
+`DescribeLaunchTemplateVersion`'s own separate, on-demand shape
+(`show_launch_template.go`) rather than growing `inventory.Instance`/
+`inventory.Image` themselves.
+
+**Show instance detail** (new `inventory.DescribeInstanceDetail`, one
+`ec2:DescribeInstances` call scoped to a single instance ID) displays:
+instance ID/name, state, instance type, AMI ID, region, VPC ID, subnet
+ID, security group IDs, IAM instance profile (if any), key pair,
+public/private IP, root + attached EBS volume sizes (reusing
+`GatherVolumeInfo`, already used at AMI-creation time), Project/
+Environment, and the full tag set.
+
+**Show AMI detail** (new `inventory.DescribeImageDetail`, one
+`ec2:DescribeImages` call scoped to a single image ID) displays: AMI
+ID/name, creation date, region, architecture, ENA support, root device
+name, block device mappings (device name, volume size, snapshot ID per
+mapping), Project/Environment, and the full tag set.
+
+Both are read-only -- no new AWS write calls, no new confirmation
+gating.
+
+### Not decided yet
+
+Exact display formatting/field ordering (left to match
+`displayLaunchTemplateVersion`'s existing curated-field-list style);
+whether a not-yet-attached/terminated instance's missing fields (e.g. no
+public IP) render as "none" vs "unknown" -- follow the existing
+`displayOrNone` convention used elsewhere unless a real case argues
+otherwise.
+
+## Configure clasm Domain (Design Addendum, 2026-07-24, PLAN.md Phase 20.42)
+
+**Status: designed 2026-07-24, targeted for v0.0.5.** Motivated directly
+by the user's request: `~/.clasm`'s `regions`/`backup_directories`/
+`origin_tag` settings are currently hand-edited YAML only (see
+"Configuration," above) -- no in-tool way to view or change them.
+
+**A sixth Domain Picker entry, "Configuration"** -- alongside
+Compute/Key Management/S3/Tag Management/IAM -- matching Tag
+Management's and IAM's own precedent of a new domain for a cross-cutting
+concern rather than nesting it inside an existing one (this settings
+editor doesn't belong to Compute, S3, or IAM specifically).
+
+**Edits happen against an in-memory copy of `config.Config`, not the
+file directly.** The domain loop (same loop-until-'q' shape as Tag
+Management, Phase 20.29) holds a working copy loaded once on entry;
+every edit action below mutates only that copy. Nothing touches
+`~/.clasm` until the operator explicitly picks **Save**. Pressing 'q'
+with unsaved changes pending shows a plain warning ("Unsaved changes
+will be discarded") rather than silently writing or silently
+discarding -- consistent with this project's general caution around
+persisting state without an explicit, visible action.
+
+Menu actions:
+- **Show current config** -- prints the working copy's regions, backup
+  directory rules, and origin tag settings in the same curated-field
+  style as other Show actions.
+- **Edit regions** -- list current regions; add one (free-text, no live
+  validation against AWS's actual region list -- a typo'd region simply
+  won't resolve to a usable client next launch, the same failure mode as
+  hand-editing the YAML today); remove one via a picker. Flags directly
+  in the UI that region changes only take effect on clasm's *next*
+  launch -- `cmd/clasm/main.go` builds the region-to-client map once at
+  startup from the config loaded at that time, so a live-session change
+  can't retroactively add/remove a running client.
+- **Edit backup directory rules** -- list current `pattern -> directory`
+  rules in order; add one (prompts for pattern then directory, appended
+  to the end -- first-match-wins order, per `config.BackupDirectoryFor`,
+  so append is the safe default; reordering is not exposed in v1 of this
+  domain, since nothing today needs it yet); remove one via a picker.
+- **Edit Origin tag config** -- edit `key` (defaults `"Origin"`) and
+  `dld_value` (defaults `""`) as two plain prompts, pre-filled with the
+  working copy's current values -- same shape as the IAM domain's
+  existing dependency on this setting.
+- **Save** -- calls new `config.Save(path, cfg) error` (YAML-marshal the
+  working copy, write to the resolved config path -- `config.DefaultPath()`
+  unless `-config` was passed) and refreshes the working copy's "clean"
+  state so a subsequent 'q' doesn't warn.
+
+**New `config.Save`.** No existing write path in `internal/config` today
+(`Load` only). `Save` marshals the whole `Config` struct via
+`yaml.Marshal` and writes it with `0644` (no secrets live in this file,
+unlike the `0600` private-key convention `create_key_pair.go` uses) --
+round-trips through `yaml.v3`, so any hand-written comments in an
+existing `~/.clasm` are lost on first Save from within clasm. This is
+called out directly in the UI's Save confirmation text so it isn't a
+silent surprise for anyone who has hand-annotated their file.
+
+### Not decided yet
+
+Whether region add/remove should validate against AWS's actual published
+region list (would need a hardcoded list to stay offline-friendly, since
+there's no "list all regions" call that doesn't itself need a client
+already configured) -- left as free-text for v0.0.5; exact prompt copy
+for the Save confirmation and the unsaved-changes-on-'q' warning, left
+for the implementation plan.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

@@ -4,6 +4,73 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-24 — Configure clasm domain: explicit Save, region changes deferred to next launch
+
+**Context.** `~/.clasm`'s `regions`/`backup_directories`/`origin_tag`
+settings are hand-edited YAML only today. The user requested a top-level
+menu item to view/create/update this config file from within clasm,
+bundled into v0.0.5 alongside the Instance/AMI Detail Views below.
+
+**Decision 1: edits happen against an in-memory working copy; nothing
+touches `~/.clasm` until an explicit "Save" action.** 'q' with unsaved
+changes pending warns before discarding.
+
+**Rejected alternative.** *Write-immediately per edit* (add a region,
+save instantly) — fewer steps, but removes the ability to back out of a
+half-finished edit sequence, and doesn't match this project's general
+caution around persisting state without a visible, explicit action.
+
+**Decision 2: region add/remove is free-text, not validated against
+AWS's actual published region list.** A typo'd region simply won't
+resolve to a usable client on next launch — the same failure mode as
+hand-editing the YAML today, not a regression.
+
+**Rejected alternative.** *Hardcode a list of valid AWS region names to
+validate against* — would catch typos immediately, but needs its own
+maintenance as AWS adds regions, and there's no "list all regions" API
+call that doesn't itself require an already-configured client. Not worth
+the upkeep for a first pass.
+
+**Decision 3: region changes take effect on next launch, not live.**
+Surfaced directly in the UI when saving, rather than left as a silent
+gap. `cmd/clasm/main.go` builds the region-to-client map once at
+startup from the config loaded at that time; retrofitting the running
+client map to react to a mid-session config edit was judged unnecessary
+complexity for how rarely regions actually change.
+
+**Decision 4: new `config.Save` writes with `0644`, not the `0600`
+private-key convention.** No secrets live in `~/.clasm`, unlike the SSH
+private keys `create_key_pair.go` writes.
+
+## 2026-07-24 — Instance/AMI Detail Views: on-demand describe calls, appended menu placement
+
+**Context.** TODO.md has carried an open item since the Launch Templates
+work (Phase 20.27/20.28) gave templates a single-resource detail view:
+instances and AMIs are still only ever seen as a row in the List-tier
+table (Show instances/Show AMIs), never a dedicated detail screen.
+
+**Decision 1: fetch the fuller field set via a new, separate,
+single-resource describe call (`inventory.DescribeInstanceDetail`/
+`DescribeImageDetail`), not by adding fields to the aggregate
+`Instance`/`Image` structs.** Mirrors `DescribeLaunchTemplateVersion`'s
+existing shape.
+
+**Rejected alternative.** *Add SecurityGroupIDs/SubnetID/
+IAMInstanceProfile/InstanceType (and BlockDeviceMappings/RootDeviceName
+for Image) directly to `Instance`/`Image`* — would let the list-fetch
+populate everything in one pass, but every other call site
+(`ListInstances`/`ListImages`'s many existing callers: pickers, Tag
+Management, the list views) would carry fields it never uses, and this
+project already hit real breakage once from adding a map field to these
+structs (Phase 20.30's `reflect.DeepEqual` fix, when `Tags` was added) —
+not worth repeating for fields only the detail view needs.
+
+**Decision 2: the two new menu entries are appended at the end of
+`mainMenuItems`, not placed near "Show instances"/"Show AMIs."**
+Consistent with this project's established convention (Phase 20.40) of
+appending rather than reordering, so existing numeric-index tests for
+prior entries stay valid unchanged.
+
 ## 2026-07-23 — Real bug: ListRoles/ListInstanceProfiles/ListPolicies silently truncate past 100 items
 
 **Context.** Found via live use immediately after Phase 20.40 shipped:
