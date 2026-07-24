@@ -29,6 +29,23 @@ func displayRegionsList(w io.Writer, regions []string) {
 	fmt.Fprintf(w, "Regions: %s\n", strings.Join(regions, ", "))
 }
 
+// regionsEditDescription formats the current regions for the "Edit
+// regions" Select's own Description, so they're rendered inside that
+// Select's full-height chrome (DESIGN.md, "Full-height Menu Tier")
+// instead of relying solely on displayRegionsList's separate plain print
+// staying visible above it -- the instant that Select redraws, it fills
+// the whole terminal and scrolls whatever was printed just before it out
+// of view (the same bug class as manage_tags.go's actionMenuDescription
+// fix, Phase 20.29's "Show tags appeared to do nothing"). displayRegionsList
+// itself is kept too -- accessible mode never prints a field's
+// Description, only its Title and options.
+func regionsEditDescription(regions []string) string {
+	if len(regions) == 0 {
+		return "No regions configured yet. Region changes take effect the next time clasm is launched."
+	}
+	return fmt.Sprintf("Current regions: %s. Region changes take effect the next time clasm is launched.", strings.Join(regions, ", "))
+}
+
 func backupDirectoryRuleLabel(r config.BackupDirectoryRule) string {
 	return fmt.Sprintf("%s -> %s", r.Pattern, r.Directory)
 }
@@ -44,6 +61,23 @@ func displayBackupDirectoryRulesList(w io.Writer, rules []config.BackupDirectory
 	}
 }
 
+// backupDirectoryRulesEditDescription formats the current rules for the
+// "Edit backup directory rules" Select's own Description -- same
+// wipe-avoidance rationale as regionsEditDescription above.
+// displayBackupDirectoryRulesList itself is kept too, for the same
+// accessible-mode reason.
+func backupDirectoryRulesEditDescription(rules []config.BackupDirectoryRule) string {
+	if len(rules) == 0 {
+		return "No backup directory rules configured yet."
+	}
+	var b strings.Builder
+	b.WriteString("Current rules (first match wins):")
+	for _, r := range rules {
+		fmt.Fprintf(&b, "\n  %s", backupDirectoryRuleLabel(r))
+	}
+	return b.String()
+}
+
 // editRegionsChoices is the Edit regions sub-menu, in order. "Done"
 // returns to the Configuration menu -- deliberately not 'q' (which would
 // exit the whole domain) since this is a nested, bounded loop.
@@ -57,7 +91,7 @@ func editRegions(w io.Writer, cfg *config.Config, input io.Reader, output io.Wri
 	changed := false
 	for {
 		displayRegionsList(w, cfg.Regions)
-		action, err := pickString(w, "Edit regions", "Region changes take effect the next time clasm is launched.", hintGoBack, editRegionsChoices, input, output)
+		action, err := pickString(w, "Edit regions", regionsEditDescription(cfg.Regions), hintGoBack, editRegionsChoices, input, output)
 		if err != nil {
 			return changed, cancelledIsNil(w, err)
 		}
@@ -105,7 +139,7 @@ func editBackupDirectoryRules(w io.Writer, cfg *config.Config, input io.Reader, 
 	changed := false
 	for {
 		displayBackupDirectoryRulesList(w, cfg.BackupDirectories)
-		action, err := pickString(w, "Edit backup directory rules", "", hintGoBack, editBackupDirChoices, input, output)
+		action, err := pickString(w, "Edit backup directory rules", backupDirectoryRulesEditDescription(cfg.BackupDirectories), hintGoBack, editBackupDirChoices, input, output)
 		if err != nil {
 			return changed, cancelledIsNil(w, err)
 		}

@@ -4888,6 +4888,27 @@ loop, pause-for-acknowledgment after a successful action -- every case
 terminates via ctx cancellation from within a test-supplied action
 closure, never by letting scripted input run out.
 
+**Real bug found via review before real-AWS/live testing even started, fixed same day:**
+`editRegions`/`editBackupDirectoryRules` originally called
+`displayRegionsList`/`displayBackupDirectoryRulesList` (a plain print)
+immediately before their own action-menu `pickString` -- the same bug
+class as Phase 20.29's "Show tags appeared to do nothing" (a full-height
+Menu-tier `Select` fills the whole terminal on every render and scrolls
+whatever was printed just before it out of view, so the current
+region/rule list was invisible in real terminal use even though it was
+always being (re)computed correctly). Fixed the same way Phase 20.29
+was: embed the current list in the Select's own `Description`
+(`regionsEditDescription`/`backupDirectoryRulesEditDescription`) in
+addition to (not instead of) the existing plain print, since accessible
+mode never renders a field's Description, only Title and options --
+this means the fix itself is invisible to the existing pipe-driven
+tests, same accepted limitation as `manage_tags.go`'s own
+`actionMenuDescription` fix. General lesson reinforced a third time in
+this project: any call site that prints plain text immediately before a
+full-height Menu-tier Select is at risk of this same silent-scroll bug --
+worth checking for it by default in any new Menu-tier loop, not just
+after a live report.
+
 ### Files
 
 `internal/config/config.go`, new `internal/workflow/configure_menu.go`,
