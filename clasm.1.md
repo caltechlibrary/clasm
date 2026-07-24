@@ -1,6 +1,6 @@
-%clasm(1) user manual | version 0.0.4 93ca336
+%clasm(1) user manual | version 0.0.5 3ec93c9
 % R. S. Doiel
-% 2026-07-22
+% 2026-07-24
 
 # NAME
 
