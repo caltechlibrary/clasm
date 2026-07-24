@@ -49,12 +49,16 @@ func storageClassLabel(sc types.TransitionStorageClass) string {
 	}
 }
 
-// lifecycleActions is DESIGN.md's lifecycle action menu. No "Back" entry
-// -- DECISIONS.md, "TUI keybinding conventions": 'q' is the universal
-// back key everywhere, so a redundant menu item would just be a second
-// way to do the same thing (matching s3MenuItems' own drop of "Back to
-// domain picker" in Phase 20.7).
-var lifecycleActions = []string{"Add rule", "Edit rule", "Remove rule", "View rule details"}
+// lifecycleActions is DESIGN.md's lifecycle action menu. "View rule
+// details" leads (MENU_REVIEW.md, 2026-07-24; DECISIONS.md, "Regroup the
+// Compute menu"), matching the view-before-mutate convention used
+// everywhere else (e.g. Manage Tags' own action menu, "Show tags, Add,
+// Update, Remove") -- this menu had drifted from that convention. No
+// "Back" entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is the
+// universal back key everywhere, so a redundant menu item would just be
+// a second way to do the same thing (matching s3MenuItems' own drop of
+// "Back to domain picker" in Phase 20.7).
+var lifecycleActions = []string{"View rule details", "Add rule", "Edit rule", "Remove rule"}
 
 // pickLifecycleAction runs the lifecycle action menu as a huh.Select
 // (PLAN.md Phase 20.9), reusing the same q-quit-key/accessible-mode-

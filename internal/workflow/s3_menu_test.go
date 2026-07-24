@@ -306,8 +306,8 @@ func TestS3MenuItems_NoBackToDomainPickerEntry(t *testing.T) {
 	}
 }
 
-func TestS3MenuItems_FirstItemIsListS3Buckets(t *testing.T) {
-	if got := s3MenuItems[0].label; got != "List S3 Buckets" {
-		t.Errorf("s3MenuItems[0].label = %q, want %q", got, "List S3 Buckets")
+func TestS3MenuItems_FirstItemIsShowBuckets(t *testing.T) {
+	if got := s3MenuItems[0].label; got != "Show Buckets" {
+		t.Errorf("s3MenuItems[0].label = %q, want %q", got, "Show Buckets")
 	}
 }

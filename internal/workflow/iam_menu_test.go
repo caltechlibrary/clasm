@@ -174,7 +174,7 @@ func TestRunIAMMenu_DispatchesToViewRoleDetail(t *testing.T) {
 	actions := testIAMActions()
 	actions.ViewRoleDetail = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("4\n"), buf) // View Role Detail
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("4\n"), buf) // Show Role Detail
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestRunIAMMenu_DispatchesToViewInstanceProfileDetail(t *testing.T) {
 	actions := testIAMActions()
 	actions.ViewInstanceProfileDetail = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // View Instance Profile Detail
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // Show Instance Profile Detail
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestRunIAMMenu_DispatchesToDeleteRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.DeleteRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Delete Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Delete Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestRunIAMMenu_DispatchesToAttachPolicyToRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.AttachPolicyToRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("8\n"), buf) // Attach Policy to Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Attach Policy to Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestRunIAMMenu_DispatchesToDetachPolicyFromRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.DetachPolicyFromRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Detach Policy from Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("8\n"), buf) // Detach Policy from Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}

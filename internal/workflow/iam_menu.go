@@ -23,8 +23,12 @@ type IAMActions struct {
 	// actions (PLAN.md Phase 20.38): pick one role/profile and show its
 	// full detail (trust policy, attached/inline policies, tags,
 	// SSM-capability, cross-references), matching Compute's own
-	// "Show a launch template" vs. "Show launch templates" split
-	// between a single-resource detail view and a bulk list.
+	// "Show launch template detail" vs. "Show launch templates" split
+	// between a single-resource detail view and a bulk list. Labeled
+	// "Show Role Detail"/"Show Instance Profile Detail" in the menu as of
+	// 2026-07-24 (MENU_REVIEW.md; DECISIONS.md, "Regroup the Compute
+	// menu") -- unifying on "Show" rather than "View" to match every
+	// other detail view in the app; the Go field names are unchanged.
 	ViewRoleDetail            func(ctx context.Context) error
 	ViewInstanceProfileDetail func(ctx context.Context) error
 	// CreateRoleFromTemplate is Phase 20.39's guided creation action --
@@ -49,19 +53,22 @@ type iamMenuItem struct {
 	action func(IAMActions, context.Context) error
 }
 
-// iamMenuItems is DESIGN.md's IAM domain menu, in order. No "Back to
-// domain picker" entry -- DECISIONS.md, "TUI keybinding conventions":
-// 'q' is the universal back key everywhere.
+// iamMenuItems is DESIGN.md's IAM domain menu, in order. Attach/Detach
+// precede Delete (MENU_REVIEW.md, 2026-07-24; DECISIONS.md, "Regroup the
+// Compute menu") -- both are trivially reversible via their paired
+// action, unlike Delete Role, so the one truly irreversible action sits
+// last. No "Back to domain picker" entry -- DECISIONS.md, "TUI keybinding
+// conventions": 'q' is the universal back key everywhere.
 var iamMenuItems = []iamMenuItem{
 	{"Show Roles", func(a IAMActions, ctx context.Context) error { return a.ShowRoles(ctx) }},
 	{"Show Instance Profiles", func(a IAMActions, ctx context.Context) error { return a.ShowInstanceProfiles(ctx) }},
 	{"Show Policies", func(a IAMActions, ctx context.Context) error { return a.ShowPolicies(ctx) }},
-	{"View Role Detail", func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
-	{"View Instance Profile Detail", func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
+	{"Show Role Detail", func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
+	{"Show Instance Profile Detail", func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
 	{"Create Role from Template", func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
-	{"Delete Role", func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
 	{"Attach Policy to Role", func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
 	{"Detach Policy from Role", func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
+	{"Delete Role", func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
 }
 
 // pickIAMItem runs the IAM domain menu's huh.Select and returns the

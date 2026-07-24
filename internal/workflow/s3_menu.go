@@ -40,14 +40,16 @@ type s3Item struct {
 	action func(S3Actions, context.Context) error
 }
 
-// s3MenuItems is DESIGN.md 21.2's S3 domain menu, in order. "List S3
-// Buckets" leads the menu, same convention as Compute and Key
-// Management's own "Show resource lists" entries. No "Back to domain
-// picker" entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is
-// the universal back key everywhere, so a redundant menu item would
-// just be a second way to do the same thing.
+// s3MenuItems is DESIGN.md 21.2's S3 domain menu, in order. "Show
+// Buckets" leads the menu, same convention as every other domain's own
+// "Show X" entry -- relabeled from "List S3 Buckets" 2026-07-24
+// (MENU_REVIEW.md; DECISIONS.md, "Regroup the Compute menu") to use the
+// same verb as everywhere else. No "Back to domain picker" entry --
+// DECISIONS.md, "TUI keybinding conventions": 'q' is the universal back
+// key everywhere, so a redundant menu item would just be a second way to
+// do the same thing.
 var s3MenuItems = []s3Item{
-	{"List S3 Buckets", func(a S3Actions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
+	{"Show Buckets", func(a S3Actions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
 	{"Create Bucket", func(a S3Actions, ctx context.Context) error { return a.CreateBucket(ctx) }},
 	{"Configure Static Website Hosting", func(a S3Actions, ctx context.Context) error { return a.ConfigureWebsite(ctx) }},
 	{"Browse & Manage Objects", func(a S3Actions, ctx context.Context) error { return a.BrowseAndManageObjects(ctx) }},

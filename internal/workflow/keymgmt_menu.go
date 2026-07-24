@@ -37,15 +37,19 @@ type keyMgmtItem struct {
 }
 
 // keyMgmtMenuItems is DESIGN.md's Key Management menu, in order. "Show
-// resource lists" leads the menu, same convention as the Compute domain
-// (DECISIONS.md, "Move Show resource lists to the top of the Compute
-// menu; rename from Refresh"). No "Back to domain picker" entry --
-// DECISIONS.md, "TUI keybinding conventions": 'q' is the universal back
-// key everywhere, so a redundant menu item would just be a second way
-// to do the same thing (matching s3MenuItems' own drop of "Back to
-// domain picker" in Phase 20.7).
+// Key Pairs" leads the menu, same convention as every other domain's own
+// "Show X" entry -- relabeled from the generic "Show resource lists"
+// 2026-07-24 (MENU_REVIEW.md; DECISIONS.md, "Regroup the Compute menu"):
+// this domain only ever manages one resource type, so the specific name
+// is both clearer and consistent with Compute's own per-resource-type
+// "Show X" entries (DECISIONS.md, "Split Show resource lists into
+// per-resource-type Compute menu entries"). No "Back to domain picker"
+// entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is the
+// universal back key everywhere, so a redundant menu item would just be
+// a second way to do the same thing (matching s3MenuItems' own drop of
+// "Back to domain picker" in Phase 20.7).
 var keyMgmtMenuItems = []keyMgmtItem{
-	{"Show resource lists", func(a KeyMgmtActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
+	{"Show Key Pairs", func(a KeyMgmtActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
 	{"Create Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.CreateKeyPair(ctx) }},
 	{"Import Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.ImportKeyPair(ctx) }},
 	{"Delete Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.DeleteKeyPair(ctx) }},

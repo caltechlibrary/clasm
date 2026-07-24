@@ -85,21 +85,30 @@ type menuItem struct {
 	action func(MenuActions, context.Context) error
 }
 
-// mainMenuItems is DESIGN.md's Main Menu, in order. The three "Show"
-// entries lead the menu (DECISIONS.md, "Move Show resource lists to the
-// top of the Compute menu; rename from Refresh") -- it's the natural
-// first move on entering the domain (orient before acting), not just
-// one action among many -- split into three separate entries rather
-// than one combined listing (DECISIONS.md, "Split Show resource lists
-// into per-resource-type Compute menu entries"). No "Back to domain
+// mainMenuItems is DESIGN.md's Main Menu, grouped View/Inspect -> Instance
+// lifecycle -> AMI lifecycle -> Launch Template lifecycle -> Maintenance
+// (MENU_REVIEW.md, 2026-07-24; DECISIONS.md, "Regroup the Compute menu").
+// The view/inspect group leads (DECISIONS.md, "Move Show resource lists
+// to the top of the Compute menu; rename from Refresh") -- it's the
+// natural first move on entering the domain (orient before acting), not
+// just one action among many. Each list-view/detail-view pair sits
+// together (Show instances + Show instance detail, Show AMIs + Show AMI
+// detail, Show launch templates + Show launch template detail), matching
+// the IAM domain menu's own List-then-Detail shape. No "Back to domain
 // picker" entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is
 // the universal back key everywhere, so a redundant menu item would
 // just be a second way to do the same thing (matching s3MenuItems' own
 // drop of "Back to domain picker" in Phase 20.7).
 var mainMenuItems = []menuItem{
+	// View/Inspect
 	{"Show instances", func(a MenuActions, ctx context.Context) error { return a.ShowInstances(ctx) }},
+	{"Show instance detail", func(a MenuActions, ctx context.Context) error { return a.ShowInstanceDetail(ctx) }},
 	{"Show AMIs", func(a MenuActions, ctx context.Context) error { return a.ShowAMIs(ctx) }},
+	{"Show AMI detail", func(a MenuActions, ctx context.Context) error { return a.ShowAMIDetail(ctx) }},
 	{"Show launch templates", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplates(ctx) }},
+	{"Show launch template detail", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplate(ctx) }},
+	{"Show/export cloud-init for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ShowCloudInit(ctx) }},
+	// Instance lifecycle
 	{"Create EC2 instance from AMI", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
 	{"Create EC2 instance from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
 	{"Create EC2 instance from launch template", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
@@ -109,18 +118,17 @@ var mainMenuItems = []menuItem{
 	{"Resize instance's root volume", func(a MenuActions, ctx context.Context) error { return a.ResizeInstanceRootVolume(ctx) }},
 	{"Associate/replace IAM instance profile", func(a MenuActions, ctx context.Context) error { return a.AssociateOrReplaceInstanceProfile(ctx) }},
 	{"Manage tags for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ManageTags(ctx) }},
+	// AMI lifecycle
 	{"Create AMI from EC2 instance (running or stopped)", func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},
 	{"Remove AMI", func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},
-	{"Show/export cloud-init for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ShowCloudInit(ctx) }},
-	{"Show a launch template", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplate(ctx) }},
+	// Launch Template lifecycle
 	{"Create launch template from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
 	{"Sync cloud-init YAML to a launch template", func(a MenuActions, ctx context.Context) error { return a.SyncLaunchTemplate(ctx) }},
 	{"Promote a launch template version to default", func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
 	{"Delete launch template version(s)", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
 	{"Delete a launch template", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},
+	// Maintenance
 	{"Archive stale backups to S3 and trim disk space", func(a MenuActions, ctx context.Context) error { return a.BackupArchiveAndTrim(ctx) }},
-	{"Show instance detail", func(a MenuActions, ctx context.Context) error { return a.ShowInstanceDetail(ctx) }},
-	{"Show AMI detail", func(a MenuActions, ctx context.Context) error { return a.ShowAMIDetail(ctx) }},
 }
 
 // pickMainMenuItem runs the Compute main menu's huh.Select and returns

@@ -35,13 +35,17 @@ type tagMgmtItem struct {
 	action func(TagMgmtActions, context.Context) error
 }
 
-// tagMgmtMenuItems is DESIGN.md's Tag Management menu, in order. No
-// "Back to domain picker" entry -- DECISIONS.md, "TUI keybinding
-// conventions": 'q' is the universal back key everywhere, so a
-// redundant menu item would just be a second way to do the same thing.
+// tagMgmtMenuItems is DESIGN.md's Tag Management menu, in order. "Show
+// all tags" leads (MENU_REVIEW.md, 2026-07-24; DECISIONS.md, "Regroup
+// the Compute menu"), matching every other domain's "Show/List leads"
+// convention -- this 2-item menu predated that convention being applied
+// consistently elsewhere. No "Back to domain picker" entry --
+// DECISIONS.md, "TUI keybinding conventions": 'q' is the universal back
+// key everywhere, so a redundant menu item would just be a second way to
+// do the same thing.
 var tagMgmtMenuItems = []tagMgmtItem{
-	{"Manage tags", func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 	{"Show all tags", func(a TagMgmtActions, ctx context.Context) error { return a.ShowAllTags(ctx) }},
+	{"Manage tags", func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 }
 
 // pickTagMgmtItem runs the Tag Management menu's huh.Select and returns

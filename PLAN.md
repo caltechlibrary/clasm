@@ -4924,6 +4924,68 @@ the direct structural model.
 
 ---
 
+## Phase 20.43 — Menu Reordering and Terminology Cleanup
+
+**Status: designed, implemented, and unit-tested 2026-07-24** (see
+`MENU_REVIEW.md` for the full audit; DECISIONS.md, "Regroup the Compute
+menu, and a terminology cleanup across every domain menu"). `go build`/
+`go vet`/`go test ./... -race`/`gofmt -l` all clean. No AWS-facing
+behavior changed -- this is entirely menu-item order and label text.
+
+### Work Items
+
+- [x] `menu.go`: `mainMenuItems` regrouped into View/Inspect -> Instance
+      lifecycle -> AMI lifecycle -> Launch Template lifecycle ->
+      Maintenance; "Show a launch template" renamed to "Show launch
+      template detail"
+- [x] `menu_test.go`: every numeric-index literal updated to match the
+      new order (a dozen-odd call sites)
+- [x] `tagmgmt_menu.go`: "Show all tags" moved ahead of "Manage tags";
+      `tagmgmt_menu_test.go` indices updated
+- [x] `bucket_lifecycle.go`: `lifecycleActions` reordered to "View rule
+      details" first; `bucket_lifecycle_test.go` indices updated
+- [x] `iam_menu.go`: last three items reordered to Attach -> Detach ->
+      Delete; "View Role Detail"/"View Instance Profile Detail" relabeled
+      "Show Role Detail"/"Show Instance Profile Detail" (Go field names
+      unchanged); `iam_menu_test.go` indices and comment text updated
+- [x] `s3_menu.go`: "List S3 Buckets" relabeled "Show Buckets";
+      `s3_menu_test.go`'s literal label-equality check updated (the one
+      test in the whole suite that asserted on exact menu-label text,
+      confirmed via a targeted search before starting)
+- [x] `keymgmt_menu.go`: "Show resource lists" relabeled "Show Key Pairs"
+- [x] Considered and explicitly declined: reordering the Tag Management
+      kind picker (already a sensible EC2-backed/S3/IAM cluster on
+      inspection) and normalizing Key Management/S3/IAM's Title Case to
+      match Compute/Tag Management/Configuration's sentence case (a much
+      larger, purely cosmetic pass the user chose not to do this round)
+
+### Tests
+
+No new test files -- every change here is a reorder or relabel of an
+existing, already-tested menu, so the work was updating the existing
+accessible-mode pipe-input index literals (and, for S3, one literal label
+assertion) to match, then confirming the full suite still passes. A
+background search across every `_test.go` file confirmed only that one
+S3 label assertion existed anywhere in the suite before starting, so the
+blast radius of the rename pass was known upfront rather than discovered
+by trial and error.
+
+### Files
+
+`internal/workflow/menu.go`, `menu_test.go`, `tagmgmt_menu.go`,
+`tagmgmt_menu_test.go`, `bucket_lifecycle.go`, `bucket_lifecycle_test.go`,
+`iam_menu.go`, `iam_menu_test.go`, `s3_menu.go`, `s3_menu_test.go`,
+`keymgmt_menu.go`.
+
+### Not done, flagged as pre-existing gaps
+
+`user_manual.md` and `TUI_REFERENCE.md`'s screen-map are both already
+stale independent of this change (missing three whole domains, wrong
+item counts) -- out of scope for this pass, noted in DECISIONS.md as a
+separate, larger follow-up if wanted.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

@@ -71,7 +71,7 @@ func TestRunMainMenu_DispatchesToTheChosenAction(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.StartEC2Instance = cancelingAction(&startCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRunMainMenu_ResizeInstanceRootVolumeDispatchesToItsOwnAction(t *testing
 	actions := testMenuActions(&refreshCalls)
 	actions.ResizeInstanceRootVolume = cancelingAction(&resizeCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("10\n"), buf) // Resize instance's root volume
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("14\n"), buf) // Resize instance's root volume
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestRunMainMenu_AssociateOrReplaceInstanceProfileDispatchesToItsOwnAction(t
 	actions := testMenuActions(&refreshCalls)
 	actions.AssociateOrReplaceInstanceProfile = cancelingAction(&associateCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Associate/replace IAM instance profile
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("15\n"), buf) // Associate/replace IAM instance profile
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestRunMainMenu_RefreshesAfterASuccessfulAction(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.StartEC2Instance = cancelingAction(&startCalls, cancel)
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestRunMainMenu_ActionErrorDoesNotCrashLoop(t *testing.T) {
 	// prompt (DECISIONS.md, "Pause for acknowledgment before every
 	// menu-loop redraw") consuming its own line of input after the error
 	// is printed, before the loop reprompts.
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("4\n\n4\n"), buf) // Create EC2 instance from AMI, twice
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("8\n\n8\n"), buf) // Create EC2 instance from AMI, twice
 	if err != nil {
 		t.Fatalf("expected the loop to survive a single action's error and exit cleanly once ctx is cancelled, got: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestRunMainMenu_PausesForAcknowledgmentAfterARefreshError(t *testing.T) {
 		return errors.New("refresh boom")
 	}
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("7\n\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("11\n\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestRunMainMenu_PausesForAcknowledgmentAfterASuccessfulAction(t *testing.T)
 		return nil
 	}
 
-	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("7\n\n"), buf) // Start EC2 instance
+	err := runMainMenu(ctx, term, actions, newHuhAccessibleInput("11\n\n"), buf) // Start EC2 instance
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestRunMainMenu_CleanExitOnInterrupt(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.CreateInstanceFromAMI = failingAction(huh.ErrUserAborted)
 
-	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("4\n"), buf); err != nil {
+	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("8\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on huh.ErrUserAborted, got: %v", err)
 	}
 }
@@ -287,7 +287,7 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 	actions := testMenuActions(&refreshCalls)
 	actions.CreateInstanceFromAMI = failingAction(io.EOF)
 
-	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("4\n"), buf); err != nil {
+	if err := runMainMenu(context.Background(), term, actions, newHuhAccessibleInput("8\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on io.EOF, got: %v", err)
 	}
 }

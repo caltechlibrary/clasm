@@ -28,7 +28,7 @@ func TestRunTagMgmtMenu_DispatchesToTheChosenAction(t *testing.T) {
 	actions := testTagMgmtActions(&refreshCalls)
 	actions.ManageTags = cancelingAction(&manageCalls, cancel)
 
-	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf) // Manage tags
+	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n"), buf) // Manage tags
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestRunTagMgmtMenu_ShowAllTagsDispatchesToItsOwnAction(t *testing.T) {
 	actions := testTagMgmtActions(&refreshCalls)
 	actions.ShowAllTags = cancelingAction(&showCalls, cancel)
 
-	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n"), buf) // Show all tags
+	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf) // Show all tags
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestRunTagMgmtMenu_RefreshesAfterASuccessfulAction(t *testing.T) {
 	actions := testTagMgmtActions(&refreshCalls)
 	actions.ManageTags = cancelingAction(&manageCalls, cancel)
 
-	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf)
+	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n"), buf)
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestRunTagMgmtMenu_ActionErrorDoesNotCrashLoop(t *testing.T) {
 	// prompt (DECISIONS.md, "Pause for acknowledgment before every
 	// menu-loop redraw") consuming its own line of input after the error
 	// is printed, before the loop reprompts.
-	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n1\n"), buf) // Manage tags, twice
+	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n\n2\n"), buf) // Manage tags, twice
 	if err != nil {
 		t.Fatalf("expected the loop to survive a single action's error and exit cleanly once ctx is cancelled, got: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRunTagMgmtMenu_PausesForAcknowledgmentAfterARefreshError(t *testing.T) 
 		return errors.New("refresh boom")
 	}
 
-	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n"), buf) // Manage tags
+	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n\n"), buf) // Manage tags
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestRunTagMgmtMenu_PausesForAcknowledgmentAfterASuccessfulAction(t *testing
 		return nil
 	}
 
-	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n"), buf) // Manage tags
+	err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("2\n\n"), buf) // Manage tags
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestRunTagMgmtMenu_CleanExitOnInterrupt(t *testing.T) {
 	actions := testTagMgmtActions(&refreshCalls)
 	actions.ManageTags = failingAction(huh.ErrUserAborted)
 
-	if err := runTagMgmtMenu(context.Background(), term, actions, newHuhAccessibleInput("1\n"), buf); err != nil {
+	if err := runTagMgmtMenu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on huh.ErrUserAborted, got: %v", err)
 	}
 }
@@ -196,7 +196,7 @@ func TestRunTagMgmtMenu_CleanExitOnEOF(t *testing.T) {
 	actions := testTagMgmtActions(&refreshCalls)
 	actions.ManageTags = failingAction(io.EOF)
 
-	if err := runTagMgmtMenu(context.Background(), term, actions, newHuhAccessibleInput("1\n"), buf); err != nil {
+	if err := runTagMgmtMenu(context.Background(), term, actions, newHuhAccessibleInput("2\n"), buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) on io.EOF, got: %v", err)
 	}
 }

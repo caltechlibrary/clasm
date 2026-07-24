@@ -55,7 +55,7 @@ func TestManageBucketLifecyclePolicies_NoSuchLifecycleConfigurationIsNotAnError(
 	// Edit rule -- with zero rules (NoSuchLifecycleConfiguration), this
 	// returns immediately ("No rules to edit."), a clean way to end the
 	// loop without needing any further input at all.
-	term, actionInput, buf := newPipeEditor("2\n")
+	term, actionInput, buf := newPipeEditor("3\n")
 	if err := manageBucketLifecyclePolicies(context.Background(), term, newClient, bucket, actionInput, term); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestManageBucketLifecyclePolicies_NoSuchLifecycleConfigurationIsNotAnError(
 func TestManageBucketLifecyclePolicies_BackupPurposeAddGuidedFlow(t *testing.T) {
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "backup"}
-	input := "1\n" + // Add rule
+	input := "2\n" + // Add rule
 		"90\n" + // expire after 90 days
 		"30\n" + // transition after 30 days (before the expiration)
 		"1\n" + // storage class: Standard-IA (first of the curated 4)
@@ -100,7 +100,7 @@ func TestManageBucketLifecyclePolicies_BackupPurposeAddGuidedFlow(t *testing.T) 
 func TestManageBucketLifecyclePolicies_BackupGuidedRejectsTransitionNotBeforeExpiration(t *testing.T) {
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "backup"}
-	input := "1\n" + // Add rule
+	input := "2\n" + // Add rule
 		"30\n" + // expire after 30 days
 		"30\n" + // transition after 30 days -- rejected, not before expiration
 		"90\n" + // rejected too -- still not before expiration
@@ -134,7 +134,7 @@ func TestManageBucketLifecyclePolicies_BackupGuidedRejectsTransitionNotBeforeExp
 func TestManageBucketLifecyclePolicies_BackupAddWithNoActionsIsNothingToDo(t *testing.T) {
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "backup"}
-	input := "1\n" + // Add rule
+	input := "2\n" + // Add rule
 		"\n" + "\n" // blank expire, blank transition
 
 	term, actionInput, buf := newPipeEditor(input)
@@ -155,7 +155,7 @@ func TestManageBucketLifecyclePolicies_GenericPurposeAddNamedRule(t *testing.T) 
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}
 	firstStorageClass := types.TransitionStorageClass("").Values()[0]
-	input := "1\n" + // Add rule
+	input := "2\n" + // Add rule
 		"my-rule\n" + // rule ID
 		"\n" + // prefix blank
 		"y\n" + // add a transition
@@ -191,7 +191,7 @@ func TestManageBucketLifecyclePolicies_GenericAddRejectsExpirationNotAfterLatest
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}
 	firstStorageClass := types.TransitionStorageClass("").Values()[0]
-	input := "1\n" + // Add rule
+	input := "2\n" + // Add rule
 		"my-rule\n" + // rule ID
 		"\n" + // prefix blank
 		"y\n" + // add a transition
@@ -233,7 +233,7 @@ func TestManageBucketLifecyclePolicies_GenericAddRejectsDuplicateID(t *testing.T
 		{ID: aws.String("existing"), Status: types.ExpirationStatusEnabled, Expiration: &types.LifecycleExpiration{Days: aws.Int32(10)}},
 	}}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}
-	input := "1\n" + // Add rule
+	input := "2\n" + // Add rule
 		"existing\n" + // rejected -- duplicate
 		"new-rule\n" +
 		"\n" + // prefix blank
@@ -346,7 +346,7 @@ func TestManageBucketLifecyclePolicies_EditWithNoRulesReportsAndSkipsPut(t *test
 	fake := &fakeS3Client{}
 	bucket := inventory.Bucket{Name: "my-bucket", Region: "us-west-2", Purpose: "internal"}
 
-	term, actionInput, buf := newPipeEditor("2\n") // Edit rule (none exist)
+	term, actionInput, buf := newPipeEditor("3\n") // Edit rule (none exist)
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
 	if err := manageBucketLifecyclePolicies(context.Background(), term, newClient, bucket, actionInput, term); err != nil {
@@ -392,7 +392,7 @@ func TestManageBucketLifecyclePolicies_ViewRuleDetailWithNoRules(t *testing.T) {
 	// View rule details (none exist, prints "No rules to view.", loops
 	// back), then Edit rule -- also no rules, returns immediately, a
 	// clean way to end the loop.
-	term, actionInput, buf := newPipeEditor("4\n" + "2\n")
+	term, actionInput, buf := newPipeEditor("1\n" + "3\n")
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
 	if err := manageBucketLifecyclePolicies(context.Background(), term, newClient, bucket, actionInput, term); err != nil {
