@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>clasm</title>
+    <link rel="stylesheet" href="https://caltechlibrary.github.io/css/site.css">
+    <link rel="stylesheet" href="https://media.library.caltech.edu/cl-webcomponents/css/code-blocks.css">
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/copyToClipboard.js"></script>
+    <script type="module" src="https://media.library.caltech.edu/cl-webcomponents/footer-global.js"></script>
+</head>
+<body>
+<header>
+<a href="https://library.caltech.edu"><img src="https://media.library.caltech.edu/assets/caltechlibrary-logo.png" alt="Caltech Library logo"></a>
+</header>
+<a href="#main-content" class="visually-hidden">skip to main content</a>
+<nav>
+<ul>
+    <li><a href="/">All Library Apps</a></li>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="LICENSE">LICENSE</a></li>
+    <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
+    <li><a href="user_manual.html">User Manual</a></li>
+    <li><a href="about.html">About</a></li>
+    <li><a href="https://github.com/caltechlibrary/clasm">Code Repository</a></li>
+</ul>
+</nav>
+<section id="main-content">
+<h1 id="clasm-menu-review-2026-07-24">clasm Menu Review —
+2026-07-24</h1>
+<p><strong>Status: implemented 2026-07-24.</strong> All 5 reordering
+suggestions below were applied except the Tag Management kind-picker
+one, which turned out on closer inspection not to need a change (see
+DECISIONS.md, “Regroup the Compute menu, and a terminology cleanup
+across every domain menu,” and PLAN.md Phase 20.43, for what actually
+happened). The terminology question below was answered with the “S3
+rename + unify verbs” scope, not the broader capitalization pass.
+<code>user_manual.md</code> and <code>TUI_REFERENCE.md</code> (flagged
+below as already stale, independent of this review) were also brought
+current as part of the same-day v0.0.5 release review, alongside this
+file’s own status note. This document is left as-is below as the
+original review; treat the DECISIONS.md/PLAN.md entries as authoritative
+for final state.</p>
+<p>Purpose: lay out every interactive menu in clasm as it exists today,
+in its current item order, then flag places where that order feels ad
+hoc rather than deliberate, and propose a reordering for review.</p>
+<h2 id="why-the-ordering-feels-ad-hoc">Why the ordering feels ad
+hoc</h2>
+<p>Two real conventions already exist and are documented in
+DECISIONS.md:</p>
+<ol type="1">
+<li><strong>“Show/List” leads a domain menu</strong> — established
+2026-07-02, “Move ‘Show resource lists’ to the top of the Compute menu;
+rename from ‘Refresh’”: orient before acting is the natural first move
+on entering a domain.</li>
+<li><strong>No “Back”/“Exit” entry anywhere</strong> — ‘q’ is the
+universal back/quit key (DECISIONS.md, “TUI keybinding
+conventions”).</li>
+</ol>
+<p>But there’s a third, <em>unwritten</em> pattern that’s been applied
+inconsistently: <strong>new menu entries have almost always been
+appended to the end of the list</strong>, specifically so they don’t
+shift the numeric index every existing accessible-mode pipe-input test
+depends on (<code>"7\n"</code> for “Start EC2 instance”, etc.) — a real,
+understandable engineering reason, but one that optimizes for <em>not
+breaking tests</em> rather than for <em>where the item logically
+belongs</em>. That’s very likely the specific feeling you’re picking up
+on: several recently-added items (the two new Instance/AMI detail views,
+in particular) sit at the very bottom of the Compute menu for purely
+mechanical reasons, disconnected from the related items they belong next
+to.</p>
+<p>The <strong>IAM menu</strong> is the one domain that was designed all
+at once, and it shows: List views, then single-resource Detail views,
+then Create, then the CRUD-completion actions — a clean, deliberate
+shape. It’s the best model for what the others (especially Compute)
+could look like.</p>
+<hr />
+<h2 id="domain-picker-6-items">1. Domain Picker — 6 items</h2>
+<pre><code>1. Compute (EC2 &amp; AMI)
+2. Key Management
+3. S3 (Buckets &amp; Static Websites)
+4. Tag Management
+5. IAM
+6. Configuration</code></pre>
+<p><strong>Assessment:</strong> reasonable as-is. Roughly
+usage-frequency-first (Compute, the original single domain, still
+leads), then the two cross-cutting domains (Tag Management, IAM), then
+Configuration last — settings-last is a common, expected convention. No
+change suggested.</p>
+<hr />
+<h2 id="compute-menu-24-items-the-biggest-offender">2. Compute Menu — 24
+items (the biggest offender)</h2>
+<h3 id="current-order">Current order</h3>
+<pre><code> 1. Show instances
+ 2. Show AMIs
+ 3. Show launch templates
+ 4. Create EC2 instance from AMI
+ 5. Create EC2 instance from cloud-init YAML
+ 6. Create EC2 instance from launch template
+ 7. Start EC2 instance
+ 8. Stop EC2 instance
+ 9. Terminate EC2 instance
+10. Resize instance&#39;s root volume
+11. Associate/replace IAM instance profile
+12. Manage tags for an instance or AMI
+13. Create AMI from EC2 instance (running or stopped)
+14. Remove AMI
+15. Show/export cloud-init for an instance or AMI
+16. Show a launch template
+17. Create launch template from cloud-init YAML
+18. Sync cloud-init YAML to a launch template
+19. Promote a launch template version to default
+20. Delete launch template version(s)
+21. Delete a launch template
+22. Archive stale backups to S3 and trim disk space
+23. Show instance detail          &lt;- appended 2026-07-24, purely to avoid reindexing
+24. Show AMI detail               &lt;- appended 2026-07-24, purely to avoid reindexing</code></pre>
+<h3 id="whats-actually-going-on">What’s actually going on</h3>
+<ul>
+<li>Items 1–3 (the three list views) correctly lead, per the established
+convention.</li>
+<li>Items 23–24 (the new detail views) are the clearest case of “tacked
+on the end” — they’re conceptually a pair with items 1–2 and with item
+16 (“Show a launch template”), but sit 20 rows away from all of
+them.</li>
+<li>Instance actions (4–12), AMI actions (13–14), cloud-init export
+(15), launch-template actions (16–21), and backup maintenance (22) are
+<em>mostly</em> grouped already, just interleaved a bit (cloud-init
+export sits between AMI actions and launch-template actions even though
+it applies to instances and AMIs, not templates).</li>
+<li>“Manage tags for an instance or AMI” (12) sits in the middle of
+instance-only actions even though it’s cross-cutting (works on instances
+and AMIs both) — same category problem as cloud-init export.</li>
+</ul>
+<h3 id="suggested-reordering">Suggested reordering</h3>
+<p>Group by: <strong>View/Inspect → Instance lifecycle → AMI lifecycle →
+Launch Template lifecycle → Maintenance</strong> — mirroring the List →
+Detail → Create → Mutate shape the IAM menu already uses.</p>
+<pre><code> 1. Show instances
+ 2. Show instance detail
+ 3. Show AMIs
+ 4. Show AMI detail
+ 5. Show launch templates
+ 6. Show a launch template
+ 7. Show/export cloud-init for an instance or AMI
+ --- (view/inspect group ends)
+ 8. Create EC2 instance from AMI
+ 9. Create EC2 instance from cloud-init YAML
+10. Create EC2 instance from launch template
+11. Start EC2 instance
+12. Stop EC2 instance
+13. Terminate EC2 instance
+14. Resize instance&#39;s root volume
+15. Associate/replace IAM instance profile
+16. Manage tags for an instance or AMI
+ --- (instance lifecycle group ends)
+17. Create AMI from EC2 instance (running or stopped)
+18. Remove AMI
+ --- (AMI lifecycle group ends)
+19. Create launch template from cloud-init YAML
+20. Sync cloud-init YAML to a launch template
+21. Promote a launch template version to default
+22. Delete launch template version(s)
+23. Delete a launch template
+ --- (launch template lifecycle group ends)
+24. Archive stale backups to S3 and trim disk space</code></pre>
+<p>Notes on specific placements: - “Show instance detail”/“Show AMI
+detail” paired immediately after their respective list (“Show
+instances”/“Show AMIs”), matching IAM’s List-then-Detail pairing. -
+“Show/export cloud-init” moved into the view/inspect group (it’s a read
+operation, same as the detail views) rather than sitting between AMI
+actions and launch-template actions. - “Manage tags for an instance or
+AMI” moved to the end of the instance group rather than the middle —
+it’s the last, most general-purpose instance/AMI action before moving on
+to AMI-specific and template-specific actions. - Everything else keeps
+its existing relative order within its group — this is a regrouping, not
+a full reshuffle.</p>
+<p><strong>Cost of applying this:</strong> <code>mainMenuItems</code>’
+order is asserted by index throughout
+<code>internal/workflow/menu_test.go</code> (roughly a dozen call sites
+like <code>newHuhAccessibleInput("7\n") // Start EC2 instance</code>).
+Reordering would mean updating each of those literal indices to match —
+contained to that one file, not spread across the workflow test suite,
+since every other workflow’s own tests drive it directly rather than
+through the Compute menu’s position.</p>
+<hr />
+<h2 id="key-management-menu-4-items">3. Key Management Menu — 4
+items</h2>
+<pre><code>1. Show resource lists
+2. Create Key Pair
+3. Import Key Pair
+4. Delete Key Pair</code></pre>
+<p><strong>Assessment:</strong> already well-ordered — view, then two
+ways to create, then delete. No change suggested.</p>
+<hr />
+<h2 id="s3-menu-6-items">4. S3 Menu — 6 items</h2>
+<pre><code>1. List S3 Buckets
+2. Create Bucket
+3. Configure Static Website Hosting
+4. Browse &amp; Manage Objects
+5. Manage Bucket Lifecycle Policies
+6. Delete Bucket</code></pre>
+<p><strong>Assessment:</strong> already well-ordered — view, create,
+configure, use, maintain, delete. No change suggested.</p>
+<hr />
+<h2 id="tag-management-menu-2-items">5. Tag Management Menu — 2
+items</h2>
+<pre><code>1. Manage tags
+2. Show all tags</code></pre>
+<p><strong>Assessment:</strong> this is backwards relative to every
+other domain’s own convention — “Show” should lead. This 2-item menu
+predates the “Show leads” convention being applied consistently
+elsewhere and was never revisited.</p>
+<h3 id="suggested-reordering-1">Suggested reordering</h3>
+<pre><code>1. Show all tags
+2. Manage tags</code></pre>
+<p><strong>Cost of applying this:</strong> small — only
+<code>tagmgmt_menu_test.go</code>’s index literals (2 items, so trivial
+either way).</p>
+<hr />
+<h2 id="iam-menu-9-items-the-model-to-follow">6. IAM Menu — 9 items (the
+model to follow)</h2>
+<pre><code>1. Show Roles
+2. Show Instance Profiles
+3. Show Policies
+4. View Role Detail
+5. View Instance Profile Detail
+6. Create Role from Template
+7. Delete Role
+8. Attach Policy to Role
+9. Detach Policy from Role</code></pre>
+<p><strong>Assessment:</strong> the cleanest menu in the app — List →
+Detail → Create → CRUD-completion. This is the shape Compute’s
+reordering above is modeled on.</p>
+<p><strong>Optional minor tweak:</strong> items 7–9 go Delete → Attach →
+Detach. Since Attach/Detach are both reversible and Delete is not,
+ordering them Attach → Detach → Delete (least-destructive-first) would
+put the one truly irreversible action last. Small enough that it’s worth
+a mention, not a strong recommendation.</p>
+<hr />
+<h2 id="configuration-menu-5-items">7. Configuration Menu — 5 items</h2>
+<pre><code>1. Show current config
+2. Edit regions
+3. Edit backup directory rules
+4. Edit Origin tag config
+5. Save</code></pre>
+<p><strong>Assessment:</strong> already well-ordered — view, three edit
+actions, save last as the natural “commit” step. No change
+suggested.</p>
+<hr />
+<h2 id="notable-sub-menus-secondary-for-completeness">Notable sub-menus
+(secondary, for completeness)</h2>
+<p>These aren’t top-level domain menus, but they’re still menus an
+operator navigates, so they’re worth a quick pass too.</p>
+<p><strong>Tag Management’s “kind” picker</strong> (which resource type
+to tag) —
+<code>Instance, AMI, Launch Template, Key Pair, S3 Bucket, IAM Role, IAM Instance Profile, IAM Policy</code>.
+Order reflects the sequence each kind was added to the domain
+(EC2-backed types first, S3 Bucket next, IAM last), not usage frequency
+or any grouping logic. Low priority, but flagging it since it’s the same
+“grew by appending” pattern as the Compute menu.</p>
+<p><strong>Bucket Lifecycle action menu</strong> —
+<code>Add rule, Edit rule, Remove rule, View rule details</code>. This
+one <strong>is</strong> inconsistent with the “view leads” convention:
+“View rule details” is last instead of first. Manage Tags’ own action
+menu (<code>Show tags, Add, Update, Remove</code>) gets this right by
+contrast. Suggested fix: move “View rule details” to the front.</p>
+<p><strong>Manage Tags action menu</strong> —
+<code>Show tags, Add, Update, Remove</code>. Already correct (view
+leads). No change.</p>
+<p><strong>Show Launch Template’s action choice</strong> —
+<code>Show version detail, List all versions, Diff two versions</code>.
+Already view-oriented, no change.</p>
+<p><strong>Edit regions / Edit backup directory rules sub-menus</strong>
+— <code>Add, Remove, Done</code>. No separate “Show” entry needed here —
+the current list is shown via the Select’s own Description text (the
+2026-07-24 silent-scroll fix), not as a separate menu choice.</p>
+<hr />
+<h2 id="summary-of-concrete-suggestions-ranked-by-impact">Summary of
+concrete suggestions, ranked by impact</h2>
+<ol type="1">
+<li><strong>Reorder the Compute menu</strong> into View/Inspect →
+Instance → AMI → Launch Template → Maintenance groups (see above).
+Biggest win, most directly addresses the “ad hoc” feeling. Touches
+<code>menu.go</code> + <code>menu_test.go</code>.</li>
+<li><strong>Swap Tag Management’s two items</strong> so “Show all tags”
+leads. Small, brings it in line with every other domain.</li>
+<li><strong>Move “View rule details” to the front</strong> of the Bucket
+Lifecycle action menu, matching the view-leads convention.</li>
+<li><em>(Optional, low priority)</em> Reorder IAM’s last three items to
+Attach → Detach → Delete.</li>
+<li><em>(Optional, low priority)</em> Reorder Tag Management’s “kind”
+picker by some more meaningful grouping (e.g. EC2-backed / S3 / IAM
+clusters) rather than historical addition order.</li>
+</ol>
+<p>Let me know which of these you’d like applied — happy to do them one
+at a time or all together, with the corresponding DECISIONS.md entry and
+test updates.</p>
+</section>
+<footer-global></footer-global>
+</body>
+</html>
