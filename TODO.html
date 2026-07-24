@@ -28,63 +28,148 @@
 <h2 id="bugs">Bugs</h2>
 <ul class="task-list">
 <li><label><input type="checkbox" checked="" />Menu-loop
-output-visibility bug (confirmed 2026-07-22, live real-AWS testing): any
-plain-printed status/error text immediately before a domain menu’s next
-full-height <code>Select</code> redraw gets wiped before it can be read
-– found via Resize Instance’s Root Volume’s own output, then confirmed
-as a systemic gap (same two print sites duplicated in all four domain
-menu loops) via a live typo’s error message during instance cleanup. See
-DECISIONS.md, “Pause for acknowledgment before every menu-loop redraw,”
-PLAN.md Phase 20.32. Implemented and unit-tested 2026-07-22, test-first
-throughout. Not yet re-verified live against real AWS or released.
-Targeted for v0.0.4.</label></li>
-<li><label><input type="checkbox" />SSM never came online for either
-real-AWS test instance during Resize Instance’s Root Volume verification
-(2026-07-22) – both were launched via cloud-init with
-<code>IamInstanceProfile: null</code> (no instance profile at all), so
-<code>growRootFilesystem</code>’s automated OS-level growth (Part 2 of
-Phase 20.31) correctly fell back to manual instructions but remains
-unverified end-to-end against real AWS. Root cause and fix folded into
-the SSM-enforcement design below, not a bug in
-<code>growRootFilesystem</code> itself.</label></li>
+output-visibility bug – fixed, real-AWS-verified, released in v0.0.4.
+See DECISIONS.md, “Pause for acknowledgment before every menu-loop
+redraw,” PLAN.md Phase 20.32.</label></li>
+<li><label><input type="checkbox" checked="" />SSM never came online for
+the resize-verification test instances (2026-07-22) – root cause (no
+SSM-capable instance profile available at all) closed structurally by
+the SSM-enforcement work below. <code>growRootFilesystem</code>’s own
+OS-level <code>growpart</code>/<code>resize2fs</code> automation still
+hasn’t been specifically re-verified end-to-end with a proper instance
+profile in place – worth doing next time Resize Instance’s Root Volume
+comes up.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>
+– fixed and real-AWS-verified 2026-07-22
+(<code>test-clasm-granian</code> launch template + instance). See
+DECISIONS.md, “Always gzip-compress user-data before base64-encoding
+it,” PLAN.md Phase 20.34. Not yet released – part of
+v0.0.5.</label></li>
 </ul>
 <h2 id="requested-features">Requested features</h2>
 <ul class="task-list">
-<li><p><label><input type="checkbox" />Insist on SSM support (instance
-profile with SSM permissions) at launch time – mirrors IMDSv2’s
-unconditional enforcement – across instance creation, cloud-init launch,
-and launch templates. Also cover associating/replacing an SSM-capable
-profile on an already-running instance (retrofit), since both of
-2026-07-22’s test instances have no profile at all and can’t become
-SSM-manageable without relaunching otherwise. Supersedes/absorbs the
-IAM-instance-profile item below and the “Gap (found in production use,
-2026-07-22)” entry in someday/maybe. Scoped 2026-07-22, not yet designed
-in DESIGN.md/PLAN.md. Targeted for v0.0.5.</label></p></li>
-<li><p><label><input type="checkbox" />Support arm64/aarch64 (Graviton)
-alongside amd64 in the curated Ubuntu LTS AMI list and instance-type
-list – a parallel Graviton <code>curatedInstanceTypes</code> family
-(t4g/m6g/c6g/r6g etc.), arm64 variants in
-<code>curatedUbuntuReleases</code>, and a new
-AMI-arch-vs-instance-type-arch pre-flight compatibility check (mirrors
-<code>ensureInstanceTypeENACompatible</code>). Raised 2026-07-22 in a
-conversation with colleagues: cost savings using ARM instances outside
-RDM. Bundle with the Ubuntu 26.04 LTS item below (same files). Targeted
-for v0.0.6.</label></p></li>
-<li><p><label><input type="checkbox" />Need an improved way to interact
-with AIM profiles, see what they are, when to use them and apply them to
-resources (merged into the SSM-support item above,
-2026-07-22)</label></p></li>
-<li><p><label><input type="checkbox" />Need to include 26.04 LTS in our
-Ubuntu image listed for EC2 instance, AMI and launch templates (merged
-into the arm64/Graviton item above, 2026-07-22)</label></p></li>
-<li><p><label><input type="checkbox" />When doing the Archive backups,
-the S3 target bucket should be saved as a default but I’m not sure how
-this works with the bucket picker approach we have now. This needs to be
-explored.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />Set the root EBS
-volume size when creating an instance/launch template (instead of always
+<li><label><input type="checkbox" checked="" />SSM-capable instance
+profile enforcement at launch + associate/replace retrofit for running
+instances – designed, implemented, unit-tested, and real-AWS-verified
+2026-07-22. See DESIGN.md/DECISIONS.md, “SSM-Capable Instance Profile
+Enforcement + Retrofit”, PLAN.md Phase 20.33. Not yet released – part of
+v0.0.5.</label></li>
+<li><label><input type="checkbox" checked="" />arm64/aarch64 (Graviton)
+support + Ubuntu 26.04 LTS in the curated AMI/instance-type lists –
+designed, implemented, unit-tested, and real-AWS-verified 2026-07-22.
+See DESIGN.md/DECISIONS.md, “ARM64 (Graviton) Support + Ubuntu 26.04
+LTS”, PLAN.md Phase 20.35. Not yet released – part of
+v0.0.5.</label></li>
+</ul>
+<p><strong>v0.0.5 release: Phases 20.33/20.34/20.35 and now IAM Profile
+&amp; Role Management (20.36-20.40) are all done and real-AWS-verified –
+release-ready, not yet released.</strong> 2026-07-23, the user chose to
+bundle IAM Profile &amp; Role Management into this same release rather
+than ship it separately as v0.0.6. See DECISIONS.md, “IAM Profile &amp;
+Role Management: seven scoping decisions, bundled into v0.0.5.”</p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />IAM Profile &amp; Role
+Management – discovery (Roles/Instance Profiles/Policies, each row
+showing its <code>Origin</code> tag’s literal value or “(unset)”, sorted
+by recency), a config-driven <code>Origin</code> tag (key + which value
+means DLD-owned, both configurable in <code>~/.clasm</code>, left unset
+until the user’s group reacts to a demo – no hardcoded vocabulary), a
+read-only guard on permission-changing actions for resources not
+recognized as DLD-owned (tagging itself is always allowed, for
+support-contact purposes, on IMSS- or AWS-owned resources too), IAM
+resources becoming taggable via the Tag Management domain (no separate
+backfill action needed), a detail view (trust policy, attached policies,
+cross-referenced usage), curated per-use-case role/policy creation
+templates (Static Website, RDM Repository, Bridge Service, Patron-Facing
+Service, Data Processing), and CRUD completion for DLD-owned roles
+(Delete Role, Attach/Detach Policy). See
+<code>aim_management_and_support_proposal.md</code>, DESIGN.md “IAM
+Profile &amp; Role Management Domain” and “CRUD completion for DLD-owned
+roles”, DECISIONS.md “IAM Profile &amp; Role Management: seven scoping
+decisions, bundled into v0.0.5”, “…Origin tag revision…”, and “…support
+CRUD for DLD-owned roles”, PLAN.md Phases 20.36-20.40. Part of
+v0.0.5.</label>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Phase 20.36 (discovery,
+<code>Origin</code> tag config, IAM domain menu,
+<code>RequireDLDOwned</code> guard predicate) implemented, unit-tested,
+and real-AWS-verified 2026-07-23. Real bug found via live use the same
+day and fixed –
+<code>ListRoles</code>/<code>ListInstanceProfiles</code>/<code>ListPolicies</code>
+don’t return <code>Tags</code> inline (contrary to the original design’s
+assumption); fixed via per-resource
+<code>ListRoleTags</code>/<code>ListInstanceProfileTags</code>/<code>ListPolicyTags</code>
+calls. See DECISIONS.md, “Real bug:
+ListRoles/ListInstanceProfiles/ListPolicies don’t return tags inline.”
+User confirmed the fix and all six suggested manual test items
+pass.</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.37 (Tag
+Management domain extension for IAM resources – Role/Instance
+Profile/Policy all taggable via TagRole/TagInstanceProfile/TagPolicy and
+their Untag counterparts, plus “Show all tags”) implemented,
+unit-tested, and real-AWS-verified 2026-07-23 (add/update/remove on a
+role, instance profile, and policy; Show all tags for all three; editing
+<code>Origin</code> itself through the ordinary tag flow). Second real
+bug found via the same live testing and fixed same day – the IAM
+Role/Instance Profile/Policy pickers were slow to open (sequential
+per-resource tag fetches); fixed by parallelizing with a bounded worker
+pool. See DECISIONS.md, “Parallelize per-resource IAM tag fetches.” User
+confirmed both the tagging behavior and the speed fix.</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.38 (IAM detail
+view – View Role Detail: trust policy, attached/inline policies with
+on-demand document viewing, tags, SSM-capable, referenced-by-profiles;
+View Instance Profile Detail: tags, contained role(s), each role’s
+SSM-capable status) implemented, unit-tested, and real-AWS-verified
+2026-07-23. The “which running instance is using this profile”
+cross-reference was deferred per the user’s own scoping call (no direct
+API filter exists for it).</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.39 (curated
+per-use-case role/policy creation templates – Static Website, RDM
+Repository Instance, Bridge Service, Patron-Facing Service, Data
+Processing; guided flow: pick template, supply ARN params, confirm,
+create role+policy, attach, auto-tag if
+<code>origin_tag.dld_value</code> is configured) implemented and
+unit-tested 2026-07-23, test-first end to end. Real-AWS testing in
+progress – RDM Repository Instance confirmed fully, Static Website
+confirmed in read-only mode; a real usability bug (hand-typed ARNs)
+found and fixed same day, see DECISIONS.md, “Phase 20.39 templates
+collect resource names/IDs, not ARNs.”</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.40 (CRUD
+completion for DLD-owned roles – Delete Role with type-to-confirm and
+dedicated-policy cascade-delete; Attach Policy to Role and Detach Policy
+from Role with a plain confirm) implemented, unit-tested, and
+real-AWS-verified 2026-07-23, test-first throughout. Delete Role
+successfully removed all three real test roles left over from Phase
+20.39’s template testing (<code>test-rdm-repo-role</code>,
+<code>test-static-site-role</code>,
+<code>test-static-site-role-2</code>), including their dedicated
+policies – independently confirmed gone via
+<code>aws iam get-role</code>/<code>get-policy</code>. <strong>All five
+IAM phases (20.36-20.40) now implemented, unit-tested, and
+real-AWS-verified.</strong></label></li>
+<li><label><input type="checkbox" checked="" />Third real bug found via
+live testing 2026-07-23, while walking through Delete Role’s real-AWS
+steps:
+<code>ListRoles</code>/<code>ListInstanceProfiles</code>/<code>ListPolicies</code>
+silently truncate past 100 items with no pagination handling – three
+correctly-tagged test roles were missing from the Delete Role picker
+because this account has 121 roles. Fixed via
+<code>listAllRoles</code>/<code>listAllInstanceProfiles</code>/<code>listAllPolicies</code>
+paging on <code>Marker</code>/<code>IsTruncated</code>, test-first.
+Real-AWS-verifying the fix immediately surfaced a follow-on bug –
+fetching all 121 roles’ tags at concurrency 10 reliably throttled –
+fixed by lowering concurrency to 4 and raising the IAM client’s retry
+ceiling to 8. Re-verified against real AWS: all 121 roles fetched, all 5
+DLD-owned roles (including the three test roles) correctly recognized,
+no throttling. See DECISIONS.md, “Real bug:
+ListRoles/ListInstanceProfiles/ListPolicies silently truncate past 100
+items.”</label></li>
+</ul></li>
+<li><label><input type="checkbox" checked="" />Set the root EBS volume
+size when creating an instance/launch template (instead of always
 inheriting the AMI’s default, e.g. 8GB), and resize a running instance’s
-root volume after the fact.</label></p>
+root volume after the fact.</label>
 <ul>
 <li>Designed and scoped 2026-07-21 – see DESIGN.md, “Configurable EBS
 Root Volume Size”, DECISIONS.md, “Configurable EBS root volume size:
@@ -97,23 +182,21 @@ instance’s root volume” menu entry, including automated OS-level
 SSM with a manual-instructions fallback for any layout it doesn’t
 recognize (e.g. LVM). Not yet verified against real AWS.</li>
 </ul></li>
-<li><p><label><input type="checkbox" />Need a show instances details,
-ami details, launch template details</label></p>
-<ul>
-<li>Show Launch Template already exists (Compute domain, since
-2026-07-20) and covers the launch-template half: AMI, instance type,
-root volume size (added 2026-07-21), key pair, IAM instance profile,
-security groups, subnet, Project/Environment tags, IMDSv2 status. What’s
-still missing is the equivalent single-resource detail view for an
-individual EC2 instance and an individual AMI – today those are only
-ever seen as a row in the list-tier table (Show instances/Show AMIs),
-not a dedicated detail screen. Should show the same shape of settings
-the launch template view already does: instance type, EBS volume size(s)
-(<code>volume_info.go</code>’s <code>GatherVolumeInfo</code> already
-fetches this for AMI-creation-time estimates, so the data path exists),
-security groups, subnet, IAM instance profile, key pair, tags, and (for
-AMIs) block device mappings/root device name.</li>
-</ul></li>
+<li><label><input type="checkbox" checked="" />Show instance detail /
+Show AMI detail (Show Launch Template already covers the launch-template
+half, since 2026-07-20). Designed, implemented, and unit-tested
+2026-07-24, targeted for v0.0.5. Not yet real-AWS-verified. See
+DESIGN.md, “Instance/AMI Detail Views”, DECISIONS.md, “Instance/AMI
+Detail Views: on-demand describe calls, appended menu placement”,
+PLAN.md Phase 20.41.</label></li>
+<li><label><input type="checkbox" checked="" />Configure clasm domain –
+a sixth top-level menu for viewing/creating/updating
+<code>~/.clasm</code> (regions, backup directory rules, Origin tag
+config) from within clasm instead of hand-editing YAML. Designed,
+implemented, and unit-tested 2026-07-24, targeted for v0.0.5. See
+DESIGN.md, “Configure clasm Domain”, DECISIONS.md, “Configure clasm
+domain: explicit Save, region changes deferred to next launch”, PLAN.md
+Phase 20.42.</label></li>
 </ul>
 <h2 id="nice-to-have">Nice to have</h2>
 <ul class="task-list">
@@ -168,28 +251,6 @@ yet implemented” placeholder entry, so 0.0.1 doesn’t expose a menu item
 that goes nowhere. The design in DESIGN.md/PLAN.md stays valid reference
 for if this is ever picked back up. Phase 22 (real-AWS testing for Key
 Management/S3) no longer depends on it.</p></li>
-<li><p><strong>Gap (found in production use, 2026-07-22), merged into
-“Requested features”’ SSM-support item above:</strong> no way to
-attach/associate an IAM instance profile to an EC2 instance that’s
-<em>already running</em> – surfaced twice the same day (once setting up
-an InvenioRDM test instance for S3 access, once as the reason SSM never
-came online for either Resize Instance’s Root Volume test instance).
-Detail preserved here: <code>promptIAMInstanceProfileOrCreate</code>/
-<code>create_instance_profile.go</code> is only invoked from the launch
-workflow (<code>launch_instance.go</code>);
-<code>IAMInstanceProfile</code> is only ever consumed by
-<code>launch_execute.go</code> (<code>RunInstancesInput</code>) and
-<code>launch_template_create.go</code> (launch-template data); no
-<code>AssociateIamInstanceProfile</code>/<code>ReplaceIamInstanceProfileAssociation</code>
-call exists anywhere in the codebase, only the read-only
-<code>DescribeIamInstanceProfileAssociations</code>. Also, by design
-(per DECISIONS.md “2026-07-02 – Support picking or creating an IAM
-instance profile from within awsops”), clasm only attaches an
-<em>existing</em> IAM role to a new instance profile – it never creates
-the role or its permissions policy itself, so even the launch-time path
-requires the role/bucket-scoped policy to already exist, authored
-outside clasm. No longer someday/maybe: promoted to “Requested features”
-as part of the SSM-enforcement design.</p></li>
 <li><p>A compliance/audit-style report across the Tag Management
 domain’s five resource types (EC2 instance, AMI, launch template, key
 pair, S3 bucket): which resources are missing tags entirely (or missing

@@ -4590,6 +4590,1220 @@ first-pass code before the loop-placement change.</p>
 <p><strong>Dependency:</strong> none (independent bugfix; targeted for
 v0.0.4).</p>
 <hr />
+<h2
+id="phase-20.33-ssm-capable-instance-profile-enforcement-retrofit">Phase
+20.33 — SSM-Capable Instance Profile Enforcement + Retrofit</h2>
+<p><strong>Status: designed 2026-07-22</strong> (DESIGN.md, “SSM-Capable
+Instance Profile Enforcement + Retrofit”; DECISIONS.md, same title).
+Targeted for v0.0.5, alongside the not-yet-started arm64/Graviton +
+Ubuntu 26.04 LTS work. Not yet implemented.</p>
+<h3 id="work-items-78">Work Items</h3>
+<p><strong>Part 1 — SSM-capability verification helper: done,
+2026-07-22.</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>IAMAPI</code> gains
+<code>ListAttachedRolePolicies</code>, mirrored into
+<code>logging_iam.go</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>roleHasSSMPermissions(ctx, iamClient, roleName) (bool, error)</code>
+(new <code>ssm_iam_check.go</code>): calls
+<code>iam:ListAttachedRolePolicies</code> for <code>roleName</code>,
+returns true iff
+<code>arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore</code> is
+attached. Does not inspect inline policies (see DESIGN.md’s “known,
+deliberate limitation” note)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>instanceProfileIsSSMCapable(ctx, iamClient, profile     InstanceProfileInfo) (bool, error)</code>
+(<code>ssm_iam_check.go</code>): checks every role attached to profile
+(a profile conventionally holds one, but
+<code>InstanceProfileInfo.Roles</code> is a slice), true if any one is
+SSM-capable. Test-first: 8 tests (4 per helper) confirmed failing to
+compile before the implementation existed, all passing after.
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean.</label></li>
+</ul>
+<p><strong>Part 2 — Enforcement at launch: done, 2026-07-22, revised
+same day after live testing.</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Removed the
+<code>"(none)"</code> choice from <code>instanceProfileChoice</code>/
+<code>promptIAMInstanceProfileOrCreate</code>’s picker
+(<code>create_instance_profile.go</code>) – an instance profile is now
+mandatory</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>buildInstanceProfileChoices</code>/<code>buildRoleChoices</code>
+<strong>filter out</strong> non-SSM-capable profiles/roles entirely
+(revised from the original same-day design of annotating them with a
+<code>" -- NOT SSM-capable..."</code> suffix and rejecting on selection
+– see DECISIONS.md, “Filter non-SSM-capable profiles/roles from the
+picker, don’t just annotate them”: live testing, creating a launch
+template from cloud-init YAML for the Granian test instance, found a
+long annotated role list harder to use than filtering, since a
+non-capable entry is never valid to pick once SSM support is a hard
+requirement). The <code>ssmCapable</code> field and the post-pick
+rejection branches are removed as dead code – filtering guarantees
+everything shown is already capable</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>createInstanceProfileInteractive</code> reports an
+empty-after-filter role list (“No SSM-capable IAM roles found…”) the
+same way it already reports “no roles at all” – same shape, new
+reason</label></li>
+<li><label><input type="checkbox" checked="" />No changes needed to the
+call sites themselves (<code>collectLaunchInstanceParams</code>,
+<code>collectLaunchInstanceParamsFromCloudInit</code>) – confirmed:
+Create EC2 Instance from AMI, from Cloud-Init YAML, and Create Launch
+Template from Cloud-Init YAML all gain enforcement for free, same
+shared-surface pattern as Phase 20.31’s root-volume-size
+prompt</label></li>
+</ul>
+<p><strong>Tests (Part 2):</strong> test-first for the two builder
+functions –
+<code>buildInstanceProfileChoices</code>/<code>buildRoleChoices</code>
+are independent of the Picker-tier UI (same “testable core” split as
+every other Picker-tier conversion in this project) and got direct unit
+tests covering the no-profiles/no-none-entry case, filtering out
+non-capable entries (confirmed failing against the pre-revision
+annotate-only code first), and IAM-error propagation. A new
+<code>TestCreateInstanceProfileInteractive_NoSSMCapableRolesReturnsWithoutError</code>
+covers the empty-after-filter case. Two more tests
+(<code>TestPromptIAMInstanceProfileOrCreate_PropagatesSSMCheckError</code>,
+<code>TestCreateInstanceProfileInteractive_PropagatesSSMCheckError</code>)
+confirm the SSM-check runs <em>before</em> the (untestable) picker call,
+so an IAM error there is still reachable and testable without touching
+the UI. All existing tests (including the free-text-fallback and
+no-roles-found paths) still pass unchanged.
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean.</p>
+<p><strong>Part 3 — Retrofit (general-purpose associate/replace): done,
+2026-07-22.</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>EC2API</code> gains
+<code>AssociateIamInstanceProfile</code>,
+<code>ReplaceIamInstanceProfileAssociation</code>, mirrored into
+<code>logging_ec2.go</code></label></li>
+<li><label><input type="checkbox" checked="" />New Compute-domain menu
+entry, “Associate/replace IAM instance profile” (new
+<code>associate_instance_profile.go</code>): <code>pickInstance</code>
+-&gt; <code>resolveCurrentInstanceProfileAssociation</code>
+(<code>ec2:DescribeIamInstanceProfileAssociations</code> filtered by
+<code>instance-id</code>/<code>state</code> – the existing call,
+previously declared but never actually called anywhere) -&gt; reuse
+<code>promptIAMInstanceProfileOrCreate</code> to pick/create a profile
+(SSM-capability shown, not gated here) -&gt;
+<code>AssociateIamInstanceProfile</code> if no existing association,
+else <code>ReplaceIamInstanceProfileAssociation</code>. Wired into
+<code>MenuActions</code>/<code>mainMenuItems</code> (22 items now, was
+21) and <code>cmd/clasm/main.go</code></label></li>
+</ul>
+<p><strong>Status: Phase 20.33 (all three parts) fully implemented,
+unit-tested, and real-AWS-verified 2026-07-22.</strong>
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Verified live: created <code>ec2-granian-test-role</code>
+(EC2 trust policy + <code>AmazonSSMManagedInstanceCore</code> attached)
+via AWS CLI since the account had no other general-purpose SSM-capable
+role; Part 2’s filtered picker correctly showed only SSM-capable
+profiles/roles (confirmed both before and after the new role existed);
+launched <code>test-clasm-granian</code> successfully using it,
+alongside Phase 20.34’s gzip fix (below) in the same
+launch-template-from-cloud-init flow. Not yet released – targeted for
+v0.0.5 alongside the not-yet-started arm64/Graviton + Ubuntu 26.04 LTS
+work.</p>
+<p><strong>Tests:</strong> test-first throughout, per this project’s
+standing convention – every new test confirmed failing (compile error,
+the Go equivalent of a failing test) before its corresponding
+implementation existed. Fixture-driven unit tests for
+<code>roleHasSSMPermissions</code>/
+<code>instanceProfileIsSSMCapable</code> against a fake IAM client (Part
+1, no real AWS round-trip);
+<code>buildInstanceProfileChoices</code>/<code>buildRoleChoices</code>
+tests covering the no-profiles-still-offers-create-new case,
+SSM-capability annotation, and IAM-error propagation, plus two
+integration tests confirming the SSM-check runs <em>before</em> the
+(untestable) Picker-tier call so an IAM error there is still reachable
+without touching the UI (Part 2);
+<code>associate_instance_profile.go</code> tests covering both the
+associate-path and replace-path branches, resolve-error propagation,
+associate-error propagation, and the missing-region-client case (fake
+EC2 client, <code>DescribeIamInstanceProfileAssociations</code>
+returning empty vs. non-empty) (Part 3).</p>
+<p><strong>Files:</strong> <code>internal/awsclient/iam.go</code>,
+<code>internal/awsclient/logging_iam.go</code>,
+<code>internal/awsclient/ec2.go</code>,
+<code>internal/awsclient/logging_ec2.go</code>,
+<code>internal/workflow/create_instance_profile.go</code>, new
+<code>internal/workflow/ssm_iam_check.go</code>, new
+<code>internal/workflow/associate_instance_profile.go</code>,
+<code>internal/workflow/menu.go</code>, <code>cmd/clasm/main.go</code>,
+plus each file’s <code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> none (independent of the not-yet-started
+arm64/Graviton phase, though both target v0.0.5).</p>
+<hr />
+<h2
+id="phase-20.34-gzip-compress-user-data-before-base64-encoding">Phase
+20.34 — Gzip-Compress User-Data Before Base64-Encoding</h2>
+<p><strong>Status: designed, implemented, and real-AWS-verified
+2026-07-22</strong>, live-testing-driven (see DECISIONS.md, “Always
+gzip-compress user-data before base64-encoding it”). Closes
+<code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>,
+hit creating a launch template from
+<code>invenio-rdm-13-granian-init.yaml</code> (16976 raw bytes, already
+over the limit). Verified live: <code>test-clasm-granian</code> launch
+template created successfully and an instance launched from it. Targeted
+for v0.0.5.</p>
+<h3 id="work-items-79">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>encodeUserData(plainText string) string</code> and
+<code>decodeUserData(encoded string) (string, error)</code> (new
+<code>userdata_gzip.go</code>)</label></li>
+<li><label><input type="checkbox" checked="" />All three write sites
+switched from bare <code>base64.StdEncoding.EncodeToString</code> to
+<code>encodeUserData</code>: <code>Launch</code>
+(<code>launch_execute.go</code>),
+<code>buildRequestLaunchTemplateData</code>
+(<code>launch_template_create.go</code>),
+<code>createLaunchTemplateVersion</code>
+(<code>launch_template_sync.go</code>)</label></li>
+<li><label><input type="checkbox" checked="" />All four read sites
+switched from bare <code>base64.StdEncoding.DecodeString</code> to
+<code>decodeUserData</code>: <code>ShowCloudInitFromInstance</code>
+(<code>cloud_init_instance.go</code>), <code>syncLaunchTemplate</code>’s
+existing-version read (<code>launch_template_sync.go</code>), both sides
+of the version-diff in <code>show_launch_template.go</code></label></li>
+</ul>
+<p><strong>Tests:</strong> test-first –
+<code>encodeUserData</code>/<code>decodeUserData</code> round-trip tests
+(encode then decode returns the original text), a
+decode-plain-base64-without-gzip-magic test (backward compatibility with
+every resource created before this change), and decode-error tests for
+malformed base64/corrupt gzip. All new tests confirmed failing
+(undefined function, the Go equivalent of a failing test) before the
+helpers existed. Existing tests at every read/write call site still pass
+unchanged, since encode-then-decode round-trips to the same plain text.
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. Manually confirmed the real 16976-byte granian file gzips to
+5628 bytes via plain <code>gzip -c | wc -c</code>, not assumed.</p>
+<p><strong>Files:</strong> new
+<code>internal/workflow/userdata_gzip.go</code>,
+<code>internal/workflow/launch_execute.go</code>,
+<code>internal/workflow/launch_template_create.go</code>,
+<code>internal/workflow/launch_template_sync.go</code>,
+<code>internal/workflow/cloud_init_instance.go</code>,
+<code>internal/workflow/show_launch_template.go</code>, plus each file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> none.</p>
+<hr />
+<h2 id="phase-20.35-arm64-graviton-support-ubuntu-26.04-lts">Phase 20.35
+— ARM64 (Graviton) Support + Ubuntu 26.04 LTS</h2>
+<p><strong>Status: designed, implemented, and real-AWS-verified
+2026-07-22</strong> (DESIGN.md, “ARM64 (Graviton) Support + Ubuntu 26.04
+LTS”; DECISIONS.md, “ARM64/Ubuntu 26.04: filter the instance-type list
+by AMI architecture, no new pre-flight check”). Targeted for v0.0.5
+alongside Phase 20.33/20.34 (also real-AWS-verified).
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. All three Phase 20.33/20.34/20.35 work targeted for v0.0.5 is
+now implemented, unit-tested, and real-AWS-verified. Not yet
+released.</p>
+<h3 id="work-items-80">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>inventory.Image</code> gains
+<code>Architecture string</code>, populated in <code>imageFromSDK</code>
+(<code>internal/inventory/images.go</code>) and
+<code>listOfficialUbuntuAMIsInRegion</code>
+(<code>official_ubuntu_amis.go</code>) from the SDK’s own
+<code>Architecture</code> field
+(<code>types.ArchitectureValues</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>curatedUbuntuReleases</code> gains arm64 variants of
+24.04/22.04 plus new 26.04 entries for both architectures (confirmed
+naming patterns live via <code>ec2:DescribeImages</code>, not assumed:
+<code>ubuntu-{noble,jammy}-{24.04,22.04}-arm64-server-*</code>,
+<code>ubuntu-resolute-26.04-{amd64,arm64}-server-*</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>instanceTypeChoice</code>
+(<code>launch_prompts.go</code>) gains an <code>arch</code> field;
+existing entries tagged <code>"x86_64"</code>, new Graviton entries
+(<code>t4g.micro/small/medium/large/xlarge</code>,
+<code>m6g.large/xlarge</code>, <code>c6g.large</code>,
+<code>r6g.large</code>) tagged <code>"arm64"</code> – no t2-style
+non-ENA-required Graviton equivalent (every Graviton type requires ENA,
+confirmed live via <code>ec2:DescribeInstanceTypes</code>). Appended
+after the existing amd64 entries (not interleaved), so every existing
+numeric-index test for the amd64 entries stayed valid
+unchanged</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>promptInstanceType</code> gains an
+<code>arch string</code> parameter (<code>""</code> = no filter);
+filters <code>curatedInstanceTypes</code> to matching-arch entries plus
+“Other” always included</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>collectLaunchInstanceParams</code>/<code>collectLaunchInstanceParamsFromCloudInit</code>
+pass <code>image.Architecture</code> at their initial
+<code>promptInstanceType</code> call; the ENA-check and AZ-check
+remediation call sites pass <code>""</code> (unfiltered, unchanged
+behavior)</label></li>
+</ul>
+<p><strong>Tests:</strong> test-first, per this project’s standing
+convention, every new test confirmed failing (compile error – undefined
+field/wrong arg count, the Go equivalent of a failing test) before its
+implementation existed.
+<code>imageFromSDK</code>/<code>listOfficialUbuntuAMIsInRegion</code>
+architecture-population tests; a <code>curatedUbuntuReleases</code> test
+asserting every expected arm64/26.04 name pattern is present;
+<code>promptInstanceType</code> filtering tests (arm64-only list when
+filtered to arm64, x86_64-only when filtered to x86_64, “Other” always
+present even when filtered, unfiltered when <code>arch == ""</code>,
+including the two existing “Other” free-text tests whose numeric index
+shifted from 12 to 21 once the Graviton entries were appended); two
+integration tests
+(<code>TestCollectLaunchInstanceParams_FiltersInstanceTypeByImageArchitecture</code>,
+the cloud-init path’s own mirror of it) confirming both collection
+functions actually thread the picked AMI’s <code>Architecture</code>
+through to the filter, not just that the filter works in isolation. All
+prior existing tests (including the five original
+<code>promptInstanceType</code> tests using positions 1/4/10, unaffected
+by appending rather than interleaving) still pass unchanged.</p>
+<p><strong>Files:</strong> <code>internal/inventory/images.go</code>,
+<code>internal/workflow/official_ubuntu_amis.go</code>,
+<code>internal/workflow/launch_prompts.go</code>,
+<code>internal/workflow/launch_instance.go</code>,
+<code>internal/workflow/launch_from_cloud_init.go</code>, plus each
+file’s <code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> none.</p>
+<hr />
+<h2
+id="phase-20.36-iam-domain-discovery-categorization-and-the-read-only-guard">Phase
+20.36 — IAM Domain: Discovery, Categorization, and the Read-Only
+Guard</h2>
+<p><strong>Status: designed 2026-07-23, implemented 2026-07-23, real-bug
+found and fixed via live testing 2026-07-23</strong> (DESIGN.md, “IAM
+Profile &amp; Role Management Domain”; DECISIONS.md, “IAM Profile &amp;
+Role Management: Origin tag revision…” and “Real bug:
+ListRoles/ListInstanceProfiles/ ListPolicies don’t return tags inline”).
+Targeted for v0.0.5, bundled alongside Phases 20.33-20.35 (already
+implemented) rather than deferred to v0.0.6.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. The user tagged a real role (<code>air-sampling</code>,
+<code>Origin=DLD</code> in their own casing) and found Show Roles still
+reported it <code>(unset)</code> – root-caused to a wrong assumption in
+the original design (below), not the config layer (verified separately
+and independently correct).</p>
+<h3 id="work-items-81">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>internal/config.Config</code> field,
+<code>OriginTag OriginTagConfig</code> (<code>Key</code>,
+<code>DLDValue</code>), YAML section <code>origin_tag</code>
+(<code>key</code>/<code>dld_value</code>), defaulting to
+<code>Key: "Origin"</code>, <code>DLDValue: ""</code> if unset or the
+config file doesn’t exist — mirrors
+<code>Regions</code>/<code>BackupDirectories</code>’ existing
+per-field-default pattern. No fixed tag vocabulary is hardcoded;
+<code>DLDValue</code> empty means nothing is recognized as DLD-owned
+yet. <code>internal/config/config_test.go</code></label></li>
+<li><label><input type="checkbox" checked="" />New fifth Domain Picker
+entry, “IAM” (<code>DomainActions.IAM</code>/ <code>domainItems</code>,
+<code>domain_menu.go</code>), alongside Compute/Key Management/S3/Tag
+Management</label></li>
+<li><label><input type="checkbox" checked="" /><code>IAMAPI</code> gains
+<code>ListPolicies</code> (scoped to <code>PolicyScopeTypeLocal</code>,
+i.e. customer-managed only) — mirrored into <code>logging_iam.go</code>.
+<strong>Original plan assumed no separate <code>GetRole</code>/tag-read
+call was needed, reasoning that
+<code>ListRoles</code>/<code>ListInstanceProfiles</code>/
+<code>ListPolicies</code> already return each resource’s full
+<code>Tags</code> inline based on the vendored SDK response structs all
+declaring a <code>Tags</code> field — confirmed live, 2026-07-23, that
+this assumption was wrong for all three</strong> (DECISIONS.md, “Real
+bug: ListRoles/ ListInstanceProfiles/ListPolicies don’t return tags
+inline”): none of the three list operations populate <code>Tags</code>,
+regardless of the shared struct declaring the field. Fixed by adding
+<code>ListRoleTags</code>/
+<code>ListInstanceProfileTags</code>/<code>ListPolicyTags</code> to
+<code>IAMAPI</code> (mirrored into <code>logging_iam.go</code>) and
+calling the appropriate one once per resource inside each
+<code>ListIAM*Summaries</code> function
+(<code>internal/inventory/iam.go</code>) — N+1 IAM calls per list
+instead of 1, accepted as the only way to get per-resource tags via
+these APIs</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Layering
+correction, mid-implementation:</strong> the discovery/ categorization
+core
+(<code>IAMRoleSummary</code>/<code>IAMInstanceProfileSummary</code>/
+<code>IAMPolicySummary</code>, <code>ResolveOrigin</code>,
+<code>IsDLDOwned</code>, and the three <code>ListIAM*Summaries</code>
+fetch functions) was initially written in
+<code>internal/workflow</code>, then moved to
+<code>internal/inventory/iam.go</code> once it became clear
+<code>internal/ui</code> would need to import these types to build the
+List-tier display, and <code>internal/workflow</code> already imports
+<code>internal/ui</code> — a cycle. Matches the existing
+<code>inventory.Image</code>/<code>ListImages</code> convention:
+<code>inventory</code> holds “fetch AWS data + shape it,”
+<code>ui</code> displays <code>inventory</code> types,
+<code>workflow</code> orchestrates. SSM-capability stays a
+workflow-layer concern (<code>iamRoleRows</code>,
+<code>internal/workflow/iam_domain.go</code>), layered on top of
+<code>inventory.IAMRoleSummary</code> rather than fetched as part of it,
+since <code>roleHasSSMPermissions</code> is workflow-owned.
+<code>internal/inventory/iam_test.go</code>,
+<code>internal/workflow/     iam_domain_test.go</code></label></li>
+<li><label><input type="checkbox" checked="" />Three List-tier sub-views
+(<code>internal/ui/iam_display.go</code>:
+<code>DisplayIAMRoles</code>/<code>DisplayIAMInstanceProfiles</code>/<code>DisplayIAMPolicies</code>,
+built on
+<code>iamRoleListViewConfig</code>/<code>iamInstanceProfileListViewConfig</code>/
+<code>iamPolicyListViewConfig</code> — the testable cores, per
+<code>imageListViewConfig</code>’s established extraction pattern), each
+sorted by <code>CreateDate</code> descending, each row showing the
+resource’s <code>Origin</code> tag value verbatim or
+<code>"(unset)"</code> if absent — not a fixed category enum — and, for
+roles, SSM-capability. Filterable for free via
+<code>tui.RunListView</code>’s existing shared filter (“/”), no new
+filtering code needed. Wired into a new
+<code>IAMActions</code>/<code>iamMenuItems</code>/
+<code>RunIAMMenu</code> menu loop
+(<code>internal/workflow/iam_menu.go</code>), deliberately with no
+<code>Refresh</code> field (unlike the other three domains) since each
+Show action fetches fresh, account-wide, un-fanned-out data on every
+dispatch — there’s no per-region cached state to refresh.
+<code>internal/ui/iam_display_test.go</code>,
+<code>internal/workflow/iam_menu_test.go</code></label></li>
+<li><label><input type="checkbox" checked="" />Read-only guard, built as
+a reusable predicate ahead of any actual caller (deliberate, not an
+oversight — see below):
+<code>inventory.     RequireDLDOwned(tags, originTag, kind, name) error</code>,
+wrapping a new <code>inventory.ErrNotDLDOwned</code> sentinel, built on
+<code>IsDLDOwned</code>. <strong>No call site exists yet</strong> —
+Phases 20.36-20.39 don’t add any action that mutates an existing
+role’s/profile’s/policy’s actual permissions (attach/detach a managed
+policy, edit a trust policy, delete), only discovery, tagging (exempt —
+see below), and creating brand-new roles from templates (Phase 20.39).
+Whichever future phase adds the first real mutating action calls this
+function rather than re-deriving the check. <strong>Tagging is exempt
+from this guard</strong> — see Phase 20.37, which handles all tag reads/
+writes including <code>Origin</code> itself, with no separate gating.
+<code>internal/inventory/iam_test.go</code></label></li>
+</ul>
+<p><strong>Dependency:</strong> none. (The previously-planned “Tag as
+DLD-owned” menu action is dropped — see DECISIONS.md, Decision 3 of the
+revision entry — so this phase no longer depends on Phase 20.37 for a
+dedicated action; it still shares Phase 20.37’s tag-write path for
+editing <code>Origin</code> like any other tag.)</p>
+<p><strong>Files:</strong> <code>internal/config/config.go</code>,
+<code>internal/awsclient/iam.go</code>,
+<code>internal/awsclient/logging_iam.go</code>,
+<code>internal/workflow/create_instance_profile_test.go</code> (shared
+<code>fakeIAMClient</code> gained
+<code>ListPolicies</code>/<code>ListRoleTags</code>/
+<code>ListInstanceProfileTags</code>/<code>ListPolicyTags</code> stubs),
+new <code>internal/inventory/iam.go</code>, new
+<code>internal/ui/iam_display.go</code>, new
+<code>internal/workflow/iam_domain.go</code>, new
+<code>internal/workflow/iam_menu.go</code>,
+<code>internal/workflow/domain_menu.go</code>,
+<code>cmd/clasm/main.go</code>, plus each new file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Status update, same day:</strong> live-testing bug
+(tags-not-inline, above) found and fixed after the initial
+implementation; <code>go build</code>/<code>go vet</code>/
+<code>go test ./... -race</code>/<code>gofmt -l</code> re-confirmed
+clean after the fix. <strong>Real-AWS-verified 2026-07-23</strong> –
+user confirmed <code>air-sampling</code> now shows <code>dld</code> in
+the Origin column after rebuilding, and ran all six manual test items
+suggested after Phase 20.36’s initial implementation (config end-to-end
+with a non-default key/value, Show Policies scoped to customer-managed
+only, SSM-capable column accuracy, sort order,
+filter/back-navigation/fresh-refetch, regression check on the other four
+domains) – all passed.</p>
+<p><strong>Second real bug found via live testing, same day, while
+testing Phase 20.37: the IAM Role picker took several seconds to
+open</strong> in an account with dozens of roles –
+<code>ListIAMRoleSummaries</code>/<code>ListIAMInstanceProfileSummaries</code>/
+<code>ListIAMPolicySummaries</code> fetched each resource’s tags one at
+a time, sequentially. Fixed by parallelizing with a bounded worker pool
+(new <code>fetchTagsConcurrently</code>,
+<code>iamTagFetchConcurrency = 10</code>), mirroring
+<code>inventory.ListImages</code>’ own concurrent per-region fan-out.
+See DECISIONS.md, “Parallelize per-resource IAM tag fetches.” All
+existing correctness tests kept green; <code>go test -race</code>
+confirms no data race. <strong>Real-AWS-verified 2026-07-23</strong> –
+user rebuilt and confirmed the IAM Role picker opens noticeably faster.
+Not yet released.</p>
+<p><strong>Third real bug found via live testing, same day, while
+testing Phase 20.40’s Delete Role: three real test roles were silently
+missing from the Delete Role picker</strong> even though they were
+correctly tagged <code>origin=dld</code> (confirmed via
+<code>aws iam list-role-tags</code>). Root-caused via
+<code>aws iam list-roles --no-paginate</code> (the AWS CLI
+auto-paginates by default, which had been masking this): the account has
+121 roles, IAM truncates <code>ListRoles</code> at 100 per page, and
+<code>ListIAMRoleSummaries</code> made a single, un-paginated call with
+no <code>IsTruncated</code>/<code>Marker</code> handling at all – any
+account over 100 roles was silently missing some, with no error.
+<code>ListIAMInstanceProfileSummaries</code>/<code>ListIAMPolicySummaries</code>
+had the same gap, not yet triggered only because this account’s instance
+profiles (4) and local policies (59) both stay under IAM’s page size.
+Fixed by adding
+<code>listAllRoles</code>/<code>listAllInstanceProfiles</code>/
+<code>listAllPolicies</code> (<code>internal/inventory/iam.go</code>),
+each paging via <code>Marker</code> until <code>IsTruncated</code> is
+false, and switching all three <code>ListIAM*Summaries</code> functions
+to use them. See DECISIONS.md, “Real bug:
+ListRoles/ListInstanceProfiles/ListPolicies silently truncate past 100
+items.” Test-first: a
+<code>TestListIAM*Summaries_PaginatesAcrossMultiplePages</code> test per
+kind, each confirmed failing (only the first page’s item returned)
+before the fix.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/
+<code>gofmt -l</code> all clean after the fix.</p>
+<p><strong>Real-AWS-verified 2026-07-23, immediately surfacing a
+follow-on real bug: fetching all 121 (correctly-paginated) roles’ tags
+at concurrency 10 reliably throttled
+(<code>Throttling: Rate exceeded</code>), reproduced twice in a
+row.</strong> Fixed by lowering <code>iamTagFetchConcurrency</code> from
+10 to 4 and raising <code>awsclient.NewIAMClient</code>’s retry ceiling
+to 8 attempts (<code>config.WithRetryMaxAttempts(8)</code>,
+IAM-client-only, since its N+1-calls-per-list shape is what makes it
+uniquely prone to this). Re-verified against real AWS after both
+changes: all 121 roles fetched, all 5 DLD-owned roles correctly
+recognized (including the three test roles that prompted this
+investigation), no throttling.</p>
+<hr />
+<h2
+id="phase-20.37-tag-management-domain-extension-for-iam-resources">Phase
+20.37 — Tag Management Domain Extension for IAM Resources</h2>
+<p><strong>Status: designed 2026-07-23, implemented and unit-tested
+2026-07-23</strong> (DESIGN.md, “IAM Profile &amp; Role Management
+Domain”). Targeted for v0.0.5.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Not yet real-AWS-verified or released.</p>
+<h3 id="work-items-82">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>IAMAPI</code> gains
+<code>TagRole</code>, <code>TagInstanceProfile</code>,
+<code>TagPolicy</code>, <code>UntagRole</code>,
+<code>UntagInstanceProfile</code>, <code>UntagPolicy</code> — mirrored
+into <code>logging_iam.go</code>. Confirmed via the vendored SDK (not
+assumed, given Phase 20.36’s tags-not-inline lesson) that these are
+fine-grained, one-tag-at-a-time calls
+(<code>TagRoleInput{RoleName,     Tags}</code>/<code>UntagRoleInput{RoleName, TagKeys}</code>,
+same shape for InstanceProfile/Policy addressed by ARN) – closer to
+EC2’s <code>CreateTags</code>/<code>DeleteTags</code> shape than S3’s
+whole-set-replace <code>PutBucketTagging</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>tagManagementKinds</code>
+(<code>tag_management.go</code>) gains <code>IAM Role</code>,
+<code>IAM Instance Profile</code>, <code>IAM Policy</code>, appended
+after the existing five (not interleaved) so every existing
+numeric-index test for Instance/AMI/Launch Template/Key Pair/S3 Bucket
+stayed valid unchanged – new tests use indices 6/7/8</label></li>
+<li><label><input type="checkbox" checked="" />New fetch/apply closures
+per IAM kind (<code>internal/workflow/iam_tags.go</code>:
+<code>fetchIAMRoleTags</code>/<code>applyIAMRoleTagChange</code> and
+Instance-Profile/ Policy equivalents), reusing the generalized
+<code>tagApplyFunc</code>-closure pattern the S3 Bucket slice
+established (Phase 20.30) – no new tag-editing mechanism, only new
+per-kind fetch/apply plumbing. This is also how <code>Origin</code> gets
+set/edited – no dedicated action, per DECISIONS.md’s revision entry.
+<code>iam_tags_test.go</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>inventory.IAMRoleSummary</code>/<code>IAMInstanceProfileSummary</code>/
+<code>IAMPolicySummary</code> gained a
+<code>Tags map[string]string</code> field, at no extra API cost (the
+per-resource <code>ListRoleTags</code>/etc. call Phase 20.36 already
+makes to resolve <code>Origin</code> already has the full map in hand) –
+lets “Show all tags”/“Manage tags” for the three IAM kinds reuse Phase
+20.36’s existing listing functions directly rather than fetching
+twice</label></li>
+<li><label><input type="checkbox" checked="" />“Show all tags” extended
+to the three new kinds via
+<code>iamRoleTaggedResources</code>/<code>iamInstanceProfileTaggedResources</code>/
+<code>iamPolicyTaggedResources</code> (pure conversions, unlike
+<code>bucketTaggedResources</code>’ on-demand per-bucket fetch – no
+extra API cost needed here since Tags is already populated)</label></li>
+<li><label><input type="checkbox" checked="" />New Picker-tier helpers
+<code>pickIAMRole</code>/<code>pickIAMInstanceProfile</code>/
+<code>pickIAMPolicy</code>, matching
+<code>pickInstance</code>/<code>pickImage</code>/<code>pickBucket</code>’s
+existing shape; IAM Role/Instance Profile/Policy fetch their resource
+list fresh via <code>iamClient</code>/<code>originTag</code> on every
+dispatch into <code>ManageResourceTags</code>/<code>ShowAllTags</code>
+(new parameters on both), rather than accepting a pre-fetched slice like
+the other five kinds – matching Phase 20.36’s deliberate
+no-caching-of-IAM-data convention, not an inconsistency</label></li>
+<li><label><input type="checkbox" checked="" />Tagging works identically
+regardless of the resource’s current <code>Origin</code> value or the
+read-only guard’s state (Phase 20.36) — no gating logic is shared
+between the two phases; a role read-only for permission changes is still
+fully taggable (the guard, per Phase 20.36, has no caller anywhere yet,
+including here)</label></li>
+</ul>
+<p><strong>Tests:</strong> test-first throughout – fetch/apply closures
+tested against the shared <code>fakeIAMClient</code> (extended with
+configurable per-name/ARN tag maps and last-input capture for Tag/Untag
+calls); <code>iamXxxTaggedResources</code> conversions and three new “No
+IAM X found” early-return paths tested directly, matching the existing
+five kinds’ test shape.</p>
+<p><strong>Files:</strong> <code>internal/awsclient/iam.go</code>,
+<code>internal/awsclient/logging_iam.go</code>,
+<code>internal/workflow/create_instance_profile_test.go</code> (shared
+<code>fakeIAMClient</code> gained configurable Tag/Untag fields), new
+<code>internal/workflow/iam_tags.go</code>,
+<code>internal/inventory/iam.go</code> (<code>Tags</code> field),
+<code>internal/workflow/tag_management.go</code>,
+<code>cmd/clasm/main.go</code>, plus each changed file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> Phase 20.36 (shares the IAM domain’s
+resource-listing plumbing and the <code>origin_tag</code> config, though
+the tagging mechanism itself is never gated by Phase 20.36’s read-only
+check).</p>
+<hr />
+<h2 id="phase-20.38-iam-detail-view">Phase 20.38 — IAM Detail View</h2>
+<p><strong>Status: designed and implemented 2026-07-23</strong>
+(DESIGN.md, “IAM Profile &amp; Role Management Domain”). Targeted for
+v0.0.5. <code>go build</code>/<code>go vet</code>/
+<code>go test ./... -race</code>/<code>gofmt -l</code> all clean. Two
+scope questions DESIGN.md left open were resolved by the user before
+implementation: policy documents render as raw, pretty-printed JSON (not
+a summarized rendering), and the “which running instance is associated”
+half of the cross-reference is deferred – “which instance profiles
+reference this role” (cheap, already-fetched data) ships now.</p>
+<p><strong>Real-AWS-verified 2026-07-23</strong> – user confirmed View
+Role Detail on <code>air-sampling</code> (trust policy, tags, all three
+attached policies, the inline policy), drilling into both an attached
+and the inline policy’s actual document, View Instance Profile Detail on
+<code>ec2-granian-test-role</code> (correctly showing its one contained
+role as SSM-capable, no tags), and clean <code>q</code> exit from the
+policy-document drill-down back to the IAM menu. Not yet released.</p>
+<h3 id="work-items-83">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>IAMAPI</code> gains
+<code>GetRole</code>, <code>GetInstanceProfile</code>,
+<code>ListRolePolicies</code>, <code>GetRolePolicy</code>,
+<code>GetPolicy</code>, <code>GetPolicyVersion</code> — mirrored into
+<code>logging_iam.go</code>.
+<code>GetRole</code>/<code>GetInstanceProfile</code> each cover their
+resource’s tags <em>and</em> (trust policy / contained roles) in one
+call — confirmed live, 2026-07-22, that both single-resource Get* calls
+include <code>Tags</code> inline, unlike the bulk <code>List*</code>
+calls (Phase 20.36’s “don’t return tags inline” finding)</label></li>
+<li><label><input type="checkbox" checked="" />All three
+policy-document-bearing fields (<code>AssumeRolePolicyDocument</code>,
+<code>PolicyVersion.Document</code>,
+<code>GetRolePolicyOutput.PolicyDocument</code>) confirmed live,
+2026-07-23, to be URL-encoded per RFC 3986 —
+<code>decodePolicyDocument</code>
+(<code>internal/workflow/iam_detail.go</code>) URL-decodes and
+pretty-prints; falls back to the plain decoded text (not an error) if
+the decoded content isn’t valid JSON</label></li>
+<li><label><input type="checkbox" checked="" />Role detail
+(<code>fetchIAMRoleDetail</code>/<code>displayIAMRoleDetail</code>):
+trust policy, attached managed policies (name + ARN, via
+<code>ListAttachedRolePolicies</code>) and inline policy names (via
+<code>ListRolePolicies</code>) — policy <em>documents</em> aren’t
+fetched upfront, only on demand (see below) — all tags, SSM-capability
+(reusing <code>roleHasSSMPermissions</code>, Phase 20.33), and the cheap
+cross-reference (“referenced by instance profiles”, via the existing
+<code>listInstanceProfiles</code>, <code>resource_lists.go</code> — no
+per-profile tag fetch needed for this, unlike
+<code>inventory.ListIAMInstanceProfileSummaries</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>runPolicyDocLoop</code>: pick one of the role’s
+already-listed attached/inline policies, fetch and decode its document
+on demand (<code>fetchAttachedPolicyDocument</code> via
+<code>GetPolicy</code>+<code>GetPolicyVersion</code>;
+<code>fetchInlinePolicyDocument</code> via <code>GetRolePolicy</code>),
+display, repeat until cancelled — avoids the N-policies-per-role API
+cost of fetching every document upfront just to list names</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>inventory.IAMInstanceProfileSummary</code> gains
+<code>RoleNames []string</code>, at no extra API cost
+(<code>ListInstanceProfiles</code> already returns each profile’s
+attached <code>Roles</code> inline)</label></li>
+<li><label><input type="checkbox" checked="" />Instance Profile detail
+(<code>fetchIAMInstanceProfileDetail</code>/
+<code>displayIAMInstanceProfileDetail</code>): deliberately simpler than
+Role detail — an instance profile has no trust policy or policies of its
+own — shows tags, contained role(s), and each role’s SSM-capability;
+points to View Role Detail for policy content</label></li>
+<li><label><input type="checkbox" checked="" />Wired into two new IAM
+domain menu entries, “View Role Detail” and “View Instance Profile
+Detail” (<code>IAMActions</code>/<code>iamMenuItems</code>, alongside
+the three Show actions), <code>cmd/clasm/main.go</code></label></li>
+<li><label><input type="checkbox" />Deferred (per the 2026-07-23 scoping
+discussion): “which running instance is currently using this instance
+profile” — no direct API filter
+(<code>DescribeIamInstanceProfileAssociations</code> only filters by
+instance-id/state, not instance-profile-arn), would require a per-region
+scan of active associations matched client-side</label></li>
+</ul>
+<p><strong>Tests:</strong> test-first throughout. <strong>Real bug
+caught in the test suite itself, not production code:</strong>
+<code>runPolicyDocLoop</code>’s tests initially relied on exhausted
+accessible-mode input to end the loop after a single pick, which hung
+indefinitely — huh’s accessible-mode <code>Select</code> has no way to
+signal “input exhausted” as an error (the same documented gotcha as
+<code>manageTagsForResource</code>’s own tests, Phase 20.29), so it
+silently re-picks the default option forever rather than erroring. Fixed
+by having the fake client’s relevant method (<code>GetPolicy</code>/
+<code>GetPolicyVersion</code>/<code>GetRolePolicy</code>, via three
+small wrapper types) cancel the context as a side effect, matching
+<code>domain_menu_test.go</code>’s <code>cancelingAction</code> pattern
+exactly. Caught before ever reaching the user by running tests with an
+explicit <code>-timeout 30s</code> after the first hang.</p>
+<p><strong>Files:</strong> <code>internal/awsclient/iam.go</code>,
+<code>internal/awsclient/logging_iam.go</code>,
+<code>internal/workflow/create_instance_profile_test.go</code> (shared
+<code>fakeIAMClient</code> gained
+<code>GetRole</code>/<code>GetInstanceProfile</code>/<code>ListRolePolicies</code>/
+<code>GetRolePolicy</code>/<code>GetPolicy</code>/<code>GetPolicyVersion</code>,
+plus a <code>PolicyName</code> derived from ARN in
+<code>ListAttachedRolePolicies</code> – a test-fixture gap, not a
+production bug, since nothing needed the name before), new
+<code>internal/workflow/iam_detail.go</code>,
+<code>internal/inventory/iam.go</code> (<code>RoleNames</code> field),
+<code>internal/workflow/iam_menu.go</code>,
+<code>cmd/clasm/main.go</code>, plus each changed file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> Phase 20.36 (the detail view is reached
+from the discovery list).</p>
+<hr />
+<h2
+id="phase-20.39-curated-per-use-case-rolepolicy-creation-templates">Phase
+20.39 — Curated Per-Use-Case Role/Policy Creation Templates</h2>
+<p><strong>Status: designed and implemented 2026-07-23</strong>
+(DESIGN.md, “IAM Profile &amp; Role Management Domain”; DECISIONS.md,
+“IAM Profile &amp; Role Management: seven scoping decisions, bundled
+into v0.0.5” and “…Origin tag revision…”). Targeted for v0.0.5.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Not yet real-AWS-verified or released. Reverses the
+2026-07-02 “never creates a role, only attaches an existing one” scope
+(DECISIONS.md, “Support picking or creating an IAM instance profile from
+within awsops”) — deliberately, and only through curated templates.</p>
+<h3 id="work-items-84">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>IAMAPI</code> gains
+<code>CreateRole</code>, <code>CreatePolicy</code>,
+<code>AttachRolePolicy</code> — mirrored into
+<code>logging_iam.go</code>. Confirmed via the vendored SDK that
+<code>CreateRoleInput</code>/<code>CreatePolicyInput</code> both accept
+<code>Tags</code> directly, so the newly-created role/policy are
+auto-tagged at creation time – no separate
+<code>TagRole</code>/<code>TagPolicy</code> call needed</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>TrustPrincipal</code> modeled as a small string type
+(<code>internal/workflow/iam_templates.go</code>); only
+<code>TrustPrincipalEC2</code> is wired up, shaped so Lambda/ECS-task
+principals can be added later without reshaping the creation
+flow</label></li>
+<li><label><input type="checkbox" checked="" />Five template definitions
+(<code>IAMRoleTemplate</code>, <code>iamRoleTemplates</code>), each a
+parametrized statement set (operator supplies specific ARNs at creation
+time): Static Website (S3 + CloudFront) – read-only by default, becomes
+a publish role if a <code>distribution_arn</code> is also supplied (no
+separate yes/no prompt needed); RDM Repository Instance – scoped S3
+read/write, plus <code>AmazonSSMManagedInstanceCore</code> attached via
+<code>ManagedPolicyARNs</code>; Bridge Service, Patron-Facing Service,
+Data Processing – all three share a
+<code>cloudWatchLogsStatements</code> helper for their baseline
+CloudWatch Logs access (scoped to an operator-supplied log group ARN,
+since there’s no way to know a future service’s naming convention in
+advance), with Patron-Facing’s Secrets Manager/S3 read added only when
+their optional params are non-blank</label></li>
+<li><label><input type="checkbox" checked="" />Guided creation flow
+(<code>CreateIAMRoleFromTemplate</code>/
+<code>createIAMRoleFromTemplate</code>): pick a template, prompt role
+name + each param, confirm, <code>CreateRole</code> (tagged if
+<code>origin_tag.dld_value</code> is configured) → attach each
+<code>ManagedPolicyARNs</code> entry → if the template produced any
+statements, <code>CreatePolicy</code> (also tagged) + attach it.
+<strong>Fully pipe-testable end to end</strong> – unlike this domain’s
+other actions, template selection uses a Menu-tier
+<code>huh.Select</code> (a small, fixed list) rather than a Picker-tier
+<code>tui.RunPicker</code>, since there’s no existing-resource list to
+browse here, so no Picker-tier step blocks automated testing of the
+whole flow</label></li>
+<li><label><input type="checkbox" checked="" />Picker UI distinguishes
+the two more fully-scoped templates from the three thinner ones via
+<code>iamRoleTemplateLabel</code>, which appends “(starting point,
+review before use)” to <code>Thin</code>-flagged templates’ display
+label only – the underlying <code>Label</code> field stays the clean
+base name</label></li>
+</ul>
+<p><strong>Tests:</strong> test-first throughout, including the full
+guided flow (template pick → role name → params → confirm →
+create/attach) driven end to end via accessible-mode pipe input –
+auto-tagging when <code>origin_tag.dld_value</code> is set (and its
+absence when unset), the SSM managed policy attaching alongside the
+custom policy for RDM Repository, declined confirmation skipping
+creation entirely, and <code>CreateRole</code>’s error propagating
+before any <code>AttachRolePolicy</code> call is attempted.</p>
+<p><strong>Files:</strong> <code>internal/awsclient/iam.go</code>,
+<code>internal/awsclient/logging_iam.go</code>,
+<code>internal/workflow/create_instance_profile_test.go</code> (shared
+<code>fakeIAMClient</code> gained
+<code>CreateRole</code>/<code>CreatePolicy</code>/<code>AttachRolePolicy</code>),
+new <code>internal/workflow/iam_templates.go</code>,
+<code>internal/workflow/iam_menu.go</code>,
+<code>cmd/clasm/main.go</code>, plus each changed file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Real-AWS testing in progress, 2026-07-23.</strong> RDM
+Repository Instance confirmed fully – role created, tagged
+<code>origin=dld</code> automatically,
+<code>AmazonSSMManagedInstanceCore</code> + a correctly-scoped custom
+policy both attached (<code>s3:ListBucket</code> on the bucket,
+<code>s3:GetObject</code>/<code>s3:PutObject</code> on
+<code>&lt;bucket&gt;/*</code>, nothing broader). Static Website
+confirmed in read-only mode (bucket-only, no distribution).</p>
+<p><strong>Real bug (usability) found via that same live testing, fixed
+same day: templates originally required hand-typed ARNs.</strong> Typing
+a full S3 ARN forces an unnecessary mental reformatting step, and
+CloudFront ARNs specifically can’t be found without leaving the tool
+(Console or a separate CLI call) – breaking the interactive workflow.
+Fixed by having each template param collect a plain name/ID (bucket
+name, distribution ID, log group name, secret name) and having clasm
+construct the ARN itself via a new <code>BuildARN</code> field, using
+the account ID already resolved at startup
+(<code>sts:GetCallerIdentity</code>) and the configured region. See
+DECISIONS.md, “Phase 20.39 templates collect resource names/IDs, not
+ARNs.” <code>BuildPolicy</code> functions themselves needed no changes –
+only the collection step and prompt wording. Publish-mode Static Website
+(with a distribution ID) and the thin templates (Bridge Service,
+Patron-Facing, Data Processing) not yet real-AWS-verified.</p>
+<p><strong>Dependency:</strong> Phase 20.36 (<code>origin_tag</code>
+config), Phase 20.37 (tag-write path used to auto-tag a newly-created
+role, when configured).</p>
+<hr />
+<h2
+id="phase-20.40-delete-role-attachdetach-policy-crud-completion-for-dld-owned-roles">Phase
+20.40 — Delete Role, Attach/Detach Policy (CRUD Completion for DLD-Owned
+Roles)</h2>
+<p><strong>Status: designed, implemented, and real-AWS-verified
+2026-07-23</strong> (DESIGN.md, “CRUD completion for DLD-owned roles”;
+DECISIONS.md, “IAM Profile &amp; Role Management: support CRUD for
+DLD-owned roles”). Targeted for v0.0.5.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Motivated directly by live use: testing Phase 20.39’s
+templates left behind test roles with no way to remove them from within
+clasm.</p>
+<h3 id="work-items-85">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>IAMAPI</code> gains
+<code>DeleteRole</code>, <code>DeleteRolePolicy</code>,
+<code>DetachRolePolicy</code>, <code>DeletePolicy</code>,
+<code>DeletePolicyVersion</code>, <code>ListPolicyVersions</code>,
+<code>ListEntitiesForPolicy</code> — mirrored into
+<code>logging_iam.go</code>. Confirmed via the vendored SDK’s own doc
+comments that <code>DeleteRole</code> requires inline policies deleted
+and managed policies detached first, and that <code>DeletePolicy</code>
+requires every non-default version deleted first and detaching from
+every remaining entity beforehand</label></li>
+<li><label><input type="checkbox" checked="" />Core delete logic
+(<code>internal/workflow/iam_lifecycle.go</code>):
+<code>deleteIAMRole</code> (refuses if <code>ReferencedByProfiles</code>
+is non-empty; deletes inline policies, detaches managed policies,
+deletes the role, then deletes its dedicated
+<code>&lt;role&gt;-policy</code> if unused elsewhere) and
+<code>deleteIAMPolicyIfUnused</code> (checks
+<code>ListEntitiesForPolicy</code> before deleting, deletes non-default
+versions via
+<code>ListPolicyVersions</code>/<code>DeletePolicyVersion</code> first,
+never touches an AWS-managed policy ARN —
+<code>isAWSManagedPolicyArn</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Guided Delete Role flow
+(<code>DeleteIAMRole</code>/<code>deleteIAMRoleWorkflow</code>/
+<code>deleteIAMRoleConfirmed</code>): picker filtered to DLD-owned roles
+only (<code>filterDLDOwnedRoles</code>), shows the role’s full detail
+(reusing Phase 20.38’s
+<code>fetchIAMRoleDetail</code>/<code>displayIAMRoleDetail</code>),
+refuses upfront if still referenced by an instance profile, defensively
+re-checks <code>RequireDLDOwned</code>, gated behind
+<code>ConfirmDestructive</code> (type-to-confirm the role’s own name,
+this project’s existing destructive-operation tier)</label></li>
+<li><label><input type="checkbox" checked="" />Attach Policy to Role
+(<code>AttachPolicyToRole</code>/
+<code>attachPolicyToRoleWorkflow</code>/<code>attachPolicyToRoleConfirmed</code>):
+pick a DLD-owned role, pick any customer-managed policy (not filtered to
+DLD-owned — attaching an IMSS-/AWS-authored policy to a DLD role is
+legitimate), plain <code>Confirm</code>,
+<code>AttachRolePolicy</code></label></li>
+<li><label><input type="checkbox" checked="" />Detach Policy from Role
+(<code>DetachPolicyFromRole</code>/
+<code>detachPolicyFromRoleWorkflow</code>/<code>detachPolicyFromRoleConfirmed</code>):
+pick a DLD-owned role, refuse cleanly if it has no attached policies,
+pick one via <code>pickComparable</code> (Menu-tier, since
+<code>IAMPolicyRef</code> is comparable — pipe-testable, unlike the
+Picker-tier role/policy selection steps), plain <code>Confirm</code>,
+<code>DetachRolePolicy</code>. Never cascades into deleting the detached
+policy — that’s specific to Delete Role’s own dedicated-policy
+convention</label></li>
+<li><label><input type="checkbox" checked="" />All three actions wired
+into <code>IAMActions</code>/<code>iamMenuItems</code>
+(<code>Delete     Role</code>, <code>Attach Policy to Role</code>,
+<code>Detach Policy from Role</code>, appended after
+<code>Create Role from Template</code> so existing numeric-index tests
+for prior entries stay valid unchanged) and
+<code>cmd/clasm/main.go</code></label></li>
+</ul>
+<p><strong>Tests:</strong> test-first for the core delete logic
+(<code>deleteIAMRole</code>, <code>deleteIAMPolicyIfUnused</code>) —
+every AWS-call failure point covered via subtests, plus
+never-deletes-an-AWS-managed-policy and
+leaves-the-dedicated-policy-if-used-elsewhere. Menu-tier flows
+(<code>*Confirmed</code> cores) driven end to end via accessible-mode
+pipe input: confirmed/declined/mismatched confirmation,
+<code>RequireDLDOwned</code> blocking a non-DLD-owned role, each
+AWS-call error propagating, and the
+no-DLD-owned-roles/no-attached-policies early-return messages. The
+Picker-tier entry points
+(<code>pickIAMRole</code>/<code>pickIAMPolicy</code>) remain untested
+directly, same accepted limitation as every other Picker-tier flow in
+this domain (Phase 20.36/20.38/20.39’s own testable-core split).</p>
+<p><strong>Files:</strong> <code>internal/awsclient/iam.go</code>,
+<code>internal/awsclient/logging_iam.go</code>,
+<code>internal/workflow/create_instance_profile_test.go</code> (shared
+<code>fakeIAMClient</code> gained
+<code>DeleteRole</code>/<code>DeleteRolePolicy</code>/
+<code>DetachRolePolicy</code>/<code>DeletePolicy</code>/<code>DeletePolicyVersion</code>/
+<code>ListPolicyVersions</code>/<code>ListEntitiesForPolicy</code>), new
+<code>internal/workflow/iam_lifecycle.go</code>,
+<code>internal/workflow/iam_menu.go</code>,
+<code>cmd/clasm/main.go</code>, plus each changed file’s
+<code>_test.go</code> counterpart.</p>
+<p><strong>Dependency:</strong> Phase 20.36
+(<code>RequireDLDOwned</code>, <code>filterDLDOwnedRoles</code>’
+DLD-ownership data), Phase 20.38 (<code>fetchIAMRoleDetail</code>,
+<code>displayIAMRoleDetail</code>,
+<code>IAMRoleDetail</code>/<code>IAMPolicyRef</code>), Phase 20.39 (the
+<code>&lt;role&gt;-policy</code> naming convention Delete Role’s cascade
+relies on).</p>
+<p><strong>Real-AWS-verified 2026-07-23</strong> – blocked initially by
+the pagination/ throttling bugs above (both found and fixed the same
+day, during this very verification attempt), then confirmed clean once
+fixed: the user ran Delete Role against all three real test roles left
+over from Phase 20.39’s template testing
+(<code>test-rdm-repo-role</code>, <code>test-static-site-role</code>,
+<code>test-static-site-role-2</code>). Independently confirmed via
+<code>aws iam get-role</code>/<code>get-policy</code> afterward: all
+three roles and their dedicated <code>&lt;role&gt;-policy</code>
+policies are gone. This doubled as Delete Role’s real-AWS verification
+and closed out the last open item from Phases 20.36-20.40. <strong>All
+five IAM phases (20.36-20.40) are now implemented, unit-tested, and
+real-AWS-verified.</strong></p>
+<hr />
+<h2 id="phase-20.41-instanceami-detail-views">Phase 20.41 — Instance/AMI
+Detail Views</h2>
+<p><strong>Status: designed, implemented, and unit-tested 2026-07-24,
+targeted for v0.0.5</strong> (DESIGN.md, “Instance/AMI Detail Views”;
+DECISIONS.md, “Instance/AMI Detail Views: on-demand describe calls,
+appended menu placement”). Closes the outstanding TODO.md item left over
+since Launch Templates gained its own detail view.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Not yet real-AWS-verified.</p>
+<h3 id="work-items-86">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>inventory.InstanceDetail</code> (new
+<code>internal/inventory/instance_detail.go</code>): InstanceID, Name,
+State, InstanceType, ImageID, Region, VPCID, SubnetID, SecurityGroupIDs,
+IAMInstanceProfile, KeyName, PublicIP, PrivateIP, Project, Environment,
+Tags. Volume sizes deliberately left out of this struct – combined at
+the workflow layer instead (see <code>showInstanceDetail</code> below),
+since <code>GatherVolumeInfo</code> already lives in
+<code>internal/workflow</code> and inventory can’t import it without a
+circular dependency</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>inventory.DescribeInstanceDetail(ctx, client, region, instanceID) (InstanceDetail, error)</code>
+– single <code>ec2:DescribeInstances</code> call with
+<code>InstanceIds:     []string{instanceID}</code>, erroring clearly if
+not found (mirrors <code>DescribeLaunchTemplateVersion</code>’s
+not-found handling). IAM instance profile name is parsed from the ARN
+(<code>instanceProfileNameFromARN</code>) since
+<code>ec2.types.IamInstanceProfile</code> only ever carries an Arn/Id,
+never a Name, on a running instance (unlike the launch-template
+specification type)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>inventory.ImageDetail</code>/<code>BlockDeviceMappingDetail</code>
+(new <code>internal/inventory/image_detail.go</code>): ImageID, Name,
+CreationDate, Region, Architecture, EnaSupport, RootDeviceName,
+BlockDeviceMappings ([]BlockDeviceMappingDetail{DeviceName,
+VolumeSizeGB, SnapshotID}), Project, Environment, Tags</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>inventory.DescribeImageDetail(ctx, client, region, imageID) (ImageDetail, error)</code>
+– single <code>ec2:DescribeImages</code> call with
+<code>ImageIds: []string{imageID}</code></label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/show_instance_detail.go</code>:
+<code>ShowInstanceDetail</code> (pick via existing
+<code>pickInstance</code>) -&gt; <code>showInstanceDetail</code>
+testable core -&gt; <code>displayInstanceDetail</code>, following
+<code>show_launch_template.go</code>’s entry-point/testable-core/display
+split. <code>showInstanceDetail</code> calls both
+<code>inventory.DescribeInstanceDetail</code> and the already-existing
+<code>GatherVolumeInfo</code> against the same resolved client, then
+passes both results to the display function</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/show_ami_detail.go</code>:
+<code>ShowAMIDetail</code> (pick via existing <code>pickImage</code>)
+-&gt; <code>showAMIDetail</code> testable core -&gt;
+<code>displayAMIDetail</code>, same split</label></li>
+<li><label><input type="checkbox" checked="" /><code>MenuActions</code>
+gains <code>ShowInstanceDetail</code>/<code>ShowAMIDetail</code>;
+<code>mainMenuItems</code> gains “Show instance detail”/“Show AMI
+detail”, appended at the end (DECISIONS.md, Decision 2) so existing
+numeric-index tests for prior entries stay valid unchanged (the “no Back
+to domain picker entry” test’s hardcoded count was updated 22 -&gt; 24);
+wired into <code>cmd/clasm/main.go</code></label></li>
+</ul>
+<h3 id="tests">Tests</h3>
+<p>Test-first throughout, confirmed failing (undefined symbols) before
+each implementation existed, per this project’s convention
+([[feedback-test-before-fix]] applies to new-feature work the same way
+it applies to bug fixes).
+<code>DescribeInstanceDetail</code>/<code>DescribeImageDetail</code>
+covered via a fake <code>EC2API</code> client: found case (full field
+mapping, including empty-tags/no-public-IP/no-IAM-profile edge cases)
+and not-found/client-error cases.
+<code>showInstanceDetail</code>/<code>showAMIDetail</code> testable
+cores covered directly against the shared <code>internal/workflow</code>
+<code>fakeEC2Client</code> (extended with a handful of new fields –
+<code>instanceDetail*</code>/<code>describeImages{Name,CreationDate,Architecture, EnaSupport}</code>
+– to synthesize the fuller field set this view needed; no existing
+test’s behavior changed) for: full curated-field display,
+no-volumes/no-block-device-mappings, unknown-region error, and each AWS
+call’s error propagating.
+<code>ShowInstanceDetail</code>/<code>ShowAMIDetail</code>’s
+no-resources-found early return covered directly (no Picker-tier driving
+needed, matching <code>showLaunchTemplate</code>’s own accepted
+limitation).</p>
+<h3 id="files">Files</h3>
+<p><code>internal/inventory/instances.go</code> (or new
+<code>instance_detail.go</code>),
+<code>internal/inventory/images.go</code> (or new
+<code>image_detail.go</code>), new
+<code>internal/workflow/show_instance_detail.go</code>,
+<code>internal/workflow/show_ami_detail.go</code>,
+<code>internal/workflow/menu.go</code>, <code>cmd/clasm/main.go</code>,
+plus each new/changed file’s <code>_test.go</code> counterpart.</p>
+<h3 id="dependency">Dependency</h3>
+<p>Existing <code>pickInstance</code>/<code>pickImage</code>
+(Picker-tier), <code>GatherVolumeInfo</code>
+(<code>internal/workflow/volume_info.go</code>),
+<code>displayOrNone</code>.</p>
+<hr />
+<h2 id="phase-20.42-configure-clasm-domain">Phase 20.42 — Configure
+clasm Domain</h2>
+<p><strong>Status: designed, implemented, and unit-tested 2026-07-24,
+targeted for v0.0.5</strong> (DESIGN.md, “Configure clasm Domain”;
+DECISIONS.md, “Configure clasm domain: explicit Save, region changes
+deferred to next launch”).
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Not yet real-AWS-verified (this domain makes no AWS calls at
+all, so “verified” here just means a live manual walkthrough).</p>
+<h3 id="work-items-87">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>config.Save(path string, cfg Config) error</code>
+(<code>internal/config/config.go</code>) –
+<code>yaml.Marshal(cfg)</code>,
+<code>os.WriteFile(path, data, 0o644)</code>. First write path in this
+package; <code>Load</code> only reads today</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/configure_menu.go</code>:
+<code>ConfigureActions</code> struct + <code>configureMenuItems</code>
+(Show current config, Edit regions, Edit backup directory rules, Edit
+Origin tag config, Save), following <code>tagmgmt_menu.go</code>‘s
+loop-until-’q’ shape exactly
+(<code>RunConfigureMenu</code>/<code>runConfigureMenu</code>/<code>pickConfigureItem</code>/a
+per-iteration <code>Refresh</code> – a no-op here, since this domain
+makes no AWS calls, but kept for parity so the loop’s normal-exit path
+stays testable via ctx cancellation the same way every other domain menu
+already is). The working <code>config.Config</code> copy and
+<code>dirty</code> flag are closed over by
+<code>RunConfigureMenu</code>’s own action closures (not threaded
+through <code>ConfigureActions</code> as data) – <code>dirty</code> is
+exposed to the loop via a <code>Dirty func() bool</code> field, checked
+when the picker errors (any cause, matching every other domain’s
+unconditional <code>mapMenuPickerErr</code> – accessible mode has no way
+to distinguish a real quit from other picker errors) and printed via
+<code>warnIfDirtyOnQuit</code></label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/configure_edit.go</code>:
+<code>displayConfig</code>, <code>editRegions</code>,
+<code>editBackupDirectoryRules</code>, <code>editOriginTag</code>,
+<code>warnIfDirtyOnQuit</code> – kept separate from the dispatch loop so
+each is directly unit-testable as a bounded, single-pass function (each
+inner edit loop exits via an explicit “Done” choice, never by exhausting
+scripted input – necessary because huh’s accessible mode doesn’t
+reliably surface EOF as an error on a re-driven
+<code>Select</code>/<code>Input</code>, the same gotcha PLAN.md Phase
+20.29 already found; exhausting input to end a loop is not a safe test
+strategy anywhere in this codebase)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>displayConfig(w io.Writer, cfg config.Config)</code>
+– Show current config, curated-field style matching
+<code>displayLaunchTemplateVersion</code></label></li>
+<li><label><input type="checkbox" checked="" />Edit regions:
+<code>editRegions</code> loops a plain <code>pickString</code> action
+menu (Add/Remove/Done); add via a free-text <code>ui.Prompt</code>
+(DECISIONS.md Decision 2 – no AWS region validation, blank entries
+skipped); remove via <code>pickString</code> over the current region
+list itself
+(<code>slices.Index</code>/<code>slices.Delete</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Edit backup directory
+rules: <code>editBackupDirectoryRules</code>, same Add/Remove/Done shape
+– add prompts pattern then directory (blank either skips), appended to
+the end (first-match-wins order); remove via <code>pickString</code>
+over <code>"pattern -&gt; directory"</code> labels</label></li>
+<li><label><input type="checkbox" checked="" />Edit Origin tag config:
+<code>editOriginTag</code>, two <code>ui.Prompt</code>/
+<code>ui.WithDefault</code> prompts pre-filled with the working copy’s
+current values; a blank key falls back to
+<code>config.DefaultOriginTagKey</code>, matching
+<code>config.Load</code>’s own per-field default behavior</label></li>
+<li><label><input type="checkbox" checked="" />Save action calls
+<code>config.Save</code> against the resolved config path
+(<code>RunConfigureMenu</code>’s own <code>configPath</code> parameter,
+threaded from <code>cmd/clasm/main.go</code>’s existing
+<code>-config</code> flag/<code>config.DefaultPath()</code>), clears
+<code>dirty</code>, confirms success in the UI, and explicitly notes
+region changes take effect next launch (DECISIONS.md, Decision
+3)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>domainItems</code>/<code>DomainActions</code>
+(<code>internal/workflow/domain_menu.go</code>) gain a sixth
+entry/field,
+“Configuration”/<code>Configuration func(ctx     context.Context) error</code>,
+appended after IAM (the “no Exit entry” test’s hardcoded count updated 5
+-&gt; 6); wired into <code>cmd/clasm/main.go</code></label></li>
+</ul>
+<h3 id="tests-1">Tests</h3>
+<p>Test-first throughout, confirmed failing (undefined symbols) before
+each implementation existed. <code>config.Save</code> covered directly:
+round-trips a <code>Config</code> through <code>Save</code> then
+<code>Load</code>, confirms <code>0o644</code> permissions, confirms an
+unwritable path errors cleanly. <code>editRegions</code>/
+<code>editBackupDirectoryRules</code>/<code>editOriginTag</code>/<code>displayConfig</code>/
+<code>warnIfDirtyOnQuit</code> each covered directly and independently
+(add, remove, blank-entry-skipped, no-entries-to-remove,
+unchanged-values-not-marked- dirty, blank-key-falls-back-to-default).
+<code>runConfigureMenu</code>’s dispatch loop covered the same way
+<code>runTagMgmtMenu</code> already is: dispatch-to- chosen-action, Save
+dispatches to its own action, Refresh runs once after a successful
+action, a single action’s error doesn’t crash the loop,
+pause-for-acknowledgment after a successful action – every case
+terminates via ctx cancellation from within a test-supplied action
+closure, never by letting scripted input run out.</p>
+<p><strong>Real bug found via review before real-AWS/live testing even
+started, fixed same day:</strong>
+<code>editRegions</code>/<code>editBackupDirectoryRules</code>
+originally called
+<code>displayRegionsList</code>/<code>displayBackupDirectoryRulesList</code>
+(a plain print) immediately before their own action-menu
+<code>pickString</code> – the same bug class as Phase 20.29’s “Show tags
+appeared to do nothing” (a full-height Menu-tier <code>Select</code>
+fills the whole terminal on every render and scrolls whatever was
+printed just before it out of view, so the current region/rule list was
+invisible in real terminal use even though it was always being
+(re)computed correctly). Fixed the same way Phase 20.29 was: embed the
+current list in the Select’s own <code>Description</code>
+(<code>regionsEditDescription</code>/<code>backupDirectoryRulesEditDescription</code>)
+in addition to (not instead of) the existing plain print, since
+accessible mode never renders a field’s Description, only Title and
+options – this means the fix itself is invisible to the existing
+pipe-driven tests, same accepted limitation as
+<code>manage_tags.go</code>’s own <code>actionMenuDescription</code>
+fix. General lesson reinforced a third time in this project: any call
+site that prints plain text immediately before a full-height Menu-tier
+Select is at risk of this same silent-scroll bug – worth checking for it
+by default in any new Menu-tier loop, not just after a live report.</p>
+<h3 id="files-1">Files</h3>
+<p><code>internal/config/config.go</code>, new
+<code>internal/workflow/configure_menu.go</code>,
+<code>internal/workflow/domain_menu.go</code>,
+<code>cmd/clasm/main.go</code>, plus each new/changed file’s
+<code>_test.go</code> counterpart.</p>
+<h3 id="dependency-1">Dependency</h3>
+<p>Existing
+<code>config.Load</code>/<code>config.Config</code>/<code>config.BackupDirectoryFor</code>,
+<code>ui.Prompt</code>/<code>ui.WithDefault</code>, this project’s
+Menu-tier <code>pickString</code>/ <code>pickComparable</code>
+primitives, <code>tagmgmt_menu.go</code>‘s loop-until-’q’ shape as the
+direct structural model.</p>
+<hr />
+<h2 id="phase-20.43-menu-reordering-and-terminology-cleanup">Phase 20.43
+— Menu Reordering and Terminology Cleanup</h2>
+<p><strong>Status: designed, implemented, and unit-tested
+2026-07-24</strong> (see <code>MENU_REVIEW.md</code> for the full audit;
+DECISIONS.md, “Regroup the Compute menu, and a terminology cleanup
+across every domain menu”). <code>go build</code>/
+<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. No AWS-facing behavior changed – this is entirely menu-item
+order and label text.</p>
+<h3 id="work-items-88">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>menu.go</code>:
+<code>mainMenuItems</code> regrouped into View/Inspect -&gt; Instance
+lifecycle -&gt; AMI lifecycle -&gt; Launch Template lifecycle -&gt;
+Maintenance; “Show a launch template” renamed to “Show launch template
+detail”</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>menu_test.go</code>: every numeric-index literal
+updated to match the new order (a dozen-odd call sites)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>tagmgmt_menu.go</code>: “Show all tags” moved ahead
+of “Manage tags”; <code>tagmgmt_menu_test.go</code> indices
+updated</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>bucket_lifecycle.go</code>:
+<code>lifecycleActions</code> reordered to “View rule details” first;
+<code>bucket_lifecycle_test.go</code> indices updated</label></li>
+<li><label><input type="checkbox" checked="" /><code>iam_menu.go</code>:
+last three items reordered to Attach -&gt; Detach -&gt; Delete; “View
+Role Detail”/“View Instance Profile Detail” relabeled “Show Role
+Detail”/“Show Instance Profile Detail” (Go field names unchanged);
+<code>iam_menu_test.go</code> indices and comment text
+updated</label></li>
+<li><label><input type="checkbox" checked="" /><code>s3_menu.go</code>:
+“List S3 Buckets” relabeled “Show Buckets”;
+<code>s3_menu_test.go</code>’s literal label-equality check updated (the
+one test in the whole suite that asserted on exact menu-label text,
+confirmed via a targeted search before starting)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>keymgmt_menu.go</code>: “Show resource lists”
+relabeled “Show Key Pairs”</label></li>
+<li><label><input type="checkbox" checked="" />Considered and explicitly
+declined: reordering the Tag Management kind picker (already a sensible
+EC2-backed/S3/IAM cluster on inspection) and normalizing Key
+Management/S3/IAM’s Title Case to match Compute/Tag
+Management/Configuration’s sentence case (a much larger, purely cosmetic
+pass the user chose not to do this round)</label></li>
+</ul>
+<h3 id="tests-2">Tests</h3>
+<p>No new test files – every change here is a reorder or relabel of an
+existing, already-tested menu, so the work was updating the existing
+accessible-mode pipe-input index literals (and, for S3, one literal
+label assertion) to match, then confirming the full suite still passes.
+A background search across every <code>_test.go</code> file confirmed
+only that one S3 label assertion existed anywhere in the suite before
+starting, so the blast radius of the rename pass was known upfront
+rather than discovered by trial and error.</p>
+<h3 id="files-2">Files</h3>
+<p><code>internal/workflow/menu.go</code>, <code>menu_test.go</code>,
+<code>tagmgmt_menu.go</code>, <code>tagmgmt_menu_test.go</code>,
+<code>bucket_lifecycle.go</code>, <code>bucket_lifecycle_test.go</code>,
+<code>iam_menu.go</code>, <code>iam_menu_test.go</code>,
+<code>s3_menu.go</code>, <code>s3_menu_test.go</code>,
+<code>keymgmt_menu.go</code>.</p>
+<h3 id="not-done-flagged-as-pre-existing-gaps">Not done, flagged as
+pre-existing gaps</h3>
+<p><code>user_manual.md</code> and <code>TUI_REFERENCE.md</code>’s
+screen-map are both already stale independent of this change (missing
+three whole domains, wrong item counts) – out of scope for this pass,
+noted in DECISIONS.md as a separate, larger follow-up if wanted.</p>
+<hr />
 <h2 id="deferred-to-a-later-version-phase-23-not-scheduled">Deferred to
 a Later Version (Phase 23+, not scheduled)</h2>
 <p>Not part of v1/v2 — see <code>DECISIONS.md</code>, “V1 scope: ship

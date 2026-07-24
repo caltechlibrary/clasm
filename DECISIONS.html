@@ -31,6 +31,875 @@ interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
 <hr />
 <h2
+id="regroup-the-compute-menu-and-a-terminology-cleanup-across-every-domain-menu">2026-07-24
+— Regroup the Compute menu, and a terminology cleanup across every
+domain menu</h2>
+<p><strong>Context.</strong> The user asked for a review of every menu’s
+item ordering, which felt ad hoc. See <code>MENU_REVIEW.md</code> for
+the full audit (all seven top-level menus plus notable sub-menus,
+current order, and reasoning). Root cause identified there: new menu
+entries have generally been <em>appended</em> to the end of a list
+specifically to avoid shifting the numeric index every existing
+accessible-mode pipe-input test depends on – a real engineering
+constraint, but one that optimizes for not breaking tests rather than
+for where an item logically belongs. The two newest Compute entries
+(Show instance/AMI detail, Phase 20.41) were the clearest case: tacked
+onto the very end, 20 rows away from the “Show instances”/“Show AMIs”
+entries they’re conceptually paired with.</p>
+<p><strong>Decision 1: regroup the Compute menu into View/Inspect -&gt;
+Instance lifecycle -&gt; AMI lifecycle -&gt; Launch Template lifecycle
+-&gt; Maintenance</strong>, modeled directly on the IAM domain menu’s
+own List -&gt; Detail -&gt; Create -&gt; CRUD shape (the one domain
+designed all at once, and the cleanest as a result). Each list-view now
+sits directly next to its own detail view (Show instances + Show
+instance detail, Show AMIs + Show AMI detail, Show launch templates +
+Show launch template detail), matching IAM’s Show-Roles-then-Detail
+pairing. “Show/export cloud-init” moved into the view/inspect group
+(it’s a read operation, same as the detail views). “Manage tags for an
+instance or AMI” moved to the end of the instance group rather than
+sitting in the middle of instance-only actions, since it’s cross-cutting
+(instances and AMIs both). This is a regrouping, not a full reshuffle –
+every item’s relative order within its own group is unchanged.
+<code>menu_test.go</code>’s numeric-index literals were updated to match
+(contained to that one file; every other workflow’s own tests drive it
+directly, not through the Compute menu’s position).</p>
+<p><strong>Decision 2: apply the same “view leads” convention to two
+menus that had drifted from it.</strong> Tag Management’s two items were
+backwards (“Manage tags” before “Show all tags”) relative to every other
+domain – swapped. The Bucket Lifecycle action menu had “View rule
+details” last instead of first (Manage Tags’ own action menu, “Show
+tags, Add, Update, Remove”, already got this right by contrast) – moved
+to the front.</p>
+<p><strong>Decision 3: reorder IAM’s last three items to Attach -&gt;
+Detach -&gt; Delete</strong> (was Delete -&gt; Attach -&gt; Detach).
+Attach/Detach are both trivially reversible via their paired action;
+Delete Role is not, so the one truly irreversible action now sits
+last.</p>
+<p><strong>Decision 4 (considered, not applied): reorder Tag
+Management’s “kind” picker.</strong> <code>MENU_REVIEW.md</code> flagged
+this as a possible cleanup (order reflects historical addition sequence,
+not an obvious grouping). On closer inspection while implementing the
+rest of this pass, the current order
+(<code>Instance, AMI, Launch Template, Key Pair</code> – all EC2-backed
+– then <code>S3 Bucket</code>, then the three IAM kinds) already reads
+as a sensible cluster grouping, coincidentally aligned with addition
+order. Left unchanged rather than reordering for its own sake.</p>
+<p><strong>Decision 5: terminology cleanup, scoped to “unify verbs,” not
+a full capitalization pass.</strong> Three renames, all label-text only
+(no Go identifier renamed): - S3’s <code>"List S3 Buckets"</code> -&gt;
+<code>"Show Buckets"</code> – the one menu using “List” where every
+other domain says “Show.” - Key Management’s
+<code>"Show resource lists"</code> -&gt; <code>"Show Key Pairs"</code> –
+a vague, generic name left over from before Compute’s own “Show resource
+lists” was split into specific per-resource entries (2026-07-20); Key
+Management only ever manages one resource type, so the specific name is
+both clearer and consistent. - IAM’s
+<code>"View Role Detail"</code>/<code>"View Instance Profile Detail"</code>
+-&gt;
+<code>"Show Role Detail"</code>/<code>"Show Instance Profile Detail"</code>,
+and Compute’s <code>"Show a launch template"</code> -&gt;
+<code>"Show launch template detail"</code> – unifying three different
+phrasings of the same “show one resource’s detail” concept onto one verb
+and shape. <code>IAMActions</code>’
+<code>ViewRoleDetail</code>/<code>ViewInstanceProfileDetail</code> Go
+field names are unchanged – only the user-facing label changed.</p>
+<p><strong>Rejected: normalizing capitalization across all menus to
+sentence case.</strong> Key Management/S3/IAM use Title Case throughout;
+Compute/Tag Management/Configuration use sentence case – a real, visible
+split across domains. Flagged in <code>MENU_REVIEW.md</code> as the
+largest, purely cosmetic option (~18 labels) and explicitly declined by
+the user for this pass in favor of the narrower verb-unification scope
+above. Left as a known, still-open inconsistency if picked up later.</p>
+<p><strong>Known, pre-existing gaps not addressed by this pass:</strong>
+<code>user_manual.md</code> and <code>TUI_REFERENCE.md</code>’s
+screen-map section are both already substantially stale independent of
+this change (missing the Tag Management/IAM/Configuration domains
+entirely, wrong item counts, <code>user_manual.md</code> still
+describing a removed “Back to domain picker” menu item) – bringing
+either fully current is a separate, larger task, not attempted here to
+keep this pass scoped to the actual menu-ordering/ terminology
+request.</p>
+<hr />
+<h2
+id="configure-clasm-domain-explicit-save-region-changes-deferred-to-next-launch">2026-07-24
+— Configure clasm domain: explicit Save, region changes deferred to next
+launch</h2>
+<p><strong>Context.</strong> <code>~/.clasm</code>’s
+<code>regions</code>/<code>backup_directories</code>/<code>origin_tag</code>
+settings are hand-edited YAML only today. The user requested a top-level
+menu item to view/create/update this config file from within clasm,
+bundled into v0.0.5 alongside the Instance/AMI Detail Views below.</p>
+<p><strong>Decision 1: edits happen against an in-memory working copy;
+nothing touches <code>~/.clasm</code> until an explicit “Save”
+action.</strong> ‘q’ with unsaved changes pending warns before
+discarding.</p>
+<p><strong>Rejected alternative.</strong> <em>Write-immediately per
+edit</em> (add a region, save instantly) — fewer steps, but removes the
+ability to back out of a half-finished edit sequence, and doesn’t match
+this project’s general caution around persisting state without a
+visible, explicit action.</p>
+<p><strong>Decision 2: region add/remove is free-text, not validated
+against AWS’s actual published region list.</strong> A typo’d region
+simply won’t resolve to a usable client on next launch — the same
+failure mode as hand-editing the YAML today, not a regression.</p>
+<p><strong>Rejected alternative.</strong> <em>Hardcode a list of valid
+AWS region names to validate against</em> — would catch typos
+immediately, but needs its own maintenance as AWS adds regions, and
+there’s no “list all regions” API call that doesn’t itself require an
+already-configured client. Not worth the upkeep for a first pass.</p>
+<p><strong>Decision 3: region changes take effect on next launch, not
+live.</strong> Surfaced directly in the UI when saving, rather than left
+as a silent gap. <code>cmd/clasm/main.go</code> builds the
+region-to-client map once at startup from the config loaded at that
+time; retrofitting the running client map to react to a mid-session
+config edit was judged unnecessary complexity for how rarely regions
+actually change.</p>
+<p><strong>Decision 4: new <code>config.Save</code> writes with
+<code>0644</code>, not the <code>0600</code> private-key
+convention.</strong> No secrets live in <code>~/.clasm</code>, unlike
+the SSH private keys <code>create_key_pair.go</code> writes.</p>
+<h2
+id="instanceami-detail-views-on-demand-describe-calls-appended-menu-placement">2026-07-24
+— Instance/AMI Detail Views: on-demand describe calls, appended menu
+placement</h2>
+<p><strong>Context.</strong> TODO.md has carried an open item since the
+Launch Templates work (Phase 20.27/20.28) gave templates a
+single-resource detail view: instances and AMIs are still only ever seen
+as a row in the List-tier table (Show instances/Show AMIs), never a
+dedicated detail screen.</p>
+<p><strong>Decision 1: fetch the fuller field set via a new, separate,
+single-resource describe call
+(<code>inventory.DescribeInstanceDetail</code>/
+<code>DescribeImageDetail</code>), not by adding fields to the aggregate
+<code>Instance</code>/<code>Image</code> structs.</strong> Mirrors
+<code>DescribeLaunchTemplateVersion</code>’s existing shape.</p>
+<p><strong>Rejected alternative.</strong> <em>Add
+SecurityGroupIDs/SubnetID/ IAMInstanceProfile/InstanceType (and
+BlockDeviceMappings/RootDeviceName for Image) directly to
+<code>Instance</code>/<code>Image</code></em> — would let the list-fetch
+populate everything in one pass, but every other call site
+(<code>ListInstances</code>/<code>ListImages</code>’s many existing
+callers: pickers, Tag Management, the list views) would carry fields it
+never uses, and this project already hit real breakage once from adding
+a map field to these structs (Phase 20.30’s
+<code>reflect.DeepEqual</code> fix, when <code>Tags</code> was added) —
+not worth repeating for fields only the detail view needs.</p>
+<p><strong>Decision 2: the two new menu entries are appended at the end
+of <code>mainMenuItems</code>, not placed near “Show instances”/“Show
+AMIs.”</strong> Consistent with this project’s established convention
+(Phase 20.40) of appending rather than reordering, so existing
+numeric-index tests for prior entries stay valid unchanged.</p>
+<h2
+id="real-bug-listroleslistinstanceprofileslistpolicies-silently-truncate-past-100-items">2026-07-23
+— Real bug: ListRoles/ListInstanceProfiles/ListPolicies silently
+truncate past 100 items</h2>
+<p><strong>Context.</strong> Found via live use immediately after Phase
+20.40 shipped: walking through the Delete Role steps to clean up three
+real test roles (<code>test-rdm-repo-role</code>,
+<code>test-static-site-role</code>,
+<code>test-static-site-role-2</code>), the operator’s Delete Role picker
+showed only 2 roles (<code>ec2-granian-test-role</code>,
+<code>air-sampling</code>) instead of 5, even though
+<code>aws iam list-role-tags</code> confirmed all three missing roles
+were correctly tagged <code>origin=dld</code>. Root-caused by comparing
+<code>aws iam list-roles</code> (which auto-paginates by default)
+against <code>aws iam list-roles --no-paginate</code>: the account has
+121 roles total, IAM truncates <code>ListRoles</code> at 100 items per
+page (<code>IsTruncated: true</code>), and the three missing test roles
+simply weren’t on that first page. <code>ListIAMRoleSummaries</code>
+(<code>internal/inventory/iam.go</code>) made a single, un-paginated
+<code>ListRoles</code> call and never checked
+<code>IsTruncated</code>/<code>Marker</code> at all – so any account
+with more than 100 roles was silently missing some, with no error or
+warning.
+<code>ListIAMInstanceProfileSummaries</code>/<code>ListIAMPolicySummaries</code>
+had the identical gap, just not yet triggered (this account currently
+has only 4 instance profiles and 59 local policies, both under IAM’s
+default page size).</p>
+<p><strong>Decision.</strong> Added
+<code>listAllRoles</code>/<code>listAllInstanceProfiles</code>/
+<code>listAllPolicies</code> (<code>internal/inventory/iam.go</code>),
+each looping on <code>Marker</code> until <code>IsTruncated</code> is
+false, and switched all three <code>ListIAM*Summaries</code> functions
+to use them instead of a single call. Fixed all three list calls, not
+just Roles, even though only Roles is truncated in this account today –
+the same silent-omission bug would otherwise resurface unannounced the
+moment instance profiles or local policies cross IAM’s page-size
+threshold, and the fix is the same handful of lines in each case.
+Test-first: <code>fakeIAMClient</code> (in
+<code>internal/inventory/iam_test.go</code>) gained a
+<code>*Page2</code> fixture field per list kind so a test can simulate a
+truncated first page + a <code>Marker</code>-keyed second page, and a
+<code>TestListIAM*Summaries_ PaginatesAcrossMultiplePages</code> test
+per kind confirmed failing (only the first page’s item returned) before
+the fix, then passing after.</p>
+<p><strong>Follow-on bug, found verifying the fix against real
+AWS:</strong> once discovery correctly fetched all 121 of this account’s
+roles instead of silently dropping to the first 100, the resulting ~121
+concurrent <code>ListRoleTags</code> calls
+(<code>fetchTagsConcurrently</code>, Phase 20.37’s own
+bounded-concurrency fix) reliably triggered
+<code>Throttling: Rate exceeded</code> past the AWS SDK’s default 3
+retry attempts – reproduced twice in a row via a throwaway verification
+program. Fixed two ways: lowered <code>iamTagFetchConcurrency</code>
+from 10 to 4 (a smaller burst against IAM’s not-fully-documented
+per-account rate quota) and raised <code>awsclient.NewIAMClient</code>’s
+retry ceiling to 8 attempts via
+<code>config.WithRetryMaxAttempts(8)</code> – applied only to the IAM
+client, since its N+1-calls-per-list shape (one <code>List*</code> plus
+one <code>List*Tags</code> per resource) makes it uniquely prone to
+bursty throttling that this codebase’s EC2/S3 clients never hit.
+Re-verified against real AWS after both changes: all 121 roles fetched,
+all 5 DLD-owned roles (including the three test roles that originally
+prompted this whole investigation) correctly recognized, no
+throttling.</p>
+<hr />
+<h2
+id="iam-profile-role-management-support-crud-for-dld-owned-roles">2026-07-23
+— IAM Profile &amp; Role Management: support CRUD for DLD-owned
+roles</h2>
+<p><strong>Context.</strong> Live usage surfaced the gap directly: “I
+think that we will need to support CRUD operations for roles that are
+owned by our group (example I now have two test roles cluttering things
+up),” after testing Phase 20.39’s creation templates left behind test
+roles with no way to remove them from within clasm. Three scoping
+questions, resolved via <code>AskUserQuestion</code>:</p>
+<ol type="1">
+<li><strong>Scope: delete a role, or also attach/detach policies on an
+existing one?</strong> Chose <strong>delete + attach/detach</strong>,
+not delete alone – narrowing to only delete would still leave no way to
+fix a role’s policies without going back to the AWS Console, undermining
+the whole point of this domain.</li>
+<li><strong>A role’s dedicated policy (created alongside it by a Phase
+20.39 template, named <code>&lt;role&gt;-policy</code>): delete it too,
+or leave it?</strong> Chose <strong>delete both together</strong>, since
+an orphaned policy left behind is exactly the same “test-role clutter”
+problem this feature exists to solve – but only if
+<code>ListEntitiesForPolicy</code> confirms nothing else still uses it,
+never assumed from the naming convention alone.</li>
+<li><strong>Confirmation gate: plain yes/no, or
+type-to-confirm?</strong> Chose the <strong>stronger, type-to-confirm
+tier</strong> (<code>ConfirmDestructive</code>, matching Terminate
+Instance/Remove AMI) for Delete Role specifically – deleting a role is
+irreversible and the blast radius (anything still assuming it) isn’t
+always fully visible to the operator. Attach/Detach Policy use the
+lighter plain <code>Confirm</code> instead: each is trivially reversible
+via its own paired action, unlike a deleted role.</li>
+</ol>
+<p><strong>Decision.</strong> Three new IAM-domain actions (PLAN.md
+Phase 20.40):</p>
+<ul>
+<li><strong>Delete Role</strong> – picker filtered to DLD-owned roles
+only (no legitimate reason to offer deleting a role clasm doesn’t
+recognize as DLD’s); refuses upfront, before any confirmation, if the
+role is still referenced by an instance profile (detaching that is
+already Phase 20.33’s own “Associate/replace IAM instance profile”
+action – automating it here would be scope creep into an existing,
+separate workflow); deletes inline policies, detaches managed policies,
+deletes the role, then deletes its dedicated policy if unused elsewhere
+– order matches AWS’s own documented
+<code>DeleteRole</code>/<code>DeletePolicy</code> preconditions
+(confirmed via the vendored SDK’s doc comments).</li>
+<li><strong>Attach Policy to Role</strong> – pick a DLD-owned role, pick
+<em>any</em> customer-managed policy to attach (not filtered to
+DLD-owned policies – attaching an IMSS- or AWS-authored policy to a
+DLD-owned role is a legitimate, expected case), confirm, attach.</li>
+<li><strong>Detach Policy from Role</strong> – pick a DLD-owned role,
+pick one of its currently-attached policies, confirm, detach. Never also
+deletes the detached policy – that cascade is specific to Delete Role’s
+own dedicated-policy convention, not a general rule, since a detached
+policy may still be in use elsewhere or may never have been clasm’s to
+manage at all.</li>
+</ul>
+<p>Every action defensively re-checks <code>RequireDLDOwned</code> even
+though the picker already filtered to DLD-owned resources –
+belt-and-suspenders, matching <code>deleteIAMRoleConfirmed</code>’s own
+re-check, and this is <code>RequireDLDOwned</code>’s first real caller
+since it was built ahead of any caller in Phase 20.36.</p>
+<hr />
+<h2
+id="phase-20.39-templates-collect-resource-namesids-not-arns">2026-07-23
+— Phase 20.39 templates collect resource names/IDs, not ARNs</h2>
+<p><strong>Context.</strong> Found via live usage while testing the
+Static Website template: typing a full ARN
+(<code>arn:aws:s3:::my-bucket</code>) for an S3 bucket forces a
+cognitive reformatting step the operator wouldn’t otherwise need – they
+know the bucket <em>name</em>, not its ARN shape. Worse for CloudFront:
+finding a distribution’s ARN requires either the AWS Console or a
+separate CLI lookup (<code>aws cloudfront list-distributions</code>),
+breaking the interactive workflow entirely. Both are avoidable: clasm
+already resolves the account ID once at startup
+(<code>sts:GetCallerIdentity</code>,
+<code>awsclient.CheckCredentials</code>) and already knows the region,
+which is all that’s needed to construct these ARNs from the operator’s
+plain name/ID.</p>
+<p><strong>Decision.</strong> <code>IAMRoleTemplateParam</code> gains a
+<code>BuildARN(accountID, region, value string) string</code> field.
+Each of the five templates’ params now prompts for a plain name/ID (an
+S3 bucket name, a CloudFront distribution ID, a CloudWatch log group
+name, a Secrets Manager secret name) instead of a full ARN;
+<code>createIAMRoleFromTemplate</code> calls <code>BuildARN</code> (when
+set and the answer is non-blank) right after collecting each answer,
+storing the <em>constructed</em> ARN under the same key
+<code>BuildPolicy</code> already expects – so the
+<code>BuildPolicy</code> functions themselves
+(<code>staticWebsiteStatements</code>,
+<code>rdmRepositoryStatements</code>, etc.) needed no changes at all,
+only the collection step and the prompts’ wording.
+<code>CreateIAMRoleFromTemplate</code>/<code>createIAMRoleFromTemplate</code>
+gained <code>accountID, region string</code> parameters, threaded from
+<code>main.go</code>’s existing <code>account</code> (from
+<code>CheckCredentials</code>, already resolved at startup) and
+<code>cfg.Regions[0]</code>.</p>
+<p>For Secrets Manager specifically, the constructed value is a
+<em>pattern</em> with a trailing wildcard
+(<code>arn:...:secret:name-*</code>), not an exact ARN – Secrets Manager
+appends a random 6-character suffix to every secret’s real ARN that the
+operator can’t know in advance, so a trailing wildcard is the standard,
+idiomatic way IAM policies scope access to a secret by name.</p>
+<p><strong>Rejected alternative.</strong> <em>Keep collecting full ARNs,
+improve the prompt wording only</em> – rejected: the CloudFront case
+specifically can’t be fixed by better wording alone, since finding the
+ARN still requires leaving the tool. Building the ARN from a shorter,
+more memorable identifier removes the friction at its source rather than
+just describing it better.</p>
+<p><strong>Consequences.</strong> CloudFront and Secrets Manager ARNs
+are global/ region-and-account-scoped in ways that don’t always match
+<code>cfg. Regions[0]</code> exactly (e.g. a secret could live in a
+different region than the account’s primary configured one) – accepted
+as a reasonable default for this phase, matching how the rest of clasm
+already treats <code>cfg.Regions[0]</code> as the primary region for
+singleton, not-really-per- region concerns. All five templates’
+<code>BuildPolicy</code> functions and their existing unit tests were
+unaffected – only <code>createIAMRoleFromTemplate</code>’s tests
+changed, from typing literal ARN strings as prompt answers to typing
+plain names, with an added assertion confirming the constructed ARN
+appears correctly in the resulting policy document.</p>
+<hr />
+<h2 id="parallelize-per-resource-iam-tag-fetches">2026-07-23 —
+Parallelize per-resource IAM tag fetches</h2>
+<p><strong>Context.</strong> Found via live usage while testing Phase
+20.37 (Tag Management’s IAM extension): “Manage tags -&gt; IAM Role”
+took several seconds just to open the resource picker, in an account
+with dozens of roles (several AWS-service-linked,
+e.g. SageMaker/CloudTrail roles). Root cause:
+<code>ListIAMRoleSummaries</code>/<code>ListIAMInstanceProfileSummaries</code>/
+<code>ListIAMPolicySummaries</code> (Phase 20.36) fetch each resource’s
+tags one at a time, sequentially, via
+<code>ListRoleTags</code>/<code>ListInstanceProfileTags</code>/
+<code>ListPolicyTags</code> (required per-resource calls – see
+“ListRoles/ ListInstanceProfiles/ListPolicies don’t return tags inline,”
+above) – with N roles/profiles/policies, that’s N sequential network
+round-trips before any of Show Roles, Show Instance Profiles, Show
+Policies, Manage Tags, or Show All Tags can render anything.</p>
+<p><strong>Decision.</strong> Parallelize the per-resource tag fetch
+with a bounded worker pool (new <code>fetchTagsConcurrently</code> in
+<code>internal/inventory/iam.go</code>, capped at
+<code>iamTagFetchConcurrency = 10</code> in flight at once), mirroring
+<code>inventory.ListImages</code>’ own concurrent per-region fan-out
+pattern (<code>images.go</code>) – generalized here to fan out over
+resource index rather than region. All three
+<code>ListIAM*Summaries</code> functions now call this shared helper
+instead of looping sequentially.</p>
+<p><strong>Rejected alternative.</strong> <em>Unbounded concurrency</em>
+(fire all N requests at once, no cap) – rejected: an account can
+plausibly have 100+ roles between service-linked roles and
+Lambda/SageMaker-created ones (observed directly in the account this was
+tested against), and firing that many concurrent IAM API calls risks
+throttling. 10 in flight at once is a conservative, not-tuned starting
+value – worth revisiting if it proves too slow or too aggressive in
+practice.</p>
+<p><strong>Consequences.</strong> Wall-clock time drops from roughly N x
+per-call latency to roughly (N / 10) x per-call latency (plus the fixed
+cost of the initial
+<code>ListRoles</code>/<code>ListInstanceProfiles</code>/<code>ListPolicies</code>
+call) – not measured precisely, but expected to turn a multi-second
+delay into something close to imperceptible for typical account sizes.
+Error handling changes subtly: with sequential fetches, the
+<em>first</em> resource (in <code>ListRoles</code>’ own return order) to
+error would stop the loop immediately; with concurrent fetches, the
+first error <em>observed</em> (not necessarily the first resource in
+list order) is returned, only after every in-flight fetch has completed
+– behaviorally equivalent for callers (an error is an error), but worth
+noting if debug-log call ordering ever looks unexpected. All existing
+correctness tests (Origin resolution, sorting, tag-map retention, error
+propagation) were kept green through the refactor, and
+<code>go test -race</code> confirms no data race was introduced.</p>
+<hr />
+<h2
+id="real-bug-listroleslistinstanceprofileslistpolicies-dont-return-tags-inline">2026-07-23
+— Real bug: ListRoles/ListInstanceProfiles/ListPolicies don’t return
+tags inline</h2>
+<p><strong>Context.</strong> Found via live usage, not a test: the user
+tagged the real <code>air-sampling</code> role <code>Origin=DLD</code>
+(values actually cased <code>origin</code>/<code>dld</code>, matching
+their own <code>~/.clasm</code> <code>origin_tag</code> config exactly)
+from the AWS Console, restarted clasm, and Show Roles still displayed
+<code>(unset)</code>. Config loading itself was verified correct in
+isolation (a throwaway <code>go run</code> confirmed
+<code>config.Load</code> resolved <code>OriginTag.Key="origin"</code>,
+<code>OriginTag.DLDValue="dld"</code> from <code>~/.clasm</code> exactly
+as expected) – ruling out the config layer entirely. The actual cause:
+Phase 20.36’s design (DESIGN.md, “IAM Profile &amp; Role Management
+Domain”) assumed
+<code>iam:ListRoles</code>/<code>iam:ListInstanceProfiles</code>/<code>iam:ListPolicies</code>
+return each resource’s <code>Tags</code> inline, based on the vendored
+SDK’s <code>Role</code>/
+<code>InstanceProfile</code>/<code>Policy</code> response structs all
+declaring a <code>Tags []Tag</code> field. Confirmed live against the
+real account that this assumption was wrong for all three:
+<code>aws iam list-roles</code>,
+<code>aws iam list-instance-profiles</code>, and
+<code>aws iam list-policies --scope Local</code> all omit
+<code>Tags</code> entirely from their JSON output, even for resources
+confirmed (via <code>aws iam list-role-tags</code>) to actually have
+tags. The SDK’s shared <code>Tags</code> field is populated by other
+operations (<code>GetRole</code>, <code>CreateRole</code>, etc.), not
+these three List calls – reusing one response struct across multiple API
+operations doesn’t mean every operation populates every field.</p>
+<p><strong>This is the same class of mistake this project has hit
+before</strong> (DECISIONS.md, “Offer official Ubuntu LTS AMIs…” –
+getting AMI name patterns wrong when not checked against real AWS) and
+the ARM64 addendum explicitly checked live <em>because</em> of that
+history. This time the equivalent live check wasn’t done before writing
+the design – worth re-flagging as a standing lesson: an SDK type’s field
+existing is not evidence a <em>specific operation</em> populates it;
+when a design leans on a list response including something beyond the
+obviously-basic fields (here, tags), verify against a real,
+already-tagged resource before writing the design, not just by reading
+vendored struct definitions.</p>
+<p><strong>Decision.</strong> Add a per-resource tag fetch after each
+list call: new <code>IAMAPI</code> methods <code>ListRoleTags</code>,
+<code>ListInstanceProfileTags</code>, <code>ListPolicyTags</code>
+(mirrored into <code>logging_iam.go</code>), called once per
+role/profile/policy returned by
+<code>ListRoles</code>/<code>ListInstanceProfiles</code>/
+<code>ListPolicies</code> respectively, inside
+<code>internal/inventory/iam.go</code>‘s three
+<code>ListIAM*Summaries</code> functions. Every existing “resolves
+Origin” test in <code>internal/inventory/iam_test.go</code> was
+rewritten first to supply tags via the fake’s new per-name/per-ARN tag
+maps (matching the real API shape) instead of via the list-response
+structs’ <code>Tags</code> field, confirmed failing against the pre-fix
+code, then the fix made them pass – per
+[[feedback-test-before-fix]].</p>
+<p><strong>Rejected alternative.</strong> <em>Keep relying on the list
+response’s <code>Tags</code> field</em> – not actually an alternative,
+just the bug; there was never a real code path where this could have
+worked, since AWS itself doesn’t return the data.</p>
+<p><strong>Consequences.</strong> Discovery for each of Roles/Instance
+Profiles/Policies now costs N+1 IAM calls (one list + one tag-fetch per
+resource) instead of 1 – accepted, since IAM is a low-volume,
+non-rate-limited-in-practice control-plane API for an account this size,
+and there’s no way to get per-resource tags in fewer calls via these
+APIs. <code>iamTagsToMap</code> and
+<code>ResolveOrigin</code>/<code>IsDLDOwned</code> themselves needed no
+changes – the bug was entirely in what was fed to them, not in the
+tag-matching logic itself.</p>
+<hr />
+<h2
+id="iam-profile-role-management-origin-tag-revision-imss-naming-no-hardcoded-vocabulary-tagging-exempt-from-the-read-only-guard">2026-07-23
+— IAM Profile &amp; Role Management: Origin tag revision (IMSS naming,
+no hardcoded vocabulary, tagging exempt from the read-only guard)</h2>
+<p><strong>Context.</strong> Same-day follow-up to “IAM Profile &amp;
+Role Management: seven scoping decisions, bundled into v0.0.5” (below),
+after further discussion. Three corrections surfaced: (1) “central IT”
+was the wrong name – Caltech’s central IT organization is IMSS, and the
+security team is one component <em>within</em> IMSS, not a separate
+category; (2) DLD operates as an independent group, so functionally
+AWS-provided and IMSS-provided resources get identical treatment (both
+“not DLD’s”), not a three-way split with different rules; (3) the actual
+tag vocabulary (key name and which value means “DLD-owned”) isn’t
+decided yet – it’s pending a demo of this feature and feedback from the
+user’s group – so nothing about it should be hardcoded in clasm’s
+source.</p>
+<p><strong>Decision 1 (revises the prior entry’s Decision 1):
+<code>Owner</code> with a fixed <code>DLD</code>/<code>CentralIT</code>
+vocabulary is replaced by a general, config-driven <code>Origin</code>
+tag.</strong> Both the tag’s key name and which value means “DLD-owned”
+move to a new <code>origin_tag</code> config section
+(<code>~/.clasm</code>, mirroring
+<code>regions</code>/<code>backup_directories</code>), left unset by
+default (see DESIGN.md, “New Configuration: <code>origin_tag</code>”).
+Until the user’s group settles on real values and the config is updated,
+nothing is recognized as DLD-owned via tag – accepted, since guessing at
+a vocabulary that isn’t decided would just create rework once it is.</p>
+<p><strong>Rejected alternative.</strong> <em>Keep <code>Owner</code> as
+a fixed, clasm-hardcoded enum</em> (the prior entry’s original decision)
+– rejected once it became clear the actual vocabulary is still an open
+question for the user’s group, not something clasm should presume to
+answer for them.</p>
+<p><strong>Decision 2 (revises the prior entry’s Decision 4): the
+read-only guard exempts tagging.</strong> The guard still blocks
+anything that changes a role’s/ profile’s/policy’s actual permissions
+(attach/detach a managed policy, edit a trust policy, delete) on a
+resource not recognized as DLD-owned – but tagging itself is never
+gated. DLD needs to record who to contact for support on IMSS- and
+AWS-owned resources too; blocking that would defeat the reason for
+touching those resources in the first place.</p>
+<p><strong>Rejected alternative.</strong> <em>Read-only for everything,
+including tags</em> – simpler (one gate, no exception), but directly
+blocks the concrete, stated need (support-contact recording) that
+motivated allowing any interaction with non-DLD resources at all.</p>
+<p><strong>Decision 3 (revises the prior entry’s Decision 5): drop the
+dedicated “Tag as DLD-owned” action.</strong> It made sense when
+<code>Owner=DLD</code> was a clasm-hardcoded value; once the vocabulary
+moved to “TBD, decided by the user’s group,” a bespoke shortcut for one
+specific, not-yet-known value no longer made sense. Setting
+<code>Origin</code> on a legacy resource is now just an ordinary Tag
+Management edit (Phase 20.37) – no special-cased action.</p>
+<p><strong>Decision 4 (new): the browse list shows <code>Origin</code>’s
+literal value, or an explicit “(unset)” – not a fixed multi-way
+category, not collapsed to a simple editable/read-only label.</strong>
+An unset <code>Origin</code> tag is itself useful information – it tells
+the group “this one still needs a call made on it” – which a binary or
+pre-categorized display would hide. Filterable via the existing
+List-tier filter (“/”).</p>
+<p><strong>Rejected alternatives.</strong> <em>A fixed
+DLD/IMSS/AWS/Unknown category label</em> – rejected because clasm has no
+reliable way to distinguish IMSS from AWS-managed before the vocabulary
+exists; the label would be a guess dressed up as a category.
+<em>Collapse to binary editable/read-only</em> – considered and
+initially favored earlier the same day, but reversed once it was clear
+this throws away the “nobody’s decided yet” signal that makes an unset
+tag valuable to surface at all.</p>
+<p><strong>Decision 5 (new): this is a general mechanism, but IAM-only
+in display for v0.0.5.</strong> <code>Origin</code> is designed as a
+tool-wide convention (joining
+<code>Project</code>/<code>Environment</code>), not IAM-specific, so it
+costs little extra to build generally now. But the column is only added
+to the IAM domain’s three list views this release – not to the five
+existing taggable kinds (instances, AMIs, launch templates, key pairs,
+buckets).</p>
+<p><strong>Rejected alternative.</strong> <em>Surface
+<code>Origin</code> everywhere immediately</em> – rejected for this
+release: those five resource kinds don’t share IAM’s “is this even ours
+to touch” ambiguity, so the need there is weaker, and proving the
+convention out in one place before a group demo is safer than rolling it
+out unproven everywhere at once.</p>
+<p><strong>Consequences.</strong> The IAM-domain implementation phases
+(PLAN.md Phases 20.36/20.37) gain a config-loading dependency
+(<code>internal/config</code> needs an <code>OriginTag</code> struct
+with <code>Key</code>/<code>DLDValue</code> fields, both defaulting to
+their documented values) that the prior pass hadn’t scoped; the
+previously-planned “Tag as DLD-owned” menu action is removed from Phase
+20.36’s work items, since Decision 3 makes it redundant with Phase
+20.37’s general tagging. No change to Decisions 2, 3, 6, 7 from the
+prior entry (creation-capability scope, trust-principal scope, template
+source, Policy-as-top-level-kind) – those stand as originally
+recorded.</p>
+<hr />
+<h2
+id="iam-profile-role-management-seven-scoping-decisions-bundled-into-v0.0.5">2026-07-23
+— IAM Profile &amp; Role Management: seven scoping decisions, bundled
+into v0.0.5</h2>
+<p><strong>Context.</strong> The AWS Console makes two questions hard to
+answer quickly: what roles/profiles/policies already exist and where
+they came from (Caltech Library DLD’s own, ones opened up by central IT
+for cross-team tooling such as CrowdStrike, or AWS’s own huge
+managed-policy catalog, all interleaved in one flat list), and whether
+an existing one is safe to reuse or a new one is actually needed. Seven
+scoping decisions were needed before design work could start (see
+DESIGN.md, “IAM Profile &amp; Role Management Domain,” for the full
+design built on top of them, and
+<code>aim_management_and_support_proposal.md</code> for the paths
+considered and rejected for each). Also decided the same day: this work
+is bundled into the still-unreleased v0.0.5 rather than deferred to
+v0.0.6, holding back the already-verified Phases 20.33-20.35 until IAM
+work is also done — a deliberate trade-off, not an oversight.</p>
+<p><strong>Decision 1: categorize origin via a new <code>Owner</code>
+tag, tag-based going forward.</strong> Fixed vocabulary
+(<code>DLD</code>/<code>CentralIT</code>/absent), matching the existing
+<code>Project</code>/<code>Environment</code> convention style. clasm
+tags what it creates from here on; it does not infer category from
+naming or maintain a separate curated allow-list.</p>
+<p><strong>Rejected alternatives.</strong> <em>A curated allow-list in
+clasm config</em> (name→category mapping maintained by hand) — works
+immediately for legacy/central-IT resources that can’t be tagged, but is
+a config file that silently drifts as new resources appear.
+<em>Naming-convention inference</em> — needs no new tagging, but depends
+on a consistent account-wide convention that isn’t confirmed to exist.
+<em>Hybrid (tag+fallback list)</em> — covers both cases but is two
+mechanisms to keep in sync, rejected as unnecessary complexity for a
+v0.0.5-scale first pass.</p>
+<p><strong>Decision 2: v0.0.5 adds real role/policy creation, reversing
+the 2026-07-02 “never creates a role” scope</strong> (DECISIONS.md,
+“Support picking or creating an IAM instance profile from within
+awsops”) — via curated per-use-case templates, scoped as parametrized
+statement sets (operator supplies ARNs at creation time), not free-form
+policy authoring.</p>
+<p><strong>Rejected alternatives.</strong> <em>Attach-only, no new
+policy JSON</em> — lower risk, but doesn’t solve “I need a new role and
+none of the existing policies fit,” which is exactly the gap the
+2026-07-22 granian incident exposed. <em>Defer to a later version</em> —
+would ship the discovery half sooner, but the operator-facing problem
+(“is there a role I can use for this new service”) isn’t solved by
+discovery alone.</p>
+<p><strong>Decision 3: trust principal is EC2 only for now, modeled for
+extension.</strong> <code>TrustPrincipal</code> is a small enum/type
+from the start so Lambda/ECS-task principals can be added later without
+reshaping the creation flow.</p>
+<p><strong>Rejected alternative.</strong> <em>EC2 + Lambda now</em> —
+this team isn’t making heavy use of Lambda or ECS today; adding it now
+would be speculative scope with no concrete use case yet.</p>
+<p><strong>Decision 4: non-DLD-owned resources are read-only in clasm,
+always</strong> — enforced by clasm itself, independent of what the
+active AWS credentials would technically permit.</p>
+<p><strong>Rejected alternatives.</strong> <em>Configurable
+per-category</em> (DLD editable, CentralIT flagged read-only,
+AWS-managed always read-only) — same idea, more moving parts, rejected
+as unneeded granularity for a first pass. <em>Rely on IAM permissions
+only</em> — simplest, but removes a guardrail that costs little to keep;
+a central-IT or AWS-managed resource should never be one accidental menu
+selection away from modification by this tool.</p>
+<p><strong>Decision 5: legacy/untagged DLD resources get a dedicated
+“Tag as DLD-owned” action</strong>, not a default-to-editable
+posture.</p>
+<p><strong>Rejected alternatives.</strong> <em>Untagged defaults to
+DLD-owned (editable)</em> — safer for day-one usability, but weakens
+Decision 4’s guardrail until backfilling actually happens (an untagged
+central-IT resource would also read as editable). <em>Accept the gap,
+backfill outside clasm</em> (AWS CLI/Console) — no new clasm code, but
+moves the backfill step outside the tool this whole effort is about.</p>
+<p><strong>Decision 6: the five per-use-case policy templates are
+drafted from scratch</strong> (Static Website, RDM Repository, Bridge
+Service, Patron-Facing, Data Processing), not sourced from existing
+policy documents — none were available. The three thinnest (Bridge
+Service, Patron-Facing, Data Processing) are accepted as v0.0.5 starting
+points, refined once real usage surfaces what these services actually
+need, not held back until they’re fully scoped.</p>
+<p><strong>Decision 7: IAM Policy is a full top-level browsable/taggable
+kind</strong>, symmetric with Role and Instance Profile — not secondary,
+viewed only from inside a role’s detail screen. The “what already
+exists” question this whole effort opens with applies to policies just
+as much as to roles.</p>
+<p><strong>Rejected alternative.</strong> <em>Policy as secondary,
+role-detail-only</em> — less to build, but doesn’t answer “what
+customer-managed policies exist account-wide” as a standalone question,
+which was one of the two motivating problems from the start.</p>
+<p><strong>Consequences.</strong> v0.0.5’s release is held back until
+this design is implemented, tested, and (where practical)
+real-AWS-verified alongside Phases 20.33-20.35 — a real schedule cost,
+accepted deliberately. <code>tagManagementKinds</code> grows from five
+entries to eight (<code>IAM Role</code>,
+<code>IAM Instance Profile</code>, <code>IAM Policy</code> added),
+reusing Phase 20.30’s generalized <code>tagApplyFunc</code>-closure
+pattern rather than a new tagging mechanism. A new fifth Domain Picker
+entry, IAM, is added alongside Compute/Key Management/S3/Tag Management.
+clasm’s IAM surface grows from “pick or attach an existing role” to
+“create a role from a curated template,” a genuine scope expansion that
+needs its own test coverage and (per this project’s established
+practice) real-AWS verification before release, not just unit tests.</p>
+<hr />
+<h2
+id="arm64ubuntu-26.04-filter-the-instance-type-list-by-ami-architecture-no-new-pre-flight-check">2026-07-22
+— ARM64/Ubuntu 26.04: filter the instance-type list by AMI architecture,
+no new pre-flight check</h2>
+<p><strong>Context.</strong> Adding arm64 (Graviton) support to the
+curated AMI and instance-type lists raised the same question the
+IAM-profile picker just answered: how to keep an operator from picking
+an architecture-incompatible combination. The initial design proposed a
+new pre-flight check mirroring
+<code>ensureInstanceTypeENACompatible</code> – query, then offer “change
+instance type or abort” if the picked instance type doesn’t match the
+AMI’s architecture.</p>
+<p><strong>Decision.</strong> Simplified: filter the instance-type
+picker’s own choice list by the already-picked AMI’s architecture, the
+same approach just adopted for the IAM-profile/role picker (see “Filter
+non-SSM-capable profiles/roles from the picker, don’t just annotate
+them,” above) – don’t offer an instance type that would just be wrong,
+rather than offering it and rejecting the pick afterward.
+<code>promptInstanceType</code> gains an <code>arch string</code>
+parameter (<code>""</code> = no filter); the two top-level launch-param
+collection functions pass the picked AMI’s architecture, the two
+ENA/AZ-incompatibility remediation call sites pass <code>""</code>
+(unfiltered, matching their current behavior unchanged).</p>
+<p><strong>Rejected alternative.</strong> <em>A new
+architecture-compatibility pre-flight check</em>, structurally cloning
+the ENA check – rejected once the IAM-profile picker’s own live-testing
+feedback (same day) established that filtering beats “show everything,
+reject on pick” whenever there’s no legitimate reason to show the
+invalid option in the first place. There’s no case where picking an
+arm64 instance type for an x86_64 AMI (or vice versa) is ever valid,
+exactly the same shape of argument that justified filtering there.</p>
+<p><strong>Consequences.</strong> Simpler than the rejected alternative:
+no new <code>incompatibilityChoice</code> variant, no new remediation
+loop, no new tests for a reject-then-retry flow. The two remediation
+call sites (ENA/AZ “change instance type”) deliberately stay unfiltered
+rather than threading the AMI’s architecture further through
+<code>ensureInstanceTypeENACompatible</code>/the AZ check’s own
+signatures – accepted as a real but very unlikely gap (a
+non-ENA-required AMI old enough to need that remediation path predates
+Graviton’s existence in practice).</p>
+<hr />
+<h2
+id="always-gzip-compress-user-data-before-base64-encoding-it">2026-07-22
+— Always gzip-compress user-data before base64-encoding it</h2>
+<p><strong>Context.</strong> Live testing hit
+<code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>
+creating a launch template from
+<code>invenio-rdm-13-granian-init.yaml</code> (16976 bytes raw, already
+over the limit before clasm even touches it –
+<code>invenio-rdm-13-gunicorn-init.yaml</code> is in the same boat at
+16996 bytes). clasm currently just base64-encodes the raw cloud-init
+text as-is at every write site (<code>Launch</code>,
+<code>buildRequestLaunchTemplateData</code>,
+<code>createLaunchTemplateVersion</code>) with no compression.
+cloud-init itself auto-detects gzip-compressed user-data (checks the
+gzip magic bytes) and transparently decompresses it before running – a
+standard, documented AWS/cloud-init pattern, not a hack. Gzipping the
+actual 16976-byte file (confirmed via plain
+<code>gzip -c | wc -c</code>, not assumed) brings it to 5628 bytes,
+comfortably under the limit.</p>
+<p><strong>Decision.</strong> Two new shared helpers
+(<code>userdata_gzip.go</code>):
+<code>encodeUserData(plainText string) string</code> gzip-compresses
+then base64-encodes, used at all three write sites;
+<code>decodeUserData(encoded string) (string, error)</code>
+base64-decodes then checks for the gzip magic bytes
+(<code>0x1f 0x8b</code>) – gunzips if present, returns the raw bytes
+as-is otherwise – used at all four read sites
+(<code>ShowCloudInitFromInstance</code>,
+<code>syncLaunchTemplate</code>’s existing-version read,
+<code>show_launch_template.go</code>’s two-version diff). The as-is
+fallback is what keeps this backward compatible with every
+already-existing instance/template whose user-data was written before
+this change, in plain (non-gzip) form – both old and new content read
+correctly without needing to know which one a given resource has.</p>
+<p><strong>Rejected alternative.</strong> <em>Only gzip when the raw
+content is close to or over the limit</em> – rejected in favor of always
+gzipping: cloud-init handles both forms identically, so there’s no
+behavioral reason to special-case small files, and a size-threshold
+decision is one more thing to get wrong (and test) for no benefit. The
+only cost is a minor readability regression for someone manually
+inspecting raw user-data outside clasm
+(<code>aws ec2 describe-instance-attribute</code> returns gzip’d bytes
+now, not readable YAML directly) – accepted, since clasm’s own
+“Show/export cloud-init” already exists specifically to make this
+readable again through the tool.</p>
+<p><strong>Consequences.</strong> <code>encodeUserData</code> has no
+error return – gzip-writing to an in-memory <code>bytes.Buffer</code>
+cannot fail in practice, so there’s nothing meaningful to propagate
+(avoids threading an error path for a scenario that can’t happen).
+<code>decodeUserData</code> does return an error (malformed base64 or a
+corrupt/truncated gzip stream both remain genuinely possible on
+read).</p>
+<hr />
+<h2
+id="filter-non-ssm-capable-profilesroles-from-the-picker-dont-just-annotate-them">2026-07-22
+— Filter non-SSM-capable profiles/roles from the picker, don’t just
+annotate them</h2>
+<p><strong>Context.</strong> Live testing of Phase 20.33 Part 2
+(SSM-capable instance profile enforcement): creating a launch template
+from cloud-init YAML for the Granian test instance, the operator hit
+“Create new instance profile” and was shown the account’s full IAM role
+list, annotated per role with SSM-capability – but with real accounts
+holding many roles for unrelated services (Lambda execution roles,
+service-linked roles, …), a long annotated list that’s mostly “cannot be
+selected” entries was harder to use than no annotation at all, not
+easier. Since SSM support is now a hard, unconditional requirement (no
+opt-out, same as IMDSv2), there’s no scenario where picking a
+non-capable entry is ever valid – showing it at all just adds noise to
+scan past.</p>
+<p><strong>Decision.</strong>
+<code>buildInstanceProfileChoices</code>/<code>buildRoleChoices</code>
+(<code>create_instance_profile.go</code>) now filter out non-capable
+profiles/roles entirely rather than including them with a
+<code>" -- NOT SSM-capable..."</code> label suffix. The
+<code>ssmCapable</code> field and the post-pick rejection branch in
+<code>promptIAMInstanceProfileOrCreate</code>/<code>createInstanceProfileInteractive</code>
+are removed as dead code – filtering guarantees every remaining choice
+is already capable, so there’s nothing left to reject. If filtering
+empties the role list entirely,
+<code>createInstanceProfileInteractive</code> reports it the same way it
+already reports “no roles at all in this account” (a clear message,
+<code>created=false</code>, not an error) – same shape, new reason.</p>
+<p><strong>Rejected alternative (superseded).</strong> <em>Show every
+profile/role, annotated, reject on selection</em> – this session’s
+original Part 2 design. Chosen at the time because DESIGN.md’s own “Not
+decided yet” note explicitly left “shown-but-blocked vs. …” open; live
+usage answered it: for a list of any real size,
+annotation-without-filtering just makes the operator read past
+irrelevant entries to find the ones that matter, providing no benefit
+over not showing them at all (there’s no “pick anyway” override to
+explain, since SSM support isn’t optional).</p>
+<p><strong>Consequences.</strong> Simpler code (fewer fields, fewer
+branches) and a shorter, more usable list matching what the enforcement
+itself already requires. If an account has zero SSM-capable roles, the
+operator now sees a single clear “none found” message instead of a long
+list of entries none of which can be selected.</p>
+<hr />
+<h2
+id="ssm-capable-instance-profile-enforcement-retrofit-three-scoping-decisions">2026-07-22
+— SSM-Capable Instance Profile Enforcement + Retrofit: three scoping
+decisions</h2>
+<p><strong>Context.</strong> Live real-AWS verification of “Configurable
+EBS Root Volume Size” (PLAN.md Phase 20.31) found that both test
+instances had <code>IamInstanceProfile: null</code> – no instance
+profile at all – so <code>growRootFilesystem</code>’s SSM-based OS-level
+growth automation could never come online. Separately, the same day (and
+once before, setting up an InvenioRDM test instance), there was no way
+to attach an IAM instance profile to an instance already running, only
+at launch. Three scoping decisions were needed before design work could
+start (see DESIGN.md, “SSM-Capable Instance Profile Enforcement +
+Retrofit,” for the full design built on top of them).</p>
+<p><strong>Decision 1: how to verify a role is “SSM-capable.”</strong>
+Check for AWS’s own managed policy,
+<code>AmazonSSMManagedInstanceCore</code>, attached via
+<code>iam:ListAttachedRolePolicies</code> – not an inline-policy content
+check.</p>
+<p><strong>Rejected alternative.</strong> <em>Parse inline policies
+(<code>iam:ListRolePolicies</code>/<code>GetRolePolicy</code>) for
+functionally-equivalent custom permissions</em> – rejected: this means
+interpreting arbitrary IAM policy JSON to decide whether it grants
+“enough” SSM access, which is exactly the kind of guessing Phase 20.31’s
+own “fail loud, don’t guess” convention
+(<code>growRootFilesystem</code>’s device/filesystem detection) argues
+against. A role with a custom, non-managed-policy path to equivalent
+permissions will be reported as not SSM-capable – a known, accepted
+limitation, not an oversight. clasm still never authors IAM policies
+itself (DECISIONS.md, “2026-07-02 – Support picking or creating an IAM
+instance profile from within awsops”), so the fix for a flagged role is
+an IAM-console change outside clasm, same boundary as always.</p>
+<p><strong>Decision 2: the retrofit workflow (associate/replace a
+profile on a running instance) is general-purpose, not
+SSM-specific.</strong> A new “Associate/replace IAM instance profile”
+menu entry lets an operator attach <em>any</em> instance profile to a
+running instance; SSM-capability is shown but not gated there.</p>
+<p><strong>Rejected alternative.</strong> <em>A narrower, dedicated
+“enable SSM” workflow</em> that only allows attaching an SSM-capable
+profile – rejected because the incident that first surfaced this gap
+(setting up an already-running InvenioRDM test instance) needed a
+profile for S3 access, not SSM at all. Gating the retrofit path to
+SSM-capable profiles only would have left that exact original use case
+unsolved.</p>
+<p><strong>Decision 3: launch-time enforcement checks every profile
+shown in the picker, existing and newly-created, not just newly-created
+ones.</strong> <code>promptIAMInstanceProfileOrCreate</code>’s
+existing-profile list and <code>createInstanceProfileForRole</code>’s
+role list both get SSM-capability annotation/gating, and the
+<code>"(none)"</code> choice is removed entirely – same posture as
+IMDSv2’s <code>required</code> having no <code>optional</code> escape
+hatch.</p>
+<p><strong>Rejected alternative.</strong> <em>Only verify newly-created
+profiles</em>, trusting whatever’s already in the account – rejected as
+inconsistent with “insist on SSM support”: an operator picking an
+existing, non-SSM-capable profile from the list would hit exactly the
+same silent-degradation problem Phase 20.31’s live testing just
+surfaced, just via a different picker branch.</p>
+<p><strong>Consequences.</strong> An instance profile is now mandatory
+at launch (instance creation, cloud-init launch, launch templates all
+share the same collection path, so all three gain enforcement together);
+an operator without any SSM-capable role in their account is blocked at
+launch until one exists, with no clasm-driven remediation path (by
+design – clasm doesn’t author policies). The retrofit workflow adds a
+new <code>EC2API</code> surface
+(<code>AssociateIamInstanceProfile</code>,
+<code>ReplaceIamInstanceProfileAssociation</code>) and reuses
+<code>promptIAMInstanceProfileOrCreate</code> rather than inventing a
+second profile-picking UI.</p>
+<hr />
+<h2
 id="widen-pause-for-acknowledgment-to-every-action-not-just-errors">2026-07-22
 — Widen “pause for acknowledgment” to every action, not just errors</h2>
 <p><strong>Context.</strong> Live real-AWS testing of the same day’s
