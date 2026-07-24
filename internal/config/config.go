@@ -80,6 +80,24 @@ func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string
 	return ""
 }
 
+// Save marshals cfg to YAML and writes it to path (0644 -- no secrets
+// live in this file, unlike the 0600 private-key convention
+// create_key_pair.go uses). Used by the Configure clasm domain
+// (DESIGN.md, "Configure clasm Domain") to persist edits made against an
+// in-memory working copy; round-trips through yaml.v3, so any
+// hand-written comments in an existing file are lost once Save writes
+// it.
+func Save(path string, cfg Config) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
 // DefaultPath returns ~/.clasm, falling back to a cwd-relative
 // ".clasm" if the home directory can't be resolved, matching this
 // project's existing sshKeyDir() fallback pattern (internal/workflow/

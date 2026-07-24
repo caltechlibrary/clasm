@@ -495,6 +495,9 @@ func main() {
 		IAM: func(ctx context.Context) error {
 			return workflow.RunIAMMenu(ctx, out, iamActions)
 		},
+		Configuration: func(ctx context.Context) error {
+			return workflow.RunConfigureMenu(ctx, out, configPath)
+		},
 	}
 
 	if err := workflow.RunDomainPicker(ctx, out, domains); err != nil {

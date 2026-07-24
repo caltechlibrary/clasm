@@ -187,6 +187,58 @@ func TestBackupDirectoryFor_EmptyNameReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestSave_RoundTripsThroughLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clasm-config")
+	cfg := Config{
+		Regions:           []string{"us-east-1", "us-east-2"},
+		BackupDirectories: []BackupDirectoryRule{{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"}},
+		OriginTag:         OriginTagConfig{Key: "Origin", DLDValue: "DLD"},
+	}
+
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error loading saved config: %v", err)
+	}
+	if len(got.Regions) != 2 || got.Regions[0] != "us-east-1" || got.Regions[1] != "us-east-2" {
+		t.Errorf("Regions = %v, want %v", got.Regions, cfg.Regions)
+	}
+	if len(got.BackupDirectories) != 1 || got.BackupDirectories[0] != cfg.BackupDirectories[0] {
+		t.Errorf("BackupDirectories = %v, want %v", got.BackupDirectories, cfg.BackupDirectories)
+	}
+	if got.OriginTag != cfg.OriginTag {
+		t.Errorf("OriginTag = %v, want %v", got.OriginTag, cfg.OriginTag)
+	}
+}
+
+func TestSave_WritesReadablePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clasm-config")
+	if err := Save(path, Config{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("unexpected error stat-ing saved file: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("permissions = %v, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestSave_UnwritablePathErrors(t *testing.T) {
+	// A path inside a nonexistent directory can never be created by
+	// os.WriteFile -- confirms Save surfaces the error rather than
+	// silently swallowing it.
+	path := filepath.Join(t.TempDir(), "does-not-exist", "clasm-config")
+	if err := Save(path, Config{}); err == nil {
+		t.Fatal("expected an error for an unwritable path")
+	}
+}
+
 func TestDefaultPath_ReturnsHomeDirClasm(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

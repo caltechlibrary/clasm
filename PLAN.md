@@ -4807,56 +4807,86 @@ Existing `pickInstance`/`pickImage` (Picker-tier), `GatherVolumeInfo`
 
 ## Phase 20.42 — Configure clasm Domain
 
-**Status: designed 2026-07-24, targeted for v0.0.5, not yet implemented**
-(DESIGN.md, "Configure clasm Domain"; DECISIONS.md, "Configure clasm
-domain: explicit Save, region changes deferred to next launch").
+**Status: designed, implemented, and unit-tested 2026-07-24, targeted for
+v0.0.5** (DESIGN.md, "Configure clasm Domain"; DECISIONS.md, "Configure
+clasm domain: explicit Save, region changes deferred to next launch").
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
+real-AWS-verified (this domain makes no AWS calls at all, so "verified"
+here just means a live manual walkthrough).
 
 ### Work Items
 
-- [ ] `config.Save(path string, cfg Config) error` (`internal/config/config.go`)
-      -- `yaml.Marshal(cfg)`, `os.WriteFile(path, data, 0644)`. First
+- [x] `config.Save(path string, cfg Config) error` (`internal/config/config.go`)
+      -- `yaml.Marshal(cfg)`, `os.WriteFile(path, data, 0o644)`. First
       write path in this package; `Load` only reads today
-- [ ] New `internal/workflow/configure_menu.go`: `ConfigureActions`
-      struct + `configMenuItems` (Show current config, Edit regions,
+- [x] New `internal/workflow/configure_menu.go`: `ConfigureActions`
+      struct + `configureMenuItems` (Show current config, Edit regions,
       Edit backup directory rules, Edit Origin tag config, Save),
-      following `tagmgmt_menu.go`'s loop-until-'q' shape. The loop holds
-      a working `config.Config` copy plus a `dirty bool`; 'q' with
-      `dirty == true` shows the unsaved-changes warning (DECISIONS.md,
-      Decision 1) before exiting
-- [ ] `displayConfig(w io.Writer, cfg Config)` -- Show current config,
-      curated-field style matching `displayLaunchTemplateVersion`
-- [ ] Edit regions: list current (`tui` List-tier or plain numbered
-      list, matching this domain's existing "list + pick to remove"
-      shape elsewhere), add one via a plain prompt (free-text,
-      DECISIONS.md Decision 2 -- no AWS region validation), remove one
-      via `pickString`/`pickComparable` (Menu-tier, since a region name
-      is a plain comparable string)
-- [ ] Edit backup directory rules: list current `pattern -> directory`
-      pairs in order, add one (two prompts, appended to the end -- first
-      match wins per `config.BackupDirectoryFor`), remove one via a
-      picker
-- [ ] Edit Origin tag config: two prompts (`key`, `dld_value`) pre-filled
-      with the working copy's current values, via `ui.Prompt`/
-      `ui.WithDefault`
-- [ ] Save action calls `config.Save` against the resolved config path
-      (threaded in from `cmd/clasm/main.go`'s existing `configPath`
-      flag/`config.DefaultPath()`), clears `dirty`, confirms success in
-      the UI, and explicitly notes region changes take effect next
-      launch (DECISIONS.md, Decision 3)
-- [ ] `domainItems` (`internal/workflow/domain_menu.go`) gains a sixth
-      entry, "Configuration", appended after "IAM"; `DomainActions`
-      gains a `Configuration func(ctx context.Context) error` field;
-      wired into `cmd/clasm/main.go`
+      following `tagmgmt_menu.go`'s loop-until-'q' shape exactly
+      (`RunConfigureMenu`/`runConfigureMenu`/`pickConfigureItem`/a
+      per-iteration `Refresh` -- a no-op here, since this domain makes no
+      AWS calls, but kept for parity so the loop's normal-exit path stays
+      testable via ctx cancellation the same way every other domain menu
+      already is). The working `config.Config` copy and `dirty` flag are
+      closed over by `RunConfigureMenu`'s own action closures (not
+      threaded through `ConfigureActions` as data) -- `dirty` is exposed
+      to the loop via a `Dirty func() bool` field, checked when the
+      picker errors (any cause, matching every other domain's
+      unconditional `mapMenuPickerErr` -- accessible mode has no way to
+      distinguish a real quit from other picker errors) and printed via
+      `warnIfDirtyOnQuit`
+- [x] New `internal/workflow/configure_edit.go`: `displayConfig`,
+      `editRegions`, `editBackupDirectoryRules`, `editOriginTag`,
+      `warnIfDirtyOnQuit` -- kept separate from the dispatch loop so each
+      is directly unit-testable as a bounded, single-pass function (each
+      inner edit loop exits via an explicit "Done" choice, never by
+      exhausting scripted input -- necessary because huh's accessible
+      mode doesn't reliably surface EOF as an error on a re-driven
+      `Select`/`Input`, the same gotcha PLAN.md Phase 20.29 already
+      found; exhausting input to end a loop is not a safe test strategy
+      anywhere in this codebase)
+- [x] `displayConfig(w io.Writer, cfg config.Config)` -- Show current
+      config, curated-field style matching `displayLaunchTemplateVersion`
+- [x] Edit regions: `editRegions` loops a plain `pickString` action menu
+      (Add/Remove/Done); add via a free-text `ui.Prompt` (DECISIONS.md
+      Decision 2 -- no AWS region validation, blank entries skipped);
+      remove via `pickString` over the current region list itself
+      (`slices.Index`/`slices.Delete`)
+- [x] Edit backup directory rules: `editBackupDirectoryRules`, same
+      Add/Remove/Done shape -- add prompts pattern then directory
+      (blank either skips), appended to the end (first-match-wins order);
+      remove via `pickString` over `"pattern -> directory"` labels
+- [x] Edit Origin tag config: `editOriginTag`, two `ui.Prompt`/
+      `ui.WithDefault` prompts pre-filled with the working copy's current
+      values; a blank key falls back to `config.DefaultOriginTagKey`,
+      matching `config.Load`'s own per-field default behavior
+- [x] Save action calls `config.Save` against the resolved config path
+      (`RunConfigureMenu`'s own `configPath` parameter, threaded from
+      `cmd/clasm/main.go`'s existing `-config` flag/`config.DefaultPath()`),
+      clears `dirty`, confirms success in the UI, and explicitly notes
+      region changes take effect next launch (DECISIONS.md, Decision 3)
+- [x] `domainItems`/`DomainActions` (`internal/workflow/domain_menu.go`)
+      gain a sixth entry/field, "Configuration"/`Configuration func(ctx
+      context.Context) error`, appended after IAM (the "no Exit entry"
+      test's hardcoded count updated 5 -> 6); wired into
+      `cmd/clasm/main.go`
 
 ### Tests
 
-Test-first throughout. `config.Save` covered directly (round-trips a
-`Config` through `Save` then `Load`, confirms `0644` permissions,
-confirms a malformed path errors cleanly). The domain's menu-loop
-actions (add/remove region, add/remove backup rule, edit origin tag,
-Save, the dirty/'q' warning) driven end to end via accessible-mode pipe
-input, matching `tagmgmt_menu.go`'s own test shape. `displayConfig`
-covered via captured-output assertions.
+Test-first throughout, confirmed failing (undefined symbols) before each
+implementation existed. `config.Save` covered directly: round-trips a
+`Config` through `Save` then `Load`, confirms `0o644` permissions,
+confirms an unwritable path errors cleanly. `editRegions`/
+`editBackupDirectoryRules`/`editOriginTag`/`displayConfig`/
+`warnIfDirtyOnQuit` each covered directly and independently (add, remove,
+blank-entry-skipped, no-entries-to-remove, unchanged-values-not-marked-
+dirty, blank-key-falls-back-to-default). `runConfigureMenu`'s dispatch
+loop covered the same way `runTagMgmtMenu` already is: dispatch-to-
+chosen-action, Save dispatches to its own action, Refresh runs once
+after a successful action, a single action's error doesn't crash the
+loop, pause-for-acknowledgment after a successful action -- every case
+terminates via ctx cancellation from within a test-supplied action
+closure, never by letting scripted input run out.
 
 ### Files
 

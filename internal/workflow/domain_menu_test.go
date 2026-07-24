@@ -107,6 +107,32 @@ func TestRunDomainPicker_DispatchesToIAM(t *testing.T) {
 	}
 }
 
+func TestRunDomainPicker_DispatchesToConfiguration(t *testing.T) {
+	var compute, keyMgmt, s3, tagMgmt, iamDomain, configuration int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := DomainActions{
+		Compute:       backToPickerAction(&compute),
+		KeyManagement: backToPickerAction(&keyMgmt),
+		S3:            backToPickerAction(&s3),
+		TagManagement: backToPickerAction(&tagMgmt),
+		IAM:           backToPickerAction(&iamDomain),
+		Configuration: cancelingBackToPickerAction(&configuration, cancel),
+	}
+
+	menuInput := newHuhAccessibleInput("6\n") // Configuration
+	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if configuration != 1 {
+		t.Errorf("configuration calls = %d, want 1", configuration)
+	}
+	if compute != 0 || keyMgmt != 0 || s3 != 0 || tagMgmt != 0 || iamDomain != 0 {
+		t.Errorf("expected only Configuration to be dispatched, got compute=%d keyMgmt=%d s3=%d tagMgmt=%d iamDomain=%d", compute, keyMgmt, s3, tagMgmt, iamDomain)
+	}
+}
+
 func TestRunDomainPicker_BackToDomainPickerReturnsToThePicker(t *testing.T) {
 	var compute int
 	term, buf := newTermOnly()
@@ -190,8 +216,8 @@ func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
 }
 
 func TestDomainItems_NoExitEntry(t *testing.T) {
-	if len(domainItems) != 5 {
-		t.Fatalf("len(domainItems) = %d, want 5 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
+	if len(domainItems) != 6 {
+		t.Fatalf("len(domainItems) = %d, want 6 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
 	}
 	for _, item := range domainItems {
 		if item.action == nil {

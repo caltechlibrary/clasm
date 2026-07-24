@@ -266,6 +266,11 @@ type DomainActions struct {
 	// with its Origin tag and DLD-ownership, distinct from Tag
 	// Management's own cross-resource tag-editing entry point.
 	IAM func(ctx context.Context) error
+	// Configuration is the sixth domain (DESIGN.md, "Configure clasm
+	// Domain"): view/edit clasm's own ~/.clasm settings (regions, backup
+	// directory rules, Origin tag config) from within clasm instead of
+	// hand-editing YAML.
+	Configuration func(ctx context.Context) error
 }
 
 // domainItem pairs a domain-picker label with the DomainActions field it
@@ -288,6 +293,7 @@ var domainItems = []domainItem{
 	{"S3 (Buckets & Static Websites)", func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
 	{"Tag Management", func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
 	{"IAM", func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
+	{"Configuration", func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }
 
 // pickDomainItem runs the domain picker's huh.Select and returns the
