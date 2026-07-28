@@ -2,10 +2,13 @@ package workflow
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 func TestLoadUserData_Empty(t *testing.T) {
@@ -144,6 +147,48 @@ func TestPromptCloudInitYAMLFile_ToleratesLeadingAtSign(t *testing.T) {
 	var buf bytes.Buffer
 
 	got, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput("@"+path+"\n"), &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestPromptCloudInitYAMLFile_BareQCancels(t *testing.T) {
+	// Phase 20.45: a bare "q" is the same discoverable single-step
+	// cancel every Select-based picker in this app already offers --
+	// unlike those, a free-text huh.Input has no built-in Quit key, so
+	// this has to be handled explicitly (see DESIGN.md, "Cloud-Init
+	// Picker: Discoverable Cancel + a Second, Related Bug").
+	var buf bytes.Buffer
+	_, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput("q\n"), &buf)
+	if !errors.Is(err, ui.ErrCancelled) {
+		t.Fatalf("got error %v, want ui.ErrCancelled", err)
+	}
+}
+
+func TestPromptCloudInitYAMLFile_AtQStillReadsAFileNamedQ(t *testing.T) {
+	// The cancel check must fire on a bare "q" only -- an explicit "@q"
+	// still means "read a file literally named q", same as any other
+	// "@"-prefixed path.
+	want := "#cloud-config\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "q")
+	if err := os.WriteFile(path, []byte(want), 0o644); err != nil {
+		t.Fatalf("writing test fixture: %v", err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	var buf bytes.Buffer
+	got, err := promptCloudInitYAMLFile(&buf, newHuhAccessibleInput("@q\n"), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

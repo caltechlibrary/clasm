@@ -37,7 +37,7 @@ func SyncLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]aws
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
-	return syncLaunchTemplate(ctx, w, clients, lt, nil, nil)
+	return cancelledIsNil(w, syncLaunchTemplate(ctx, w, clients, lt, nil, nil))
 }
 
 // syncLaunchTemplate is SyncLaunchTemplate's testable core, once a

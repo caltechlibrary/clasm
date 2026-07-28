@@ -1904,6 +1904,73 @@ pre-flight check ships (see TODO.md's Someday/maybe).
 Exact wording of the pre-flight error message beyond "states the
 compressed size and the overage" -- left for the implementation plan.
 
+## Cloud-Init Picker: Discoverable Cancel + a Second, Related Bug (Design Addendum, 2026-07-28, PLAN.md Phase 20.45)
+
+**Status: designed, implemented, and unit-tested 2026-07-28.** Motivated by TODO.md's own bug report:
+"When selecting a cloud init, there is no obvious exit, 'q' is treated
+as a filename." Investigating it surfaced two distinct, compounding
+problems, both in the same area of code.
+
+**Bug 1 -- no discoverable single-step cancel on
+`promptCloudInitYAMLFile` (`userdata.go`).** Every Select-based picker
+in this app (`pickString`/`pickComparable`) shows a `hintCancel`-style
+"(q to cancel)" hint and binds 'q' as a Quit key alongside Ctrl+C
+(`menuQuitKeyMap`). `promptCloudInitYAMLFile` is a free-text
+`huh.Input` field (via `ui.Prompt`), which has no such binding --
+confirmed by reading `huh`'s own `InputKeyMap` (`keymap.go`), which
+only defines `Next`/`Prev`/`Submit`/`AcceptSuggestion`, nothing for
+Quit. An operator trained by every other picker in the app types "q",
+which is simply accepted as literal text, then fails to read as a file
+and re-prompts forever with no hint that anything else would work.
+
+**Bug 2 -- found while tracing where a cancel signal actually goes:
+`SyncLaunchTemplate` (`launch_template_sync.go`) never wraps its
+testable core's return value with `cancelledIsNil`.** Every sibling
+entry point that calls `promptCloudInitYAMLFile`
+(`CreateInstanceFromCloudInit`, `CreateLaunchTemplateFromCloudInit`)
+wraps it: `return cancelledIsNil(w, err)`. `SyncLaunchTemplate` instead
+does `return syncLaunchTemplate(ctx, w, clients, lt, nil, nil)` --
+whatever `syncLaunchTemplate` returns (including a cancellation from
+`promptLaunchTemplateVersion` or `promptCloudInitYAMLFile`) propagates
+raw up to `runMainMenu`'s dispatch. There, `isExitSignal` -- the
+*fallback* for a cancel signal that escaped an inner `cancelledIsNil`
+-- catches it and **exits the entire clasm program**, not just the
+"Sync cloud-init YAML to a launch template" action. This is the exact
+bug class already found and fixed once before in this codebase (v0.0.3,
+`backup_archive.go`'s bucket-picker cancellation, DECISIONS.md/TODO.md)
+-- it recurred here because the fix was never generalized into a check
+across every call site that skips straight to a raw return.
+
+**Decision: fix both, since they compound on the same reported
+symptom.**
+
+1. `promptCloudInitYAMLFile`'s label becomes `"Cloud-init YAML file
+   path (q to cancel)"`; a bare `"q"` (exact match, checked before the
+   existing `"@"`-prefix stripping so an explicit `"@q"` still means
+   "a file literally named q") returns `ui.ErrCancelled` instead of
+   attempting to read a file named "q". Accepted trade-off: a real
+   cloud-init file literally named `q` (no extension) can no longer be
+   referenced bare -- prefixing it with `"@"` still works, and no file
+   like this has ever come up in this project's actual use of
+   cloud-init YAML (always `*.yaml`/`*.yml`, always via `@path` or a
+   bare path already, per `loadUserData`'s own docs).
+2. `SyncLaunchTemplate` wraps its call the same way its siblings
+   already do: `return cancelledIsNil(w, syncLaunchTemplate(ctx, w,
+   clients, lt, nil, nil))`. This also fixes cancelling at the
+   `promptLaunchTemplateVersion` step (the version-to-sync-against
+   prompt, one step before the file picker) for free -- same root
+   cause, same fix.
+
+**Rejected alternative.** *Add a generic wrapper/lint check across
+every `MenuActions` entry point to catch a missing `cancelledIsNil`
+mechanically* -- worth wanting, but a much larger sweep (would need to
+audit all ~30 entries) than this narrowly-reported bug calls for; noted
+here as a candidate for a dedicated pass later, not undertaken now.
+
+### Not decided yet
+
+None -- this is a small, fully-scoped fix.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

@@ -7,11 +7,11 @@
 - [x] Menu-loop output-visibility bug -- fixed, real-AWS-verified, released in v0.0.4. See DECISIONS.md, "Pause for acknowledgment before every menu-loop redraw," PLAN.md Phase 20.32.
 - [x] SSM never came online for the resize-verification test instances (2026-07-22) -- root cause (no SSM-capable instance profile available at all) closed structurally by the SSM-enforcement work below. `growRootFilesystem`'s own OS-level `growpart`/`resize2fs` automation still hasn't been specifically re-verified end-to-end with a proper instance profile in place -- worth doing next time Resize Instance's Root Volume comes up.
 - [x] `InvalidUserData.Malformed: User data is limited to 16384 bytes` -- fixed and real-AWS-verified 2026-07-22 (`test-clasm-granian` launch template + instance). See DECISIONS.md, "Always gzip-compress user-data before base64-encoding it," PLAN.md Phase 20.34. Not yet released -- part of v0.0.5.
-- [ ] When selecting a cloud init, there is no abvious exit, "q" is treated as a filename
-
+- [x] When selecting a cloud init, there is no abvious exit, "q" is treated as a filename -- fixed 2026-07-28: `promptCloudInitYAMLFile` now treats a bare "q" as cancel (label hints "(q to cancel)"), matching every Select-based picker's own convention. Tracing this also surfaced a second, more serious bug in the same code path: `SyncLaunchTemplate` never converted a cancellation to a clean return, so cancelling anywhere in "Sync cloud-init YAML to a launch template" exited the entire clasm program instead of returning to the Compute menu -- also fixed. Designed, implemented, and unit-tested. See DESIGN.md, "Cloud-Init Picker: Discoverable Cancel + a Second, Related Bug", DECISIONS.md, "Cloud-init picker: a 'q' cancel sentinel, and a second bug found while tracing it", PLAN.md Phase 20.45.
+- [ ] CMTools and Pandoc should be required software when compiling to install
 ## Requested features
 
-
+- [ ] Produce installable binaries via `make release`
 - [ ] Need to be able to modify a launch templates' size and EBS storage from clasm in addition to syncing the cloud-init
 - [ ] When spinning up a new instance successfully the IP addresses and SSH ec2 user is shown, what would be good to also show is the SSH command to SSH in using the keys created and associated with the instance similar to how via the Web UI you can look up the connection command for connecting with SSH.
 - [x] SSM-capable instance profile enforcement at launch + associate/replace retrofit for running instances -- designed, implemented, unit-tested, and real-AWS-verified 2026-07-22. See DESIGN.md/DECISIONS.md, "SSM-Capable Instance Profile Enforcement + Retrofit", PLAN.md Phase 20.33. Not yet released -- part of v0.0.5.

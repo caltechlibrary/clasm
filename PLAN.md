@@ -5083,6 +5083,77 @@ building directly on its `userdata_gzip.go`.
 
 ---
 
+## Phase 20.45 — Cloud-Init Picker: Discoverable Cancel + SyncLaunchTemplate's Missing cancelledIsNil Wrap
+
+**Status: designed, implemented, and unit-tested 2026-07-28**,
+live-usage-driven (see DESIGN.md, "Cloud-Init Picker: Discoverable
+Cancel + a Second, Related Bug"; DECISIONS.md, "Cloud-init picker: a
+'q' cancel sentinel, and a second bug found while tracing it"). Two
+bugs, same reported symptom: (1) `promptCloudInitYAMLFile` had no
+discoverable single-step cancel -- 'q' was typed as literal filename
+text; (2) `SyncLaunchTemplate` never wrapped its testable core's return
+with `cancelledIsNil`, so any cancellation inside it exited clasm
+entirely instead of returning to the Compute menu. `go build`/`go
+vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
+real-AWS-verified (or, more precisely for this phase, not yet verified
+in a real interactive terminal -- both bugs and their fixes are pure
+local control flow, no AWS calls involved).
+
+### Work Items
+
+- [x] `userdata.go`: `promptCloudInitYAMLFile`'s label becomes
+      `"Cloud-init YAML file path (q to cancel)"`; check `raw == "q"`
+      (exact match) *before* the existing `strings.TrimPrefix(raw,
+      "@")` and return `ui.ErrCancelled` if it matches
+- [x] `launch_template_sync.go`: `SyncLaunchTemplate`'s final return
+      becomes `return cancelledIsNil(w, syncLaunchTemplate(ctx, w,
+      clients, lt, nil, nil))`, matching
+      `CreateInstanceFromCloudInit`/`CreateLaunchTemplateFromCloudInit`'s
+      existing pattern
+
+### Tests
+
+Test-first, per [[feedback-test-before-fix]]: confirmed failing before
+either fix landed -- the "q" tests hung (accessible-mode `PromptString`
+re-prompting forever on exhausted input rather than erroring, the same
+gotcha already documented in this project's own memory for looping
+huh-based workflows) rather than failing cleanly, which is itself
+confirmation the old code had no cancel path at all. `SyncLaunchTemplate`
+itself isn't pipe-testable (its first step, `pickLaunchTemplate`, is a
+Picker-tier bubbletea program -- same limitation as every other
+Picker-tier conversion in this package), so coverage is at the testable
+layers directly, matching how this package already tests around that
+limitation elsewhere:
+
+- [x] `promptCloudInitYAMLFile` (called directly, accessible-mode pipe
+      input): a bare `"q"` line returns `ui.ErrCancelled`, no file read
+      attempted
+- [x] `promptCloudInitYAMLFile`: `"@q"` (explicit `"@"` prefix) still
+      attempts to read a file literally named `q` -- confirms the
+      cancel check doesn't shadow the pre-existing "@"-prefix
+      convenience
+- [x] `syncLaunchTemplate` (the testable core, accessible-mode pipe
+      input reaching the cloud-init-file step): confirms a `"q"`
+      cancellation at that step surfaces as `ui.ErrCancelled` from
+      `syncLaunchTemplate` itself (i.e. the sentinel really does
+      propagate through the whole chain, not just at the helper level)
+- [x] `cancelledIsNil` (already-existing helper, exercised directly):
+      confirms wrapping `syncLaunchTemplate`'s `ui.ErrCancelled` return
+      converts it to nil + "Cancelled." printed -- this is what proves
+      the `SyncLaunchTemplate` fix is correct without needing to drive
+      the un-pipe-testable picker step
+
+### Files
+
+`internal/workflow/userdata.go`, `userdata_test.go` (new),
+`launch_template_sync.go`, `launch_template_sync_test.go`.
+
+### Dependency
+
+None.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

@@ -57,9 +57,18 @@ func loadUserData(w io.Writer, input string) (string, error) {
 // not required.
 func promptCloudInitYAMLFile(w io.Writer, input io.Reader, output io.Writer) (string, error) {
 	for {
-		raw, err := ui.Prompt("Cloud-init YAML file path", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
+		raw, err := ui.Prompt("Cloud-init YAML file path (q to cancel)", ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
 			return "", err
+		}
+		// A bare "q" cancels -- this free-text huh.Input field has no
+		// built-in Quit key the way every Select-based picker in this
+		// app does (DECISIONS.md, "Cloud-init picker: a 'q' cancel
+		// sentinel..."), so it's handled explicitly here, before the
+		// "@"-prefix stripping below so an explicit "@q" still means "a
+		// file literally named q".
+		if raw == "q" {
+			return "", ui.ErrCancelled
 		}
 		path := strings.TrimPrefix(raw, "@")
 

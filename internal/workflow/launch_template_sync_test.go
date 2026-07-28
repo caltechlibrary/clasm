@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 func TestDisplayDiff_AccessibleModeFallsBackToPlainDump(t *testing.T) {
@@ -134,6 +136,55 @@ func TestSyncLaunchTemplate_DifferentContentShowsDiffThenCreatesVersion(t *testi
 	}
 	if !strings.Contains(out, "NOT the default version") {
 		t.Errorf("expected a reminder that the new version isn't promoted, got:\n%s", out)
+	}
+}
+
+func TestSyncLaunchTemplate_QAtCloudInitPromptCancels(t *testing.T) {
+	// Phase 20.45: confirms the "q" cancel sentinel (userdata_test.go)
+	// actually propagates all the way through syncLaunchTemplate as
+	// ui.ErrCancelled, not just at promptCloudInitYAMLFile in isolation.
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
+		launchTemplateVersionWithUserData(1, "#cloud-config\nold line\n"),
+	}}
+	clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	lt := inventory.LaunchTemplate{TemplateID: "lt-1", Region: "us-east-1"}
+
+	input := "\n" + "q\n" // accept pre-filled $Default, then cancel the file prompt
+	var buf bytes.Buffer
+	err := syncLaunchTemplate(context.Background(), &buf, clients, lt, newHuhAccessibleInput(input), &buf)
+	if !errors.Is(err, ui.ErrCancelled) {
+		t.Fatalf("got error %v, want ui.ErrCancelled", err)
+	}
+	if fake.lastCreateLaunchTemplateVersionInput != nil {
+		t.Error("CreateLaunchTemplateVersion was called despite a cancelled prompt")
+	}
+}
+
+func TestCancelledIsNil_ConvertsSyncLaunchTemplateCancellation(t *testing.T) {
+	// Phase 20.45: SyncLaunchTemplate (the exported entry point) isn't
+	// pipe-testable end to end -- its first step, pickLaunchTemplate, is
+	// a Picker-tier bubbletea program, same limitation as every other
+	// Picker-tier conversion in this package. This proves the actual
+	// fix (SyncLaunchTemplate now wraps syncLaunchTemplate's return with
+	// cancelledIsNil) is correct without needing to drive that picker:
+	// cancelledIsNil must turn syncLaunchTemplate's own ui.ErrCancelled
+	// into a clean nil, printing "Cancelled."
+	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{
+		launchTemplateVersionWithUserData(1, "#cloud-config\nold line\n"),
+	}}
+	clients := map[string]awsclient.EC2API{"us-east-1": fake}
+	lt := inventory.LaunchTemplate{TemplateID: "lt-1", Region: "us-east-1"}
+
+	input := "\n" + "q\n"
+	var buf bytes.Buffer
+	syncErr := syncLaunchTemplate(context.Background(), &buf, clients, lt, newHuhAccessibleInput(input), &buf)
+
+	got := cancelledIsNil(&buf, syncErr)
+	if got != nil {
+		t.Fatalf("got error %v, want nil", got)
+	}
+	if !strings.Contains(buf.String(), "Cancelled.") {
+		t.Errorf("expected a \"Cancelled.\" message, got:\n%s", buf.String())
 	}
 }
 
