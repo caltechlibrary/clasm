@@ -31,6 +31,258 @@ interactive EC2/AMI manager, their rationale, and known trade-offs. New
 decisions are added at the top.</p>
 <hr />
 <h2
+id="ssh-connection-info-guess-the-key-path-only-if-it-exists-on-disk-and-the-login-username-canonical-owned---ubuntu-else-ec2-user">2026-07-28
+— SSH connection info: guess the key path (only if it exists on disk)
+and the login username (Canonical-owned -&gt; ubuntu, else
+ec2-user)</h2>
+<p><strong>Context.</strong> TODO.md requested feature: show the SSH
+command to connect to a just-launched/started instance.
+<code>displayConnectionInfo</code> already prints
+<code>ssh ec2-user@&lt;ip&gt;</code>, but never references the actual
+private key (<code>-i</code>), and hardcodes “ec2-user” even though this
+tool’s own curated/official AMI list is all Ubuntu. See DESIGN.md, “SSH
+Connection Info: Key Path + Username Guess”, PLAN.md Phase 20.47.</p>
+<p><strong>Decision (user’s explicit call, from three options): add
+<code>-i &lt;key path&gt;</code>, and guess the username from the AMI,
+falling back to “ec2-user” when unknown</strong> – rejected keeping
+“ec2-user” hardcoded always, and rejected always showing “ubuntu”
+unconditionally (account- owned custom AMIs aren’t guaranteed to be
+Ubuntu, so an unconditional “ubuntu” would just trade one wrong
+hardcoded guess for another).</p>
+<p><strong>Key path:</strong> guessed as <code>sshKeyDir()</code>
+(<code>~/.ssh</code>) + the instance’s own key pair name +
+<code>.pem</code> – exactly where <code>createKeyPair</code> saves a
+newly created key pair’s private key material. Shown only if
+<code>os.Stat</code> confirms that exact file exists; an imported key
+pair (<code>keypair_import.go</code>) only ever registers a
+<code>.pub</code> file with AWS, so its private key’s real location
+isn’t knowable and presenting a guessed path confidently would be
+actively misleading (a copy-pasted command that fails with a confusing
+“Permission denied (publickey)”), worse than not guessing.</p>
+<p><strong>Username:</strong> a live, best-effort
+<code>ec2:DescribeImages</code> call (new
+<code>sshUsernameForImage</code>) checks the launched AMI’s
+<code>OwnerId</code> against <code>ubuntuAMIOwnerID</code> (the same
+well-known Canonical account ID <code>official_ubuntu_amis.go</code>
+already uses) – “ubuntu” on a match, “ec2-user” otherwise (including on
+a DescribeImages error, or an AMI whose owner can’t be determined).
+Checking <code>OwnerId</code> rather than matching against
+<code>curatedUbuntuReleases</code>’ specific name patterns covers every
+Canonical Ubuntu AMI, not just this tool’s own curated releases, and
+works even for Create Instance from Launch Template, which never
+resolves an <code>inventory.Image</code> at all.</p>
+<p><strong>No new parameters threaded through the three call
+sites</strong> (<code>Launch</code> via <code>runLaunch</code>,
+<code>createInstanceFromLaunchTemplate</code>,
+<code>startEC2Instance</code>). Both <code>KeyName</code> and
+<code>ImageId</code> are already present directly on the raw SDK
+<code>types.Instance</code> every caller already has in hand – only
+<code>displayConnectionInfo</code>’s own signature widens
+(<code>ctx</code>, an <code>awsclient.EC2API</code>), not
+<code>LaunchInstanceParams</code> or any exported workflow
+signature.</p>
+<hr />
+<h2
+id="modify-launch-template-size-one-combined-action-unfiltered-instance-type-picker-shrink-to-the-amis-snapshot-floor">2026-07-28
+— Modify Launch Template Size: one combined action, unfiltered
+instance-type picker, shrink to the AMI’s snapshot floor</h2>
+<p><strong>Context.</strong> TODO.md requested feature: modify a launch
+template’s instance type and EBS root volume size from clasm, not just
+sync cloud-init. See DESIGN.md, “Modify Launch Template Size”, PLAN.md
+Phase 20.46.</p>
+<p><strong>Decision 1 – one combined action, not two.</strong> User’s
+explicit call: a single “Modify launch template’s instance type / EBS
+root volume size” entry prompts for both and creates one new launch
+template version with both overrides, mirroring how creation already
+collects both together and how Sync creates exactly one new version per
+run.</p>
+<p><strong>Decision 2 – instance-type picker stays unfiltered;
+architecture mismatches are handled by offering to swap the AMI, not by
+filtering the picker.</strong> Initially designed as simply unfiltered
+(Phase 20.35’s launch-time picker filters by the <em>picked</em> AMI’s
+architecture, which doesn’t apply here since there’s no “picked AMI”
+yet, only the template’s <em>existing</em> one). While confirming scope,
+the user gave a concrete real-world case that changed this:
+<code>granian-rdm-v14-test</code> currently launches a Graviton (arm64)
+instance, and they want to switch it to an x86_64 type. Filtering the
+instance-type picker by the template’s <em>current</em> AMI architecture
+would have made that impossible – switching architecture families is the
+actual use case, not an error to prevent. Resolved instead with a
+post-hoc check: after the (still unfiltered) instance-type pick, a new
+<code>instanceTypeArchitecture</code> helper
+(<code>ec2:DescribeInstanceTypes</code>, mirroring
+<code>instanceTypeRequiresENA</code>’s exact shape) reports the picked
+type’s required architecture; on a mismatch against the current AMI’s
+architecture (<code>describeImageRootVolume</code>, widened to also
+return it – same <code>DescribeImages</code> response already being
+read, no extra call), the operator is prompted to pick a new base AMI,
+filtered to the target architecture and the template’s own region. This
+is <em>why</em> AWS’s architecture constraint isn’t caught at
+<code>CreateLaunchTemplateVersion</code> time at all – only
+<code>RunInstances</code> validates instance-type/AMI architecture
+compatibility, so without this check the narrower original design would
+have silently produced a new version that fails only when someone
+actually launches from it. The new version’s
+<code>RequestLaunchTemplateData</code> now always explicitly sets
+<code>ImageId</code> (previously going to be
+UserData/InstanceType/BlockDeviceMappings only, inheriting
+<code>ImageId</code> via <code>SourceVersion</code>) – harmless when
+unchanged, required when the AMI swap fires. The conditional AMI re-pick
+(<code>pickImage</code>, a real bubbletea program, not pipe-testable) is
+invoked mid-sequence rather than hoisted to the untestable entry point
+the way every other Picker-tier call in this package is, so it needs its
+own substitutable seam – <code>pickNewLaunchTemplateAMIFunc</code>, the
+same shape <code>backup_archive.go</code>’s
+<code>promptBackupBucketFunc</code> already established for exactly this
+“conditional, hard-to-drive step embedded inside an otherwise
+pipe-testable sequence” case.</p>
+<p><strong>Decision 3 – shrinking the EBS root volume is allowed down to
+the AMI’s own snapshot size, not floored at the template’s current
+setting.</strong> User’s explicit call. AWS’s only real constraint on a
+launch template’s <code>BlockDeviceMappings.Ebs.VolumeSize</code> is
+never smaller than the source snapshot – the same floor
+<code>promptRootVolumeSizeGB</code> already enforces at creation time.
+Unlike <code>ResizeInstanceRootVolume</code> (which really can only
+grow, an AWS API-level restriction on <code>ec2:ModifyVolume</code> for
+an already-attached volume), a launch template’s stored size has no such
+limit. <code>promptRootVolumeSizeGB</code> widens from one
+<code>defaultGB</code> parameter (used for both the pre-filled display
+value and the validation floor – identical at creation time) to two:
+<code>displayDefaultGB</code> (the version’s current override, or the
+AMI default if never set) and <code>floorGB</code> (always the AMI’s own
+snapshot size). The two existing creation-time call sites pass the same
+value for both, unchanged behavior.</p>
+<p><strong>Rejected alternative.</strong> <em>Floor shrinking at the
+template’s current setting</em> (simpler “can only grow” mental model,
+matching <code>ResizeInstanceRootVolume</code>’s own restriction) –
+rejected because that restriction exists there for a different,
+AWS-API-level reason (a live attached volume genuinely cannot shrink)
+that doesn’t apply to a launch template’s stored, not-yet-attached size;
+enforcing it here anyway would block a legitimate operation (shrinking
+an over-provisioned template back down) for no real reason.</p>
+<p><strong>Not decided, raised but out of scope.</strong> Whether to add
+<code>m7i</code>/other non-curated instance-type families to
+<code>curatedInstanceTypes</code> – “Other” already covers any exact
+value; a separate, smaller follow-up if wanted.</p>
+<hr />
+<h2
+id="cloud-init-picker-a-q-cancel-sentinel-and-a-second-bug-found-while-tracing-it-synclaunchtemplate-exits-the-whole-program-on-cancel">2026-07-28
+— Cloud-init picker: a ‘q’ cancel sentinel, and a second bug found while
+tracing it (SyncLaunchTemplate exits the whole program on cancel)</h2>
+<p><strong>Context.</strong> TODO.md bug report: “When selecting a cloud
+init, there is no obvious exit, ‘q’ is treated as a filename.” See
+DESIGN.md, “Cloud-Init Picker: Discoverable Cancel + a Second, Related
+Bug”, PLAN.md Phase 20.45. Tracing where a cancel signal actually goes
+surfaced a second, more serious bug in the same code path.</p>
+<p><strong>Decision, part 1 (the reported bug).</strong>
+<code>promptCloudInitYAMLFile</code> (<code>userdata.go</code>) is a
+free-text <code>huh.Input</code> field – unlike every Select-based
+picker in this app, <code>huh.Input</code> has no Quit-key binding at
+all (confirmed by reading <code>huh</code>‘s own
+<code>InputKeyMap</code>), so ’q’ is simply typed as literal text. Fix:
+the label gains an explicit hint
+(<code>"Cloud-init YAML file path (q to cancel)"</code>), and a bare
+<code>"q"</code> (exact match, checked <em>before</em> the existing
+<code>"@"</code>-prefix stripping) returns <code>ui.ErrCancelled</code>
+instead of attempting to read a file named “q”.</p>
+<p><strong>Decision, part 2 (the bug found while tracing part
+1).</strong> <code>SyncLaunchTemplate</code>
+(<code>launch_template_sync.go</code>) is the only one of
+<code>promptCloudInitYAMLFile</code>’s three call sites that doesn’t
+wrap its testable core’s return with <code>cancelledIsNil</code> –
+<code>CreateInstanceFromCloudInit</code> and
+<code>CreateLaunchTemplateFromCloudInit</code> both already do
+(<code>return cancelledIsNil(w, err)</code>). Because of that gap,
+<em>any</em> cancellation inside <code>syncLaunchTemplate</code> – not
+just at the cloud-init file prompt, also at the preceding
+<code>promptLaunchTemplateVersion</code> step – propagates raw up to
+<code>runMainMenu</code>’s dispatch, where <code>isExitSignal</code>
+(the fallback for a cancel signal that escaped an inner
+<code>cancelledIsNil</code>) treats it as “exit the entire clasm
+program” rather than “return to the Compute menu.” Fix:
+<code>SyncLaunchTemplate</code> now wraps the same way its siblings do:
+<code>return cancelledIsNil(w, syncLaunchTemplate(ctx, w, clients, lt, nil, nil))</code>.
+This is the identical bug class already found and fixed once before in
+this codebase (v0.0.3, <code>backup_archive.go</code>’s bucket-picker
+cancellation) – it recurred here because that fix was applied at the one
+call site reported at the time, not generalized into a check across
+every entry point with the same shape.</p>
+<p><strong>Rejected alternative.</strong> <em>A generic mechanism (lint
+rule or shared wrapper) to catch a missing <code>cancelledIsNil</code>
+at every <code>MenuActions</code> entry point automatically</em> – worth
+wanting given this is the second occurrence of the same bug class, but
+auditing all ~30 entries is a larger, separate sweep than this
+narrowly-reported bug calls for. Left as a candidate for a dedicated
+pass later, not undertaken now.</p>
+<p><strong>Consequences.</strong> A cloud-init YAML file literally named
+<code>q</code> (no extension) can no longer be referenced bare –
+prefixing it with <code>"@"</code> still works. No other behavior
+change; every other <code>promptCloudInitYAMLFile</code> call site was
+already correct.</p>
+<hr />
+<h2
+id="user-data-pre-flight-size-check-hard-error-no-remediation-loop-back-switch-to-gzip.bestcompression">2026-07-28
+— User-data pre-flight size check: hard error, no remediation loop-back;
+switch to gzip.BestCompression</h2>
+<p><strong>Context.</strong>
+<code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>
+recurred syncing <code>granian-rdm-v14/cloud-init.yaml</code> (57849 raw
+bytes) to a launch template – Phase 20.34’s gzip fix is confirmed
+necessary but not sufficient here: the file gzips (default compression,
+level 6) to 16671 bytes, 287 over the limit; even
+<code>gzip.BestCompression</code> only reaches 16576, still 192 over.
+<code>encodeUserData</code> (<code>userdata_gzip.go</code>) has never
+validated size against AWS’s limit at any of its three write sites – the
+16384-byte figure exists only as a source comment. See DESIGN.md,
+“User-Data Pre-Flight Size Check”, PLAN.md Phase 20.44.</p>
+<p><strong>Decision.</strong> Two changes: (1) switch
+<code>encodeUserData</code>’s <code>gzip.NewWriter</code> to
+<code>gzip.NewWriterLevel(..., gzip.BestCompression)</code> – same
+“always take the free win, no conditional” reasoning Phase 20.34 already
+applied to gzipping unconditionally; (2) widen
+<code>encodeUserData</code>’s signature to <code>(string, error)</code>
+(matching <code>decodeUserData</code>’s existing shape) and add a hard
+pre-flight check against a new <code>maxUserDataBytes = 16384</code>
+constant, comparing the gzip-compressed byte count (before base64) – the
+same quantity AWS’s own error is measuring, confirmed via the incident’s
+debug-log numbers above. On failure: <strong>hard error, abort</strong>
+– the operator sees the compressed size and the overage, then trims the
+cloud-init file themselves and retries the whole workflow. All three
+write-site callers (<code>launch_execute.go</code>,
+<code>launch_template_create.go</code>,
+<code>launch_template_sync.go</code>) now propagate this error instead
+of calling AWS with a payload already known to be doomed.</p>
+<p><strong>Rejected alternatives.</strong> - <em>Offer to pick a
+different file inline</em> (loop back to
+<code>promptCloudInitYAMLFile</code> on failure instead of aborting) –
+rejected by the user’s own explicit call: the failure surfaces deep in
+the call chain (inside <code>encodeUserData</code>, several frames past
+where the file was originally selected), so a clean loop-back would need
+new plumbing to re-enter file selection from inside what is currently a
+simple encode step; a hard abort is simpler and consistent with this
+codebase’s “fail loud, don’t guess” precedent
+(<code>growRootFilesystem</code>’s SSM/layout-detection fallback). -
+<em>A multipart/<code>#include</code>/S3-reference mechanism</em> to
+split payloads too large even at max compression – a real, standard
+cloud-init/EC2 pattern, but a materially larger feature (new upload
+step, new IAM/S3 permissions surface, new decode/diff/show read-paths)
+with no second use case yet; this incident was resolved by trimming the
+cloud-init content itself, outside clasm. Left as a candidate in
+TODO.md’s Someday/maybe if oversized files recur after this pre-flight
+check ships. - <em>Leave the check as advisory (warn, let the operator
+proceed anyway)</em> – rejected because AWS would reject the call
+unconditionally regardless; there’s no scenario where proceeding past
+this check succeeds, so a warn-and-continue would just delay the same
+failure by one step while adding a confusing “are you sure” prompt for
+something that can never be sure.</p>
+<p><strong>Consequences.</strong> <code>encodeUserData</code> callers
+that previously ignored a return value now must handle an error – a
+small, mechanical change at exactly three call sites, no behavior change
+for any payload that was already under the limit. No new dependency, no
+new AWS permissions, no change to <code>decodeUserData</code> or any
+read site.</p>
+<hr />
+<h2
 id="regroup-the-compute-menu-and-a-terminology-cleanup-across-every-domain-menu">2026-07-24
 — Regroup the Compute menu, and a terminology cleanup across every
 domain menu</h2>

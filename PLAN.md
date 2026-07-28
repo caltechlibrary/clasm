@@ -4988,16 +4988,16 @@ separate, larger follow-up if wanted.
 
 ## Phase 20.44 — User-Data Pre-Flight Size Check
 
-**Status: designed, implemented, and unit-tested 2026-07-28**,
-live-testing-driven (see DESIGN.md, "User-Data Pre-Flight Size Check";
-DECISIONS.md, "User-data pre-flight size check: hard error, no
-remediation loop-back; switch to gzip.BestCompression"). Closes a
-confirmed gap: Phase 20.34's gzip fix is not sufficient for large
-cloud-init files (the incident's `granian-rdm-v14` file, 57849 raw
-bytes at the time, still exceeded the 16384-byte limit even gzip'd),
-and `encodeUserData` had no pre-flight size validation anywhere. `go
-build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
-real-AWS-verified.
+**Status: designed, implemented, unit-tested, and real-AWS-verified
+2026-07-28**, live-testing-driven (see DESIGN.md, "User-Data
+Pre-Flight Size Check"; DECISIONS.md, "User-data pre-flight size
+check: hard error, no remediation loop-back; switch to
+gzip.BestCompression"). Closes a confirmed gap: Phase 20.34's gzip fix
+is not sufficient for large cloud-init files (the incident's
+`granian-rdm-v14` file, 57849 raw bytes at the time, still exceeded the
+16384-byte limit even gzip'd), and `encodeUserData` had no pre-flight
+size validation anywhere. `go build`/`go vet`/`go test
+./... -race`/`gofmt -l` all clean. Targeted for v0.0.6.
 
 ### Work Items
 
@@ -5085,19 +5085,17 @@ building directly on its `userdata_gzip.go`.
 
 ## Phase 20.45 — Cloud-Init Picker: Discoverable Cancel + SyncLaunchTemplate's Missing cancelledIsNil Wrap
 
-**Status: designed, implemented, and unit-tested 2026-07-28**,
-live-usage-driven (see DESIGN.md, "Cloud-Init Picker: Discoverable
-Cancel + a Second, Related Bug"; DECISIONS.md, "Cloud-init picker: a
-'q' cancel sentinel, and a second bug found while tracing it"). Two
-bugs, same reported symptom: (1) `promptCloudInitYAMLFile` had no
-discoverable single-step cancel -- 'q' was typed as literal filename
-text; (2) `SyncLaunchTemplate` never wrapped its testable core's return
-with `cancelledIsNil`, so any cancellation inside it exited clasm
-entirely instead of returning to the Compute menu. `go build`/`go
-vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
-real-AWS-verified (or, more precisely for this phase, not yet verified
-in a real interactive terminal -- both bugs and their fixes are pure
-local control flow, no AWS calls involved).
+**Status: designed, implemented, unit-tested, and verified in a real
+interactive terminal 2026-07-28**, live-usage-driven (see DESIGN.md,
+"Cloud-Init Picker: Discoverable Cancel + a Second, Related Bug";
+DECISIONS.md, "Cloud-init picker: a 'q' cancel sentinel, and a second
+bug found while tracing it"). Two bugs, same reported symptom: (1)
+`promptCloudInitYAMLFile` had no discoverable single-step cancel --
+'q' was typed as literal filename text; (2) `SyncLaunchTemplate` never
+wrapped its testable core's return with `cancelledIsNil`, so any
+cancellation inside it exited clasm entirely instead of returning to
+the Compute menu. `go build`/`go vet`/`go test ./... -race`/`gofmt -l`
+all clean. Targeted for v0.0.6.
 
 ### Work Items
 
@@ -5156,19 +5154,20 @@ None.
 
 ## Phase 20.46 — Modify Launch Template Size
 
-**Status: designed, implemented, and unit-tested 2026-07-28** (see
-DESIGN.md, "Modify Launch Template Size"; DECISIONS.md, "Modify Launch
-Template Size: one combined action, unfiltered instance-type picker,
-shrink to the AMI's snapshot floor"). New TODO.md-requested feature:
-change a launch template's instance type and/or EBS root volume size
-without touching `UserData`, today only possible via Sync (which only
-ever changes `UserData`) or by hand-editing in the AWS Console.
-Expanded mid-design after the user's own concrete example (switching
-`granian-rdm-v14-test` from Graviton/arm64 to an x86_64 instance type)
-surfaced that this requires an AMI swap too, since architecture is tied
-to the AMI and `CreateLaunchTemplateVersion` doesn't validate the
-mismatch itself. `go build`/`go vet`/`go test ./... -race`/`gofmt -l`
-all clean. Not yet real-AWS-verified.
+**Status: designed, implemented, unit-tested, and real-AWS-verified
+2026-07-28** (see DESIGN.md, "Modify Launch Template Size";
+DECISIONS.md, "Modify Launch Template Size: one combined action,
+unfiltered instance-type picker, shrink to the AMI's snapshot floor").
+New TODO.md-requested feature: change a launch template's instance
+type and/or EBS root volume size without touching `UserData`, today
+only possible via Sync (which only ever changes `UserData`) or by
+hand-editing in the AWS Console. Expanded mid-design after the user's
+own concrete example (switching `granian-rdm-v14-test` from
+Graviton/arm64 to an x86_64 instance type) surfaced that this requires
+an AMI swap too, since architecture is tied to the AMI and
+`CreateLaunchTemplateVersion` doesn't validate the mismatch itself. `go
+build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean. Targeted
+for v0.0.6.
 
 ### Work Items
 
@@ -5292,14 +5291,14 @@ None.
 
 ## Phase 20.47 — SSH Connection Info: Key Path + Username Guess
 
-**Status: designed, implemented, and unit-tested 2026-07-28** (see
-DESIGN.md, "SSH Connection Info: Key Path + Username Guess";
-DECISIONS.md, "SSH connection info: guess the key path (only if it
-exists on disk) and the login username"). TODO.md-requested feature:
-`displayConnectionInfo` already printed `ssh ec2-user@<ip>`, missing an
-`-i <key path>` entirely and hardcoding "ec2-user" even for this
-tool's own Ubuntu-only curated AMI list. `go build`/`go vet`/`go test
-./... -race`/`gofmt -l` all clean. Not yet real-AWS-verified.
+**Status: designed, implemented, unit-tested, and real-AWS-verified
+2026-07-28** (see DESIGN.md, "SSH Connection Info: Key Path + Username
+Guess"; DECISIONS.md, "SSH connection info: guess the key path (only
+if it exists on disk) and the login username"). TODO.md-requested
+feature: `displayConnectionInfo` already printed `ssh ec2-user@<ip>`,
+missing an `-i <key path>` entirely and hardcoding "ec2-user" even for
+this tool's own Ubuntu-only curated AMI list. `go build`/`go vet`/`go
+test ./... -race`/`gofmt -l` all clean. Targeted for v0.0.6.
 
 ### Work Items
 

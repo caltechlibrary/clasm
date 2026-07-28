@@ -5804,6 +5804,445 @@ screen-map are both already stale independent of this change (missing
 three whole domains, wrong item counts) – out of scope for this pass,
 noted in DECISIONS.md as a separate, larger follow-up if wanted.</p>
 <hr />
+<h2 id="phase-20.44-user-data-pre-flight-size-check">Phase 20.44 —
+User-Data Pre-Flight Size Check</h2>
+<p><strong>Status: designed, implemented, unit-tested, and
+real-AWS-verified 2026-07-28</strong>, live-testing-driven (see
+DESIGN.md, “User-Data Pre-Flight Size Check”; DECISIONS.md, “User-data
+pre-flight size check: hard error, no remediation loop-back; switch to
+gzip.BestCompression”). Closes a confirmed gap: Phase 20.34’s gzip fix
+is not sufficient for large cloud-init files (the incident’s
+<code>granian-rdm-v14</code> file, 57849 raw bytes at the time, still
+exceeded the 16384-byte limit even gzip’d), and
+<code>encodeUserData</code> had no pre-flight size validation anywhere.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Targeted for v0.0.6.</p>
+<h3 id="work-items-89">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>userdata_gzip.go</code>: switch
+<code>gzip.NewWriter(&amp;buf)</code> to
+<code>gzip.NewWriterLevel(&amp;buf, gzip.BestCompression)</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>userdata_gzip.go</code>: new
+<code>maxUserDataBytes = 16384</code> constant</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>userdata_gzip.go</code>: widen
+<code>encodeUserData</code> to
+<code>encodeUserData(plainText string) (string, error)</code> – after
+gzip-compressing and before base64-encoding, compare the compressed byte
+count against <code>maxUserDataBytes</code>; if over, return an error
+stating the compressed size and the overage (no base64 encoding
+attempted, no AWS call made)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_execute.go</code>: the
+<code>encodeUserData</code> call site in <code>Launch</code> updated to
+handle the new error return</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_template_create.go</code>:
+<code>buildRequestLaunchTemplateData</code> widened to
+<code>(*types.RequestLaunchTemplateData, error)</code>; its one caller
+(<code>createLaunchTemplate</code>) updated to check the error right
+before the <code>CreateLaunchTemplate</code> API call (same relative
+position as before – after confirmation, immediately before the real AWS
+call)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_template_sync.go</code>:
+<code>createLaunchTemplateVersion</code>’s call site updated (already
+returned an error, so this was a pass-through)</label></li>
+</ul>
+<h3 id="tests-3">Tests</h3>
+<p>Test-first, per [[feedback-test-before-fix]]/this project’s standing
+practice: every new/changed <code>userdata_gzip_test.go</code>,
+<code>launch_execute_test.go</code>,
+<code>launch_template_create_test.go</code>, and
+<code>launch_template_sync_test.go</code> case confirmed failing
+(compile error against the old single-return signatures) before the
+implementation existed.</p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Round-trip still passes
+(encode-then-decode returns the original text) for a payload comfortably
+under the limit</label></li>
+<li><label><input type="checkbox" checked="" />A payload that compresses
+to just over <code>maxUserDataBytes</code> returns a non-nil error
+mentioning the compressed size and the overage, and returns no usable
+encoded string</label></li>
+<li><label><input type="checkbox" checked="" />A payload compresses to
+exactly at/just under the limit succeeds, and one byte more (when it
+actually crosses the boundary) fails – found via a binary search over a
+deterministic pseudo-random fixture
+(<code>pseudoRandomBytes</code>/<code>TestEncodeUserData_BoundaryAtTheLimit</code>),
+not assumed</label></li>
+<li><label><input type="checkbox" checked="" />A fixture distinguishing
+gzip’s default compression level from <code>BestCompression</code>
+(<code>wordSaladText</code>, sized to the original incident’s 57849 raw
+bytes) confirms <code>encodeUserData</code> actually uses
+<code>BestCompression</code>, not just gzip at some level – a naive
+perfectly-periodic repeated string
+(<code>TestEncodeUserData_ShrinksLargeText</code>’s fixture) compresses
+identically at both levels and would not have caught a regression to the
+old default level</label></li>
+<li><label><input type="checkbox" checked="" />New propagation tests at
+all three call sites
+(<code>TestLaunch_PropagatesEncodeUserDataError</code>,
+<code>TestBuildRequestLaunchTemplateData_PropagatesEncodeUserDataError</code>,
+<code>TestCreateLaunchTemplateVersion_PropagatesEncodeUserDataError</code>)
+confirm the AWS call is never attempted when the payload is
+oversized</label></li>
+<li><label><input type="checkbox" checked="" />Existing
+<code>launch_execute.go</code>/<code>launch_template_create.go</code>/
+<code>launch_template_sync.go</code> tests updated for the new
+error-return shape at each call site; no behavior change for any
+existing passing case (every payload they exercise is already well under
+the limit)</label></li>
+<li><label><input type="checkbox" checked="" />Manually confirmed
+(<code>gzip -9 -c | wc -c</code>, not assumed): the real
+<code>granian-rdm-v14/cloud-init.yaml</code> is now 30541 raw bytes
+(already trimmed as a workaround on the <code>granian-rdm-v14</code>
+side after the 2026-07-28 incident, per that project’s own memory) and
+compresses to 10299 bytes – comfortably under the limit, confirming this
+fix doesn’t regress the now-working case. The original 57849-byte file
+that triggered this phase no longer exists to re-test directly; the
+synthetic <code>wordSaladText</code>-based tests above cover the
+over-limit path instead.</label></li>
+</ul>
+<h3 id="files-3">Files</h3>
+<p><code>internal/workflow/userdata_gzip.go</code>,
+<code>userdata_gzip_test.go</code>, <code>launch_execute.go</code>,
+<code>launch_execute_test.go</code>,
+<code>launch_template_create.go</code>,
+<code>launch_template_create_test.go</code>,
+<code>launch_template_sync.go</code>,
+<code>launch_template_sync_test.go</code>.</p>
+<h3 id="dependency-2">Dependency</h3>
+<p>None. Independent of Phase 20.34 (already shipped in v0.0.5) other
+than building directly on its <code>userdata_gzip.go</code>.</p>
+<hr />
+<h2
+id="phase-20.45-cloud-init-picker-discoverable-cancel-synclaunchtemplates-missing-cancelledisnil-wrap">Phase
+20.45 — Cloud-Init Picker: Discoverable Cancel + SyncLaunchTemplate’s
+Missing cancelledIsNil Wrap</h2>
+<p><strong>Status: designed, implemented, unit-tested, and verified in a
+real interactive terminal 2026-07-28</strong>, live-usage-driven (see
+DESIGN.md, “Cloud-Init Picker: Discoverable Cancel + a Second, Related
+Bug”; DECISIONS.md, “Cloud-init picker: a ‘q’ cancel sentinel, and a
+second bug found while tracing it”). Two bugs, same reported symptom:
+(1) <code>promptCloudInitYAMLFile</code> had no discoverable single-step
+cancel – ‘q’ was typed as literal filename text; (2)
+<code>SyncLaunchTemplate</code> never wrapped its testable core’s return
+with <code>cancelledIsNil</code>, so any cancellation inside it exited
+clasm entirely instead of returning to the Compute menu.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Targeted for v0.0.6.</p>
+<h3 id="work-items-90">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>userdata.go</code>:
+<code>promptCloudInitYAMLFile</code>’s label becomes
+<code>"Cloud-init YAML file path (q to cancel)"</code>; check
+<code>raw == "q"</code> (exact match) <em>before</em> the existing
+<code>strings.TrimPrefix(raw,     "@")</code> and return
+<code>ui.ErrCancelled</code> if it matches</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_template_sync.go</code>:
+<code>SyncLaunchTemplate</code>’s final return becomes
+<code>return cancelledIsNil(w, syncLaunchTemplate(ctx, w,     clients, lt, nil, nil))</code>,
+matching
+<code>CreateInstanceFromCloudInit</code>/<code>CreateLaunchTemplateFromCloudInit</code>’s
+existing pattern</label></li>
+</ul>
+<h3 id="tests-4">Tests</h3>
+<p>Test-first, per [[feedback-test-before-fix]]: confirmed failing
+before either fix landed – the “q” tests hung (accessible-mode
+<code>PromptString</code> re-prompting forever on exhausted input rather
+than erroring, the same gotcha already documented in this project’s own
+memory for looping huh-based workflows) rather than failing cleanly,
+which is itself confirmation the old code had no cancel path at all.
+<code>SyncLaunchTemplate</code> itself isn’t pipe-testable (its first
+step, <code>pickLaunchTemplate</code>, is a Picker-tier bubbletea
+program – same limitation as every other Picker-tier conversion in this
+package), so coverage is at the testable layers directly, matching how
+this package already tests around that limitation elsewhere:</p>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>promptCloudInitYAMLFile</code> (called directly,
+accessible-mode pipe input): a bare <code>"q"</code> line returns
+<code>ui.ErrCancelled</code>, no file read attempted</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>promptCloudInitYAMLFile</code>: <code>"@q"</code>
+(explicit <code>"@"</code> prefix) still attempts to read a file
+literally named <code>q</code> – confirms the cancel check doesn’t
+shadow the pre-existing “@”-prefix convenience</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>syncLaunchTemplate</code> (the testable core,
+accessible-mode pipe input reaching the cloud-init-file step): confirms
+a <code>"q"</code> cancellation at that step surfaces as
+<code>ui.ErrCancelled</code> from <code>syncLaunchTemplate</code> itself
+(i.e. the sentinel really does propagate through the whole chain, not
+just at the helper level)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cancelledIsNil</code> (already-existing helper,
+exercised directly): confirms wrapping <code>syncLaunchTemplate</code>’s
+<code>ui.ErrCancelled</code> return converts it to nil + “Cancelled.”
+printed – this is what proves the <code>SyncLaunchTemplate</code> fix is
+correct without needing to drive the un-pipe-testable picker
+step</label></li>
+</ul>
+<h3 id="files-4">Files</h3>
+<p><code>internal/workflow/userdata.go</code>,
+<code>userdata_test.go</code> (new),
+<code>launch_template_sync.go</code>,
+<code>launch_template_sync_test.go</code>.</p>
+<h3 id="dependency-3">Dependency</h3>
+<p>None.</p>
+<hr />
+<h2 id="phase-20.46-modify-launch-template-size">Phase 20.46 — Modify
+Launch Template Size</h2>
+<p><strong>Status: designed, implemented, unit-tested, and
+real-AWS-verified 2026-07-28</strong> (see DESIGN.md, “Modify Launch
+Template Size”; DECISIONS.md, “Modify Launch Template Size: one combined
+action, unfiltered instance-type picker, shrink to the AMI’s snapshot
+floor”). New TODO.md-requested feature: change a launch template’s
+instance type and/or EBS root volume size without touching
+<code>UserData</code>, today only possible via Sync (which only ever
+changes <code>UserData</code>) or by hand-editing in the AWS Console.
+Expanded mid-design after the user’s own concrete example (switching
+<code>granian-rdm-v14-test</code> from Graviton/arm64 to an x86_64
+instance type) surfaced that this requires an AMI swap too, since
+architecture is tied to the AMI and
+<code>CreateLaunchTemplateVersion</code> doesn’t validate the mismatch
+itself.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Targeted for v0.0.6.</p>
+<h3 id="work-items-91">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>ebs_size.go</code>:
+widen <code>promptRootVolumeSizeGB</code> to
+<code>promptRootVolumeSizeGB(displayDefaultGB, floorGB int32, input     io.Reader, output io.Writer) (int32, error)</code>
+– <code>WithDefault</code> uses <code>displayDefaultGB</code>, the
+validator’s floor check uses <code>floorGB</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_from_cloud_init.go</code>/<code>launch_instance.go</code>:
+both existing call sites updated to
+<code>promptRootVolumeSizeGB(rootDefaultGB,     rootDefaultGB, menuInput, menuOutput)</code>
+(same value for both – unchanged behavior)</label></li>
+<li><label><input type="checkbox" checked="" /><code>ebs_size.go</code>:
+widened <code>describeImageRootVolume</code> to also return the AMI’s
+<code>Architecture</code> (already present in the same
+<code>DescribeImages</code> response it already reads) – both existing
+call sites (which already have an
+<code>inventory.Image.Architecture</code> in hand from
+<code>pickImage</code>) just discard the new return value</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>instance_type_arch_check.go</code>:
+<code>instanceTypeArchitecture(ctx,     client, instanceType) (string, error)</code>
+(mirroring <code>instanceTypeRequiresENA</code>’s exact shape) –
+<code>ec2:DescribeInstanceTypes</code>, reads
+<code>ProcessorInfo.SupportedArchitectures[0]</code>; <code>""</code>/an
+error means “unknown, skip the check” (same “skip gracefully” philosophy
+as the ENA check)</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>imagesForRegionAndArchitecture(images []inventory.Image,     region, arch string) []inventory.Image</code>
+filter helper</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>pickNewLaunchTemplateAMIFunc = pickImage</code> package-level
+func-var seam (same shape as <code>backup_archive.go</code>’s
+<code>promptBackupBucketFunc</code>) for the conditional,
+non-pipe-testable AMI re-pick</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>modify_launch_template_size.go</code>:
+<code>modifyLaunchTemplateVersion(ctx,     client, templateID, sourceVersion, instanceType, imageID,     rootDeviceName string, rootVolumeSizeGB int32) (int64, error)</code>
+– <code>CreateLaunchTemplateVersion</code> with
+<code>RequestLaunchTemplateData{ImageId,     InstanceType, BlockDeviceMappings}</code>
+(ImageId always explicitly set, harmless when unchanged), inheriting
+everything else (including <code>UserData</code>) via
+<code>SourceVersion</code></label></li>
+<li><label><input type="checkbox" checked="" />Same file:
+<code>ModifyLaunchTemplateSize</code> (exported entry point, takes
+<code>images []inventory.Image</code> in addition to
+<code>templates</code>/<code>clients</code>) +
+<code>modifyLaunchTemplateSize</code> (testable core) – pick template
+-&gt; <code>promptLaunchTemplateVersion</code> -&gt;
+<code>DescribeLaunchTemplateVersion</code> -&gt;
+<code>describeImageRootVolume</code> against the version’s
+<code>ImageID</code> -&gt;
+<code>promptInstanceType(w, "",     input, output)</code> (unfiltered)
+-&gt; <code>instanceTypeArchitecture</code> check; on mismatch, message
++ <code>pickNewLaunchTemplateAMIFunc</code> against
+<code>imagesForRegionAndArchitecture(imagesWithOfficialUbuntu(ctx,     clients, images), lt.Region, targetArch)</code>
+(error out if empty, not an empty picker), then
+re-<code>describeImageRootVolume</code> against the new AMI -&gt;
+<code>promptRootVolumeSizeGB(currentOrAMIDefault,     amiDefaultGB, input, output)</code>
+-&gt; no-op check (instance type, root volume size, AND AMI all
+unchanged) -&gt; confirm -&gt; <code>modifyLaunchTemplateVersion</code>
+-&gt; “not yet default” reminder, same message Sync already
+prints</label></li>
+<li><label><input type="checkbox" checked="" /><code>menu.go</code>: new
+<code>MenuActions.ModifyLaunchTemplateSize</code> field; new
+<code>mainMenuItems</code> entry (“Modify launch template’s instance
+type / EBS root volume size”) in the Launch Template lifecycle group,
+right after “Sync cloud-init YAML to a launch template” – turned out to
+shift no existing numeric-index test literal (the new position, 21st of
+25, is past every index any current test drives to; only the
+<code>len(mainMenuItems)</code> count assertion needed updating, 24
+-&gt; 25), confirmed via a search first, same diligence Phase 20.43
+applied</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: wired
+<code>ModifyLaunchTemplateSize</code> the same way
+<code>SyncLaunchTemplate</code>/<code>PromoteLaunchTemplateVersion</code>
+are wired, passing <code>state.images</code> too (matching
+<code>CreateLaunchTemplateFromCloudInit</code>’s own
+wiring)</label></li>
+</ul>
+<h3 id="tests-5">Tests</h3>
+<p>Test-first, per [[feedback-test-before-fix]]: every new/changed
+function’s tests confirmed failing (undefined symbol or assignment-
+mismatch compile errors) before the corresponding implementation
+existed.</p>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>promptRootVolumeSizeGB</code>: display default and
+floor are independent – a value between the two succeeds and shows the
+display default pre-filled; a value below <code>floorGB</code> (even if
+above/equal to a lower <code>displayDefaultGB</code>) is
+rejected</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>describeImageRootVolume</code>: also returns the
+AMI’s <code>Architecture</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>instanceTypeArchitecture</code>: returns the first
+supported architecture; returns <code>""</code> (not an error) when
+<code>ProcessorInfo</code>/<code>SupportedArchitectures</code> is
+absent; propagates a real <code>DescribeInstanceTypes</code>
+error</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>imagesForRegionAndArchitecture</code>: filters
+correctly on both dimensions (region alone or architecture alone isn’t
+enough)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>modifyLaunchTemplateVersion</code>: sets
+<code>ImageId</code>, <code>InstanceType</code>, and
+<code>BlockDeviceMappings</code> (device name + size) on the request,
+leaves <code>UserData</code> unset (inherited via
+<code>SourceVersion</code>), same assertion shape as
+<code>TestCreateLaunchTemplateVersion_SetsSourceVersionAndUserData</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>modifyLaunchTemplateSize</code>: no-op when instance
+type, root volume size, and AMI are all unchanged (“No changes” message,
+no API call)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>modifyLaunchTemplateSize</code>: a same-architecture
+instance type change never invokes
+<code>pickNewLaunchTemplateAMIFunc</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>modifyLaunchTemplateSize</code>: a
+different-architecture instance type change invokes
+<code>pickNewLaunchTemplateAMIFunc</code> (substituted fake) and the new
+version’s <code>ImageId</code> reflects the picked AMI</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>modifyLaunchTemplateSize</code>: no compatible AMI in
+the template’s region for the target architecture fails loud with an
+actionable error, <code>pickNewLaunchTemplateAMIFunc</code> never
+invoked</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>modifyLaunchTemplateSize</code>: a declined
+confirmation does not create a new version</label></li>
+<li><label><input type="checkbox" checked="" />Existing
+<code>promptRootVolumeSizeGB</code>/<code>describeImageRootVolume</code>
+callers’
+(<code>launch_from_cloud_init_test.go</code>/<code>launch_instance_test.go</code>)
+tests still pass unchanged with the widened signatures</label></li>
+</ul>
+<h3 id="files-5">Files</h3>
+<p><code>internal/workflow/ebs_size.go</code>,
+<code>ebs_size_test.go</code>, <code>launch_from_cloud_init.go</code>,
+<code>launch_instance.go</code>, new
+<code>instance_type_arch_check.go</code>/<code>instance_type_arch_check_test.go</code>,
+new
+<code>modify_launch_template_size.go</code>/<code>modify_launch_template_size_test.go</code>,
+<code>menu.go</code>, <code>menu_test.go</code>,
+<code>cmd/clasm/main.go</code>, <code>launch_execute_test.go</code>
+(fake <code>DescribeInstanceTypes</code> extended with
+<code>instanceTypeArchitectures</code>).</p>
+<h3 id="dependency-4">Dependency</h3>
+<p>None.</p>
+<hr />
+<h2 id="phase-20.47-ssh-connection-info-key-path-username-guess">Phase
+20.47 — SSH Connection Info: Key Path + Username Guess</h2>
+<p><strong>Status: designed, implemented, unit-tested, and
+real-AWS-verified 2026-07-28</strong> (see DESIGN.md, “SSH Connection
+Info: Key Path + Username Guess”; DECISIONS.md, “SSH connection info:
+guess the key path (only if it exists on disk) and the login username”).
+TODO.md-requested feature: <code>displayConnectionInfo</code> already
+printed <code>ssh ec2-user@&lt;ip&gt;</code>, missing an
+<code>-i &lt;key path&gt;</code> entirely and hardcoding “ec2-user” even
+for this tool’s own Ubuntu-only curated AMI list.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean. Targeted for v0.0.6.</p>
+<h3 id="work-items-92">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>sshUsernameForImage(ctx, client, imageID) string</code>
+(best-effort <code>ec2:DescribeImages</code>, checks
+<code>OwnerId == ubuntuAMIOwnerID</code> -&gt; “ubuntu”, else/error
+-&gt; “ec2-user”)</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>sshKeyDirFunc = sshKeyDir</code> package-level func-var seam (so
+tests can point <code>sshKeyPath</code> at a temp directory instead of
+the real <code>~/.ssh</code>) and
+<code>sshKeyPath(keyName string) (string, bool)</code> –
+<code>os.Stat</code>s
+<code>filepath.Join(sshKeyDirFunc(), keyName+".pem")</code>, returns
+<code>("", false)</code> if it doesn’t exist</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>launch_execute.go</code>: widened
+<code>displayConnectionInfo</code> to
+<code>displayConnectionInfo(ctx context.Context, w io.Writer, client     awsclient.EC2API, instanceID string, inst types.Instance)</code>
+– reads
+<code>aws.ToString(inst.KeyName)</code>/<code>aws.ToString(inst.ImageId)</code>
+directly off <code>inst</code>, no new params threaded from callers
+beyond <code>ctx</code>/<code>client</code>; when there’s a public IP,
+prints <code>ssh -i &lt;path&gt;     &lt;user&gt;@&lt;ip&gt;</code> if
+<code>sshKeyPath</code> found a real file, else
+<code>ssh -i     &lt;path to your "KEYNAME" private key&gt; &lt;user&gt;@&lt;ip&gt;</code>
+if not</label></li>
+<li><label><input type="checkbox" checked="" />Updated all three call
+sites
+(<code>runLaunch</code>/<code>createInstanceFromLaunchTemplate</code>/<code>startEC2Instance</code>)
+to pass <code>ctx</code>/<code>client</code> (both already in scope at
+each site)</label></li>
+</ul>
+<h3 id="tests-6">Tests</h3>
+<p>Test-first, per [[feedback-test-before-fix]]: confirmed failing
+(undefined-symbol/assignment-mismatch compile errors) before the
+implementation existed.</p>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>sshUsernameForImage</code>: Canonical
+<code>OwnerId</code> -&gt; “ubuntu”; any other owner -&gt; “ec2-user”;
+<code>DescribeImages</code> error -&gt; “ec2-user”</label></li>
+<li><label><input type="checkbox" checked="" /><code>sshKeyPath</code>:
+existing file -&gt; its path and <code>true</code>; missing file -&gt;
+<code>("", false)</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>displayConnectionInfo</code>: with a public IP and an
+existing key file, output contains <code>-i &lt;path&gt;</code>; with a
+public IP and no matching key file, output still names the key pair but
+not a specific (possibly-wrong) path; with no public IP, no ssh line at
+all (existing behavior, unchanged)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>displayConnectionInfo</code>: username reflects
+<code>sshUsernameForImage</code>’s result for the instance’s own
+<code>ImageId</code></label></li>
+</ul>
+<h3 id="files-6">Files</h3>
+<p><code>internal/workflow/launch_execute.go</code>,
+<code>launch_execute_test.go</code>,
+<code>launch_from_template.go</code>, <code>power_state.go</code>, and
+their <code>_test.go</code> counterparts.</p>
+<h3 id="dependency-5">Dependency</h3>
+<p>None.</p>
+<hr />
 <h2 id="deferred-to-a-later-version-phase-23-not-scheduled">Deferred to
 a Later Version (Phase 23+, not scheduled)</h2>
 <p>Not part of v1/v2 — see <code>DECISIONS.md</code>, “V1 scope: ship

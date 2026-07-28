@@ -25,33 +25,29 @@
 </nav>
 <section id="main-content">
 <h1 id="about-this-software">About this software</h1>
-<h2 id="clasm-0.0.5">clasm 0.0.5</h2>
-<p>Adds a fifth domain, IAM: browse Roles/Instance Profiles/Policies
-(each showing a config-driven ‘Origin’ tag’s value, or ‘(unset)’), a
-read-only guard on permission-changing actions for anything not
-recognized as DLD-owned (tagging itself is always allowed), a detail
-view (trust policy, attached policies, tags, SSM-capability,
-cross-references), five curated per-use-case role/policy creation
-templates (Static Website, RDM Repository, Bridge Service, Patron-Facing
-Service, Data Processing), and CRUD completion for DLD-owned roles
-(Delete Role, Attach/Detach Policy). Also adds: SSM-capable instance
-profile enforcement at launch plus associate/replace for already-running
-instances; automatic gzip compression of user-data, fixing AWS’s
-16384-byte limit on larger cloud-init files; arm64/Graviton support and
-Ubuntu 26.04 LTS in the curated AMI/instance-type lists; single-resource
-detail views for an individual EC2 instance and AMI (Show instance
-detail/Show AMI detail), alongside the existing per-resource-type list
-views; and a sixth domain, Configuration, to view and edit clasm’s own
-~/.clasm settings (regions, backup directory rules, Origin tag config)
-from within clasm instead of hand-editing YAML, with changes staged in
-memory until an explicit Save. Finally, every domain menu’s item
-ordering was reviewed and regrouped (View/Inspect -&gt; Instance -&gt;
-AMI -&gt; Launch Template -&gt; Maintenance for Compute, matching the
-List -&gt; Detail -&gt; Create -&gt; CRUD shape IAM already used), and
-several menu labels were unified onto consistent terminology (‘List S3
-Buckets’ -&gt; ‘Show Buckets’, ‘Show resource lists’ -&gt; ‘Show Key
-Pairs’, ‘View Role/Instance Profile Detail’ -&gt; ‘Show Role/Instance
-Profile Detail’).</p>
+<h2 id="clasm-0.0.6">clasm 0.0.6</h2>
+<p>Fixes a recurring ‘InvalidUserData.Malformed: User data is limited to
+16384 bytes’ error on large cloud-init files: gzip compression now uses
+maximum compression, and user-data is checked against AWS’s limit before
+any API call, failing with a clear, actionable clasm-side error (stating
+the compressed size and the overage) instead of AWS’s opaque 400. Fixes
+two related bugs in the cloud-init file picker: a bare ‘q’ now cancels
+(matching every other picker’s convention, instead of being treated as a
+literal filename), and cancelling anywhere in Sync Cloud-Init YAML to a
+Launch Template now correctly returns to the Compute menu instead of
+exiting clasm entirely. Adds a new action, Modify Launch Template’s
+Instance Type / EBS Root Volume Size, creating a new launch template
+version with both overrides in one step (never auto-promoted, matching
+Sync); if the newly chosen instance type’s CPU architecture doesn’t
+match the template’s current AMI (e.g. switching a Graviton/arm64
+template to an x86_64 instance type), it prompts for a compatible
+replacement AMI automatically. Finally, the connection info shown after
+launching or starting an instance now includes a ready-to-use ‘-i
+<path>’ key reference (guessed from where clasm itself saves a key
+pair’s private key, shown only when that file actually exists) and
+guesses the SSH login username (‘ubuntu’ for this tool’s own
+curated/official Ubuntu AMIs, ‘ec2-user’ otherwise) instead of always
+hardcoding ‘ec2-user’.</p>
 <h2 id="authors">Authors</h2>
 <ul>
 <li><a href="https://orcid.org/0000-0003-0900-6903">R. S. Doiel</a></li>
@@ -80,11 +76,11 @@ Tracker</a></li>
 <ul>
 <li>Go &gt;= 1.26</li>
 <li>CMTools &gt;= 0.0.46</li>
+<li>Pandoc &gt;= 3.9</li>
 </ul>
 <h2 id="software-suggestions">Software Suggestions</h2>
 <ul>
 <li>GNU Make &gt;= 3.8</li>
-<li>Pandoc &gt;= 3.9</li>
 </ul>
 </section>
 <footer-global></footer-global>

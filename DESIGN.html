@@ -2361,6 +2361,354 @@ offline-friendly, since there’s no “list all regions” call that doesn’t
 itself need a client already configured) – left as free-text for v0.0.5;
 exact prompt copy for the Save confirmation and the
 unsaved-changes-on-‘q’ warning, left for the implementation plan.</p>
+<h2
+id="user-data-pre-flight-size-check-design-addendum-2026-07-28-plan.md-phase-20.44">User-Data
+Pre-Flight Size Check (Design Addendum, 2026-07-28, PLAN.md Phase
+20.44)</h2>
+<p><strong>Status: designed, implemented, unit-tested, and
+real-AWS-verified 2026-07-28.</strong> Motivated directly by a
+recurrence of
+<code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>,
+this time syncing <code>granian-rdm-v14/cloud-init.yaml</code> (57849
+raw bytes) to a launch template – confirmed via clasm’s own
+<code>--debug</code> JSONL log that Phase 20.34’s gzip fix
+(<code>encodeUserData</code>, <code>userdata_gzip.go</code>) is
+necessary but not sufficient: the file gzips (default
+<code>gzip.NewWriter</code>, compression level 6) to 16671 bytes, 287
+over the limit, and even
+<code>gzip -9</code>/<code>gzip.BestCompression</code> only reaches
+16576 – still 192 over. <code>encodeUserData</code> has never validated
+size against AWS’s 16384-byte limit at any of its three write sites
+(<code>Launch</code>, <code>buildRequestLaunchTemplateData</code>,
+<code>createLaunchTemplateVersion</code>) – the limit is only ever
+mentioned in a source comment. The operator’s only signal today is AWS’s
+bare 400, with no clasm-side context on how far over the limit the
+payload is or which of the (currently invisible) compressed bytes is
+responsible.</p>
+<p><strong>Two changes, both scoped to <code>userdata_gzip.go</code> and
+its three call sites:</strong></p>
+<ol type="1">
+<li><strong>Switch <code>encodeUserData</code> to
+<code>gzip.BestCompression</code></strong> (from the implicit default,
+level 6). Same reasoning Phase 20.34 already applied to “always gzip,
+never conditionally” – there’s no behavioral reason to leave headroom on
+the table, and this is a one-line change with no downside (compression
+time is not a user-visible cost at these file sizes). Not sufficient
+alone for this incident’s file (confirmed above), but narrows the gap
+for files close to the limit.</li>
+<li><strong>A hard pre-flight size check inside
+<code>encodeUserData</code> itself, after gzip-compressing and before
+base64-encoding.</strong> New <code>maxUserDataBytes = 16384</code>
+constant (matching AWS’s own documented limit, no longer just a source
+comment); if the compressed byte count exceeds it,
+<code>encodeUserData</code> returns an error stating the compressed size
+and how far over the limit it is, instead of proceeding to a doomed AWS
+call. This requires widening <code>encodeUserData</code>’s signature to
+<code>(string, error)</code> – matching <code>decodeUserData</code>’s
+existing shape – and updating its three call sites
+(<code>launch_execute.go</code>, <code>launch_template_create.go</code>,
+<code>launch_template_sync.go</code>) to propagate the error.</li>
+</ol>
+<p><strong>On failure: hard error, abort</strong> (user’s explicit
+scoping call, 2026-07-28) – matches this codebase’s established “fail
+loud, don’t guess” precedent (<code>growRootFilesystem</code>’s
+SSM/layout-detection fallback). The operator sees exactly how many bytes
+over the limit the compressed payload is and trims the cloud-init file
+themselves (e.g. moving package installs or large embedded scripts to a
+separate mechanism fetched at boot) before retrying the whole workflow –
+no inline “pick a different file” loop-back, since the failure surfaces
+deep in the call chain (inside <code>encodeUserData</code>, called from
+<code>createLaunchTemplateVersion</code>/<code>buildRequestLaunchTemplateData</code>/
+<code>Launch</code>), well past where the file was originally selected
+via <code>promptCloudInitYAMLFile</code>.</p>
+<p><strong>Rejected alternative.</strong> <em>A
+multipart/<code>#include</code>/S3-reference mechanism</em> to split a
+payload that’s fundamentally too large even at max compression – this is
+a real, standard cloud-init/EC2 pattern (store the bulk of the content
+in S3, have a small stub user-data <code>#include</code> it at boot),
+but it’s a materially larger feature (new upload step, new IAM/S3
+permissions surface, a new read-path for decode/diff/show) that wasn’t
+requested and has no second use case yet – the actual 2026-07-28
+incident was resolved by trimming the cloud-init content itself, outside
+clasm. Noted here, not designed, as a candidate if oversized cloud-init
+files recur after this pre-flight check ships (see TODO.md’s
+Someday/maybe).</p>
+<h3 id="not-decided-yet-7">Not decided yet</h3>
+<p>Exact wording of the pre-flight error message beyond “states the
+compressed size and the overage” – left for the implementation plan.</p>
+<h2
+id="cloud-init-picker-discoverable-cancel-a-second-related-bug-design-addendum-2026-07-28-plan.md-phase-20.45">Cloud-Init
+Picker: Discoverable Cancel + a Second, Related Bug (Design Addendum,
+2026-07-28, PLAN.md Phase 20.45)</h2>
+<p><strong>Status: designed, implemented, unit-tested, and verified in a
+real interactive terminal 2026-07-28.</strong> Motivated by TODO.md’s
+own bug report: “When selecting a cloud init, there is no obvious exit,
+‘q’ is treated as a filename.” Investigating it surfaced two distinct,
+compounding problems, both in the same area of code.</p>
+<p><strong>Bug 1 – no discoverable single-step cancel on
+<code>promptCloudInitYAMLFile</code>
+(<code>userdata.go</code>).</strong> Every Select-based picker in this
+app (<code>pickString</code>/<code>pickComparable</code>) shows a
+<code>hintCancel</code>-style “(q to cancel)” hint and binds ‘q’ as a
+Quit key alongside Ctrl+C (<code>menuQuitKeyMap</code>).
+<code>promptCloudInitYAMLFile</code> is a free-text
+<code>huh.Input</code> field (via <code>ui.Prompt</code>), which has no
+such binding – confirmed by reading <code>huh</code>’s own
+<code>InputKeyMap</code> (<code>keymap.go</code>), which only defines
+<code>Next</code>/<code>Prev</code>/<code>Submit</code>/<code>AcceptSuggestion</code>,
+nothing for Quit. An operator trained by every other picker in the app
+types “q”, which is simply accepted as literal text, then fails to read
+as a file and re-prompts forever with no hint that anything else would
+work.</p>
+<p><strong>Bug 2 – found while tracing where a cancel signal actually
+goes: <code>SyncLaunchTemplate</code>
+(<code>launch_template_sync.go</code>) never wraps its testable core’s
+return value with <code>cancelledIsNil</code>.</strong> Every sibling
+entry point that calls <code>promptCloudInitYAMLFile</code>
+(<code>CreateInstanceFromCloudInit</code>,
+<code>CreateLaunchTemplateFromCloudInit</code>) wraps it:
+<code>return cancelledIsNil(w, err)</code>.
+<code>SyncLaunchTemplate</code> instead does
+<code>return syncLaunchTemplate(ctx, w, clients, lt, nil, nil)</code> –
+whatever <code>syncLaunchTemplate</code> returns (including a
+cancellation from <code>promptLaunchTemplateVersion</code> or
+<code>promptCloudInitYAMLFile</code>) propagates raw up to
+<code>runMainMenu</code>’s dispatch. There, <code>isExitSignal</code> –
+the <em>fallback</em> for a cancel signal that escaped an inner
+<code>cancelledIsNil</code> – catches it and <strong>exits the entire
+clasm program</strong>, not just the “Sync cloud-init YAML to a launch
+template” action. This is the exact bug class already found and fixed
+once before in this codebase (v0.0.3, <code>backup_archive.go</code>’s
+bucket-picker cancellation, DECISIONS.md/TODO.md) – it recurred here
+because the fix was never generalized into a check across every call
+site that skips straight to a raw return.</p>
+<p><strong>Decision: fix both, since they compound on the same reported
+symptom.</strong></p>
+<ol type="1">
+<li><code>promptCloudInitYAMLFile</code>’s label becomes
+<code>"Cloud-init YAML file path (q to cancel)"</code>; a bare
+<code>"q"</code> (exact match, checked before the existing
+<code>"@"</code>-prefix stripping so an explicit <code>"@q"</code> still
+means “a file literally named q”) returns <code>ui.ErrCancelled</code>
+instead of attempting to read a file named “q”. Accepted trade-off: a
+real cloud-init file literally named <code>q</code> (no extension) can
+no longer be referenced bare – prefixing it with <code>"@"</code> still
+works, and no file like this has ever come up in this project’s actual
+use of cloud-init YAML (always <code>*.yaml</code>/<code>*.yml</code>,
+always via <code>@path</code> or a bare path already, per
+<code>loadUserData</code>’s own docs).</li>
+<li><code>SyncLaunchTemplate</code> wraps its call the same way its
+siblings already do:
+<code>return cancelledIsNil(w, syncLaunchTemplate(ctx, w, clients, lt, nil, nil))</code>.
+This also fixes cancelling at the
+<code>promptLaunchTemplateVersion</code> step (the
+version-to-sync-against prompt, one step before the file picker) for
+free – same root cause, same fix.</li>
+</ol>
+<p><strong>Rejected alternative.</strong> <em>Add a generic wrapper/lint
+check across every <code>MenuActions</code> entry point to catch a
+missing <code>cancelledIsNil</code> mechanically</em> – worth wanting,
+but a much larger sweep (would need to audit all ~30 entries) than this
+narrowly-reported bug calls for; noted here as a candidate for a
+dedicated pass later, not undertaken now.</p>
+<h3 id="not-decided-yet-8">Not decided yet</h3>
+<p>None – this is a small, fully-scoped fix.</p>
+<h2
+id="modify-launch-template-size-design-addendum-2026-07-28-plan.md-phase-20.46">Modify
+Launch Template Size (Design Addendum, 2026-07-28, PLAN.md Phase
+20.46)</h2>
+<p><strong>Status: designed, implemented, unit-tested, and
+real-AWS-verified 2026-07-28.</strong> Motivated by TODO.md’s requested
+feature: “Need to be able to modify a launch templates’ size and EBS
+storage from clasm in addition to syncing the cloud-init.” Today, Sync
+Cloud-Init YAML to a Launch Template is the only way to create a new
+launch template version, and it only ever touches <code>UserData</code>
+– there’s no way to change instance type or EBS root volume size without
+hand-editing via the AWS Console.</p>
+<p><strong>One combined action</strong> (user’s explicit call,
+2026-07-28): a new “Modify launch template’s instance type / EBS root
+volume size” entry prompts for both together and creates one new launch
+template version with both overrides – matches how creation already
+collects both together, and avoids two near-identical entries that would
+each need their own version-selection/no-op/confirm scaffolding for half
+the value.</p>
+<p><strong>Flow, mirroring Sync’s own shape
+(<code>syncLaunchTemplate</code>) closely:</strong> pick a launch
+template (Picker-tier, same <code>pickLaunchTemplate</code>) -&gt; pick
+a source version to base the change on (same
+<code>promptLaunchTemplateVersion</code>, pre-filled
+<code>$Default</code>) -&gt;
+<code>inventory.DescribeLaunchTemplateVersion</code> to read the
+version’s current
+<code>InstanceType</code>/<code>RootVolumeSizeGB</code>/<code>ImageID</code>
+-&gt; <code>describeImageRootVolume</code> (already exists,
+<code>ebs_size.go</code>) against that <code>ImageID</code> for the root
+device name and the AMI’s own snapshot default size -&gt; prompt for a
+new instance type (pre-filled to the current one via display, not
+enforced) and a new root volume size (pre-filled to the current
+override, or the AMI default if the version never set one) -&gt; if
+neither changed, “No changes – nothing to modify,” same framing Sync
+uses for identical content -&gt; confirm -&gt;
+<code>CreateLaunchTemplateVersion</code> (new
+<code>modifyLaunchTemplateVersion</code>, setting only
+<code>InstanceType</code>+<code>BlockDeviceMappings</code> in
+<code>RequestLaunchTemplateData</code>, inheriting everything else –
+including <code>UserData</code> – via <code>SourceVersion</code>,
+exactly as <code>createLaunchTemplateVersion</code> already does for the
+reverse case) -&gt; same “not yet default, use Promote when ready”
+reminder Sync prints. Never auto-promotes – no reason for this action to
+behave differently from Sync’s own explicit “the operator expects to
+experiment with in-progress versions without silently changing what a
+plain launch picks up” rationale.</p>
+<p><strong>Instance type: unfiltered picker
+(<code>promptInstanceType(w, "", ...)</code>), plus a post-hoc
+architecture-mismatch check that can swap the AMI.</strong> Phase
+20.35’s launch-time picker filters by architecture <em>before</em> the
+pick, because an <code>inventory.Image</code> (carrying
+<code>Architecture</code>) is already in hand at that point. Here the
+operator is choosing a <em>new</em> instance type for an
+<em>existing</em> template – filtering the picker by the template’s
+<em>current</em> AMI architecture would be actively wrong, since
+switching architecture families (the user’s own motivating example,
+2026-07-28: <code>granian-rdm-v14-test</code> is currently
+Graviton/arm64, and they want to switch it to an x86_64 type) is a
+legitimate, expected use of this feature, not an error case to filter
+away. So the picker stays unfiltered (also covers “Other,”
+e.g. <code>m7i-flex.2xlarge</code>, which isn’t in
+<code>curatedInstanceTypes</code> – the user confirmed this can stay
+reachable via “Other” rather than being added to the curated list).</p>
+<p><strong>AMI-swap on architecture mismatch (added 2026-07-28, after
+the Graviton -&gt; x86_64 example surfaced a real gap in the original,
+narrower design):</strong> an EC2 instance type’s architecture is tied
+to the AMI it launches from – an arm64 AMI cannot boot as an x86_64
+instance type and vice versa, and
+<code>CreateLaunchTemplateVersion</code> does not validate this at
+creation time, only <code>RunInstances</code> does, later, when someone
+actually launches from the template. Without an AMI swap, the narrower
+instance-type + EBS-size-only design would let an operator create a new
+version that looks fine and then fails at the next actual launch. Fixed
+by checking after the instance type is picked: a new
+<code>instanceTypeArchitecture</code> helper
+(<code>ec2:DescribeInstanceTypes</code>, mirroring
+<code>instanceTypeRequiresENA</code>’s exact shape/API) reports the
+picked type’s required architecture; if it doesn’t match the current
+AMI’s architecture (from <code>describeImageRootVolume</code>, widened
+to also return it – already reading the same <code>DescribeImages</code>
+response, no extra call), the operator is shown why and prompted to pick
+a new base AMI, filtered to the target architecture <em>and</em> the
+launch template’s own region (a launch template’s AMI must exist in that
+same region;
+<code>imagesWithOfficialUbuntu(ctx, clients, images)</code>’s combined
+multi-region list is filtered down before the pick). If no compatible
+AMI exists in that region, this fails loud with an actionable error
+rather than handing the picker an empty list. Root device name and the
+AMI-default floor are then re-fetched against the <em>new</em> AMI
+(different AMIs can have different root device names,
+e.g. <code>/dev/sda1</code> vs <code>/dev/xvda</code>, and different
+default sizes) before the EBS-size prompt. The new version’s
+<code>RequestLaunchTemplateData</code> always explicitly sets
+<code>ImageId</code> (not just
+<code>InstanceType</code>+<code>BlockDeviceMappings</code>) – harmless
+when unchanged (same value the version already had), and what actually
+makes the swap take effect when it did change.</p>
+<p><strong>Testability seam for the conditional AMI re-pick:</strong>
+<code>pickImage</code> runs a real bubbletea <code>tui.RunPicker</code>
+program, the same “can’t be pipe-tested” limitation every other
+Picker-tier call in this package already has – but every other one of
+those is hoisted to the very start of an otherwise-untestable exported
+entry point, with the testable core taking the already-resolved value as
+a plain parameter. This one is different: it’s <em>conditional</em>,
+invoked partway through an otherwise fully pipe-testable prompt sequence
+(after the instance-type prompt, before the EBS-size prompt), so it
+can’t be hoisted out the same way. Given a package-level func-var seam
+instead (<code>pickNewLaunchTemplateAMIFunc</code>), the same shape
+<code>backup_archive.go</code>’s <code>promptBackupBucketFunc</code>
+already established for a conditional/hard-to-drive step embedded inside
+an otherwise testable sequence – tests substitute a fake and restore the
+real one after.</p>
+<p><strong>EBS size: shrinking is allowed down to the AMI’s own snapshot
+size</strong> (user’s explicit call, 2026-07-28) – not floored at
+whatever the template currently specifies. AWS’s only real constraint on
+a launch template’s <code>BlockDeviceMappings.Ebs.VolumeSize</code> is
+never smaller than the source snapshot, the same floor
+<code>promptRootVolumeSizeGB</code> already enforces at creation time;
+there’s no live-attached-volume restriction here the way
+<code>ResizeInstanceRootVolume</code> has (that one really can only
+grow, an AWS API-level restriction on <code>ec2:ModifyVolume</code> for
+a running volume – a launch template has no such limit).
+<code>promptRootVolumeSizeGB</code> widens from one
+<code>defaultGB</code> parameter (used for both the pre-filled display
+value and the validation floor – identical at creation time, since
+there’s no “current template setting” yet) to two:
+<code>displayDefaultGB</code> (what’s shown pre-filled – the version’s
+current override, or the AMI default if it never set one) and
+<code>floorGB</code> (always the AMI’s own snapshot size). The two
+existing creation-time call sites pass the same value for both,
+unchanged behavior.</p>
+<h3 id="not-decided-yet-9">Not decided yet</h3>
+<p>Whether <code>m7i</code>-family (or other non-curated) instance types
+should be added to <code>curatedInstanceTypes</code> – raised by the
+user while confirming scope, not part of this phase; “Other” already
+covers typing any exact value, curated-list expansion is a separate,
+smaller follow-up if wanted.</p>
+<h2
+id="ssh-connection-info-key-path-username-guess-design-addendum-2026-07-28-plan.md-phase-20.47">SSH
+Connection Info: Key Path + Username Guess (Design Addendum, 2026-07-28,
+PLAN.md Phase 20.47)</h2>
+<p><strong>Status: designed, implemented, unit-tested, and
+real-AWS-verified 2026-07-28.</strong> Motivated by TODO.md’s requested
+feature: “show the SSH command to SSH in using the keys created and
+associated with the instance.” <code>displayConnectionInfo</code>
+(<code>launch_execute.go</code>, shared by Create Instance from
+AMI/Cloud-Init YAML, Create Instance from Launch Template, and Start
+Instance) already prints a <code>ssh ec2-user@&lt;ip&gt;</code> line –
+but with two real gaps: no <code>-i &lt;key path&gt;</code> at all, and
+“ec2-user” hardcoded even though every AMI this tool curates/offers by
+default (the official Ubuntu list) uses “ubuntu,” not “ec2-user.”</p>
+<p><strong>Key path: guessed from <code>sshKeyDir()</code>
+(<code>~/.ssh</code>) + the instance’s own key pair name +
+<code>.pem</code>, shown only if that exact file exists on
+disk.</strong> This matches exactly where <code>createKeyPair</code>
+saves a <em>newly created</em> key pair’s private key material – but an
+<em>imported</em> key pair (<code>keypair_import.go</code>) only ever
+registers a <code>.pub</code> file with AWS; the private key could be
+anywhere (e.g. <code>~/.ssh/id_ed25519</code>, no <code>.pem</code>,
+possibly not even named after the AWS key pair), so guessing wrong and
+presenting it confidently would be worse than not guessing.
+<code>os.Stat</code> confirms the guessed path is real before showing
+it; otherwise the line names the key pair and says the path is unknown,
+rather than printing a command that will fail with a confusing
+“Permission denied (publickey)” if copy-pasted as-is.</p>
+<p><strong>Username: “ubuntu” if the launched AMI is Canonical-owned
+(<code>OwnerId == ubuntuAMIOwnerID</code>, the same well-known account
+ID <code>official_ubuntu_amis.go</code> already uses to fetch the
+curated list), else “ec2-user.”</strong> A live, best-effort
+<code>ec2:DescribeImages</code> call (new
+<code>sshUsernameForImage</code>) – checking <code>OwnerId</code> covers
+every Canonical Ubuntu AMI, not just the specific curated releases in
+<code>curatedUbuntuReleases</code>, and works uniformly across all three
+call sites (including Create Instance from Launch Template, which never
+has an <code>inventory.Image</code> in hand at all – only the template’s
+stored <code>ImageId</code>). Falls back to “ec2-user” (today’s existing
+default, correct for Amazon Linux/RHEL-family) if the check errors or
+the AMI isn’t Canonical-owned – there’s no reliable API-level way to
+identify every other distribution’s own default login user, and
+“ec2-user” was already the assumption every one of today’s callers
+made.</p>
+<p><strong>No new parameters threaded through the three call
+sites.</strong> Both <code>KeyName</code> and <code>ImageId</code> are
+already present directly on the raw SDK <code>types.Instance</code>
+(<code>inst</code>) every caller already has in hand from
+<code>WaitUntilRunning</code>/its own <code>DescribeInstances</code>
+call – confirmed via <code>inventory.instanceFromSDK</code>’s own
+existing <code>aws.ToString(inst.KeyName)</code>/
+<code>aws.ToString(inst.ImageId)</code> reads of the same type. Only
+<code>displayConnectionInfo</code>’s own signature widens
+(<code>ctx</code>, an <code>awsclient.EC2API</code>, for the live
+<code>DescribeImages</code> call), not <code>LaunchInstanceParams</code>
+or any exported workflow signature.</p>
+<h3 id="not-decided-yet-10">Not decided yet</h3>
+<p>None – this is a small, fully-scoped fix.</p>
 <h2 id="core-features">Core Features</h2>
 <h3 id="compute-domain-ec2-ami">Compute Domain (EC2 &amp; AMI)</h3>
 <p>Features 1 through 12 below are unchanged in behavior from the

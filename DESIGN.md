@@ -1834,8 +1834,8 @@ for the implementation plan.
 
 ## User-Data Pre-Flight Size Check (Design Addendum, 2026-07-28, PLAN.md Phase 20.44)
 
-**Status: designed, implemented, and unit-tested 2026-07-28. Not yet
-real-AWS-verified.** Motivated directly by a recurrence of
+**Status: designed, implemented, unit-tested, and real-AWS-verified
+2026-07-28.** Motivated directly by a recurrence of
 `InvalidUserData.Malformed: User data is limited to 16384 bytes`, this
 time syncing `granian-rdm-v14/cloud-init.yaml` (57849 raw bytes) to a
 launch template -- confirmed via clasm's own `--debug` JSONL log that
@@ -1906,7 +1906,7 @@ compressed size and the overage" -- left for the implementation plan.
 
 ## Cloud-Init Picker: Discoverable Cancel + a Second, Related Bug (Design Addendum, 2026-07-28, PLAN.md Phase 20.45)
 
-**Status: designed, implemented, and unit-tested 2026-07-28.** Motivated by TODO.md's own bug report:
+**Status: designed, implemented, unit-tested, and verified in a real interactive terminal 2026-07-28.** Motivated by TODO.md's own bug report:
 "When selecting a cloud init, there is no obvious exit, 'q' is treated
 as a filename." Investigating it surfaced two distinct, compounding
 problems, both in the same area of code.
@@ -1973,7 +1973,7 @@ None -- this is a small, fully-scoped fix.
 
 ## Modify Launch Template Size (Design Addendum, 2026-07-28, PLAN.md Phase 20.46)
 
-**Status: designed, implemented, and unit-tested 2026-07-28.** Motivated by TODO.md's requested
+**Status: designed, implemented, unit-tested, and real-AWS-verified 2026-07-28.** Motivated by TODO.md's requested
 feature: "Need to be able to modify a launch templates' size and EBS
 storage from clasm in addition to syncing the cloud-init." Today,
 Sync Cloud-Init YAML to a Launch Template is the only way to create a
@@ -2098,7 +2098,7 @@ wanted.
 
 ## SSH Connection Info: Key Path + Username Guess (Design Addendum, 2026-07-28, PLAN.md Phase 20.47)
 
-**Status: designed, implemented, and unit-tested 2026-07-28.** Motivated by TODO.md's requested
+**Status: designed, implemented, unit-tested, and real-AWS-verified 2026-07-28.** Motivated by TODO.md's requested
 feature: "show the SSH command to SSH in using the keys created and
 associated with the instance." `displayConnectionInfo`
 (`launch_execute.go`, shared by Create Instance from AMI/Cloud-Init

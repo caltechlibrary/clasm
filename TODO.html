@@ -27,40 +27,112 @@
 <h1 id="action-items">Action items</h1>
 <h2 id="bugs">Bugs</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" checked="" />Menu-loop
+<li><p><label><input type="checkbox" checked="" />When I try to update
+the cloud-init.yaml for the granian-rdm-v14-test launch template I get
+an error about the user data being too large, this should have been
+fixed by gzipping I think – root cause: gzip alone isn’t always enough
+for large files, and there was no pre-flight size check anywhere. Fixed
+2026-07-28: <code>encodeUserData</code> now uses
+<code>gzip.BestCompression</code> and hard-errors before any AWS call if
+the compressed payload still exceeds the 16384-byte limit, stating the
+byte count and overage. Designed, implemented, and unit-tested. See
+DESIGN.md, “User-Data Pre-Flight Size Check”, DECISIONS.md, “User-data
+pre-flight size check: hard error, no remediation loop-back; switch to
+gzip.BestCompression”, PLAN.md Phase 20.44. Real-AWS-verified
+2026-07-28.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />Menu-loop
 output-visibility bug – fixed, real-AWS-verified, released in v0.0.4.
 See DECISIONS.md, “Pause for acknowledgment before every menu-loop
-redraw,” PLAN.md Phase 20.32.</label></li>
-<li><label><input type="checkbox" checked="" />SSM never came online for
-the resize-verification test instances (2026-07-22) – root cause (no
+redraw,” PLAN.md Phase 20.32.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />SSM never came online
+for the resize-verification test instances (2026-07-22) – root cause (no
 SSM-capable instance profile available at all) closed structurally by
 the SSM-enforcement work below. <code>growRootFilesystem</code>’s own
 OS-level <code>growpart</code>/<code>resize2fs</code> automation still
 hasn’t been specifically re-verified end-to-end with a proper instance
 profile in place – worth doing next time Resize Instance’s Root Volume
-comes up.</label></li>
-<li><label><input type="checkbox"
+comes up.</label></p></li>
+<li><p><label><input type="checkbox"
 checked="" /><code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>
 – fixed and real-AWS-verified 2026-07-22
 (<code>test-clasm-granian</code> launch template + instance). See
 DECISIONS.md, “Always gzip-compress user-data before base64-encoding
 it,” PLAN.md Phase 20.34. Not yet released – part of
-v0.0.5.</label></li>
-</ul>
-<h2 id="requested-features">Requested features</h2>
-<ul class="task-list">
-<li><label><input type="checkbox" checked="" />SSM-capable instance
+v0.0.5.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />When selecting a cloud
+init, there is no abvious exit, “q” is treated as a filename – fixed
+2026-07-28: <code>promptCloudInitYAMLFile</code> now treats a bare “q”
+as cancel (label hints “(q to cancel)”), matching every Select-based
+picker’s own convention. Tracing this also surfaced a second, more
+serious bug in the same code path: <code>SyncLaunchTemplate</code> never
+converted a cancellation to a clean return, so cancelling anywhere in
+“Sync cloud-init YAML to a launch template” exited the entire clasm
+program instead of returning to the Compute menu – also fixed. Designed,
+implemented, unit-tested, and verified in a real interactive terminal
+2026-07-28. See DESIGN.md, “Cloud-Init Picker: Discoverable Cancel + a
+Second, Related Bug”, DECISIONS.md, “Cloud-init picker: a ‘q’ cancel
+sentinel, and a second bug found while tracing it”, PLAN.md Phase
+20.45.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />CMTools and Pandoc
+should be required software when compiling to install – fixed
+2026-07-28: <code>codemeta.json</code>’s
+<code>softwareRequirements</code> now lists both
+<code>CMTools &gt;= 0.0.46</code> and <code>Pandoc &gt;= 3.9</code>
+(Pandoc moved out of <code>softwareSuggestions</code>) – confirmed via
+the Makefile that both <code>cmt</code> and <code>pandoc</code> are
+invoked unconditionally by
+<code>make build</code>/<code>make man</code>, not optional.
+<code>GNU Make &gt;= 3.8</code> stays a suggestion (only needed to
+invoke <code>make</code> itself, not to build the plain Go binary via
+<code>go build</code>). ## Requested features</label></p></li>
+<li><p><label><input type="checkbox" checked="" />Produce installable
+binaries via <code>make release</code> – already done:
+<code>release.bash</code>/<code>release.ps1</code> (added 2026-06-30)
+are wired into the Makefile’s <code>release</code> target, which builds
+cross-platform dist zips (Linux x86_64/aarch64/armv7l, macOS
+x86_64/arm64, Windows x86_64/arm64) and points at
+<code>release.bash</code> to publish.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />Need to be able to
+modify a launch templates’ size and EBS storage from clasm in addition
+to syncing the cloud-init – fixed 2026-07-28: new “Modify launch
+template’s instance type / EBS root volume size” action creates a new
+version with both overrides (never auto-promotes, matching Sync).
+Expanded mid-design after a concrete example (switching
+<code>granian-rdm-v14-test</code> from Graviton/arm64 to x86_64) showed
+this also needs to swap the base AMI when the new instance type’s
+architecture doesn’t match – now handled via a post-hoc architecture
+check that prompts for a new, compatible AMI only when needed. Designed,
+implemented, and unit-tested. See DESIGN.md, “Modify Launch Template
+Size”, DECISIONS.md, “Modify Launch Template Size: one combined action,
+unfiltered instance-type picker, shrink to the AMI’s snapshot floor”,
+PLAN.md Phase 20.46. Real-AWS-verified 2026-07-28.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />When spinning up a new
+instance successfully the IP addresses and SSH ec2 user is shown, what
+would be good to also show is the SSH command to SSH in using the keys
+created and associated with the instance similar to how via the Web UI
+you can look up the connection command for connecting with SSH. – fixed
+2026-07-28: the ssh command now includes
+<code>-i &lt;key path&gt;</code>, guessed from where clasm itself saves
+a key pair’s private key (<code>~/.ssh/&lt;name&gt;.pem</code>) and
+shown only if that file actually exists; the login username is now
+guessed as “ubuntu” for Canonical-owned AMIs (this tool’s own
+curated/official AMI list) instead of always hardcoding “ec2-user”.
+Designed, implemented, and unit-tested. See DESIGN.md, “SSH Connection
+Info: Key Path + Username Guess”, DECISIONS.md, “SSH connection info:
+guess the key path (only if it exists on disk) and the login username”,
+PLAN.md Phase 20.47. Real-AWS-verified 2026-07-28.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />SSM-capable instance
 profile enforcement at launch + associate/replace retrofit for running
 instances – designed, implemented, unit-tested, and real-AWS-verified
 2026-07-22. See DESIGN.md/DECISIONS.md, “SSM-Capable Instance Profile
 Enforcement + Retrofit”, PLAN.md Phase 20.33. Not yet released – part of
-v0.0.5.</label></li>
-<li><label><input type="checkbox" checked="" />arm64/aarch64 (Graviton)
-support + Ubuntu 26.04 LTS in the curated AMI/instance-type lists –
-designed, implemented, unit-tested, and real-AWS-verified 2026-07-22.
-See DESIGN.md/DECISIONS.md, “ARM64 (Graviton) Support + Ubuntu 26.04
-LTS”, PLAN.md Phase 20.35. Not yet released – part of
-v0.0.5.</label></li>
+v0.0.5.</label></p></li>
+<li><p><label><input type="checkbox" checked="" />arm64/aarch64
+(Graviton) support + Ubuntu 26.04 LTS in the curated AMI/instance-type
+lists – designed, implemented, unit-tested, and real-AWS-verified
+2026-07-22. See DESIGN.md/DECISIONS.md, “ARM64 (Graviton) Support +
+Ubuntu 26.04 LTS”, PLAN.md Phase 20.35. Not yet released – part of
+v0.0.5.</label></p></li>
 </ul>
 <p><strong>v0.0.5 release: Phases 20.33/20.34/20.35 and now IAM Profile
 &amp; Role Management (20.36-20.40) are all done and real-AWS-verified –
