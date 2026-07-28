@@ -1,9 +1,13 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +98,10 @@ type fakeEC2Client struct {
 	describeImagesCreationDate string
 	describeImagesArchitecture string
 	describeImagesEnaSupport   bool
+	// describeImagesOwnerID backs DescribeImages' synthesized image's
+	// OwnerId, for sshUsernameForImage's Canonical-owner check
+	// ("SSH Connection Info: Key Path + Username Guess").
+	describeImagesOwnerID string
 
 	describeVolumesOutput []types.Volume
 	describeVolumesErr    error
@@ -522,6 +530,7 @@ func (f *fakeEC2Client) DescribeImages(ctx context.Context, params *ec2.Describe
 		CreationDate:        aws.String(f.describeImagesCreationDate),
 		Architecture:        types.ArchitectureValues(f.describeImagesArchitecture),
 		EnaSupport:          aws.Bool(f.describeImagesEnaSupport),
+		OwnerId:             aws.String(f.describeImagesOwnerID),
 		Tags:                f.describeImagesTags,
 		State:               state,
 		RootDeviceName:      aws.String(f.describeImagesRootDeviceName),
@@ -937,5 +946,133 @@ func TestWaitUntilRunning_TimesOutIfNeverVisible(t *testing.T) {
 	_, err := WaitUntilRunning(context.Background(), fake, "i-1", 20*time.Millisecond, testPollInterval)
 	if err == nil {
 		t.Fatal("expected a timeout error")
+	}
+}
+
+func TestSSHUsernameForImage_CanonicalOwnerReturnsUbuntu(t *testing.T) {
+	fake := &fakeEC2Client{describeImagesOwnerID: ubuntuAMIOwnerID}
+	got := sshUsernameForImage(context.Background(), fake, "ami-1")
+	if got != "ubuntu" {
+		t.Errorf("got %q, want %q", got, "ubuntu")
+	}
+}
+
+func TestSSHUsernameForImage_OtherOwnerReturnsEC2User(t *testing.T) {
+	fake := &fakeEC2Client{describeImagesOwnerID: "123456789012"}
+	got := sshUsernameForImage(context.Background(), fake, "ami-1")
+	if got != "ec2-user" {
+		t.Errorf("got %q, want %q", got, "ec2-user")
+	}
+}
+
+func TestSSHUsernameForImage_ErrorFallsBackToEC2User(t *testing.T) {
+	fake := &fakeEC2Client{describeImagesErr: errors.New("boom")}
+	got := sshUsernameForImage(context.Background(), fake, "ami-1")
+	if got != "ec2-user" {
+		t.Errorf("got %q, want %q", got, "ec2-user")
+	}
+}
+
+func TestSSHKeyPath_ExistingFileReturnsPathAndTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "my-key.pem")
+	if err := os.WriteFile(path, []byte("fake key material"), 0o600); err != nil {
+		t.Fatalf("writing test fixture: %v", err)
+	}
+
+	orig := sshKeyDirFunc
+	sshKeyDirFunc = func() string { return dir }
+	defer func() { sshKeyDirFunc = orig }()
+
+	got, ok := sshKeyPath("my-key")
+	if !ok {
+		t.Fatal("got false, want true")
+	}
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+}
+
+func TestSSHKeyPath_MissingFileReturnsFalse(t *testing.T) {
+	dir := t.TempDir()
+	orig := sshKeyDirFunc
+	sshKeyDirFunc = func() string { return dir }
+	defer func() { sshKeyDirFunc = orig }()
+
+	_, ok := sshKeyPath("no-such-key")
+	if ok {
+		t.Error("got true, want false")
+	}
+}
+
+func TestDisplayConnectionInfo_ShowsSSHCommandWithKeyPathWhenFileExists(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "my-key.pem"), []byte("fake"), 0o600); err != nil {
+		t.Fatalf("writing test fixture: %v", err)
+	}
+	orig := sshKeyDirFunc
+	sshKeyDirFunc = func() string { return dir }
+	defer func() { sshKeyDirFunc = orig }()
+
+	fake := &fakeEC2Client{describeImagesOwnerID: ubuntuAMIOwnerID}
+	inst := types.Instance{
+		PublicIpAddress:  aws.String("1.2.3.4"),
+		PrivateIpAddress: aws.String("10.0.0.1"),
+		KeyName:          aws.String("my-key"),
+		ImageId:          aws.String("ami-1"),
+	}
+
+	var buf bytes.Buffer
+	displayConnectionInfo(context.Background(), &buf, fake, "i-1", inst)
+	out := buf.String()
+	wantPath := filepath.Join(dir, "my-key.pem")
+	if !strings.Contains(out, "-i "+wantPath) {
+		t.Errorf("expected -i %s in output, got:\n%s", wantPath, out)
+	}
+	if !strings.Contains(out, "ubuntu@1.2.3.4") {
+		t.Errorf("expected ubuntu@1.2.3.4 in output, got:\n%s", out)
+	}
+}
+
+func TestDisplayConnectionInfo_NoMatchingKeyFileOmitsSpecificPath(t *testing.T) {
+	dir := t.TempDir() // empty -- no my-key.pem in it
+	orig := sshKeyDirFunc
+	sshKeyDirFunc = func() string { return dir }
+	defer func() { sshKeyDirFunc = orig }()
+
+	fake := &fakeEC2Client{}
+	inst := types.Instance{
+		PublicIpAddress: aws.String("1.2.3.4"),
+		KeyName:         aws.String("my-key"),
+		ImageId:         aws.String("ami-1"),
+	}
+
+	var buf bytes.Buffer
+	displayConnectionInfo(context.Background(), &buf, fake, "i-1", inst)
+	out := buf.String()
+	wantPath := filepath.Join(dir, "my-key.pem")
+	if strings.Contains(out, wantPath) {
+		t.Errorf("expected no specific (possibly-wrong) key path in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "my-key") {
+		t.Errorf("expected the key pair name to still be mentioned, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ec2-user@1.2.3.4") {
+		t.Errorf("expected ec2-user@1.2.3.4 (fallback username) in output, got:\n%s", out)
+	}
+}
+
+func TestDisplayConnectionInfo_NoPublicIPOmitsSSHLineEntirely(t *testing.T) {
+	fake := &fakeEC2Client{}
+	inst := types.Instance{
+		PrivateIpAddress: aws.String("10.0.0.1"),
+		KeyName:          aws.String("my-key"),
+		ImageId:          aws.String("ami-1"),
+	}
+
+	var buf bytes.Buffer
+	displayConnectionInfo(context.Background(), &buf, fake, "i-1", inst)
+	if strings.Contains(buf.String(), "ssh") {
+		t.Errorf("expected no ssh line without a public IP, got:\n%s", buf.String())
 	}
 }

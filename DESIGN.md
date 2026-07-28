@@ -2096,6 +2096,60 @@ scope, not part of this phase; "Other" already covers typing any exact
 value, curated-list expansion is a separate, smaller follow-up if
 wanted.
 
+## SSH Connection Info: Key Path + Username Guess (Design Addendum, 2026-07-28, PLAN.md Phase 20.47)
+
+**Status: designed, implemented, and unit-tested 2026-07-28.** Motivated by TODO.md's requested
+feature: "show the SSH command to SSH in using the keys created and
+associated with the instance." `displayConnectionInfo`
+(`launch_execute.go`, shared by Create Instance from AMI/Cloud-Init
+YAML, Create Instance from Launch Template, and Start Instance) already
+prints a `ssh ec2-user@<ip>` line -- but with two real gaps: no `-i
+<key path>` at all, and "ec2-user" hardcoded even though every AMI this
+tool curates/offers by default (the official Ubuntu list) uses
+"ubuntu," not "ec2-user."
+
+**Key path: guessed from `sshKeyDir()` (`~/.ssh`) + the instance's own
+key pair name + `.pem`, shown only if that exact file exists on
+disk.** This matches exactly where `createKeyPair` saves a *newly
+created* key pair's private key material -- but an *imported* key pair
+(`keypair_import.go`) only ever registers a `.pub` file with AWS; the
+private key could be anywhere (e.g. `~/.ssh/id_ed25519`, no `.pem`,
+possibly not even named after the AWS key pair), so guessing wrong and
+presenting it confidently would be worse than not guessing. `os.Stat`
+confirms the guessed path is real before showing it; otherwise the
+line names the key pair and says the path is unknown, rather than
+printing a command that will fail with a confusing "Permission denied
+(publickey)" if copy-pasted as-is.
+
+**Username: "ubuntu" if the launched AMI is Canonical-owned (`OwnerId
+== ubuntuAMIOwnerID`, the same well-known account ID
+`official_ubuntu_amis.go` already uses to fetch the curated list),
+else "ec2-user."** A live, best-effort `ec2:DescribeImages` call (new
+`sshUsernameForImage`) -- checking `OwnerId` covers every Canonical
+Ubuntu AMI, not just the specific curated releases in
+`curatedUbuntuReleases`, and works uniformly across all three call
+sites (including Create Instance from Launch Template, which never
+has an `inventory.Image` in hand at all -- only the template's stored
+`ImageId`). Falls back to "ec2-user" (today's existing default,
+correct for Amazon Linux/RHEL-family) if the check errors or the AMI
+isn't Canonical-owned -- there's no reliable API-level way to identify
+every other distribution's own default login user, and "ec2-user" was
+already the assumption every one of today's callers made.
+
+**No new parameters threaded through the three call sites.** Both
+`KeyName` and `ImageId` are already present directly on the raw SDK
+`types.Instance` (`inst`) every caller already has in hand from
+`WaitUntilRunning`/its own `DescribeInstances` call -- confirmed via
+`inventory.instanceFromSDK`'s own existing `aws.ToString(inst.KeyName)`/
+`aws.ToString(inst.ImageId)` reads of the same type. Only
+`displayConnectionInfo`'s own signature widens (`ctx`, an
+`awsclient.EC2API`, for the live `DescribeImages` call), not
+`LaunchInstanceParams` or any exported workflow signature.
+
+### Not decided yet
+
+None -- this is a small, fully-scoped fix.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

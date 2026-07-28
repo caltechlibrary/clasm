@@ -117,7 +117,7 @@ func startEC2Instance(ctx context.Context, w io.Writer, clients map[string]awscl
 		return err
 	}
 
-	displayConnectionInfo(w, inst.InstanceID, running)
+	displayConnectionInfo(ctx, w, client, inst.InstanceID, running)
 	fmt.Fprintln(w, "Note: the public IP may have changed since this instance was last running, unless it uses an Elastic IP.")
 	return nil
 }

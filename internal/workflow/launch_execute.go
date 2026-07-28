@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -211,20 +213,74 @@ func runLaunch(ctx context.Context, w io.Writer, ec2Client awsclient.EC2API, ssm
 		}
 	}
 
-	displayConnectionInfo(w, instanceID, inst)
+	displayConnectionInfo(ctx, w, ec2Client, instanceID, inst)
 	return nil
 }
 
-// displayConnectionInfo prints an instance's public/private IP and, if it
-// has a public IP, a ready-to-copy ssh command -- shared by every
+// sshKeyDirFunc indirects sshKeyPath's call to sshKeyDir (create_key_pair.go)
+// through a package-level var, so tests can point it at a temp directory
+// instead of the operator's real ~/.ssh.
+var sshKeyDirFunc = sshKeyDir
+
+// sshKeyPath returns keyName's private key file path, guessed as
+// sshKeyDir()/<keyName>.pem -- exactly where createKeyPair saves a
+// newly created key pair's private key material -- and whether that
+// exact file actually exists on disk. An imported key pair
+// (keypair_import.go) never gets this file from clasm at all, so a
+// false here means "don't guess," not "definitely missing" (DESIGN.md,
+// "SSH Connection Info: Key Path + Username Guess").
+func sshKeyPath(keyName string) (string, bool) {
+	path := filepath.Join(sshKeyDirFunc(), keyName+".pem")
+	if _, err := os.Stat(path); err != nil {
+		return "", false
+	}
+	return path, true
+}
+
+// sshUsernameForImage guesses imageID's default SSH login username:
+// "ubuntu" if the AMI is Canonical-owned (this tool's own
+// curated/official Ubuntu AMIs, and any other Canonical Ubuntu AMI --
+// checking OwnerId rather than matching curatedUbuntuReleases' name
+// patterns catches every Canonical AMI, not just this tool's own
+// curated releases), "ec2-user" otherwise -- including when the
+// DescribeImages call itself fails, since there's no reliable way to
+// guess any other distribution's default login user, and "ec2-user"
+// was already every caller's prior assumption (DESIGN.md, "SSH
+// Connection Info: Key Path + Username Guess").
+func sshUsernameForImage(ctx context.Context, client awsclient.EC2API, imageID string) string {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{imageID}})
+	if err != nil || len(out.Images) == 0 {
+		return "ec2-user"
+	}
+	if aws.ToString(out.Images[0].OwnerId) == ubuntuAMIOwnerID {
+		return "ubuntu"
+	}
+	return "ec2-user"
+}
+
+// displayConnectionInfo prints an instance's public/private IP and, if
+// it has a public IP, a ready-to-copy ssh command -- shared by every
 // workflow that ends with a running instance (Create Instance from AMI/
-// Cloud-Init YAML, Start Instance).
-func displayConnectionInfo(w io.Writer, instanceID string, inst types.Instance) {
+// Cloud-Init YAML/Launch Template, Start Instance). The username and
+// key path are both best-effort guesses (DESIGN.md, "SSH Connection
+// Info: Key Path + Username Guess"): a wrong username is just
+// discovered on connect, but a wrong key path presented confidently
+// would be actively misleading, so the specific path is only shown
+// when sshKeyPath confirms it's real.
+func displayConnectionInfo(ctx context.Context, w io.Writer, client awsclient.EC2API, instanceID string, inst types.Instance) {
 	fmt.Fprintf(w, "\nInstance %s is running.\n", instanceID)
 	fmt.Fprintf(w, "  Public IP:  %s\n", displayOrNone(aws.ToString(inst.PublicIpAddress)))
 	fmt.Fprintf(w, "  Private IP: %s\n", displayOrNone(aws.ToString(inst.PrivateIpAddress)))
 	if inst.PublicIpAddress != nil {
-		fmt.Fprintf(w, "  ssh ec2-user@%s\n", aws.ToString(inst.PublicIpAddress))
+		user := sshUsernameForImage(ctx, client, aws.ToString(inst.ImageId))
+		keyName := aws.ToString(inst.KeyName)
+		if path, ok := sshKeyPath(keyName); ok {
+			fmt.Fprintf(w, "  ssh -i %s %s@%s\n", path, user, aws.ToString(inst.PublicIpAddress))
+		} else {
+			fmt.Fprintf(w, "  ssh -i <path to your %q private key> %s@%s\n", keyName, user, aws.ToString(inst.PublicIpAddress))
+		}
 	}
 }
 

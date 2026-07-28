@@ -68,7 +68,7 @@ func createInstanceFromLaunchTemplate(ctx context.Context, w io.Writer, clients 
 	if err != nil {
 		return err
 	}
-	displayConnectionInfo(w, instanceID, inst)
+	displayConnectionInfo(ctx, w, client, instanceID, inst)
 	return nil
 }
 

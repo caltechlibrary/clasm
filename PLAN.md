@@ -5290,6 +5290,69 @@ None.
 
 ---
 
+## Phase 20.47 — SSH Connection Info: Key Path + Username Guess
+
+**Status: designed, implemented, and unit-tested 2026-07-28** (see
+DESIGN.md, "SSH Connection Info: Key Path + Username Guess";
+DECISIONS.md, "SSH connection info: guess the key path (only if it
+exists on disk) and the login username"). TODO.md-requested feature:
+`displayConnectionInfo` already printed `ssh ec2-user@<ip>`, missing an
+`-i <key path>` entirely and hardcoding "ec2-user" even for this
+tool's own Ubuntu-only curated AMI list. `go build`/`go vet`/`go test
+./... -race`/`gofmt -l` all clean. Not yet real-AWS-verified.
+
+### Work Items
+
+- [x] New `sshUsernameForImage(ctx, client, imageID) string` (best-effort
+      `ec2:DescribeImages`, checks `OwnerId == ubuntuAMIOwnerID` ->
+      "ubuntu", else/error -> "ec2-user")
+- [x] New `sshKeyDirFunc = sshKeyDir` package-level func-var seam (so
+      tests can point `sshKeyPath` at a temp directory instead of the
+      real `~/.ssh`) and `sshKeyPath(keyName string) (string, bool)` --
+      `os.Stat`s `filepath.Join(sshKeyDirFunc(), keyName+".pem")`,
+      returns `("", false)` if it doesn't exist
+- [x] `launch_execute.go`: widened `displayConnectionInfo` to
+      `displayConnectionInfo(ctx context.Context, w io.Writer, client
+      awsclient.EC2API, instanceID string, inst types.Instance)` --
+      reads `aws.ToString(inst.KeyName)`/`aws.ToString(inst.ImageId)`
+      directly off `inst`, no new params threaded from callers beyond
+      `ctx`/`client`; when there's a public IP, prints `ssh -i <path>
+      <user>@<ip>` if `sshKeyPath` found a real file, else `ssh -i
+      <path to your "KEYNAME" private key> <user>@<ip>` if not
+- [x] Updated all three call sites
+      (`runLaunch`/`createInstanceFromLaunchTemplate`/`startEC2Instance`)
+      to pass `ctx`/`client` (both already in scope at each site)
+
+### Tests
+
+Test-first, per [[feedback-test-before-fix]]: confirmed failing
+(undefined-symbol/assignment-mismatch compile errors) before the
+implementation existed.
+
+- [x] `sshUsernameForImage`: Canonical `OwnerId` -> "ubuntu"; any other
+      owner -> "ec2-user"; `DescribeImages` error -> "ec2-user"
+- [x] `sshKeyPath`: existing file -> its path and `true`; missing file
+      -> `("", false)`
+- [x] `displayConnectionInfo`: with a public IP and an existing key
+      file, output contains `-i <path>`; with a public IP and no
+      matching key file, output still names the key pair but not a
+      specific (possibly-wrong) path; with no public IP, no ssh line
+      at all (existing behavior, unchanged)
+- [x] `displayConnectionInfo`: username reflects
+      `sshUsernameForImage`'s result for the instance's own `ImageId`
+
+### Files
+
+`internal/workflow/launch_execute.go`, `launch_execute_test.go`,
+`launch_from_template.go`, `power_state.go`, and their `_test.go`
+counterparts.
+
+### Dependency
+
+None.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
