@@ -42,9 +42,15 @@ type MenuActions struct {
 	CreateLaunchTemplateFromCloudInit func(ctx context.Context) error
 	CreateInstanceFromLaunchTemplate  func(ctx context.Context) error
 	SyncLaunchTemplate                func(ctx context.Context) error
-	PromoteLaunchTemplateVersion      func(ctx context.Context) error
-	DeleteLaunchTemplateVersions      func(ctx context.Context) error
-	DeleteLaunchTemplate              func(ctx context.Context) error
+	// ModifyLaunchTemplateSize changes an existing launch template's
+	// instance type and/or EBS root volume size (and, if needed, its
+	// base AMI, to match a new instance type's architecture) by
+	// creating a new version -- distinct from Sync, which only ever
+	// touches UserData (DESIGN.md, "Modify Launch Template Size").
+	ModifyLaunchTemplateSize     func(ctx context.Context) error
+	PromoteLaunchTemplateVersion func(ctx context.Context) error
+	DeleteLaunchTemplateVersions func(ctx context.Context) error
+	DeleteLaunchTemplate         func(ctx context.Context) error
 	// Refresh re-fetches the instance/AMI/launch-template listings,
 	// silently -- no display. Called once after every successful
 	// dispatched action (DECISIONS.md, "Refresh data after each
@@ -124,6 +130,7 @@ var mainMenuItems = []menuItem{
 	// Launch Template lifecycle
 	{"Create launch template from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
 	{"Sync cloud-init YAML to a launch template", func(a MenuActions, ctx context.Context) error { return a.SyncLaunchTemplate(ctx) }},
+	{"Modify launch template's instance type / EBS root volume size", func(a MenuActions, ctx context.Context) error { return a.ModifyLaunchTemplateSize(ctx) }},
 	{"Promote a launch template version to default", func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
 	{"Delete launch template version(s)", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
 	{"Delete a launch template", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},

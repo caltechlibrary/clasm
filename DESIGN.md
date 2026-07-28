@@ -1971,6 +1971,131 @@ here as a candidate for a dedicated pass later, not undertaken now.
 
 None -- this is a small, fully-scoped fix.
 
+## Modify Launch Template Size (Design Addendum, 2026-07-28, PLAN.md Phase 20.46)
+
+**Status: designed, implemented, and unit-tested 2026-07-28.** Motivated by TODO.md's requested
+feature: "Need to be able to modify a launch templates' size and EBS
+storage from clasm in addition to syncing the cloud-init." Today,
+Sync Cloud-Init YAML to a Launch Template is the only way to create a
+new launch template version, and it only ever touches `UserData` --
+there's no way to change instance type or EBS root volume size without
+hand-editing via the AWS Console.
+
+**One combined action** (user's explicit call, 2026-07-28): a new
+"Modify launch template's instance type / EBS root volume size" entry
+prompts for both together and creates one new launch template version
+with both overrides -- matches how creation already collects both
+together, and avoids two near-identical entries that would each need
+their own version-selection/no-op/confirm scaffolding for half the
+value.
+
+**Flow, mirroring Sync's own shape (`syncLaunchTemplate`) closely:**
+pick a launch template (Picker-tier, same `pickLaunchTemplate`) -> pick
+a source version to base the change on (same `promptLaunchTemplateVersion`,
+pre-filled `$Default`) -> `inventory.DescribeLaunchTemplateVersion` to
+read the version's current `InstanceType`/`RootVolumeSizeGB`/`ImageID`
+-> `describeImageRootVolume` (already exists, `ebs_size.go`) against
+that `ImageID` for the root device name and the AMI's own snapshot
+default size -> prompt for a new instance type (pre-filled to the
+current one via display, not enforced) and a new root volume size
+(pre-filled to the current override, or the AMI default if the version
+never set one) -> if neither changed, "No changes -- nothing to
+modify," same framing Sync uses for identical content -> confirm ->
+`CreateLaunchTemplateVersion` (new `modifyLaunchTemplateVersion`,
+setting only `InstanceType`+`BlockDeviceMappings` in
+`RequestLaunchTemplateData`, inheriting everything else -- including
+`UserData` -- via `SourceVersion`, exactly as `createLaunchTemplateVersion`
+already does for the reverse case) -> same "not yet default, use
+Promote when ready" reminder Sync prints. Never auto-promotes -- no
+reason for this action to behave differently from Sync's own explicit
+"the operator expects to experiment with in-progress versions without
+silently changing what a plain launch picks up" rationale.
+
+**Instance type: unfiltered picker (`promptInstanceType(w, "", ...)`),
+plus a post-hoc architecture-mismatch check that can swap the AMI.**
+Phase 20.35's launch-time picker filters by architecture *before* the
+pick, because an `inventory.Image` (carrying `Architecture`) is already
+in hand at that point. Here the operator is choosing a *new* instance
+type for an *existing* template -- filtering the picker by the
+template's *current* AMI architecture would be actively wrong, since
+switching architecture families (the user's own motivating example,
+2026-07-28: `granian-rdm-v14-test` is currently Graviton/arm64, and
+they want to switch it to an x86_64 type) is a legitimate, expected use
+of this feature, not an error case to filter away. So the picker stays
+unfiltered (also covers "Other," e.g. `m7i-flex.2xlarge`, which isn't
+in `curatedInstanceTypes` -- the user confirmed this can stay reachable
+via "Other" rather than being added to the curated list).
+
+**AMI-swap on architecture mismatch (added 2026-07-28, after the
+Graviton -> x86_64 example surfaced a real gap in the original,
+narrower design):** an EC2 instance type's architecture is tied to the
+AMI it launches from -- an arm64 AMI cannot boot as an x86_64 instance
+type and vice versa, and `CreateLaunchTemplateVersion` does not
+validate this at creation time, only `RunInstances` does, later, when
+someone actually launches from the template. Without an AMI swap, the
+narrower instance-type + EBS-size-only design would let an operator
+create a new version that looks fine and then fails at the next actual
+launch. Fixed by checking after the instance type is picked: a new
+`instanceTypeArchitecture` helper (`ec2:DescribeInstanceTypes`,
+mirroring `instanceTypeRequiresENA`'s exact shape/API) reports the
+picked type's required architecture; if it doesn't match the current
+AMI's architecture (from `describeImageRootVolume`, widened to also
+return it -- already reading the same `DescribeImages` response, no
+extra call), the operator is shown why and prompted to pick a new base
+AMI, filtered to the target architecture *and* the launch template's
+own region (a launch template's AMI must exist in that same region;
+`imagesWithOfficialUbuntu(ctx, clients, images)`'s combined multi-region
+list is filtered down before the pick). If no compatible AMI exists in
+that region, this fails loud with an actionable error rather than
+handing the picker an empty list. Root device name and the AMI-default
+floor are then re-fetched against the *new* AMI (different AMIs can
+have different root device names, e.g. `/dev/sda1` vs `/dev/xvda`, and
+different default sizes) before the EBS-size prompt. The new version's
+`RequestLaunchTemplateData` always explicitly sets `ImageId` (not just
+`InstanceType`+`BlockDeviceMappings`) -- harmless when unchanged (same
+value the version already had), and what actually makes the swap take
+effect when it did change.
+
+**Testability seam for the conditional AMI re-pick:** `pickImage` runs
+a real bubbletea `tui.RunPicker` program, the same "can't be
+pipe-tested" limitation every other Picker-tier call in this package
+already has -- but every other one of those is hoisted to the very
+start of an otherwise-untestable exported entry point, with the
+testable core taking the already-resolved value as a plain parameter.
+This one is different: it's *conditional*, invoked partway through an
+otherwise fully pipe-testable prompt sequence (after the instance-type
+prompt, before the EBS-size prompt), so it can't be hoisted out the
+same way. Given a package-level func-var seam instead
+(`pickNewLaunchTemplateAMIFunc`), the same shape
+`backup_archive.go`'s `promptBackupBucketFunc` already established for
+a conditional/hard-to-drive step embedded inside an otherwise testable
+sequence -- tests substitute a fake and restore the real one after.
+
+**EBS size: shrinking is allowed down to the AMI's own snapshot size**
+(user's explicit call, 2026-07-28) -- not floored at whatever the
+template currently specifies. AWS's only real constraint on a launch
+template's `BlockDeviceMappings.Ebs.VolumeSize` is never smaller than
+the source snapshot, the same floor `promptRootVolumeSizeGB` already
+enforces at creation time; there's no live-attached-volume restriction
+here the way `ResizeInstanceRootVolume` has (that one really can only
+grow, an AWS API-level restriction on `ec2:ModifyVolume` for a running
+volume -- a launch template has no such limit). `promptRootVolumeSizeGB`
+widens from one `defaultGB` parameter (used for both the pre-filled
+display value and the validation floor -- identical at creation time,
+since there's no "current template setting" yet) to two:
+`displayDefaultGB` (what's shown pre-filled -- the version's current
+override, or the AMI default if it never set one) and `floorGB` (always
+the AMI's own snapshot size). The two existing creation-time call sites
+pass the same value for both, unchanged behavior.
+
+### Not decided yet
+
+Whether `m7i`-family (or other non-curated) instance types should be
+added to `curatedInstanceTypes` -- raised by the user while confirming
+scope, not part of this phase; "Other" already covers typing any exact
+value, curated-list expansion is a separate, smaller follow-up if
+wanted.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

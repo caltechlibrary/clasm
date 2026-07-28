@@ -362,6 +362,9 @@ func main() {
 		SyncLaunchTemplate: func(ctx context.Context) error {
 			return workflow.SyncLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
 		},
+		ModifyLaunchTemplateSize: func(ctx context.Context) error {
+			return workflow.ModifyLaunchTemplateSize(ctx, out, ec2Clients, state.launchTemplates, state.images)
+		},
 		PromoteLaunchTemplateVersion: func(ctx context.Context) error {
 			return workflow.PromoteLaunchTemplateVersion(ctx, out, ec2Clients, state.launchTemplates)
 		},

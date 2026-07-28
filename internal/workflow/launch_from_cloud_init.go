@@ -67,11 +67,11 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	rootDeviceName, rootDefaultGB, err := describeImageRootVolume(ctx, ec2Client, image.ImageID)
+	rootDeviceName, rootDefaultGB, _, err := describeImageRootVolume(ctx, ec2Client, image.ImageID)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
-	rootVolumeSizeGB, err := promptRootVolumeSizeGB(rootDefaultGB, menuInput, menuOutput)
+	rootVolumeSizeGB, err := promptRootVolumeSizeGB(rootDefaultGB, rootDefaultGB, menuInput, menuOutput)
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

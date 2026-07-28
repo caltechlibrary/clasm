@@ -5154,6 +5154,142 @@ None.
 
 ---
 
+## Phase 20.46 — Modify Launch Template Size
+
+**Status: designed, implemented, and unit-tested 2026-07-28** (see
+DESIGN.md, "Modify Launch Template Size"; DECISIONS.md, "Modify Launch
+Template Size: one combined action, unfiltered instance-type picker,
+shrink to the AMI's snapshot floor"). New TODO.md-requested feature:
+change a launch template's instance type and/or EBS root volume size
+without touching `UserData`, today only possible via Sync (which only
+ever changes `UserData`) or by hand-editing in the AWS Console.
+Expanded mid-design after the user's own concrete example (switching
+`granian-rdm-v14-test` from Graviton/arm64 to an x86_64 instance type)
+surfaced that this requires an AMI swap too, since architecture is tied
+to the AMI and `CreateLaunchTemplateVersion` doesn't validate the
+mismatch itself. `go build`/`go vet`/`go test ./... -race`/`gofmt -l`
+all clean. Not yet real-AWS-verified.
+
+### Work Items
+
+- [x] `ebs_size.go`: widen `promptRootVolumeSizeGB` to
+      `promptRootVolumeSizeGB(displayDefaultGB, floorGB int32, input
+      io.Reader, output io.Writer) (int32, error)` -- `WithDefault` uses
+      `displayDefaultGB`, the validator's floor check uses `floorGB`
+- [x] `launch_from_cloud_init.go`/`launch_instance.go`: both existing
+      call sites updated to `promptRootVolumeSizeGB(rootDefaultGB,
+      rootDefaultGB, menuInput, menuOutput)` (same value for both --
+      unchanged behavior)
+- [x] `ebs_size.go`: widened `describeImageRootVolume` to also return
+      the AMI's `Architecture` (already present in the same
+      `DescribeImages` response it already reads) -- both existing call
+      sites (which already have an `inventory.Image.Architecture` in
+      hand from `pickImage`) just discard the new return value
+- [x] New `instance_type_arch_check.go`: `instanceTypeArchitecture(ctx,
+      client, instanceType) (string, error)` (mirroring
+      `instanceTypeRequiresENA`'s exact shape) -- `ec2:DescribeInstanceTypes`,
+      reads `ProcessorInfo.SupportedArchitectures[0]`; `""`/an error
+      means "unknown, skip the check" (same "skip gracefully"
+      philosophy as the ENA check)
+- [x] New `imagesForRegionAndArchitecture(images []inventory.Image,
+      region, arch string) []inventory.Image` filter helper
+- [x] New `pickNewLaunchTemplateAMIFunc = pickImage` package-level
+      func-var seam (same shape as `backup_archive.go`'s
+      `promptBackupBucketFunc`) for the conditional, non-pipe-testable
+      AMI re-pick
+- [x] New `modify_launch_template_size.go`: `modifyLaunchTemplateVersion(ctx,
+      client, templateID, sourceVersion, instanceType, imageID,
+      rootDeviceName string, rootVolumeSizeGB int32) (int64, error)` --
+      `CreateLaunchTemplateVersion` with `RequestLaunchTemplateData{ImageId,
+      InstanceType, BlockDeviceMappings}` (ImageId always explicitly
+      set, harmless when unchanged), inheriting everything else
+      (including `UserData`) via `SourceVersion`
+- [x] Same file: `ModifyLaunchTemplateSize` (exported entry point,
+      takes `images []inventory.Image` in addition to
+      `templates`/`clients`) + `modifyLaunchTemplateSize` (testable
+      core) -- pick template -> `promptLaunchTemplateVersion` ->
+      `DescribeLaunchTemplateVersion` -> `describeImageRootVolume`
+      against the version's `ImageID` -> `promptInstanceType(w, "",
+      input, output)` (unfiltered) -> `instanceTypeArchitecture` check;
+      on mismatch, message + `pickNewLaunchTemplateAMIFunc` against
+      `imagesForRegionAndArchitecture(imagesWithOfficialUbuntu(ctx,
+      clients, images), lt.Region, targetArch)` (error out if empty,
+      not an empty picker), then re-`describeImageRootVolume` against
+      the new AMI -> `promptRootVolumeSizeGB(currentOrAMIDefault,
+      amiDefaultGB, input, output)` -> no-op check (instance type, root
+      volume size, AND AMI all unchanged) -> confirm ->
+      `modifyLaunchTemplateVersion` -> "not yet default" reminder,
+      same message Sync already prints
+- [x] `menu.go`: new `MenuActions.ModifyLaunchTemplateSize` field; new
+      `mainMenuItems` entry ("Modify launch template's instance type /
+      EBS root volume size") in the Launch Template lifecycle group,
+      right after "Sync cloud-init YAML to a launch template" -- turned
+      out to shift no existing numeric-index test literal (the new
+      position, 21st of 25, is past every index any current test
+      drives to; only the `len(mainMenuItems)` count assertion needed
+      updating, 24 -> 25), confirmed via a search first, same diligence
+      Phase 20.43 applied
+- [x] `cmd/clasm/main.go`: wired `ModifyLaunchTemplateSize` the same way
+      `SyncLaunchTemplate`/`PromoteLaunchTemplateVersion` are wired,
+      passing `state.images` too (matching
+      `CreateLaunchTemplateFromCloudInit`'s own wiring)
+
+### Tests
+
+Test-first, per [[feedback-test-before-fix]]: every new/changed
+function's tests confirmed failing (undefined symbol or assignment-
+mismatch compile errors) before the corresponding implementation
+existed.
+
+- [x] `promptRootVolumeSizeGB`: display default and floor are
+      independent -- a value between the two succeeds and shows the
+      display default pre-filled; a value below `floorGB` (even if
+      above/equal to a lower `displayDefaultGB`) is rejected
+- [x] `describeImageRootVolume`: also returns the AMI's `Architecture`
+- [x] `instanceTypeArchitecture`: returns the first supported
+      architecture; returns `""` (not an error) when
+      `ProcessorInfo`/`SupportedArchitectures` is absent; propagates a
+      real `DescribeInstanceTypes` error
+- [x] `imagesForRegionAndArchitecture`: filters correctly on both
+      dimensions (region alone or architecture alone isn't enough)
+- [x] `modifyLaunchTemplateVersion`: sets `ImageId`, `InstanceType`,
+      and `BlockDeviceMappings` (device name + size) on the request,
+      leaves `UserData` unset (inherited via `SourceVersion`), same
+      assertion shape as
+      `TestCreateLaunchTemplateVersion_SetsSourceVersionAndUserData`
+- [x] `modifyLaunchTemplateSize`: no-op when instance type, root
+      volume size, and AMI are all unchanged ("No changes" message, no
+      API call)
+- [x] `modifyLaunchTemplateSize`: a same-architecture instance type
+      change never invokes `pickNewLaunchTemplateAMIFunc`
+- [x] `modifyLaunchTemplateSize`: a different-architecture instance
+      type change invokes `pickNewLaunchTemplateAMIFunc` (substituted
+      fake) and the new version's `ImageId` reflects the picked AMI
+- [x] `modifyLaunchTemplateSize`: no compatible AMI in the template's
+      region for the target architecture fails loud with an actionable
+      error, `pickNewLaunchTemplateAMIFunc` never invoked
+- [x] `modifyLaunchTemplateSize`: a declined confirmation does not
+      create a new version
+- [x] Existing `promptRootVolumeSizeGB`/`describeImageRootVolume`
+      callers' (`launch_from_cloud_init_test.go`/`launch_instance_test.go`)
+      tests still pass unchanged with the widened signatures
+
+### Files
+
+`internal/workflow/ebs_size.go`, `ebs_size_test.go`,
+`launch_from_cloud_init.go`, `launch_instance.go`, new
+`instance_type_arch_check.go`/`instance_type_arch_check_test.go`, new
+`modify_launch_template_size.go`/`modify_launch_template_size_test.go`,
+`menu.go`, `menu_test.go`, `cmd/clasm/main.go`,
+`launch_execute_test.go` (fake `DescribeInstanceTypes` extended with
+`instanceTypeArchitectures`).
+
+### Dependency
+
+None.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

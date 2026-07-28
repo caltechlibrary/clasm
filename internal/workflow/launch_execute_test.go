@@ -130,6 +130,12 @@ type fakeEC2Client struct {
 	// call fail.
 	enaRequiredInstanceTypes map[string]bool
 	describeInstanceTypesErr error
+	// instanceTypeArchitectures maps instance type -> its
+	// ProcessorInfo.SupportedArchitectures[0] (see
+	// instanceTypeArchitecture, "Modify Launch Template Size"); a type
+	// not in this map gets no ProcessorInfo at all, simulating an
+	// unknown/unrecognized instance type.
+	instanceTypeArchitectures map[string]string
 
 	createKeyPairCalls       int
 	createKeyPairErr         error
@@ -444,10 +450,14 @@ func (f *fakeEC2Client) DescribeInstanceTypes(ctx context.Context, params *ec2.D
 		if f.enaRequiredInstanceTypes[string(it)] {
 			ena = types.EnaSupportRequired
 		}
-		infos = append(infos, types.InstanceTypeInfo{
+		info := types.InstanceTypeInfo{
 			InstanceType: it,
 			NetworkInfo:  &types.NetworkInfo{EnaSupport: ena},
-		})
+		}
+		if arch, ok := f.instanceTypeArchitectures[string(it)]; ok {
+			info.ProcessorInfo = &types.ProcessorInfo{SupportedArchitectures: []types.ArchitectureType{types.ArchitectureType(arch)}}
+		}
+		infos = append(infos, info)
 	}
 	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: infos}, nil
 }
