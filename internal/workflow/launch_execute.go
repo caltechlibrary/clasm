@@ -82,7 +82,11 @@ func Launch(ctx context.Context, client awsclient.EC2API, params LaunchInstanceP
 		MetadataOptions: &types.InstanceMetadataOptionsRequest{HttpTokens: types.HttpTokensStateRequired},
 	}
 	if params.UserData != "" {
-		input.UserData = aws.String(encodeUserData(params.UserData))
+		encoded, err := encodeUserData(params.UserData)
+		if err != nil {
+			return "", err
+		}
+		input.UserData = aws.String(encoded)
 	}
 	if params.IAMInstanceProfile != "" {
 		input.IamInstanceProfile = &types.IamInstanceProfileSpecification{Name: aws.String(params.IAMInstanceProfile)}

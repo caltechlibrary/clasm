@@ -1832,6 +1832,78 @@ already configured) -- left as free-text for v0.0.5; exact prompt copy
 for the Save confirmation and the unsaved-changes-on-'q' warning, left
 for the implementation plan.
 
+## User-Data Pre-Flight Size Check (Design Addendum, 2026-07-28, PLAN.md Phase 20.44)
+
+**Status: designed, implemented, and unit-tested 2026-07-28. Not yet
+real-AWS-verified.** Motivated directly by a recurrence of
+`InvalidUserData.Malformed: User data is limited to 16384 bytes`, this
+time syncing `granian-rdm-v14/cloud-init.yaml` (57849 raw bytes) to a
+launch template -- confirmed via clasm's own `--debug` JSONL log that
+Phase 20.34's gzip fix (`encodeUserData`, `userdata_gzip.go`) is
+necessary but not sufficient: the file gzips (default `gzip.NewWriter`,
+compression level 6) to 16671 bytes, 287 over the limit, and even
+`gzip -9`/`gzip.BestCompression` only reaches 16576 -- still 192 over.
+`encodeUserData` has never validated size against AWS's 16384-byte
+limit at any of its three write sites (`Launch`,
+`buildRequestLaunchTemplateData`, `createLaunchTemplateVersion`) -- the
+limit is only ever mentioned in a source comment. The operator's only
+signal today is AWS's bare 400, with no clasm-side context on how far
+over the limit the payload is or which of the (currently invisible)
+compressed bytes is responsible.
+
+**Two changes, both scoped to `userdata_gzip.go` and its three call
+sites:**
+
+1. **Switch `encodeUserData` to `gzip.BestCompression`** (from the
+   implicit default, level 6). Same reasoning Phase 20.34 already
+   applied to "always gzip, never conditionally" -- there's no
+   behavioral reason to leave headroom on the table, and this is a
+   one-line change with no downside (compression time is not a
+   user-visible cost at these file sizes). Not sufficient alone for
+   this incident's file (confirmed above), but narrows the gap for
+   files close to the limit.
+2. **A hard pre-flight size check inside `encodeUserData` itself,
+   after gzip-compressing and before base64-encoding.** New
+   `maxUserDataBytes = 16384` constant (matching AWS's own documented
+   limit, no longer just a source comment); if the compressed byte
+   count exceeds it, `encodeUserData` returns an error stating the
+   compressed size and how far over the limit it is, instead of
+   proceeding to a doomed AWS call. This requires widening
+   `encodeUserData`'s signature to `(string, error)` -- matching
+   `decodeUserData`'s existing shape -- and updating its three call
+   sites (`launch_execute.go`, `launch_template_create.go`,
+   `launch_template_sync.go`) to propagate the error.
+
+**On failure: hard error, abort** (user's explicit scoping call,
+2026-07-28) -- matches this codebase's established "fail loud, don't
+guess" precedent (`growRootFilesystem`'s SSM/layout-detection
+fallback). The operator sees exactly how many bytes over the limit the
+compressed payload is and trims the cloud-init file themselves (e.g.
+moving package installs or large embedded scripts to a separate
+mechanism fetched at boot) before retrying the whole workflow -- no
+inline "pick a different file" loop-back, since the failure surfaces
+deep in the call chain (inside `encodeUserData`, called from
+`createLaunchTemplateVersion`/`buildRequestLaunchTemplateData`/
+`Launch`), well past where the file was originally selected via
+`promptCloudInitYAMLFile`.
+
+**Rejected alternative.** *A multipart/`#include`/S3-reference
+mechanism* to split a payload that's fundamentally too large even at
+max compression -- this is a real, standard cloud-init/EC2 pattern
+(store the bulk of the content in S3, have a small stub user-data
+`#include` it at boot), but it's a materially larger feature (new
+upload step, new IAM/S3 permissions surface, a new read-path for
+decode/diff/show) that wasn't requested and has no second use case yet
+-- the actual 2026-07-28 incident was resolved by trimming the
+cloud-init content itself, outside clasm. Noted here, not designed,
+as a candidate if oversized cloud-init files recur after this
+pre-flight check ships (see TODO.md's Someday/maybe).
+
+### Not decided yet
+
+Exact wording of the pre-flight error message beyond "states the
+compressed size and the overage" -- left for the implementation plan.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

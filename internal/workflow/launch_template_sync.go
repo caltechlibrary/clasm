@@ -139,13 +139,18 @@ func displayDiff(ctx context.Context, w io.Writer, title, diff string, input io.
 // own field comments, not assumed) -- this never touches IMDSv2 or any
 // other setting, only the cloud-init content.
 func createLaunchTemplateVersion(ctx context.Context, client awsclient.EC2API, templateID, sourceVersion, newYAML string) (int64, error) {
+	encoded, err := encodeUserData(newYAML)
+	if err != nil {
+		return 0, err
+	}
+
 	ctx, cancel := withCallTimeout(ctx)
 	defer cancel()
 	out, err := client.CreateLaunchTemplateVersion(ctx, &ec2.CreateLaunchTemplateVersionInput{
 		LaunchTemplateId: aws.String(templateID),
 		SourceVersion:    aws.String(sourceVersion),
 		LaunchTemplateData: &types.RequestLaunchTemplateData{
-			UserData: aws.String(encodeUserData(newYAML)),
+			UserData: aws.String(encoded),
 		},
 	})
 	if err != nil {

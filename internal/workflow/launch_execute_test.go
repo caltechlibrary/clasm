@@ -755,6 +755,27 @@ func TestLaunch_Success(t *testing.T) {
 	}
 }
 
+func TestLaunch_PropagatesEncodeUserDataError(t *testing.T) {
+	// Phase 20.44: a cloud-init file that's still too large even at
+	// gzip.BestCompression must fail before RunInstances is ever called,
+	// with a clasm-side error instead of AWS's opaque 400.
+	fake := &fakeEC2Client{runInstancesID: "i-abc123"}
+	params := LaunchInstanceParams{
+		ImageID:      "ami-1",
+		InstanceType: "t3.micro",
+		KeyName:      "my-key",
+		SubnetID:     "subnet-1",
+		UserData:     string(pseudoRandomBytes(20000)),
+	}
+
+	if _, err := Launch(context.Background(), fake, params); err == nil {
+		t.Fatal("expected an error")
+	}
+	if fake.lastRunInstancesInput != nil {
+		t.Error("RunInstances was called despite an oversized user-data payload")
+	}
+}
+
 func TestLaunch_SetsIMDSv2Required(t *testing.T) {
 	// Security recommends IMDSv2 (HttpTokens: required) on every new
 	// instance clasm launches -- TODO.md's bug: no MetadataOptions was

@@ -24,7 +24,10 @@ func TestBuildRequestLaunchTemplateData_SetsIMDSv2RequiredAndSubnetViaNetworkInt
 		Tags:               map[string]string{"Name": "web", "Project": "caltechauthors", "Environment": "production"},
 	}
 
-	data := buildRequestLaunchTemplateData(params)
+	data, err := buildRequestLaunchTemplateData(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if aws.ToString(data.ImageId) != "ami-1" {
 		t.Errorf("ImageId = %q, want ami-1", aws.ToString(data.ImageId))
@@ -64,7 +67,10 @@ func TestBuildRequestLaunchTemplateData_SetsIMDSv2RequiredAndSubnetViaNetworkInt
 }
 
 func TestBuildRequestLaunchTemplateData_NoIAMProfileOrTagsOmitsFields(t *testing.T) {
-	data := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if data.IamInstanceProfile != nil {
 		t.Errorf("IamInstanceProfile = %+v, want nil", data.IamInstanceProfile)
 	}
@@ -80,12 +86,15 @@ func TestBuildRequestLaunchTemplateData_SetsRootVolumeSize(t *testing.T) {
 	// Same TODO.md bug as Launch (launch_execute_test.go): templates
 	// created before this feature silently baked in the AMI's default
 	// root volume size with no way to override it.
-	data := buildRequestLaunchTemplateData(LaunchInstanceParams{
+	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{
 		ImageID:          "ami-1",
 		SubnetID:         "subnet-1",
 		RootDeviceName:   "/dev/xvda",
 		RootVolumeSizeGB: 250,
 	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(data.BlockDeviceMappings) != 1 {
 		t.Fatalf("BlockDeviceMappings = %+v, want exactly one entry", data.BlockDeviceMappings)
 	}
@@ -99,9 +108,23 @@ func TestBuildRequestLaunchTemplateData_SetsRootVolumeSize(t *testing.T) {
 }
 
 func TestBuildRequestLaunchTemplateData_OmitsBlockDeviceMappingsWhenSizeNotSet(t *testing.T) {
-	data := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if data.BlockDeviceMappings != nil {
 		t.Errorf("BlockDeviceMappings = %+v, want nil", data.BlockDeviceMappings)
+	}
+}
+
+func TestBuildRequestLaunchTemplateData_PropagatesEncodeUserDataError(t *testing.T) {
+	_, err := buildRequestLaunchTemplateData(LaunchInstanceParams{
+		ImageID:  "ami-1",
+		SubnetID: "subnet-1",
+		UserData: string(pseudoRandomBytes(20000)),
+	})
+	if err == nil {
+		t.Fatal("expected an error")
 	}
 }
 

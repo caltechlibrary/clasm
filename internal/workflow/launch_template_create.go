@@ -27,7 +27,7 @@ import (
 // entry rather than the top-level SecurityGroupIds field, per AWS's own
 // documented constraint on that field (confirmed by reading the SDK's
 // field comments, not assumed).
-func buildRequestLaunchTemplateData(params LaunchInstanceParams) *types.RequestLaunchTemplateData {
+func buildRequestLaunchTemplateData(params LaunchInstanceParams) (*types.RequestLaunchTemplateData, error) {
 	data := &types.RequestLaunchTemplateData{
 		ImageId:      aws.String(params.ImageID),
 		InstanceType: types.InstanceType(params.InstanceType),
@@ -48,7 +48,11 @@ func buildRequestLaunchTemplateData(params LaunchInstanceParams) *types.RequestL
 		}}
 	}
 	if params.UserData != "" {
-		data.UserData = aws.String(encodeUserData(params.UserData))
+		encoded, err := encodeUserData(params.UserData)
+		if err != nil {
+			return nil, err
+		}
+		data.UserData = aws.String(encoded)
 	}
 	if params.IAMInstanceProfile != "" {
 		data.IamInstanceProfile = &types.LaunchTemplateIamInstanceProfileSpecificationRequest{Name: aws.String(params.IAMInstanceProfile)}
@@ -59,7 +63,7 @@ func buildRequestLaunchTemplateData(params LaunchInstanceParams) *types.RequestL
 			{ResourceType: spec.ResourceType, Tags: spec.Tags},
 		}
 	}
-	return data
+	return data, nil
 }
 
 // CreateLaunchTemplateFromCloudInit runs the Create Launch Template
@@ -120,11 +124,16 @@ func createLaunchTemplate(ctx context.Context, w io.Writer, client awsclient.EC2
 		return nil
 	}
 
+	templateData, err := buildRequestLaunchTemplateData(params)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := withCallTimeout(ctx)
 	defer cancel()
 	out, err := client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
 		LaunchTemplateName: aws.String(name),
-		LaunchTemplateData: buildRequestLaunchTemplateData(params),
+		LaunchTemplateData: templateData,
 		TagSpecifications:  []types.TagSpecification{buildTagSpecification(types.ResourceTypeLaunchTemplate, params.Tags)},
 	})
 	if err != nil {

@@ -3,12 +3,17 @@
 
 ## Bugs 
 
+- [x] When I try to update the cloud-init.yaml for the granian-rdm-v14-test launch template I get an error about the user data being too large, this should have been fixed by gzipping I think -- root cause: gzip alone isn't always enough for large files, and there was no pre-flight size check anywhere. Fixed 2026-07-28: `encodeUserData` now uses `gzip.BestCompression` and hard-errors before any AWS call if the compressed payload still exceeds the 16384-byte limit, stating the byte count and overage. Designed, implemented, and unit-tested. See DESIGN.md, "User-Data Pre-Flight Size Check", DECISIONS.md, "User-data pre-flight size check: hard error, no remediation loop-back; switch to gzip.BestCompression", PLAN.md Phase 20.44. Not yet real-AWS-verified.
 - [x] Menu-loop output-visibility bug -- fixed, real-AWS-verified, released in v0.0.4. See DECISIONS.md, "Pause for acknowledgment before every menu-loop redraw," PLAN.md Phase 20.32.
 - [x] SSM never came online for the resize-verification test instances (2026-07-22) -- root cause (no SSM-capable instance profile available at all) closed structurally by the SSM-enforcement work below. `growRootFilesystem`'s own OS-level `growpart`/`resize2fs` automation still hasn't been specifically re-verified end-to-end with a proper instance profile in place -- worth doing next time Resize Instance's Root Volume comes up.
 - [x] `InvalidUserData.Malformed: User data is limited to 16384 bytes` -- fixed and real-AWS-verified 2026-07-22 (`test-clasm-granian` launch template + instance). See DECISIONS.md, "Always gzip-compress user-data before base64-encoding it," PLAN.md Phase 20.34. Not yet released -- part of v0.0.5.
+- [ ] When selecting a cloud init, there is no abvious exit, "q" is treated as a filename
 
 ## Requested features
 
+
+- [ ] Need to be able to modify a launch templates' size and EBS storage from clasm in addition to syncing the cloud-init
+- [ ] When spinning up a new instance successfully the IP addresses and SSH ec2 user is shown, what would be good to also show is the SSH command to SSH in using the keys created and associated with the instance similar to how via the Web UI you can look up the connection command for connecting with SSH.
 - [x] SSM-capable instance profile enforcement at launch + associate/replace retrofit for running instances -- designed, implemented, unit-tested, and real-AWS-verified 2026-07-22. See DESIGN.md/DECISIONS.md, "SSM-Capable Instance Profile Enforcement + Retrofit", PLAN.md Phase 20.33. Not yet released -- part of v0.0.5.
 - [x] arm64/aarch64 (Graviton) support + Ubuntu 26.04 LTS in the curated AMI/instance-type lists -- designed, implemented, unit-tested, and real-AWS-verified 2026-07-22. See DESIGN.md/DECISIONS.md, "ARM64 (Graviton) Support + Ubuntu 26.04 LTS", PLAN.md Phase 20.35. Not yet released -- part of v0.0.5.
 

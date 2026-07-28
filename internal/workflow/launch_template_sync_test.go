@@ -70,6 +70,17 @@ func TestCreateLaunchTemplateVersion_SetsSourceVersionAndUserData(t *testing.T) 
 	}
 }
 
+func TestCreateLaunchTemplateVersion_PropagatesEncodeUserDataError(t *testing.T) {
+	fake := &fakeEC2Client{createLaunchTemplateVersionNumber: 5}
+	_, err := createLaunchTemplateVersion(context.Background(), fake, "lt-1", "2", string(pseudoRandomBytes(20000)))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if fake.lastCreateLaunchTemplateVersionInput != nil {
+		t.Error("CreateLaunchTemplateVersion was called despite an oversized user-data payload")
+	}
+}
+
 func TestSyncLaunchTemplate_IdenticalContentIsNoOp(t *testing.T) {
 	path := writeCloudInitFixture(t, "#cloud-config\nsame content\n")
 	fake := &fakeEC2Client{launchTemplateVersions: []types.LaunchTemplateVersion{

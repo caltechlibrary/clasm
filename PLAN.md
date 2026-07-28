@@ -4986,6 +4986,103 @@ separate, larger follow-up if wanted.
 
 ---
 
+## Phase 20.44 — User-Data Pre-Flight Size Check
+
+**Status: designed, implemented, and unit-tested 2026-07-28**,
+live-testing-driven (see DESIGN.md, "User-Data Pre-Flight Size Check";
+DECISIONS.md, "User-data pre-flight size check: hard error, no
+remediation loop-back; switch to gzip.BestCompression"). Closes a
+confirmed gap: Phase 20.34's gzip fix is not sufficient for large
+cloud-init files (the incident's `granian-rdm-v14` file, 57849 raw
+bytes at the time, still exceeded the 16384-byte limit even gzip'd),
+and `encodeUserData` had no pre-flight size validation anywhere. `go
+build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean. Not yet
+real-AWS-verified.
+
+### Work Items
+
+- [x] `userdata_gzip.go`: switch `gzip.NewWriter(&buf)` to
+      `gzip.NewWriterLevel(&buf, gzip.BestCompression)`
+- [x] `userdata_gzip.go`: new `maxUserDataBytes = 16384` constant
+- [x] `userdata_gzip.go`: widen `encodeUserData` to
+      `encodeUserData(plainText string) (string, error)` -- after
+      gzip-compressing and before base64-encoding, compare the
+      compressed byte count against `maxUserDataBytes`; if over, return
+      an error stating the compressed size and the overage (no base64
+      encoding attempted, no AWS call made)
+- [x] `launch_execute.go`: the `encodeUserData` call site in `Launch`
+      updated to handle the new error return
+- [x] `launch_template_create.go`: `buildRequestLaunchTemplateData`
+      widened to `(*types.RequestLaunchTemplateData, error)`; its one
+      caller (`createLaunchTemplate`) updated to check the error right
+      before the `CreateLaunchTemplate` API call (same relative
+      position as before -- after confirmation, immediately before the
+      real AWS call)
+- [x] `launch_template_sync.go`: `createLaunchTemplateVersion`'s call
+      site updated (already returned an error, so this was a
+      pass-through)
+
+### Tests
+
+Test-first, per [[feedback-test-before-fix]]/this project's standing
+practice: every new/changed `userdata_gzip_test.go`,
+`launch_execute_test.go`, `launch_template_create_test.go`, and
+`launch_template_sync_test.go` case confirmed failing (compile error
+against the old single-return signatures) before the implementation
+existed.
+
+- [x] Round-trip still passes (encode-then-decode returns the original
+      text) for a payload comfortably under the limit
+- [x] A payload that compresses to just over `maxUserDataBytes` returns
+      a non-nil error mentioning the compressed size and the overage,
+      and returns no usable encoded string
+- [x] A payload compresses to exactly at/just under the limit succeeds,
+      and one byte more (when it actually crosses the boundary) fails --
+      found via a binary search over a deterministic pseudo-random
+      fixture (`pseudoRandomBytes`/`TestEncodeUserData_BoundaryAtTheLimit`),
+      not assumed
+- [x] A fixture distinguishing gzip's default compression level from
+      `BestCompression` (`wordSaladText`, sized to the original
+      incident's 57849 raw bytes) confirms `encodeUserData` actually
+      uses `BestCompression`, not just gzip at some level -- a naive
+      perfectly-periodic repeated string (`TestEncodeUserData_ShrinksLargeText`'s
+      fixture) compresses identically at both levels and would not have
+      caught a regression to the old default level
+- [x] New propagation tests at all three call sites
+      (`TestLaunch_PropagatesEncodeUserDataError`,
+      `TestBuildRequestLaunchTemplateData_PropagatesEncodeUserDataError`,
+      `TestCreateLaunchTemplateVersion_PropagatesEncodeUserDataError`)
+      confirm the AWS call is never attempted when the payload is
+      oversized
+- [x] Existing `launch_execute.go`/`launch_template_create.go`/
+      `launch_template_sync.go` tests updated for the new error-return
+      shape at each call site; no behavior change for any existing
+      passing case (every payload they exercise is already well under
+      the limit)
+- [x] Manually confirmed (`gzip -9 -c | wc -c`, not assumed): the real
+      `granian-rdm-v14/cloud-init.yaml` is now 30541 raw bytes (already
+      trimmed as a workaround on the `granian-rdm-v14` side after the
+      2026-07-28 incident, per that project's own memory) and compresses
+      to 10299 bytes -- comfortably under the limit, confirming this fix
+      doesn't regress the now-working case. The original 57849-byte
+      file that triggered this phase no longer exists to re-test
+      directly; the synthetic `wordSaladText`-based tests above cover
+      the over-limit path instead.
+
+### Files
+
+`internal/workflow/userdata_gzip.go`, `userdata_gzip_test.go`,
+`launch_execute.go`, `launch_execute_test.go`,
+`launch_template_create.go`, `launch_template_create_test.go`,
+`launch_template_sync.go`, `launch_template_sync_test.go`.
+
+### Dependency
+
+None. Independent of Phase 20.34 (already shipped in v0.0.5) other than
+building directly on its `userdata_gzip.go`.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
