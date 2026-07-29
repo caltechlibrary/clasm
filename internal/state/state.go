@@ -22,6 +22,14 @@ import (
 // as config.Config.
 type State struct {
 	BackupArchive BackupArchiveState `yaml:"backup_archive"`
+	// OpenSearchArchive is Archive OpenSearch Snapshot to S3's own
+	// recalled instance/directory choices (PLAN.md Phase 20.49) -- same
+	// shape as BackupArchive, kept as a separate field/instantiation
+	// rather than sharing BackupArchive's, since an instance's SQL and
+	// OpenSearch backup directories are unrelated paths; sharing one map
+	// would make each workflow silently overwrite the other's recalled
+	// default for the same instance.
+	OpenSearchArchive BackupArchiveState `yaml:"opensearch_archive"`
 }
 
 // BackupArchiveState is Backup Archive & Trim's remembered instance and

@@ -99,6 +99,20 @@ func main() {
 		appState.BackupArchive.LastDirectoryByInstance[instanceID] = directory
 		return appstate.Save(statePath, appState)
 	}
+	// saveOpenSearchArchiveHistory is Archive OpenSearch Snapshot to S3's
+	// own recalled instance/directory choices (PLAN.md Phase 20.49) --
+	// same shape as saveBackupHistory, backed by a separate
+	// appState.OpenSearchArchive field so an instance's SQL and
+	// OpenSearch backup directory recall never clobber each other (see
+	// internal/state/state.go's own doc comment).
+	saveOpenSearchArchiveHistory := func(instanceID, directory string) error {
+		if appState.OpenSearchArchive.LastDirectoryByInstance == nil {
+			appState.OpenSearchArchive.LastDirectoryByInstance = map[string]string{}
+		}
+		appState.OpenSearchArchive.LastInstanceID = instanceID
+		appState.OpenSearchArchive.LastDirectoryByInstance[instanceID] = directory
+		return appstate.Save(statePath, appState)
+	}
 
 	// -debug wraps every AWS client below in a logging decorator that
 	// writes one JSONL record per SDK call (see DESIGN.md, "Debug
@@ -463,6 +477,15 @@ func main() {
 		LastDirectoryByInstance: appState.BackupArchive.LastDirectoryByInstance,
 		Save:                    saveBackupHistory,
 	}
+	// openSearchArchiveHistory is Archive OpenSearch Snapshot to S3's own
+	// BackupHistory instantiation (PLAN.md Phase 20.49) -- same type as
+	// backupHistory above, but backed by appState.OpenSearchArchive, not
+	// appState.BackupArchive.
+	openSearchArchiveHistory := workflow.BackupHistory{
+		LastInstanceID:          appState.OpenSearchArchive.LastInstanceID,
+		LastDirectoryByInstance: appState.OpenSearchArchive.LastDirectoryByInstance,
+		Save:                    saveOpenSearchArchiveHistory,
+	}
 	// saveRDMPostgresRules persists rdm_postgres_config to ~/.clasm
 	// immediately -- best-effort, warn-on-failure, matching
 	// saveBackupHistory's own "convenience lost, not fatal" spirit
@@ -489,11 +512,12 @@ func main() {
 			return workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules, archiveSQLAction)
 		},
 		ArchiveSQL: archiveSQLAction,
-		// ArchiveOpenSearch/RestoreSQL/RestoreOpenSearch are stubs until
-		// Phases 20.49-20.51 land (matching how configure_menu.go's items
-		// were stubbed before Phase 20.42's edit actions existed).
+		// ArchiveOpenSearch lands PLAN.md Phase 20.49; RestoreSQL/
+		// RestoreOpenSearch remain stubs until Phases 20.50-20.51 land
+		// (matching how configure_menu.go's items were stubbed before
+		// Phase 20.42's edit actions existed).
 		ArchiveOpenSearch: func(ctx context.Context) error {
-			return workflow.NotYetImplemented(out, "Archive OpenSearch Snapshot to S3")
+			return workflow.ArchiveOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories, openSearchArchiveHistory)
 		},
 		RestoreSQL: func(ctx context.Context) error {
 			return workflow.NotYetImplemented(out, "Restore SQL Backup from S3")

@@ -53,6 +53,17 @@ type fakeSSMClient struct {
 	responses       []ssmCommandResponse
 	lastCommandText string
 	sentCommands    []string
+
+	// stdoutSequence, if non-empty, makes each GetCommandInvocation call
+	// return the Nth entry (by 1-indexed sendCommandCallCount, clamped to
+	// the last entry once exhausted) as StandardOutputContent, paired
+	// with finalStatus -- simulates a caller that issues a *fresh*
+	// SendCommand each time it polls for a remote resource's own state
+	// (e.g. PollSnapshotUntilComplete's repeated `GET
+	// /_snapshot/<repo>/<name>` checks), where each round-trip's SSM
+	// command itself succeeds immediately but carries a different body.
+	// Takes priority over pendingCalls/responses/stdout when set.
+	stdoutSequence []string
 }
 
 type ssmCommandResponse struct {
@@ -95,6 +106,13 @@ func (f *fakeSSMClient) GetCommandInvocation(ctx context.Context, params *ssm.Ge
 	}
 	if f.invocationErr != nil {
 		return nil, f.invocationErr
+	}
+	if len(f.stdoutSequence) > 0 {
+		idx := f.sendCommandCallCount - 1
+		if idx >= len(f.stdoutSequence) {
+			idx = len(f.stdoutSequence) - 1
+		}
+		return &ssm.GetCommandInvocationOutput{Status: f.finalStatus, StandardOutputContent: aws.String(f.stdoutSequence[idx])}, nil
 	}
 	if f.invocationCalls <= f.pendingCalls {
 		return &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}, nil

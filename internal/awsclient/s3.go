@@ -60,6 +60,12 @@ type S3API interface {
 	DeleteBucketLifecycle(ctx context.Context, params *s3.DeleteBucketLifecycleInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketLifecycleOutput, error)
 	DeleteBucket(ctx context.Context, params *s3.DeleteBucketInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketOutput, error)
 	DeleteBucketTagging(ctx context.Context, params *s3.DeleteBucketTaggingInput, optFns ...func(*s3.Options)) (*s3.DeleteBucketTaggingOutput, error)
+	// DeleteObjects supports Archive OpenSearch Snapshot to S3's app-managed
+	// cleanup (PLAN.md Phase 20.49): S3 has no atomic "delete a whole
+	// prefix" call, so removing one old snapshot means listing every
+	// object under its sub-prefix, then batch-deleting up to 1,000 keys
+	// per call (S3's own limit).
+	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
 }
 
 // NewS3Client constructs an S3 client from the SDK's default credential

@@ -4,6 +4,196 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-07-29 — Real bug: repo registration used the host directory as `location`, not the container-internal `path.repo` path
+
+**Context.** After the `--fail-with-body` fix (below) surfaced
+OpenSearch's actual error for the first time, the user immediately began
+retrofitting `path.repo` on CaltechAUTHORS production
+(`i-0c4c81336aea33d27`) per `rdm-opensearch-path-repo-retrofit.md`. That
+runbook bind-mounts the operator's chosen *host* directory (e.g.
+`/opt/rdm_opensearch_backups`) to a fixed *container-internal* path,
+`/usr/share/opensearch/backups`, and sets `path.repo` to the
+container-internal path -- because OpenSearch runs inside the `search`
+container and has no visibility into host paths at all. `archiveOpenSearchSnapshot`
+(`internal/workflow/opensearch_archive.go`) passed the same `directory`
+value (the operator-typed host path) to *both*
+`SyncOpenSearchBackupsToS3` (correct -- `aws s3 sync` runs directly on
+the host) and `RegisterSnapshotRepo` (wrong -- OpenSearch needs the
+container path). Even after a correct retrofit, registration would have
+kept failing with the identical "location doesn't match any of the
+locations specified by path.repo" error, just for a different reason
+than before the retrofit (empty `path.repo` vs. a `path.repo` that's set
+but doesn't include the host path, since it was never meant to).
+
+**Decision.** **`RegisterSnapshotRepo` is now called with a new fixed
+constant, `DefaultOpenSearchContainerRepoPath =
+"/usr/share/opensearch/backups"`, never the operator-typed `directory`.**
+The `directory` prompt continues to mean "host directory," used only for
+`aws s3 sync` (and, previously, the create-directory-yourself step the
+operator did manually).
+
+**Rationale.**
+- The host path and the container-internal path are two genuinely
+  different concepts (one filesystem visible to the host's `aws` CLI,
+  the other visible only inside the `search` container) that happened
+  to collapse into a single `directory` parameter in this phase's
+  original design -- a real gap, not caught until an actual retrofit
+  was attempted against a real, already-partially-fixed instance.
+- The container-internal path is fixed by the retrofit runbook itself
+  (`/usr/share/opensearch/backups`, identical convention for every
+  production instance, matching `granian-rdm-v14`'s own cloud-init for
+  new instances) -- hardcoding it as a constant matches
+  `DefaultOpenSearchRepoName`'s own precedent ("one fixed name/path, not
+  per-instance-configurable").
+
+**Rejected alternatives.**
+- *A second, distinct config-driven prompt for "container repo path"* --
+  unnecessary given the runbook fixes this value identically everywhere;
+  would just be one more thing an operator has to type correctly every
+  run for no real benefit.
+
+**Consequences.**
+- New `DefaultOpenSearchContainerRepoPath` constant
+  (`opensearch_archive.go`), doc comment on `RegisterSnapshotRepo`'s call
+  site distinguishing host vs. container paths explicitly so this
+  doesn't quietly regress again.
+- New regression test,
+  `TestArchiveOpenSearchSnapshot_RegistersRepoWithContainerPathNotHostDirectory`
+  -- types a host directory distinct from the container path and asserts
+  the register-repo command uses the fixed container path while the sync
+  command still uses the typed host directory. Confirmed failing against
+  the pre-fix code first.
+
+---
+
+## 2026-07-29 — Real bug: `curl -fsS` hid OpenSearch's own error body; switch to `--fail-with-body`
+
+**Context.** First live test of Archive OpenSearch Snapshot to S3
+against CaltechAUTHORS production (`i-0c4c81336aea33d27`, `--debug` on)
+hit `registering snapshot repo "rdm_backup_repo" ... failed (status:
+Failed)` -- no further detail. The `--debug` JSONL log showed the SSM
+invocation's `StandardErrorContent` was only curl's own generic `curl:
+(22) The requested URL returned error: 500 / failed to run commands:
+exit status 22`. OpenSearch's actual error -- almost certainly the
+`path.repo` prerequisite (`rdm-opensearch-path-repo-retrofit.md`) not
+yet being configured on this instance -- was never captured anywhere,
+because `-f` (`--fail`) makes curl both exit non-zero *and* discard the
+response body on a non-2xx status. Confirmed the account's real
+production instance, not a fixture -- a unit test with a fake SSM client
+never would have caught this, since the fake always returns whatever
+canned stdout a test supplies.
+
+**Decision.** **Switch every OpenSearch REST-over-SSM `curl` command from
+`-fsS` to `--fail-with-body -sS`**, and thread the captured response
+body into every resulting error message (new `curlFailureError` helper,
+`internal/workflow/opensearch_snapshot.go`).
+
+**Rationale.**
+- `--fail-with-body` (curl >= 7.76, present on every Ubuntu LTS this
+  project targets -- 22.04/24.04/26.04) keeps `-f`'s exit-code-based
+  failure detection (needed for `RunShellCommand`'s own SSM invocation
+  status to reflect a real OpenSearch-side error) while still writing
+  the HTTP response body to stdout on a non-2xx status.
+- OpenSearch's own JSON error bodies are specific and actionable (e.g.
+  "location doesn't match any of the locations specified by
+  path.repo") -- surfacing them directly in clasm's own error message
+  means an operator no longer has to dig through a `--debug` JSONL log
+  to diagnose a registration/snapshot/delete/poll failure.
+
+**Rejected alternatives.**
+- *Parse `StandardErrorContent` too* -- would still only ever show
+  curl's own generic message, never the server's actual explanation;
+  doesn't fix the underlying problem of `-f` discarding the body.
+- *Leave `-fsS`, tell operators to always run with `--debug`* --
+  workable but user-hostile; every prior "Preflight check" decision in
+  this log has favored a clear, immediate, in-app error over pushing
+  diagnosis onto a separate log file.
+
+**Consequences.**
+- `buildRegisterRepoCommand`/`buildCreateSnapshotCommand`/
+  `buildSnapshotStateCommand`/`buildDeleteSnapshotCommand` all changed;
+  their own unit tests' exact-string/substring assertions updated to
+  match.
+- `RegisterSnapshotRepo`/`CreateSnapshot`/`DeleteSnapshot`/
+  `PollSnapshotUntilComplete`'s SSM-failure branch now include the
+  captured stdout body in their returned error (new regression tests
+  per function, confirmed failing against the pre-fix code first).
+
+---
+
+## 2026-07-29 — Clarify Archive OpenSearch Snapshot to S3's cleanup-threshold prompt wording
+
+**Context.** Same live-testing session: the user found the cleanup
+prompt ("Clean up this instance's OpenSearch backups older than how
+many days?") ambiguous -- unclear whether "backups" meant the
+instance's own local `/opt/rdm_opensearch_backups` directory or the
+already-archived copies in S3.
+
+**Decision.** Reworded to: "Delete this instance's previously-archived
+OpenSearch snapshots in S3 older than how many days? (blank to skip --
+does not affect anything on the instance itself, or the snapshot this
+run is about to create)".
+
+**Rationale.** Spells out exactly what's at stake (S3-side archived
+copies only) and exactly what's safe (the local directory, and the
+snapshot this run is about to create) in the prompt itself, rather than
+requiring the operator to infer it or check documentation mid-run.
+
+**Consequences.** `promptOpenSearchCleanupDays`
+(`internal/workflow/opensearch_archive.go`) wording only -- no test
+asserted on the old literal text, so no test changes were needed.
+
+---
+
+## 2026-07-29 — Archive OpenSearch Snapshot to S3 (Phase 20.49): a separate BackupHistory instantiation, not a shared one
+
+**Context.** PLAN.md Phase 20.49's own work-item text specifies
+`ArchiveOpenSearchSnapshot(..., hist BackupHistory)`, reusing Run SQL
+Backup/Archive SQL Backup's existing `BackupHistory` *type* to recall the
+last-picked instance and pre-fill the backup-directory prompt's default.
+It doesn't say whether the actual data behind that struct should be
+shared with SQL's own recall state or kept separate -- a real gap in the
+committed design, surfaced only once implementation had to decide what
+`main.go` actually passes in.
+
+**Decision.** **Reuse the `BackupHistory` struct type unchanged, but back
+it with a brand-new, independent `appState.OpenSearchArchive` field**
+(`internal/state.State`, same shape as the existing `BackupArchive`
+field), not the SQL workflows' own `appState.BackupArchive`.
+
+**Rationale.**
+- An instance's SQL backup directory (`/opt/rdm_sql_backups`) and its
+  OpenSearch backup directory (`/opt/rdm_opensearch_backups`) are
+  unrelated paths. `LastDirectoryByInstance` is keyed only by instance
+  ID, so sharing one map would mean running Archive OpenSearch Snapshot
+  right after Run SQL Backup (or vice versa) on the same instance would
+  silently overwrite the other workflow's recalled default the next time
+  either runs.
+- The struct *type* staying shared (rather than inventing a second,
+  parallel type) keeps `BackupHistory`'s existing shape/semantics --
+  `LastInstanceID`, `LastDirectoryByInstance`, `Save` -- as the one
+  established "recall a workflow's instance/directory choices" pattern
+  in this codebase, matching how `RDMPostgresRule` got its own config
+  slice separate from `BackupDirectoryRule` despite a similar shape.
+
+**Rejected alternatives.**
+- *Share `appState.BackupArchive` directly* -- the literal reading of
+  Phase 20.49's Work Items text, but would introduce a real, silent
+  cross-workflow data-clobbering bug for any instance run through both
+  workflows.
+- *A wholly new type for OpenSearch's own recall* -- unnecessary
+  duplication; `BackupHistory`'s existing shape already fits exactly.
+
+**Consequences.**
+- `internal/state.State` gains `OpenSearchArchive BackupArchiveState`
+  (yaml `opensearch_archive`), independent of the existing
+  `BackupArchive` field.
+- `main.go` gains a second `saveOpenSearchArchiveHistory` closure and
+  `openSearchArchiveHistory` `BackupHistory` instantiation, parallel to
+  `saveBackupHistory`/`backupHistory`.
+
+---
+
 ## 2026-07-29 — Revert Project tag matching to exact-match lowercase "project" -- the fleet is clean now
 
 **Context.** The case-insensitive `Project` matching decided earlier the

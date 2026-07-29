@@ -136,3 +136,9 @@ func (w *loggingS3Client) DeleteBucketTagging(ctx context.Context, params *s3.De
 		return w.inner.DeleteBucketTagging(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingS3Client) DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
+	return logAWSCall(w.dl, "S3.DeleteObjects", w.region, params, func() (*s3.DeleteObjectsOutput, error) {
+		return w.inner.DeleteObjects(ctx, params, optFns...)
+	})
+}

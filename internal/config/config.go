@@ -47,6 +47,14 @@ type Config struct {
 	// but still hand-editable via the Configure clasm domain for any
 	// instance customized beyond Invenio RDM's shipped defaults.
 	RDMPostgresConfig []RDMPostgresRule `yaml:"rdm_postgres_config"`
+	// OpenSearchBackupDirectories is Archive OpenSearch Snapshot to S3's
+	// own per-instance default directory rules (DESIGN.md, "Archive
+	// OpenSearch Snapshot to S3"; PLAN.md Phase 20.49) -- same
+	// BackupDirectoryRule type and BackupDirectoryFor resolver
+	// BackupDirectories already uses, kept as a second, independent slice
+	// since an instance's SQL and OpenSearch backup directories are
+	// unrelated paths.
+	OpenSearchBackupDirectories []BackupDirectoryRule `yaml:"opensearch_backup_directories"`
 }
 
 // OriginTagConfig names the tag clasm treats as the IAM

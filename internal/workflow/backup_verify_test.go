@@ -65,6 +65,9 @@ type fakeS3Client struct {
 	deleteObjectErr   error
 	deleteObjectCalls []s3.DeleteObjectInput
 
+	deleteObjectsErr   error
+	deleteObjectsCalls []s3.DeleteObjectsInput
+
 	listObjectsV2Err    error
 	allObjects          []types.Object // full object list; paginated by listObjectsPageSize
 	listObjectsPageSize int            // 0 = return everything in one page

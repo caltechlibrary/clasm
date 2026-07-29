@@ -128,7 +128,12 @@ func (f *fakeS3Client) DeleteObject(ctx context.Context, params *s3.DeleteObject
 // ListObjectsV2 paginates allObjects (filtered by Prefix) in pages of
 // listObjectsPageSize, using the page's end index as a fake continuation
 // token -- enough to exercise real pagination-following code without
-// reproducing S3's actual opaque token format.
+// reproducing S3's actual opaque token format. When params.Delimiter is
+// set, keys with a further path segment past Prefix are grouped into
+// CommonPrefixes instead of Contents (real S3's own delimiter semantics),
+// which is what ListArchivedSnapshotPrefixes (opensearch_cleanup.go)
+// relies on -- CommonPrefixes is returned whole on every page, since no
+// test here paginates it.
 func (f *fakeS3Client) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	f.listObjectsV2Calls = append(f.listObjectsV2Calls, *params)
 	if f.listObjectsV2Err != nil {
@@ -136,11 +141,27 @@ func (f *fakeS3Client) ListObjectsV2(ctx context.Context, params *s3.ListObjects
 	}
 
 	prefix := aws.ToString(params.Prefix)
+	delim := aws.ToString(params.Delimiter)
 	var filtered []types.Object
+	seenPrefixes := map[string]bool{}
+	var commonPrefixes []types.CommonPrefix
 	for _, o := range f.allObjects {
-		if strings.HasPrefix(aws.ToString(o.Key), prefix) {
-			filtered = append(filtered, o)
+		key := aws.ToString(o.Key)
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
+		if delim != "" {
+			rest := key[len(prefix):]
+			if idx := strings.Index(rest, delim); idx >= 0 {
+				cp := prefix + rest[:idx+len(delim)]
+				if !seenPrefixes[cp] {
+					seenPrefixes[cp] = true
+					commonPrefixes = append(commonPrefixes, types.CommonPrefix{Prefix: aws.String(cp)})
+				}
+				continue
+			}
+		}
+		filtered = append(filtered, o)
 	}
 
 	pageSize := f.listObjectsPageSize
@@ -153,12 +174,24 @@ func (f *fakeS3Client) ListObjectsV2(ctx context.Context, params *s3.ListObjects
 	}
 	end := min(start+pageSize, len(filtered))
 
-	out := &s3.ListObjectsV2Output{Contents: filtered[start:end]}
+	out := &s3.ListObjectsV2Output{Contents: filtered[start:end], CommonPrefixes: commonPrefixes}
 	if end < len(filtered) {
 		out.IsTruncated = aws.Bool(true)
 		out.NextContinuationToken = aws.String(strconv.Itoa(end))
 	}
 	return out, nil
+}
+
+func (f *fakeS3Client) DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
+	f.deleteObjectsCalls = append(f.deleteObjectsCalls, *params)
+	if f.deleteObjectsErr != nil {
+		return nil, f.deleteObjectsErr
+	}
+	deleted := make([]types.DeletedObject, 0, len(params.Delete.Objects))
+	for _, o := range params.Delete.Objects {
+		deleted = append(deleted, types.DeletedObject{Key: o.Key})
+	}
+	return &s3.DeleteObjectsOutput{Deleted: deleted}, nil
 }
 
 func (f *fakeS3Client) GetBucketLifecycleConfiguration(ctx context.Context, params *s3.GetBucketLifecycleConfigurationInput, optFns ...func(*s3.Options)) (*s3.GetBucketLifecycleConfigurationOutput, error) {

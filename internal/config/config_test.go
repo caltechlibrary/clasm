@@ -90,6 +90,25 @@ func TestLoad_ParsesBackupDirectories(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesOpenSearchBackupDirectories(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "awsops-config")
+	content := "opensearch_backup_directories:\n" +
+		"  - pattern: \"rdm-*\"\n" +
+		"    directory: /opt/rdm_opensearch_backups\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []BackupDirectoryRule{{Pattern: "rdm-*", Directory: "/opt/rdm_opensearch_backups"}}
+	if len(cfg.OpenSearchBackupDirectories) != len(want) || cfg.OpenSearchBackupDirectories[0] != want[0] {
+		t.Errorf("OpenSearchBackupDirectories = %v, want %v", cfg.OpenSearchBackupDirectories, want)
+	}
+}
+
 func TestLoad_MissingFileReturnsDefaultOriginTag(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist")
 

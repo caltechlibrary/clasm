@@ -5430,21 +5430,110 @@ None.
 
 ## Phase 20.49 — Archive OpenSearch Snapshot to S3
 
-**Status: designed 2026-07-28, not yet implemented** (DESIGN.md, "RDM
-Backup & Restore Domain" -> "Archive OpenSearch Snapshot to S3").
-Depends on Phase 20.48 for `RDMBackupRestoreActions.ArchiveOpenSearch`
-to have somewhere to plug into, but its own workflow logic is
-independently buildable/testable first if that's a better order.
+**Status: implemented and unit-tested 2026-07-29, test-first throughout,
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean project-wide.
+Real-AWS testing started 2026-07-29 against CaltechAUTHORS production
+(`i-0c4c81336aea33d27`) but blocked before a snapshot could actually be
+created -- see below.** Wired into
+`RDMBackupRestoreActions.ArchiveOpenSearch` (Phase 20.48), replacing its
+`NotYetImplemented` stub. One implementation-level decision made along
+the way, not pinned down by this phase's own Work Items text: Archive
+OpenSearch Snapshot to S3's `BackupHistory` is backed by a new, separate
+`appState.OpenSearchArchive` state field, not shared with Run SQL
+Backup/Archive SQL Backup's own `appState.BackupArchive` -- see
+DECISIONS.md, "Archive OpenSearch Snapshot to S3 (Phase 20.49): a
+separate BackupHistory instantiation, not a shared one." A second,
+purely mechanical correction: `buildRegisterRepoCommand`/
+`buildCreateSnapshotCommand`/`buildSnapshotStateCommand`/
+`buildDeleteSnapshotCommand` compose the full `localhost:9200/_snapshot/
+...` URL first and `shellQuote` it as one shell word, rather than
+quoting `repo`/`snapshotName` individually inside the URL string (which
+would have embedded literal quote characters into the URL itself).
+
+**Two real issues found via the first live test run, both fixed
+test-first same day:** (1) `RegisterSnapshotRepo` failed with `status:
+Failed` and no further detail -- the `--debug` JSONL log showed
+OpenSearch actually returned an HTTP 500 (almost certainly the
+`path.repo` prerequisite not yet configured on this production
+instance), but `curl -fsS`'s `-f` flag discards the response body on a
+non-2xx status, so only curl's own generic `exit status 22` ever
+reached clasm's error message. Fixed by switching every OpenSearch
+`curl` command to `--fail-with-body -sS` (keeps `-f`'s exit-code
+detection, still writes the body to stdout on failure) and threading
+that body into every resulting error message via a new
+`curlFailureError` helper -- see DECISIONS.md, "Real bug: `curl -fsS`
+hid OpenSearch's own error body; switch to `--fail-with-body`". (2) The
+cleanup-threshold prompt's wording was ambiguous about whether it
+governed the instance's own local directory or the archived copies in
+S3 -- reworded to spell out both explicitly. See DECISIONS.md, "Clarify
+Archive OpenSearch Snapshot to S3's cleanup-threshold prompt wording".
+**Root cause of the original 500 confirmed by the improved error
+message itself, same day:** `{"error":{"reason":"[rdm_backup_repo]
+location [/opt/rdm_opensearch_backups] doesn't match any of the
+locations specified by path.repo because this setting is empty"}}` --
+exactly the `path.repo` retrofit prerequisite, as suspected. While
+retrofitting it, a **third real bug surfaced, also fixed test-first same
+day**: `RegisterSnapshotRepo` was passed the operator-typed *host*
+directory as `location`, but OpenSearch (running inside the `search`
+container) only ever sees the container-internal path the retrofit's
+bind mount maps that host directory to
+(`/usr/share/opensearch/backups`) -- so even a correctly-applied
+retrofit would have kept failing with the identical error, for a
+different reason. Fixed by registering with a new fixed constant,
+`DefaultOpenSearchContainerRepoPath`, never `directory` (which continues
+to mean "host path," correctly used only for the `aws s3 sync` call) --
+see DECISIONS.md, "Real bug: repo registration used the host directory
+as `location`, not the container-internal `path.repo` path".
+**Still blocked on the user completing the retrofit itself** before a
+full end-to-end real-AWS run (create -> sync -> verify -> delete) can be
+confirmed.
+
+**A fourth issue, more serious than the first three and not a clasm code
+bug, surfaced attempting the retrofit itself (2026-07-29/30):** both
+known instances' `docker-services.yml` lack a persistent volume for
+OpenSearch's `search` service data directory -- confirmed via `docker
+inspect ... Mounts` on both CaltechDATA dev (`data.caltechlibrary.dev`)
+and, read-only via clasm's own SSM access, CaltechAUTHORS production.
+Recreating that container (unavoidable to pick up `path.repo`) discards
+every index unconditionally, independent of any `docker compose down
+-v`. **Live-tested the consequence on CaltechDATA dev**: the retrofit
+attempt there wiped every OpenSearch index; recovered same-session via
+`invenio rdm-records rebuild-index` (records/drafts/vocabularies), then
+per-index `invenio index create <name>` for everything else (`invenio
+index init` aborts its entire batch on the first already-existing
+index, making it unusable once partial state exists), then `invenio
+communities rebuild-index`, then the generic `invenio index reindex
+--pid-type <type>` + `invenio index run` for `users` and any type
+without its own dedicated command -- site confirmed working again.
+**CaltechAUTHORS production was not harmed**: `path.repo` had been
+hand-added to its `docker-services.yml`, but the `search` container was
+never recreated before the risk was identified and the edit reverted.
+Production's exposure would have been far worse than CaltechDATA dev's,
+though -- ~150K live records (rebuildable from Postgres) plus roughly 10
+months of `stats-record-view-*`/`stats-file-download-*`/
+`events-stats-*` usage-event history that has **no source of truth
+outside OpenSearch at all** and would be permanently lost, not just
+delayed, by the same recreate. `~/WorkLab/rdm-opensearch-path-repo-retrofit.md`
+rewritten same day with a mandatory persistent-volume migration
+procedure (via `docker cp` of the live data out, before any `path.repo`
+change) and the recovery sequence that worked, so neither instance's
+retrofit is attempted again without it. **Both instances are currently
+reverted to their pre-retrofit config** -- neither has `path.repo` set.
+**Next step when this resumes:** redo the retrofit on CaltechDATA dev
+first (now including the persistent-volume migration), confirm Archive
+OpenSearch Snapshot works end to end there, *then* consider
+CaltechAUTHORS production. Full session account:
+`agents/hand-off/2026-07-30T040000Z-clasm-opensearch-live-testing-and-production-safety.spmd`.
 
 ### Work Items
 
-- [ ] `internal/config/config.go`: new field
+- [x] `internal/config/config.go`: new field
       `OpenSearchBackupDirectories []BackupDirectoryRule` (same rule
       type `backup_directories` already uses -- pattern/directory pairs
       -- no new type needed); `config.BackupDirectoryFor` is already
       generic over `[]BackupDirectoryRule`, so no new resolver function,
       just a second slice to pass it
-- [ ] New `internal/workflow/opensearch_index_patterns.go`:
+- [x] New `internal/workflow/opensearch_index_patterns.go`:
       `rdmOpenSearchSnapshotIndexPatterns(prefix string) []string`,
       building the confirmed allowlist (`<prefix>-rdmrecords-*`,
       `-users-*`, `-communities-*`, `-requests*`, `-requestevents-*`,
@@ -5459,7 +5548,7 @@ independently buildable/testable first if that's a better order.
       too before relying on it generally, since a mismatch here would
       silently snapshot zero indices (`ignore_unavailable: true` makes
       a wrong pattern fail quietly, not loudly)
-- [ ] New `internal/workflow/opensearch_snapshot.go`: the OpenSearch
+- [x] New `internal/workflow/opensearch_snapshot.go`: the OpenSearch
       REST-over-SSM primitives, each a `buildXCommand` (pure, unit
       testable without a real instance) paired with a `RunShellCommand`-driving
       wrapper, mirroring `backup_delete.go`'s
@@ -5503,7 +5592,7 @@ independently buildable/testable first if that's a better order.
         string, timeout, pollInterval time.Duration) error` -- the
         OpenSearch-API-level delete DESIGN.md requires, never a raw
         `rm` on the repo directory
-- [ ] New `internal/workflow/opensearch_sync.go`:
+- [x] New `internal/workflow/opensearch_sync.go`:
       - `buildSyncCommand(localDir, bucket, prefix, snapshotName
         string) string` -- `aws s3 sync --only-show-errors <localDir>
         s3://<bucket>/<prefix>/opensearch-snapshots/<snapshotName>/` --
@@ -5532,7 +5621,7 @@ independently buildable/testable first if that's a better order.
         `.sql.gz` files would be prohibitively slow here. Flagged as a
         real, deliberate difference from Feature 11's model, not an
         oversight -- worth a second look during review
-- [ ] New `internal/workflow/opensearch_cleanup.go` -- the S3-side
+- [x] New `internal/workflow/opensearch_cleanup.go` -- the S3-side
       cleanup primitives, app-managed rather than an S3 bucket lifecycle
       policy (DESIGN.md, "Why app-managed cleanup, not an S3 bucket
       lifecycle policy"):
@@ -5557,7 +5646,7 @@ independently buildable/testable first if that's a better order.
         -- S3 has no atomic "delete a whole prefix" call
       - `displayCleanupDryRun(w io.Writer, prefixes []SnapshotPrefixInfo)`
         -- mirrors `displayBackupDryRun`'s shape
-- [ ] New `internal/workflow/opensearch_archive.go`:
+- [x] New `internal/workflow/opensearch_archive.go`:
       `DefaultOpenSearchRepoName = "rdm_backup_repo"` constant;
       `ArchiveOpenSearchSnapshot(ctx, w, ssmClients, s3Client,
       newS3Client, instances, openSearchBackupDirRules
@@ -5611,31 +5700,31 @@ independently buildable/testable first if that's a better order.
 Test-first throughout, confirmed failing (undefined symbols) before each
 implementation exists, per [[feedback-test-before-fix]].
 
-- [ ] `rdmOpenSearchSnapshotIndexPatterns`: table-driven against a fixed
+- [x] `rdmOpenSearchSnapshotIndexPatterns`: table-driven against a fixed
       prefix, confirms every pattern in DESIGN.md's list is present and
       correctly prefixed
-- [ ] `buildRegisterRepoCommand`/`buildCreateSnapshotCommand`/
+- [x] `buildRegisterRepoCommand`/`buildCreateSnapshotCommand`/
       `buildSnapshotStateCommand`/`buildDeleteSnapshotCommand`/
       `buildSyncCommand`: each a pure string-building function, asserted
       against fixed inputs
-- [ ] `parseSnapshotState`: `SUCCESS`/`IN_PROGRESS`/`FAILED`/`PARTIAL`
+- [x] `parseSnapshotState`: `SUCCESS`/`IN_PROGRESS`/`FAILED`/`PARTIAL`
       bodies, plus a malformed-JSON case
-- [ ] `PollSnapshotUntilComplete`: a `fakeSSMClient` sequenced to return
+- [x] `PollSnapshotUntilComplete`: a `fakeSSMClient` sequenced to return
       `IN_PROGRESS` then `SUCCESS` across successive calls; a
       `FAILED`-terminal case returns an error, not a timeout; a
       never-completing sequence times out with a clear error
-- [ ] `parseSnapshotTimestamp`: valid `rdm-20060102-150405` name parses
+- [x] `parseSnapshotTimestamp`: valid `rdm-20060102-150405` name parses
       to the expected time; a malformed name errors
-- [ ] `ListArchivedSnapshotPrefixes`: `CommonPrefixes`-based listing;
+- [x] `ListArchivedSnapshotPrefixes`: `CommonPrefixes`-based listing;
       one unparseable prefix name is skipped, not fatal, and doesn't
       abort the rest of the listing
-- [ ] `FilterOlderThan`: table-driven, mirrors `FilterByAge`'s own test
+- [x] `FilterOlderThan`: table-driven, mirrors `FilterByAge`'s own test
       shape (nothing-matches, everything-matches, boundary-exact-N-days)
-- [ ] `DeleteSnapshotPrefixes`: a fake S3 client with >1,000 objects
+- [x] `DeleteSnapshotPrefixes`: a fake S3 client with >1,000 objects
       under one prefix confirms `DeleteObjects` is called in batches,
       not one oversized request; a multi-prefix case confirms every
       prefix's objects are removed
-- [ ] `archiveOpenSearchSnapshot`'s testable core, using the existing
+- [x] `archiveOpenSearchSnapshot`'s testable core, using the existing
       shared `fakeSSMClient`/`fakeS3Client` pair (per
       `backup_archive_test.go`'s own convention): happy path end to end
       with no cleanup threshold given (no confirm shown, no cleanup

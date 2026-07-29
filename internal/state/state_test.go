@@ -61,6 +61,36 @@ func TestSaveThenLoad_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestSaveThenLoad_RoundTripsOpenSearchArchive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clasm-state")
+	want := State{
+		BackupArchive: BackupArchiveState{LastInstanceID: "i-sql", LastDirectoryByInstance: map[string]string{"i-sql": "/opt/rdm_sql_backups"}},
+		OpenSearchArchive: BackupArchiveState{
+			LastInstanceID:          "i-os",
+			LastDirectoryByInstance: map[string]string{"i-os": "/opt/rdm_opensearch_backups"},
+		},
+	}
+
+	if err := Save(path, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.OpenSearchArchive.LastInstanceID != want.OpenSearchArchive.LastInstanceID {
+		t.Errorf("OpenSearchArchive.LastInstanceID = %q, want %q", got.OpenSearchArchive.LastInstanceID, want.OpenSearchArchive.LastInstanceID)
+	}
+	if got.OpenSearchArchive.LastDirectoryByInstance["i-os"] != "/opt/rdm_opensearch_backups" {
+		t.Errorf("OpenSearchArchive.LastDirectoryByInstance[i-os] = %q, want /opt/rdm_opensearch_backups", got.OpenSearchArchive.LastDirectoryByInstance["i-os"])
+	}
+	// BackupArchive (SQL) and OpenSearchArchive stay independent -- the
+	// whole point of a separate field (state.go's own doc comment).
+	if got.BackupArchive.LastInstanceID != "i-sql" {
+		t.Errorf("BackupArchive.LastInstanceID = %q, want i-sql (must stay independent of OpenSearchArchive)", got.BackupArchive.LastInstanceID)
+	}
+}
+
 func TestSave_OverwritesExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "clasm-state")
 	first := State{BackupArchive: BackupArchiveState{LastInstanceID: "i-1"}}
