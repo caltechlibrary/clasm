@@ -121,7 +121,7 @@ func TestRunDomainPicker_DispatchesToConfiguration(t *testing.T) {
 		Configuration: cancelingBackToPickerAction(&configuration, cancel),
 	}
 
-	menuInput := newHuhAccessibleInput("6\n") // Configuration
+	menuInput := newHuhAccessibleInput("7\n") // Configuration
 	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -130,6 +130,33 @@ func TestRunDomainPicker_DispatchesToConfiguration(t *testing.T) {
 	}
 	if compute != 0 || keyMgmt != 0 || s3 != 0 || tagMgmt != 0 || iamDomain != 0 {
 		t.Errorf("expected only Configuration to be dispatched, got compute=%d keyMgmt=%d s3=%d tagMgmt=%d iamDomain=%d", compute, keyMgmt, s3, tagMgmt, iamDomain)
+	}
+}
+
+func TestRunDomainPicker_DispatchesToRDMBackupRestore(t *testing.T) {
+	var compute, keyMgmt, s3, tagMgmt, iamDomain, configuration, rdmBackupRestore int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := DomainActions{
+		Compute:          backToPickerAction(&compute),
+		KeyManagement:    backToPickerAction(&keyMgmt),
+		S3:               backToPickerAction(&s3),
+		TagManagement:    backToPickerAction(&tagMgmt),
+		IAM:              backToPickerAction(&iamDomain),
+		Configuration:    backToPickerAction(&configuration),
+		RDMBackupRestore: cancelingBackToPickerAction(&rdmBackupRestore, cancel),
+	}
+
+	menuInput := newHuhAccessibleInput("6\n") // RDM Backup & Restore
+	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if rdmBackupRestore != 1 {
+		t.Errorf("rdmBackupRestore calls = %d, want 1", rdmBackupRestore)
+	}
+	if compute != 0 || keyMgmt != 0 || s3 != 0 || tagMgmt != 0 || iamDomain != 0 || configuration != 0 {
+		t.Errorf("expected only RDM Backup & Restore to be dispatched, got compute=%d keyMgmt=%d s3=%d tagMgmt=%d iamDomain=%d configuration=%d", compute, keyMgmt, s3, tagMgmt, iamDomain, configuration)
 	}
 }
 
@@ -216,8 +243,8 @@ func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
 }
 
 func TestDomainItems_NoExitEntry(t *testing.T) {
-	if len(domainItems) != 6 {
-		t.Fatalf("len(domainItems) = %d, want 6 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
+	if len(domainItems) != 7 {
+		t.Fatalf("len(domainItems) = %d, want 7 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
 	}
 	for _, item := range domainItems {
 		if item.action == nil {

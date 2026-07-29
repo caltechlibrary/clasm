@@ -76,7 +76,7 @@ func sdkInstance(id, name, state, imageID, project, environment string) types.In
 		tags = append(tags, types.Tag{Key: aws.String("Name"), Value: aws.String(name)})
 	}
 	if project != "" {
-		tags = append(tags, types.Tag{Key: aws.String("Project"), Value: aws.String(project)})
+		tags = append(tags, types.Tag{Key: aws.String("project"), Value: aws.String(project)})
 	}
 	if environment != "" {
 		tags = append(tags, types.Tag{Key: aws.String("Environment"), Value: aws.String(environment)})
@@ -111,9 +111,9 @@ func TestListInstances_AggregatesAcrossRegions(t *testing.T) {
 
 	want := []Instance{
 		{InstanceID: "i-1", Name: "web", State: "running", ImageID: "ami-1", Region: "us-east-1", Project: "caltechauthors", Environment: "production",
-			Tags: map[string]string{"Name": "web", "Project": "caltechauthors", "Environment": "production"}},
+			Tags: map[string]string{"Name": "web", "project": "caltechauthors", "Environment": "production"}},
 		{InstanceID: "i-2", Name: "db", State: "stopped", ImageID: "ami-2", Region: "us-west-2", Project: "caltechdata", Environment: "development",
-			Tags: map[string]string{"Name": "db", "Project": "caltechdata", "Environment": "development"}},
+			Tags: map[string]string{"Name": "db", "project": "caltechdata", "Environment": "development"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d instances, want %d: %+v", len(got), len(want), got)
@@ -122,6 +122,68 @@ func TestListInstances_AggregatesAcrossRegions(t *testing.T) {
 		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestListInstances_RecognizesLowercaseProjectTag confirms lowercase
+// "project" is the recognized tag key -- the team's actual, standardized
+// convention (confirmed 2026-07-29 after a live incident on
+// CaltechAUTHORS production surfaced the mismatch; case-folding was a
+// temporary accommodation, since removed -- see DECISIONS.md, "Revert
+// Project tag matching to exact-match lowercase "project" -- the fleet
+// is clean now" -- once every clasm-tagged test resource was retagged
+// to match).
+func TestListInstances_RecognizesLowercaseProjectTag(t *testing.T) {
+	clients := map[string]awsclient.EC2API{
+		"us-east-1": &fakeEC2Client{reservations: []types.Reservation{
+			{Instances: []types.Instance{{
+				InstanceId: aws.String("i-1"),
+				ImageId:    aws.String("ami-1"),
+				State:      &types.InstanceState{Name: types.InstanceStateNameRunning},
+				Tags: []types.Tag{
+					{Key: aws.String("Name"), Value: aws.String("newauthors")},
+					{Key: aws.String("project"), Value: aws.String("caltechauthors")},
+				},
+			}}},
+		}},
+	}
+
+	got, err := ListInstances(context.Background(), clients)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Project != "caltechauthors" {
+		t.Fatalf("got %+v, want Project = %q", got, "caltechauthors")
+	}
+}
+
+// TestListInstances_DoesNotRecognizeCapitalizedProjectTag locks in the
+// reversion away from case-insensitive matching: "Project" (capitalized)
+// is no longer a fleet-wide convention (every clasm-tagged test resource
+// was retagged to lowercase "project" 2026-07-29), so it's no longer
+// recognized -- a deliberate choice, not an oversight, and this test
+// exists so a future change can't silently reintroduce case-folding
+// without a visible test failure prompting a real decision.
+func TestListInstances_DoesNotRecognizeCapitalizedProjectTag(t *testing.T) {
+	clients := map[string]awsclient.EC2API{
+		"us-east-1": &fakeEC2Client{reservations: []types.Reservation{
+			{Instances: []types.Instance{{
+				InstanceId: aws.String("i-1"),
+				ImageId:    aws.String("ami-1"),
+				State:      &types.InstanceState{Name: types.InstanceStateNameRunning},
+				Tags: []types.Tag{
+					{Key: aws.String("Project"), Value: aws.String("should-not-be-recognized")},
+				},
+			}}},
+		}},
+	}
+
+	got, err := ListInstances(context.Background(), clients)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Project != "" {
+		t.Fatalf("got %+v, want Project = \"\" (capitalized \"Project\" is no longer recognized)", got)
 	}
 }
 

@@ -123,6 +123,82 @@ func TestEditBackupDirectoryRules_BlankPatternNotAdded(t *testing.T) {
 	}
 }
 
+func TestEditRDMPostgresRules_AddsARuleWithAllFields(t *testing.T) {
+	cfg := config.Config{}
+	_, input, buf := newPipeEditor("1\ncaltechauthors\ncaltechauthors-db-1\ncaltechauthors\ncaltechauthors\n3\n") // Add, pattern, container, db name, db user, Done
+
+	changed, err := editRDMPostgresRules(buf, &cfg, input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !changed {
+		t.Error("expected changed = true")
+	}
+	want := config.RDMPostgresRule{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1", DBName: "caltechauthors", DBUser: "caltechauthors"}
+	if len(cfg.RDMPostgresConfig) != 1 || cfg.RDMPostgresConfig[0] != want {
+		t.Errorf("RDMPostgresConfig = %+v, want [%+v]", cfg.RDMPostgresConfig, want)
+	}
+}
+
+func TestEditRDMPostgresRules_AddsARuleWithBlankOptionalFields(t *testing.T) {
+	cfg := config.Config{}
+	_, input, buf := newPipeEditor("1\ncaltechauthors\n\n\n\n3\n") // Add, pattern, blank container/db name/db user, Done
+
+	changed, err := editRDMPostgresRules(buf, &cfg, input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !changed {
+		t.Error("expected changed = true")
+	}
+	want := config.RDMPostgresRule{Pattern: "caltechauthors"}
+	if len(cfg.RDMPostgresConfig) != 1 || cfg.RDMPostgresConfig[0] != want {
+		t.Errorf("RDMPostgresConfig = %+v, want [%+v] (blank container/db fields allowed)", cfg.RDMPostgresConfig, want)
+	}
+}
+
+func TestEditRDMPostgresRules_RemovesARule(t *testing.T) {
+	cfg := config.Config{RDMPostgresConfig: []config.RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1"},
+		{Pattern: "caltechdata", ContainerName: "caltechdata-db-1"},
+	}}
+	_, input, buf := newPipeEditor("2\n1\n3\n") // Remove, pick first rule, Done
+
+	changed, err := editRDMPostgresRules(buf, &cfg, input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !changed {
+		t.Error("expected changed = true")
+	}
+	if len(cfg.RDMPostgresConfig) != 1 || cfg.RDMPostgresConfig[0].Pattern != "caltechdata" {
+		t.Errorf("RDMPostgresConfig = %+v, want only the caltechdata rule left", cfg.RDMPostgresConfig)
+	}
+}
+
+func TestEditRDMPostgresRules_BlankPatternNotAdded(t *testing.T) {
+	cfg := config.Config{}
+	_, input, buf := newPipeEditor("1\n\n3\n") // Add, blank pattern, Done
+
+	changed, err := editRDMPostgresRules(buf, &cfg, input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if changed {
+		t.Error("expected changed = false")
+	}
+	if len(cfg.RDMPostgresConfig) != 0 {
+		t.Errorf("RDMPostgresConfig = %+v, want empty", cfg.RDMPostgresConfig)
+	}
+}
+
+func TestRDMPostgresRuleLabel_BlankFieldsShowPlaceholders(t *testing.T) {
+	got := rdmPostgresRuleLabel(config.RDMPostgresRule{Pattern: "caltechauthors"})
+	if !strings.Contains(got, "caltechauthors") || !strings.Contains(got, "discover") {
+		t.Errorf("got %q, want it to mention the pattern and that the container is auto-discovered", got)
+	}
+}
+
 func TestEditOriginTag_UpdatesKeyAndValue(t *testing.T) {
 	cfg := config.Config{OriginTag: config.OriginTagConfig{Key: "Origin", DLDValue: ""}}
 	_, input, buf := newPipeEditor("Owner\nDLD\n")

@@ -13,6 +13,7 @@ func testConfigureActions(dirty *bool, refreshCalls *int) ConfigureActions {
 		ShowCurrentConfig:        noop,
 		EditRegions:              noop,
 		EditBackupDirectoryRules: noop,
+		EditRDMPostgresConfig:    noop,
 		EditOriginTag:            noop,
 		Save:                     noop,
 		Refresh:                  countingAction(refreshCalls),
@@ -38,6 +39,24 @@ func TestRunConfigureMenu_DispatchesToTheChosenAction(t *testing.T) {
 	}
 }
 
+func TestRunConfigureMenu_EditRDMPostgresConfigDispatchesToItsOwnAction(t *testing.T) {
+	var dirty bool
+	var refreshCalls, editCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testConfigureActions(&dirty, &refreshCalls)
+	actions.EditRDMPostgresConfig = cancelingAction(&editCalls, cancel)
+
+	err := runConfigureMenu(ctx, term, actions, newHuhAccessibleInput("4\n"), buf) // Edit RDM Postgres config
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if editCalls != 1 {
+		t.Errorf("editCalls = %d, want 1", editCalls)
+	}
+}
+
 func TestRunConfigureMenu_SaveDispatchesToItsOwnAction(t *testing.T) {
 	var dirty bool
 	var refreshCalls, saveCalls int
@@ -47,7 +66,7 @@ func TestRunConfigureMenu_SaveDispatchesToItsOwnAction(t *testing.T) {
 	actions := testConfigureActions(&dirty, &refreshCalls)
 	actions.Save = cancelingAction(&saveCalls, cancel)
 
-	err := runConfigureMenu(ctx, term, actions, newHuhAccessibleInput("5\n"), buf) // Save
+	err := runConfigureMenu(ctx, term, actions, newHuhAccessibleInput("6\n"), buf) // Save
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}

@@ -5352,6 +5352,815 @@ None.
 
 ---
 
+## Phase 20.48 — RDM Backup & Restore Domain: Wiring + Relocate Feature 11
+
+**Status: designed 2026-07-28, implemented and unit-tested 2026-07-29**
+(DESIGN.md, "RDM Backup & Restore Domain"). Pure UI wiring -- no new AWS
+calls, no new workflow logic. `go build`/`go vet`/`go test ./... -race`/
+`gofmt -l` all clean. Not yet real-AWS-verified (nothing here makes an
+AWS call beyond the already-verified `BackupArchiveAndTrim`, relocated
+unchanged).
+
+### Work Items
+
+- [x] `internal/workflow/domain_menu.go`: `DomainActions` gains a
+      seventh field, `RDMBackupRestore func(ctx context.Context) error`
+      (appended after `Configuration`); `domainItems` gains a seventh
+      entry, `{"RDM Backup & Restore", ...}`, appended after
+      `"Configuration"`
+- [x] `internal/workflow/menu.go`: remove the `BackupArchiveAndTrim`
+      field from `MenuActions` and its `"Archive stale backups to S3 and
+      trim disk space"` entry from Compute's own menu item list --
+      `mainMenuItems` shrinks from 25 to 24
+- [x] New `internal/workflow/rdm_menu.go`: `RDMBackupRestoreActions`
+      struct (`ArchiveSQL`, `ArchiveOpenSearch`, `RestoreSQL`,
+      `RestoreOpenSearch`, each `func(ctx context.Context) error`, plus
+      `Refresh`) + `rdmMenuItems` (four entries, in that order) +
+      `RunRDMBackupRestoreMenu`/`runRDMBackupRestoreMenu`/
+      `pickRDMBackupRestoreItem`, following `runTagMgmtMenu`'s
+      loop-until-'q' shape (per-iteration `Refresh` -- meaningful here,
+      unlike Configuration's no-op, since Archive OpenSearch/Restore
+      actions do make AWS calls; dispatch-error doesn't crash the loop;
+      pause-for-acknowledgment after a successful action)
+- [x] `cmd/clasm/main.go`: relocated the existing `BackupArchiveAndTrim`
+      action-closure construction (previously wired into `MenuActions`)
+      into a new `rdmActions := workflow.RDMBackupRestoreActions{...}`'s
+      `ArchiveSQL` field instead -- the closure body itself is unchanged,
+      only which struct field it's assigned to changed;
+      `ArchiveOpenSearch`/`RestoreSQL`/`RestoreOpenSearch` closures added
+      as stubs returning `workflow.NotYetImplemented(out, "<label>")`
+      until Phases 20.49-20.51 land; `Refresh: refresh` reuses the same
+      shared instance-listing refresh Compute already uses (no new AWS
+      calls, no new state struct); `domains := workflow.DomainActions{...}`
+      gains `RDMBackupRestore`, calling `refresh(ctx)` on entry (same
+      pattern as Compute/S3/Tag Management) before running the new menu
+- [x] DESIGN.md's Compute-domain menu ASCII box (`## User Experience
+      Flow`) updated to drop the backup-archive line and renumber "12)
+      Back to domain picker" down to "11)" -- already stale relative to
+      the current 6-domain picker in a few other ways (a pre-existing
+      gap, not this phase's to fully fix), left otherwise untouched
+
+### Tests
+
+- [x] `domain_menu_test.go`: `TestDomainItems_NoExitEntry`'s hardcoded
+      `6` -> `7`; new `TestRunDomainPicker_DispatchesToRDMBackupRestore`,
+      mirroring the existing `Configuration`/`IAM` dispatch tests
+- [x] `menu_test.go`: removed `BackupArchiveAndTrim` from
+      `testMenuActions`; `TestMainMenuItems_NoBackToDomainPickerEntry`'s
+      hardcoded `25` -> `24`
+- [x] New `rdm_menu_test.go`, mirroring `tagmgmt_menu_test.go`'s
+      dispatch-loop coverage: each of the four items dispatches to its
+      own action closure; `Refresh` runs once after a successful action;
+      a single action's error doesn't crash the loop;
+      pause-for-acknowledgment after both error and success; normal exit
+      only via ctx cancellation from a test-supplied action closure,
+      never by exhausting scripted input (per this project's own
+      accessible-mode-EOF gotcha, Phase 20.29); `TestRDMMenuItems_Order`
+      pins the four items' DESIGN.md-specified order
+
+### Files
+
+`internal/workflow/{domain_menu.go,domain_menu_test.go,menu.go,
+menu_test.go,rdm_menu.go,rdm_menu_test.go}` (last two new),
+`cmd/clasm/main.go`, `DESIGN.md`.
+
+### Dependency
+
+None.
+
+## Phase 20.49 — Archive OpenSearch Snapshot to S3
+
+**Status: designed 2026-07-28, not yet implemented** (DESIGN.md, "RDM
+Backup & Restore Domain" -> "Archive OpenSearch Snapshot to S3").
+Depends on Phase 20.48 for `RDMBackupRestoreActions.ArchiveOpenSearch`
+to have somewhere to plug into, but its own workflow logic is
+independently buildable/testable first if that's a better order.
+
+### Work Items
+
+- [ ] `internal/config/config.go`: new field
+      `OpenSearchBackupDirectories []BackupDirectoryRule` (same rule
+      type `backup_directories` already uses -- pattern/directory pairs
+      -- no new type needed); `config.BackupDirectoryFor` is already
+      generic over `[]BackupDirectoryRule`, so no new resolver function,
+      just a second slice to pass it
+- [ ] New `internal/workflow/opensearch_index_patterns.go`:
+      `rdmOpenSearchSnapshotIndexPatterns(prefix string) []string`,
+      building the confirmed allowlist (`<prefix>-rdmrecords-*`,
+      `-users-*`, `-communities-*`, `-requests*`, `-requestevents-*`,
+      `-names-*`, `-affiliations-*`, `-funders-*`, `-awards-*`,
+      `-subjects-*`, `-vocabularies-*`, `-groups-*`, `-domains-*`,
+      `-communitymembers-*`, `-stats-record-view-*`,
+      `-stats-file-download-*`, `-stats-bookmarks`,
+      `.ds-<prefix>-auditlog-audit-log-*`) from DESIGN.md's scope
+      decision. **Assumption to confirm before/during implementation**:
+      `prefix` is the picked instance's Name tag, matching what was
+      confirmed true for CaltechAUTHORS -- verify against CaltechDATA
+      too before relying on it generally, since a mismatch here would
+      silently snapshot zero indices (`ignore_unavailable: true` makes
+      a wrong pattern fail quietly, not loudly)
+- [ ] New `internal/workflow/opensearch_snapshot.go`: the OpenSearch
+      REST-over-SSM primitives, each a `buildXCommand` (pure, unit
+      testable without a real instance) paired with a `RunShellCommand`-driving
+      wrapper, mirroring `backup_delete.go`'s
+      `buildDeleteCommand`/`DeleteVerifiedFiles` split:
+      - `buildRegisterRepoCommand(repo, location string) string` --
+        `curl -fsS -X PUT localhost:9200/_snapshot/<repo> -H
+        'Content-Type: application/json' -d
+        '{"type":"fs","settings":{"location":"<location>"}}'`;
+        idempotent, safe to call every run
+      - `RegisterSnapshotRepo(ctx, client, instanceID, repo, location
+        string, timeout, pollInterval time.Duration) error`
+      - `buildCreateSnapshotCommand(repo, snapshotName string, indices
+        []string) string` -- `PUT
+        /_snapshot/<repo>/<snapshotName>` with `indices` (comma-joined),
+        `ignore_unavailable: true`, `include_global_state: false`, no
+        `wait_for_completion` (polled separately, next)
+      - `CreateSnapshot(ctx, client, instanceID, repo, snapshotName
+        string, indices []string, timeout, pollInterval) error`
+      - `buildSnapshotStateCommand(repo, snapshotName string) string`
+        -- `GET /_snapshot/<repo>/<snapshotName>` (cheaper than
+        `_status`; returns a `state` field directly: `IN_PROGRESS`/
+        `SUCCESS`/`PARTIAL`/`FAILED`)
+      - `parseSnapshotState(jsonBody []byte) (state string, err error)`
+        -- `encoding/json`, tolerant of the full response shape
+      - `PollSnapshotUntilComplete(ctx, client, instanceID, repo,
+        snapshotName string, timeout, pollInterval time.Duration)
+        (state string, err error)` -- an outer `context.WithTimeout`
+        loop (long: creating an ~8GB snapshot could take a while) that
+        calls `RunShellCommand` once per iteration with its own short
+        per-call timeout, sleeping `pollInterval` between checks --
+        two-tier timeout shape like `WaitForSSMOnline`, except each
+        "check" here is itself a full SSM round trip rather than a
+        direct API call, so `pollInterval` needs to be coarser (seconds,
+        not the sub-second cadence a direct API poll could use) --
+        proposed `DefaultSnapshotPollInterval = 30 * time.Second`,
+        `DefaultSnapshotCreateTimeout = 2 * time.Hour`. Returns an error
+        on `FAILED`/`PARTIAL`, not just on timeout
+      - `buildDeleteSnapshotCommand(repo, snapshotName string) string`
+        -- `DELETE /_snapshot/<repo>/<snapshotName>`
+      - `DeleteSnapshot(ctx, client, instanceID, repo, snapshotName
+        string, timeout, pollInterval time.Duration) error` -- the
+        OpenSearch-API-level delete DESIGN.md requires, never a raw
+        `rm` on the repo directory
+- [ ] New `internal/workflow/opensearch_sync.go`:
+      - `buildSyncCommand(localDir, bucket, prefix, snapshotName
+        string) string` -- `aws s3 sync --only-show-errors <localDir>
+        s3://<bucket>/<prefix>/opensearch-snapshots/<snapshotName>/` --
+        deliberately **no `--delete`**, and a new, snapshot-named
+        destination prefix every run (see DESIGN.md's corrected
+        "Archive OpenSearch Snapshot to S3" step 5 -- a shared,
+        `--delete`-synced prefix would make S3 mirror EBS's
+        single-snapshot state, defeating Restore's "pick a specific
+        dated backup")
+      - `SyncOpenSearchBackupsToS3(ctx, client awsclient.SSMAPI,
+        instanceID, localDir, bucket, prefix, snapshotName string,
+        timeout, pollInterval time.Duration) error` -- one
+        `RunShellCommand` call (unlike Feature 11's per-file
+        OK/FAIL script, `aws s3 sync` handles the whole directory as
+        one CLI invocation, closer to how `fstrim -av` is already a
+        single fire-and-forget command in `backup_archive.go`)
+      - `VerifySyncedSnapshot(ctx, client awsclient.S3API, bucket,
+        prefix, snapshotName string) (objectCount int, totalBytes
+        int64, err error)` -- lists the just-synced prefix via
+        `ListObjectsV2` (tool's own credentials) and confirms it's
+        non-empty. **Deliberately lighter than Feature 11's
+        per-file `HeadObject` reverification** -- `aws s3 sync`'s own
+        per-object PUT already carries S3's normal strong-consistency
+        guarantee, and re-verifying every individual segment file
+        (there could be many) the way Feature 11 does for a handful of
+        `.sql.gz` files would be prohibitively slow here. Flagged as a
+        real, deliberate difference from Feature 11's model, not an
+        oversight -- worth a second look during review
+- [ ] New `internal/workflow/opensearch_cleanup.go` -- the S3-side
+      cleanup primitives, app-managed rather than an S3 bucket lifecycle
+      policy (DESIGN.md, "Why app-managed cleanup, not an S3 bucket
+      lifecycle policy"):
+      - `SnapshotPrefixInfo{Name string, CreatedAt time.Time}`
+      - `parseSnapshotTimestamp(name string) (time.Time, error)` --
+        parses the `rdm-20060102-150405` name format `CreateSnapshot`'s
+        caller generates
+      - `ListArchivedSnapshotPrefixes(ctx, client awsclient.S3API,
+        bucket, instancePrefix string) ([]SnapshotPrefixInfo, error)`
+        -- `ListObjectsV2` with `Delimiter: "/"` under
+        `<instancePrefix>/opensearch-snapshots/`, one entry per
+        `CommonPrefixes` result, parsed via `parseSnapshotTimestamp`
+        (an unparseable prefix name is skipped, not fatal -- matches
+        `parseBackupFileList`'s own malformed-line tolerance)
+      - `FilterOlderThan(prefixes []SnapshotPrefixInfo, days int, now
+        time.Time) []SnapshotPrefixInfo` -- pure function, directly
+        analogous to `FilterByAge`
+      - `DeleteSnapshotPrefixes(ctx, client awsclient.S3API, bucket,
+        instancePrefix string, prefixes []SnapshotPrefixInfo) error` --
+        for each prefix: `ListObjectsV2` every object under it, then
+        `DeleteObjects` in batches of up to 1,000 keys (S3's own limit)
+        -- S3 has no atomic "delete a whole prefix" call
+      - `displayCleanupDryRun(w io.Writer, prefixes []SnapshotPrefixInfo)`
+        -- mirrors `displayBackupDryRun`'s shape
+- [ ] New `internal/workflow/opensearch_archive.go`:
+      `DefaultOpenSearchRepoName = "rdm_backup_repo"` constant;
+      `ArchiveOpenSearchSnapshot(ctx, w, ssmClients, s3Client,
+      newS3Client, instances, openSearchBackupDirRules
+      []config.BackupDirectoryRule, hist BackupHistory) error` (picks an
+      instance via `pickInstanceDefaulted`, reused as-is) delegating to
+      testable core `archiveOpenSearchSnapshot(ctx, w, ssmClients,
+      s3Client, newS3Client, inst, openSearchBackupDirRules, hist,
+      input, output) error`:
+      1. `resolveSSM` + `CheckAWSCLIAvailable` (both reused verbatim)
+      2. Prompt directory (reuses `ui.Prompt`/`ui.WithDefault`, default
+         from `hist`/`config.BackupDirectoryFor(openSearchBackupDirRules,
+         inst.Name)`, same shape as `backupArchiveAndTrim`'s own
+         directory prompt) -- default `/opt/rdm_opensearch_backups`
+      3. Prompt bucket (`promptBackupBucketFunc`, reused as-is -- it's
+         already generic over any bucket) + `BucketRegion` +
+         `newS3Client` + `CheckS3BucketAccess` (all reused verbatim)
+      4. Prompt the cleanup threshold in days (`ui.Prompt`, blank
+         allowed -- unlike `promptAgeDays`, which requires a positive
+         integer, this one accepts empty to mean "skip cleanup", so it's
+         a new, distinct prompt function, not a reuse of `promptAgeDays`)
+      5. **If a threshold was given**: `ListArchivedSnapshotPrefixes` +
+         `FilterOlderThan` against what's *already* in S3 (the snapshot
+         this run is about to create doesn't exist yet). If the result
+         is non-empty: `displayCleanupDryRun`, then
+         `ConfirmDestructive([]string{inst.InstanceID, inst.Name})`,
+         captured once into a local `toCleanup []SnapshotPrefixInfo` --
+         **fixed here, never re-listed later** (same
+         time-of-check/time-of-use avoidance as Feature 11's own delete
+         phase, DESIGN.md Feature 11). If no threshold, or no matching
+         candidates, `toCleanup` stays nil and no confirmation is shown
+         -- nothing destructive is on the table in that case
+      6. `RegisterSnapshotRepo` (idempotent)
+      7. `snapshotName := time.Now().UTC().Format("rdm-20060102-150405")`
+      8. `CreateSnapshot`, then `PollSnapshotUntilComplete`
+      9. `SyncOpenSearchBackupsToS3`, then `VerifySyncedSnapshot`
+      10. If verified: `DeleteSnapshot` (OpenSearch API, not `rm`) --
+          unconditional, every run, not gated by step 5's confirm (that
+          confirm only covers step 11's cleanup; this EBS-side delete is
+          the tool's ordinary behavior every time, same as before this
+          cleanup feature existed)
+      11. If `toCleanup` is non-empty: `DeleteSnapshotPrefixes` against
+          exactly that captured list -- runs *after* step 10, so the
+          fresh snapshot is always safely in S3 before any old one is
+          removed, even though both were confirmed together back in
+          step 5
+      12. Report snapshot name, object count, total bytes synced, and
+          (if cleanup ran) how many old snapshots were removed
+
+### Tests
+
+Test-first throughout, confirmed failing (undefined symbols) before each
+implementation exists, per [[feedback-test-before-fix]].
+
+- [ ] `rdmOpenSearchSnapshotIndexPatterns`: table-driven against a fixed
+      prefix, confirms every pattern in DESIGN.md's list is present and
+      correctly prefixed
+- [ ] `buildRegisterRepoCommand`/`buildCreateSnapshotCommand`/
+      `buildSnapshotStateCommand`/`buildDeleteSnapshotCommand`/
+      `buildSyncCommand`: each a pure string-building function, asserted
+      against fixed inputs
+- [ ] `parseSnapshotState`: `SUCCESS`/`IN_PROGRESS`/`FAILED`/`PARTIAL`
+      bodies, plus a malformed-JSON case
+- [ ] `PollSnapshotUntilComplete`: a `fakeSSMClient` sequenced to return
+      `IN_PROGRESS` then `SUCCESS` across successive calls; a
+      `FAILED`-terminal case returns an error, not a timeout; a
+      never-completing sequence times out with a clear error
+- [ ] `parseSnapshotTimestamp`: valid `rdm-20060102-150405` name parses
+      to the expected time; a malformed name errors
+- [ ] `ListArchivedSnapshotPrefixes`: `CommonPrefixes`-based listing;
+      one unparseable prefix name is skipped, not fatal, and doesn't
+      abort the rest of the listing
+- [ ] `FilterOlderThan`: table-driven, mirrors `FilterByAge`'s own test
+      shape (nothing-matches, everything-matches, boundary-exact-N-days)
+- [ ] `DeleteSnapshotPrefixes`: a fake S3 client with >1,000 objects
+      under one prefix confirms `DeleteObjects` is called in batches,
+      not one oversized request; a multi-prefix case confirms every
+      prefix's objects are removed
+- [ ] `archiveOpenSearchSnapshot`'s testable core, using the existing
+      shared `fakeSSMClient`/`fakeS3Client` pair (per
+      `backup_archive_test.go`'s own convention): happy path end to end
+      with no cleanup threshold given (no confirm shown, no cleanup
+      call made); happy path with a threshold but zero matching
+      candidates (still no confirm shown); happy path with a threshold
+      and real candidates (confirm shown once, `DeleteSnapshotPrefixes`
+      called with exactly the pre-captured list, called *after* the new
+      snapshot's own `DeleteSnapshot`, not before); type-to-confirm
+      mismatch on the cleanup prompt cancels the *entire* run before the
+      new snapshot is even created (matches DESIGN.md step 5's "once,
+      upfront" placement); bucket-inaccessible aborts before repo
+      registration (mirroring
+      `TestBackupArchiveAndTrim_AbortsWhenBucketInaccessible`); a
+      `FAILED` snapshot state aborts before sync/delete/cleanup; a sync
+      failure aborts before the EBS-side delete (the local snapshot must
+      survive an unverified sync)
+
+### Files
+
+`internal/config/config.go`, new
+`internal/workflow/{opensearch_index_patterns.go,
+opensearch_snapshot.go,opensearch_sync.go,opensearch_cleanup.go,
+opensearch_archive.go}` plus each one's `_test.go` counterpart.
+
+### Dependency
+
+Phase 20.48 for a menu entry point to call this from (not required to
+build/test the workflow itself, which takes its dependencies as plain
+parameters the same way `BackupArchiveAndTrim` does).
+
+## Phase 20.50 — Restore SQL Backup from S3
+
+**Status: designed 2026-07-28, load command and target-side container
+discovery resolved 2026-07-29, not yet implemented** (DESIGN.md, "RDM
+Backup & Restore Domain" -> "Restore SQL Backup from S3"). Load command
+confirmed against the real `invenio-sql-backup.bash`/
+`invenio-sql-restore.bash` (`~/WorkLab/caltechauthors`) -- plain-text
+`pg_dump --column-inserts` output (gzip'd, not `--format=custom`),
+restored via `DROP DATABASE IF EXISTS` -> `CREATE DATABASE` -> pipe into
+`psql`, all run inside the target's Postgres container via `docker exec`.
+The container itself is never assumed -- this phase now shares Phase
+20.52's live discover-and-reconcile helper (client-side Postgres-image
+matching over an unfiltered `docker ps`, reconciled with
+`rdm_postgres_config` -- not Docker's own `--filter ancestor=`, which
+real-AWS testing found doesn't match a tagged image, DECISIONS.md, "Real
+bug: `docker ps --filter ancestor=postgres` doesn't match a tagged
+image...") to resolve it on the *target* instance, since a restore
+target can be a completely
+different instance than whatever last touched that config. See
+DECISIONS.md, "SQL restore load command: grounded in the real
+invenio-sql-backup.bash/invenio-sql-restore.bash, not guessed," and
+"Restore SQL Backup also discovers-and-reconciles its own target, not
+just Run SQL Backup's source." No longer blocked, but now depends on
+Phase 20.52's shared helper existing (see Dependency, below).
+
+### Work Items
+
+- [ ] New `internal/workflow/restore_common.go` (shared with Phase
+      20.51, not duplicated): `S3Object{Key string, SizeBytes int64,
+      LastModified time.Time}`; `ListObjectsByPrefix(ctx, client
+      awsclient.S3API, bucket, prefix string) ([]S3Object, error)` --
+      paginated `ListObjectsV2` loop (`IsTruncated`/`ContinuationToken`),
+      sorted by `LastModified` descending (most recent first);
+      `pickS3Object(w, title, description string, objects []S3Object,
+      input, output io.Writer) (S3Object, error)` -- `pickComparable`
+      over the sorted list, most-recent naturally first but still fully
+      browsable/pickable, no separate "use latest?" confirm step needed
+      (mirrors Phase 20.21's `InitialCursor` precedent: sorted-to-front
+      is itself the default, not a second UI step)
+- [ ] New `internal/workflow/restore_sql.go`:
+      `RestoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client,
+      instances []inventory.Instance) error` (picks target instance via
+      `pickInstanceDefaulted`) delegating to testable core
+      `restoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client, inst,
+      input, output) error`:
+      1. `resolveSSM` + `CheckAWSCLIAvailable` (reused)
+      2. Prompt bucket (`promptBackupBucketFunc`, reused) + region/
+         access-check sequence (reused, same as Feature 11/Phase 20.49)
+      3. Prompt source-instance-name (`ui.Prompt`, default = target
+         `inst.Name` -- the common case is restoring an instance's own
+         most recent backup, but cross-instance restore, e.g. onto a
+         fresh clone, needs this editable)
+      4. `ListObjectsByPrefix(bucket, sourceName+"/")`, `pickS3Object`
+      5. `resolveRDMPostgresConfig(ctx, w, ssmClient, inst.InstanceID,
+         inst.Name, rdmPostgresRules) (containerName, dbName, dbUser
+         string, updatedRules []config.RDMPostgresRule, error)` (Phase
+         20.52's shared helper, reused not reimplemented) -- discovers
+         the target's live Postgres container via an unfiltered
+         `docker ps` plus client-side image matching, reconciles with
+         `rdm_postgres_config`, resolves `dbName`/`dbUser` (config
+         override else `inst.Name`).
+         If `updatedRules` differs from the rules passed in, persist via
+         `config.Save` and report the change, same as Run SQL Backup
+      6. `detectExistingSQLData(ctx, ssmClient, inst.InstanceID,
+         containerName, dbName, dbUser string) (bool, error)`: SSM-run
+         `docker exec <containerName> psql --username=<dbUser> --dbname
+         postgres -tAc "SELECT 1 FROM pg_database WHERE datname=
+         '<dbName>'"` -- true if the database already exists (any row
+         returned), matching `invenio-sql-restore.bash`'s own `DROP
+         DATABASE IF EXISTS` precondition
+      7. If existing data detected:
+         `ConfirmDestructive([]string{inst.InstanceID, inst.Name})`
+         (reused verbatim, same tier as Feature 9/IAM's Delete Role)
+      8. Download the chosen object to the target (SSM, `aws s3 cp`) --
+         new `buildDownloadCommand`/`DownloadBackupObject`, mirroring
+         `buildUploadCommand`/`UploadBackupFiles`'s shape but in the
+         opposite direction (single file, not a batch, so no per-file
+         progress ticker needed -- a single OK/FAIL is enough); then
+         `gunzip` it on the target
+      9. Load into the target's Postgres container (SSM), new
+         `buildRestoreSQLCommand(containerName, dbName, dbUser,
+         sqlFilePath string) []string` producing exactly the real
+         script's sequence wrapped in `docker exec`: `docker exec
+         <containerName> psql --username=<dbUser> --dbname postgres -c
+         "DROP DATABASE IF EXISTS <dbName>"`, then `docker exec
+         <containerName> psql --username=<dbUser> --dbname postgres -c
+         "CREATE DATABASE <dbName>"`, then `docker exec -i
+         <containerName> psql --username=<dbUser> <dbName> <
+         <sqlFilePath>` -- drop-and-recreate, not restore-in-place,
+         matching `invenio-sql-restore.bash` exactly
+      10. Post-restore sanity check: SSM-run `docker exec <containerName>
+          psql --username=<dbUser> <dbName> -tAc "SELECT count(*) FROM
+          information_schema.tables WHERE table_schema='public'"`,
+          surface the table count in the report rather than silently
+          declaring success on an empty database
+      11. Report summary
+
+### Tests
+
+- [ ] `ListObjectsByPrefix`: pagination (multiple pages via
+      `IsTruncated`), sort-by-`LastModified`-descending, empty-prefix
+      case
+- [ ] `pickS3Object`: most-recent is the first/default-selected entry,
+      still able to pick any other
+- [ ] `restoreSQLBackup`'s testable core: happy path with no existing
+      data (no confirm prompt shown); existing-data path requires
+      `ConfirmDestructive`, mismatch cancels before download; download
+      failure aborts before any load attempt; zero or multiple
+      `docker ps` results for the target aborts before any S3 activity,
+      same as Run SQL Backup's own discovery-failure test
+- [ ] `buildRestoreSQLCommand`: exact three-`docker exec`-wrapped-statement
+      sequence (DROP/CREATE/load), table-driven against a couple of
+      containerName/dbName/dbUser combinations
+- [ ] `detectExistingSQLData`: existing-db and no-db fixture responses
+
+### Files
+
+New `internal/workflow/{restore_common.go,restore_common_test.go,
+restore_sql.go,restore_sql_test.go}`.
+
+### Dependency
+
+Phase 20.48 (menu entry point) -- the load-command dependency that
+previously blocked Work Items 6/9/10 is resolved (see status note
+above). New dependency: Phase 20.52's `internal/workflow/
+rdm_postgres_config.go` (shared container discover-and-reconcile
+helper) -- if Phase 20.52 hasn't landed yet when this phase starts, that
+shared helper's own work items need to land first (or as part of this
+phase, since both need it equally).
+
+## Phase 20.51 — Restore OpenSearch Snapshot from S3
+
+**Status: designed 2026-07-28, restore-conflict decided 2026-07-29, not
+yet implemented** (DESIGN.md, "RDM Backup & Restore Domain" -> "Restore
+OpenSearch Snapshot from S3"). Depends on Phase 20.49's
+`opensearch_snapshot.go`/`opensearch_index_patterns.go` primitives
+directly (registration, polling, index patterns all reused, not
+reimplemented). See DECISIONS.md, "Restore OpenSearch: delete conflicting
+indices before `_restore`, don't close them."
+
+### Work Items
+
+- [ ] New `internal/workflow/restore_opensearch.go`:
+      `RestoreOpenSearchSnapshot(ctx, w, ssmClients, s3Client,
+      newS3Client, instances []inventory.Instance,
+      openSearchBackupDirRules []config.BackupDirectoryRule) error`
+      (picks target instance via `pickInstanceDefaulted`) delegating to
+      testable core `restoreOpenSearchSnapshot(ctx, w, ssmClients,
+      s3Client, newS3Client, inst, openSearchBackupDirRules, input,
+      output) error`:
+      1. `resolveSSM` + `CheckAWSCLIAvailable` (reused)
+      2. Prompt OpenSearch backup directory (reused pattern from Phase
+         20.49, `config.BackupDirectoryFor(openSearchBackupDirRules,
+         inst.Name)` as default)
+      3. Prompt bucket + region/access-check (reused)
+      4. Prompt source-instance-name (default = target `inst.Name`,
+         same rationale as SQL restore)
+      5. List the sub-prefixes under
+         `<bucket>/<sourceName>/opensearch-snapshots/` -- **new**:
+         `ListSnapshotPrefixes(ctx, client awsclient.S3API, bucket,
+         basePrefix string) ([]string, error)`, using `ListObjectsV2`
+         with `Delimiter: "/"` to get `CommonPrefixes` (one per archived
+         snapshot) rather than every individual object -- distinct from
+         `ListObjectsByPrefix` (Phase 20.50), which lists individual
+         objects, not prefixes
+      6. Pick one (defaulting to the most recent by name, since
+         snapshot names are `rdm-<timestamp>` and therefore already
+         lexically sortable)
+      7. Sync the chosen sub-prefix down to the target's local
+         directory (SSM, `aws s3 sync` from S3 to local this time --
+         opposite direction from Phase 20.49's `SyncOpenSearchBackupsToS3`
+         but the same command-building shape); `RegisterSnapshotRepo`
+         (reused from Phase 20.49) to confirm/create the `fs` repository
+         on the target
+      8. `detectExistingOpenSearchIndices(ctx, ssmClient, instanceID
+         string, indexPatterns []string) ([]string, error)` -- checks
+         which of the snapshot's own index names already exist on the
+         target (`GET _cat/indices/<pattern>`)
+      9. If any exist: `ConfirmDestructive([]string{inst.InstanceID,
+         inst.Name})` (reused), then **delete** them before restore --
+         new `buildDeleteIndicesCommand`/`DeleteConflictingIndices`
+         (`DELETE <index-name>` via the OpenSearch REST API, never a raw
+         filesystem operation on the repo/data directory), not
+         close-then-restore. See DECISIONS.md, "Restore OpenSearch:
+         delete conflicting indices before `_restore`, don't close
+         them."
+      10. `POST /_snapshot/<repo>/<name>/_restore`, scoped to the
+          snapshot's own index list -- new `buildRestoreCommand`/
+          `RestoreSnapshot`, mirroring `opensearch_snapshot.go`'s
+          command-building shape
+      11. Poll for restore completion -- reuses
+          `PollSnapshotUntilComplete`'s shape (a new sibling
+          `PollRestoreUntilComplete`, since the status endpoint/response
+          shape for an in-progress restore differs from snapshot
+          creation's)
+      12. **Post-restore sanity check**: compare per-index `docs.count`
+          between the snapshot's own metadata (available from the
+          `_snapshot/<repo>/<name>` response, which includes per-index
+          shard stats) and `GET _cat/indices` on the freshly-restored
+          indices; surface any mismatch rather than silently declaring
+          success -- `buildRestoreVerificationCommand`/
+          `VerifyRestoredIndices`
+      13. Report summary
+
+### Tests
+
+- [ ] `ListSnapshotPrefixes`: `CommonPrefixes`-based listing, most-recent
+      name sorts first
+- [ ] `buildRestoreCommand`/`PollRestoreUntilComplete`/
+      `VerifyRestoredIndices`: same pure-function/fake-client-sequence
+      pattern as Phase 20.49's `buildCreateSnapshotCommand`/
+      `PollSnapshotUntilComplete`
+- [ ] `buildDeleteIndicesCommand`/`DeleteConflictingIndices`: same
+      pure-function/fake-client-sequence pattern as the other
+      command-building helpers in this phase
+- [ ] `restoreOpenSearchSnapshot`'s testable core: happy path with no
+      existing conflicting indices (no confirm prompt); conflicting-index
+      path requires `ConfirmDestructive`, mismatch cancels before delete;
+      a doc-count mismatch after restore is reported, not swallowed
+
+### Files
+
+New `internal/workflow/{restore_opensearch.go,
+restore_opensearch_test.go}`.
+
+### Dependency
+
+Phase 20.48 (menu entry point); Phase 20.49's `opensearch_snapshot.go`
+primitives (repo registration, poll/parse helpers) and
+`opensearch_index_patterns.go`. The close-vs-delete decision noted in
+Work Item 9 is resolved (delete) -- no longer a blocker.
+
+## Phase 20.52 — Run SQL Backup + `rdm_postgres_config`
+
+**Status: designed 2026-07-29, implemented and unit-tested 2026-07-29,
+real-AWS-tested same day -- found and fixed four real bugs, then
+confirmed working end to end against CaltechAUTHORS production.** Builds
+the shared container discover-and-reconcile helper both this phase and
+Phase 20.50 depend on -- Phase 20.50 itself is not yet implemented, but
+its dependency now exists.
+
+**Four real bugs found via live testing against CaltechAUTHORS
+production (`i-0c4c81336aea33d27`), same day, immediately after this
+phase's initial implementation:**
+1. **`docker ps --filter ancestor=postgres` doesn't match a tagged
+   image** -- confirmed via the `--debug` log (`Status: Success`, empty
+   stdout, `ResponseCode: 0`) that the filter genuinely found zero
+   containers even though `caltechauthors-db-1` (`postgres:14.13`) was
+   running. Fixed: dropped the filter, list every container's image+name
+   (`docker ps --format '{{.Image}}\t{{.Names}}'`) and match the
+   Postgres image client-side (`isPostgresImage`). See DECISIONS.md,
+   "Real bug: `docker ps --filter ancestor=postgres` doesn't match a
+   tagged image...".
+2. **`pg_dump | gzip` masked `pg_dump`'s own exit status** -- a pipe's
+   status is its last command's, so a failed `pg_dump` (connecting to a
+   database that, per bug 3 below, didn't exist) still reported
+   `Success` with `gzip` compressing 20 bytes of nothing. Fixed by
+   matching `invenio-sql-backup.bash`'s real (non-piped) two-step
+   structure: `pg_dump` redirects to a plain `.sql` file, `gzip -f`
+   compresses it as a separate step, joined by `set -e`. See
+   DECISIONS.md, "Real bug: pg_dump | gzip masks pg_dump's own exit
+   status...".
+3. **`db_name`/`db_user` defaulted to the wrong tag** --
+   `i-0c4c81336aea33d27`'s Name tag is `newauthors` (legacy), not its
+   actual project shortname; a separate Project tag correctly reads
+   `caltechauthors`. `RDMPostgresConfigFor` widened to take a
+   `fallbackIdentifier` parameter separate from the `Pattern`-matching
+   `instanceName`; callers now pass `cmp.Or(inst.Project, inst.Name)`.
+   See DECISIONS.md, "Default db_name/db_user to the instance's Project
+   tag, not its Name tag."
+4. **Bug 3's own fix didn't work at first** -- re-testing (even after
+   removing the `rdm_postgres_config` override entirely, to rule out a
+   stale-config explanation) still resolved to `newauthors`. Root cause:
+   `inventory.tagValues` matches the `Project` tag key by exact string
+   equality, but this instance's real tag is spelled lowercase
+   `project`, so `inst.Project` was silently empty and the `cmp.Or`
+   fallback in bug 3's fix fell through to `Name` regardless. Checked
+   every instance across every local `--debug` log before changing
+   shared code: every real production/legacy instance uses lowercase
+   `project` (predates clasm), every clasm-created test instance uses
+   `Project` -- no instance uses both, so case-insensitive matching
+   (`strings.EqualFold`) was applied as a safe superset fix.
+
+**Real-AWS re-verification confirmed success**: the corrected pipeline
+produced a correctly-sized, correctly-named backup (`985MB` gzip'd,
+matching the pre-existing cron-produced backup for the same day
+byte-for-byte in scale). Follow-up, same day: after confirming with a
+colleague that the team's actual standard is lowercase `project` (not
+`Project`), the user retagged every clasm-tagged resource using
+capitalized `Project` to lowercase (found via a live
+`resourcegroupstaggingapi` query across every region, not just the
+historical `--debug`-log survey: one AMI, two launch templates, one EC2
+instance, all account-wide) and asked to remove the now-unneeded
+case-folding. `tagValues` reverted to exact-match on lowercase
+`"project"` -- simpler code, and a new test
+(`TestListInstances_DoesNotRecognizeCapitalizedProjectTag`) locks in the
+reversion. See DECISIONS.md, "Real bug: recognize the Project tag
+case-insensitively" and "Revert Project tag matching to exact-match
+lowercase 'project' -- the fleet is clean now."
+
+All four bugs fixed test-first (each reproduced via a new regression
+test confirmed failing against the pre-fix code), `go build`/`go vet`/
+`go test ./... -race`/`gofmt -l` all clean throughout and after every
+change, including the final reversion. Also same session: the RDM
+Backup & Restore domain moved before Configuration in the domain picker
+(user's explicit call, DECISIONS.md, "RDM Backup & Restore moved before
+Configuration in the domain picker").
+
+**Run SQL Backup is now real-AWS-verified end to end** against
+CaltechAUTHORS production. See
+DECISIONS.md, "Run SQL Backup: a new on-demand dump workflow, chaining
+into Archive SQL rather than replacing it," "RDM Postgres container/DB
+naming: discover via docker ps every run, reconcile with
+rdm_postgres_config," and "Restore SQL Backup also discovers-and-
+reconciles its own target, not just Run SQL Backup's source."
+
+### Work Items
+
+- [x] `internal/config/config.go`: `Config` gains `RDMPostgresConfig
+      []RDMPostgresRule` (`yaml:"rdm_postgres_config"`); new
+      `RDMPostgresRule{Pattern, ContainerName, DBName, DBUser string}`
+      (same shape as `BackupDirectoryRule`, three overridable fields
+      instead of one); new `RDMPostgresConfigFor(rules
+      []RDMPostgresRule, instanceName, fallbackIdentifier string)
+      (containerName, dbName, dbUser string)` -- first-match-wins via
+      `path.Match` against `instanceName` (same semantics as
+      `BackupDirectoryFor`); `dbName`/`dbUser` each independently fall
+      back to `fallbackIdentifier` -- deliberately a *separate* parameter
+      from `instanceName`, not reused, after a real incident confirmed an
+      instance's Name tag (the `Pattern`-matching key) can differ from
+      its actual RDM project shortname (a separate Project tag), see
+      DECISIONS.md, "Default db_name/db_user to the instance's Project
+      tag, not its Name tag" -- `containerName` has no fallback at all,
+      since it's never assumed, only discovered (see below). New
+      `UpsertRDMPostgresRule(rules []RDMPostgresRule,
+      pattern, containerName string) []RDMPostgresRule` -- updates the
+      existing rule for `pattern` if one exists (preserving its
+      `DBName`/`DBUser`), else appends a new one; returns the same slice
+      unchanged (by value equality) if `containerName` already matches,
+      so callers can cheaply tell whether a save is actually needed
+- [x] New `internal/workflow/rdm_postgres_config.go` (shared by this
+      phase and Phase 20.50, built once here): `discoverPostgresContainer
+      (ctx, ssmClient awsclient.SSMAPI, instanceID string, timeout,
+      pollInterval time.Duration) (string, error)` -- SSM-runs `docker ps
+      --format '{{.Image}}\t{{.Names}}'` (no `--filter`; real-AWS testing
+      2026-07-29 found Docker's own `--filter ancestor=postgres` doesn't
+      match a tagged image like `postgres:14.13`, DECISIONS.md, "Real
+      bug..."), splits the output into lines, matches the image column
+      via `isPostgresImage` (any tag/digest/registry-path), errors loudly
+      (naming the raw command in the error text, per DESIGN.md's
+      manual-fallback precedent) if zero or more than one match comes
+      back; `resolveRDMPostgresConfig
+      (ctx, w io.Writer, ssmClient awsclient.SSMAPI, instanceID,
+      instanceName, fallbackIdentifier string, rules
+      []config.RDMPostgresRule) (containerName, dbName, dbUser string,
+      updatedRules []config.RDMPostgresRule, error)` -- calls
+      `discoverPostgresContainer`, then `config.
+      UpsertRDMPostgresRule`, then `config.RDMPostgresConfigFor` for the
+      final `dbName`/`dbUser`; if `updatedRules` differs from `rules`,
+      prints what changed (new vs. updated vs. unchanged) via `w` --
+      persistence itself (`config.Save`) is the caller's job (both this
+      phase's `RunSQLBackup` and Phase 20.50's `restoreSQLBackup` own
+      their own `~/.clasm` path and existing config-loading pattern, same
+      as `RunConfigureMenu` already does), matching `BackupHistory.Save`'s
+      own "warn on failure, not fatal" spirit -- a config-write failure
+      here is a convenience lost, not a reason to abort the backup/restore
+      itself
+- [x] New `internal/workflow/run_sql_backup.go`: `RunSQLBackup(ctx, w,
+      ssmClients, instances []inventory.Instance, backupDirRules
+      []config.BackupDirectoryRule, rdmPostgresRules
+      []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules
+      func([]config.RDMPostgresRule) error, archiveSQL func(ctx
+      context.Context) error) error` (picks instance via
+      `pickInstanceDefaulted`, recalled via the same `hist.LastInstanceID`
+      Archive SQL uses) delegating to testable core `runSQLBackup(ctx, w,
+      ssmClient, inst, backupDirRules, rdmPostgresRules, hist,
+      saveRDMPostgresRules, archiveSQL, input, output) error`:
+      1. `resolveSSM` + `CheckAWSCLIAvailable` (reused)
+      2. Prompt backup directory -- identical prompt/recall/pattern-match
+         to `backupArchiveAndTrim`'s own (same `hist.LastDirectoryByInstance`
+         priority over `config.BackupDirectoryFor`), `hist.Save` on pick
+      3. `resolveRDMPostgresConfig` (this phase's own new helper), called
+         with `fallbackIdentifier = cmp.Or(inst.Project, inst.Name)` --
+         prefer the instance's Project tag over its Name tag for
+         defaulting `dbName`/`dbUser` (DECISIONS.md, "Default db_name/
+         db_user to the instance's Project tag, not its Name tag"); if
+         `updatedRules` differs, `saveRDMPostgresRules(updatedRules)`;
+         then print the resolved container/dbName/dbUser to the operator
+         before running the dump, so a wrong resolution is visible
+         immediately
+      4. New `buildSQLDumpCommand(containerName, dbName, dbUser,
+         directory, date string) string` producing `set -e; docker exec
+         <containerName> pg_dump --username=<dbUser> --column-inserts
+         <dbName> > <directory>/<containerName>-<dbName>-<date>.sql;
+         gzip -f <directory>/<containerName>-<dbName>-<date>.sql` --
+         matches `invenio-sql-backup.bash`'s own command *structure*
+         exactly (redirect-then-separately-gzip, not piped -- see
+         DECISIONS.md, "Real bug: pg_dump | gzip masks pg_dump's own
+         exit status..."), producing the identical final `...sql.gz`
+         filename convention either way; `RunShellCommand` (reused) to
+         execute it via SSM, a new `DefaultSQLDumpTimeout` (long-running,
+         mirrors `DefaultBackupUploadTimeout`'s 30-minute bound)
+      5. Report success/failure (surface the command's own exit
+         status/stderr on failure -- genuinely reliable now that the
+         command has no pipe left to mask `pg_dump`'s own exit status)
+      6. `Confirm` (not `ConfirmDestructive` -- not itself destructive):
+         "Continue to Archive SQL Backup to S3 now?"; on yes, call
+         `archiveSQL(ctx)` directly (the same closure `RDMBackupRestoreActions.
+         ArchiveSQL` already wraps `BackupArchiveAndTrim` in, passed
+         through rather than reimplemented)
+- [x] `internal/workflow/configure_edit.go`: new `rdmPostgresRuleLabel(r
+      config.RDMPostgresRule) string` (`"<pattern> -> <container_name>
+      (<db_name>/<db_user>)"`, blank `db_name`/`db_user` shown as
+      `displayOrNone`'s "(none)"/"(instance Name)" -- TBD exact wording
+      during implementation); `displayRDMPostgresRulesList`/
+      `rdmPostgresRulesEditDescription` (same wipe-avoidance pair as
+      `displayBackupDirectoryRulesList`/`backupDirectoryRulesEditDescription`);
+      new `editRDMPostgresRules(w, cfg *config.Config, input, output)
+      (bool, error)`, same bounded Add/Remove/Done loop shape as
+      `editBackupDirectoryRules` -- "Add a rule" prompts pattern, then
+      container name, db name, db user (each individually optional except
+      pattern, blank db name/user meaning "fall back to instance Name");
+      `displayConfig` gains a line for this new section
+- [x] `internal/workflow/configure_menu.go`: `ConfigureActions` gains
+      `EditRDMPostgresConfig func(ctx context.Context) error`;
+      `configureMenuItems` gains "Edit RDM Postgres config", inserted
+      after "Edit backup directory rules" and before "Edit Origin tag
+      config" (groups the two backup-related rule editors together);
+      `RunConfigureMenu` wires it the same way `EditBackupDirectoryRules`
+      is wired (`editRDMPostgresRules(w, &cfg, nil, nil)`, sets `dirty`
+      on change)
+
+### Tests
+
+- [x] `RDMPostgresConfigFor`: pattern match returns the rule's fields;
+      blank `DBName`/`DBUser` fall back to `fallbackIdentifier`; no match
+      falls back to `fallbackIdentifier` for both; `ContainerName` has no
+      fallback (returns "" on no match, since it's never assumed);
+      `fallbackIdentifier` is independent of `instanceName` -- a
+      dedicated regression test reproduces the real incident directly
+      (`instanceName="newauthors"`, `fallbackIdentifier="caltechauthors"`)
+- [x] `UpsertRDMPostgresRule`: updates an existing pattern's
+      `ContainerName` in place (preserving `DBName`/`DBUser`); appends a
+      new rule when the pattern doesn't exist yet; returns an equal slice
+      (no-op) when the container name hasn't changed
+- [x] `discoverPostgresContainer`: exactly one line succeeds; zero lines
+      errors; more than one line errors; the raw command appears in the
+      error text; matches a bare "postgres" image, a tagged one, and a
+      fully-qualified registry-path one; does not match an image that
+      merely contains "postgres" as a substring; a dedicated regression
+      test replays the exact real `docker ps` output from the
+      CaltechAUTHORS incident (all 7 containers) and confirms only the
+      Postgres one matches
+- [x] `resolveRDMPostgresConfig`: discovery-differs-from-config triggers
+      an update and a printed change message; discovery-matches-config
+      prints nothing and returns the same rules; `DBName`/`DBUser`
+      overrides in an existing rule are preserved through an update;
+      `fallbackIdentifier` (not `instanceName`) is what a fresh rule's
+      `dbName`/`dbUser` actually default to
+- [x] `buildSQLDumpCommand`: exact command shape, table-driven against a
+      couple of containerName/dbName/dbUser/directory combinations;
+      separately asserts no `|` appears anywhere in the built command and
+      that `set -e` does (regression test for the exit-status-masking
+      bug)
+- [x] `runSQLBackup`'s testable core: happy path with "yes" to the
+      Archive SQL prompt calls the passed-in `archiveSQL` closure exactly
+      once; "no" skips it; a discovery failure (zero or multiple
+      containers) aborts before any dump attempt; a dump command failure
+      is reported and does not offer the Archive SQL prompt; a dedicated
+      regression test (`Name="newauthors"`, `Project="caltechauthors"`)
+      confirms the dump command uses the Project tag, never the Name tag
+- [x] `editRDMPostgresRules`: add/remove a rule (same shape as
+      `editBackupDirectoryRules`'s own tests); a blank pattern re-prompts
+      without adding; container name/db name/db user can each be left
+      blank independently on add
+
+### Files
+
+`internal/config/{config.go,config_test.go}` (extended, not new);
+`internal/workflow/{configure_edit.go,configure_edit_test.go,
+configure_menu.go,configure_menu_test.go}` (extended, not new); new
+`internal/workflow/{rdm_postgres_config.go,rdm_postgres_config_test.go,
+run_sql_backup.go,run_sql_backup_test.go}`; `cmd/clasm/main.go` (wire
+`RunSQLBackup`, the `archiveSQL` closure hand-off, and
+`EditRDMPostgresConfig`).
+
+### Dependency
+
+Phase 20.48 (menu entry point; `rdmMenuItems` gains a fifth entry, "Run
+SQL Backup," placed first; `RDMBackupRestoreActions` gains a
+`RunSQLBackup` field). None of Phases 20.49-20.51 are required -- this
+phase is independently buildable once Phase 20.48 exists.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

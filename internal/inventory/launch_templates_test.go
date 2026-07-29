@@ -16,7 +16,7 @@ import (
 func sdkLaunchTemplate(id, name string, defaultVersion, latestVersion int64, project, environment string) types.LaunchTemplate {
 	var tags []types.Tag
 	if project != "" {
-		tags = append(tags, types.Tag{Key: aws.String("Project"), Value: aws.String(project)})
+		tags = append(tags, types.Tag{Key: aws.String("project"), Value: aws.String(project)})
 	}
 	if environment != "" {
 		tags = append(tags, types.Tag{Key: aws.String("Environment"), Value: aws.String(environment)})
@@ -52,9 +52,9 @@ func TestListLaunchTemplates_AggregatesAcrossRegions(t *testing.T) {
 
 	want := []LaunchTemplate{
 		{TemplateID: "lt-1", Name: "rdm-app", DefaultVersion: 2, LatestVersion: 3, Region: "us-east-1", Project: "caltechauthors", Environment: "production",
-			Tags: map[string]string{"Project": "caltechauthors", "Environment": "production"}},
+			Tags: map[string]string{"project": "caltechauthors", "Environment": "production"}},
 		{TemplateID: "lt-2", Name: "rdm-worker", DefaultVersion: 1, LatestVersion: 1, Region: "us-west-2", Project: "caltechdata", Environment: "development",
-			Tags: map[string]string{"Project": "caltechdata", "Environment": "development"}},
+			Tags: map[string]string{"project": "caltechdata", "Environment": "development"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d templates, want %d: %+v", len(got), len(want), got)
@@ -131,7 +131,7 @@ func sdkLaunchTemplateVersion(templateID string, versionNumber int64, isDefault 
 			},
 			TagSpecifications: []types.LaunchTemplateTagSpecification{
 				{ResourceType: types.ResourceTypeInstance, Tags: []types.Tag{
-					{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+					{Key: aws.String("project"), Value: aws.String("caltechauthors")},
 					{Key: aws.String("Environment"), Value: aws.String("production")},
 				}},
 			},

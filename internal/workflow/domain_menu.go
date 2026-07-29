@@ -266,8 +266,20 @@ type DomainActions struct {
 	// with its Origin tag and DLD-ownership, distinct from Tag
 	// Management's own cross-resource tag-editing entry point.
 	IAM func(ctx context.Context) error
-	// Configuration is the sixth domain (DESIGN.md, "Configure clasm
-	// Domain"): view/edit clasm's own ~/.clasm settings (regions, backup
+	// RDMBackupRestore (DESIGN.md, "RDM Backup & Restore Domain"; added
+	// after IAM chronologically, hence "seventh Domain Picker entry" in
+	// DESIGN.md's own dated addendum -- but ordered here, in the picker,
+	// right after IAM and before Configuration, since it's an operational
+	// domain used routinely, not clasm's own settings): archive/restore
+	// SQL and OpenSearch backups to/from S3, consolidating Archive SQL
+	// Backup to S3 (Feature 11, relocated out of Compute) alongside the
+	// OpenSearch archive and both restore workflows. Restore is a
+	// meaningfully more dangerous class of operation than Compute's
+	// routine EC2 lifecycle actions, so it doesn't belong buried in that
+	// menu.
+	RDMBackupRestore func(ctx context.Context) error
+	// Configuration (DESIGN.md, "Configure clasm Domain") is last in the
+	// picker -- view/edit clasm's own ~/.clasm settings (regions, backup
 	// directory rules, Origin tag config) from within clasm instead of
 	// hand-editing YAML.
 	Configuration func(ctx context.Context) error
@@ -293,6 +305,7 @@ var domainItems = []domainItem{
 	{"S3 (Buckets & Static Websites)", func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
 	{"Tag Management", func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
 	{"IAM", func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
+	{"RDM Backup & Restore", func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
 	{"Configuration", func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }
 

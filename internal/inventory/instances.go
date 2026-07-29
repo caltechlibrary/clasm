@@ -122,12 +122,25 @@ func instanceFromSDK(inst types.Instance, region string) Instance {
 	}
 }
 
+// tagValues extracts the Name/Project/Environment convention's values,
+// all matched by exact tag key. Project is lowercase "project" -- the
+// team's own standardized convention, confirmed 2026-07-29 after a live
+// incident (Run SQL Backup silently defaulting to the wrong database)
+// surfaced that this account's fleet was inconsistent: real
+// production/legacy instances used lowercase "project" (predating
+// clasm), while instances clasm itself created used "Project". Matching
+// case-insensitively was a temporary accommodation while that was sorted
+// out; once every clasm-tagged resource was retagged to lowercase
+// "project" (the team's actual standard), the fleet became consistent
+// again and exact-match is sufficient -- see DECISIONS.md, "Revert
+// Project tag matching to exact-match lowercase 'project' -- the fleet
+// is clean now."
 func tagValues(tags []types.Tag) (name, project, environment string) {
 	for _, tag := range tags {
 		switch aws.ToString(tag.Key) {
 		case "Name":
 			name = aws.ToString(tag.Value)
-		case "Project":
+		case "project":
 			project = aws.ToString(tag.Value)
 		case "Environment":
 			environment = aws.ToString(tag.Value)

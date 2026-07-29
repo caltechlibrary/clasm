@@ -26,7 +26,7 @@ func TestShowAMIDetail_DisplaysCuratedFields(t *testing.T) {
 			{DeviceName: aws.String("/dev/sdb"), Ebs: &types.EbsBlockDevice{VolumeSize: aws.Int32(100), SnapshotId: aws.String("snap-data")}},
 		},
 		describeImagesTags: []types.Tag{
-			{Key: aws.String("Project"), Value: aws.String("granian")},
+			{Key: aws.String("project"), Value: aws.String("granian")},
 			{Key: aws.String("Environment"), Value: aws.String("test")},
 		},
 	}

@@ -30,7 +30,7 @@ func sdkInstanceDetailed(id string) types.Instance {
 		PrivateIpAddress: aws.String("10.0.0.4"),
 		Tags: []types.Tag{
 			{Key: aws.String("Name"), Value: aws.String("test-instance")},
-			{Key: aws.String("Project"), Value: aws.String("granian")},
+			{Key: aws.String("project"), Value: aws.String("granian")},
 			{Key: aws.String("Environment"), Value: aws.String("test")},
 			{Key: aws.String("Owner"), Value: aws.String("rsdoiel")},
 		},
@@ -63,7 +63,7 @@ func TestDescribeInstanceDetail_Found(t *testing.T) {
 		Environment:        "test",
 		Tags: map[string]string{
 			"Name":        "test-instance",
-			"Project":     "granian",
+			"project":     "granian",
 			"Environment": "test",
 			"Owner":       "rsdoiel",
 		},

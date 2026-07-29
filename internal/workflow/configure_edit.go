@@ -17,6 +17,7 @@ func displayConfig(w io.Writer, cfg config.Config) {
 	fmt.Fprintln(w, "\nCurrent configuration:")
 	displayRegionsList(w, cfg.Regions)
 	displayBackupDirectoryRulesList(w, cfg.BackupDirectories)
+	displayRDMPostgresRulesList(w, cfg.RDMPostgresConfig)
 	fmt.Fprintf(w, "Origin tag key:             %s\n", cfg.OriginTag.Key)
 	fmt.Fprintf(w, "Origin tag DLD-owned value: %s\n", displayOrNone(cfg.OriginTag.DLDValue))
 }
@@ -181,6 +182,126 @@ func editBackupDirectoryRules(w io.Writer, cfg *config.Config, input io.Reader, 
 			}
 			if idx := slices.Index(labels, label); idx >= 0 {
 				cfg.BackupDirectories = slices.Delete(cfg.BackupDirectories, idx, idx+1)
+				changed = true
+			}
+		case "Done":
+			return changed, nil
+		}
+	}
+}
+
+// rdmPostgresRuleLabel formats one RDMPostgresRule for display -- blank
+// ContainerName/DBName/DBUser get an explanatory placeholder rather than
+// an empty string, since blank means something specific for each field
+// (DESIGN.md, "New Configuration: rdm_postgres_config"): ContainerName
+// is never assumed, only discovered, so blank means "not yet discovered,
+// or discover fresh next run"; DBName/DBUser blank means "fall back to
+// the instance's own Name tag."
+func rdmPostgresRuleLabel(r config.RDMPostgresRule) string {
+	container := r.ContainerName
+	if container == "" {
+		container = "(discover automatically via docker ps)"
+	}
+	dbName := r.DBName
+	if dbName == "" {
+		dbName = "(instance Name)"
+	}
+	dbUser := r.DBUser
+	if dbUser == "" {
+		dbUser = "(instance Name)"
+	}
+	return fmt.Sprintf("%s -> %s (%s/%s)", r.Pattern, container, dbName, dbUser)
+}
+
+func displayRDMPostgresRulesList(w io.Writer, rules []config.RDMPostgresRule) {
+	if len(rules) == 0 {
+		fmt.Fprintln(w, "No RDM Postgres config rules configured.")
+		return
+	}
+	fmt.Fprintln(w, "RDM Postgres config (first match wins):")
+	for _, r := range rules {
+		fmt.Fprintf(w, "  %s\n", rdmPostgresRuleLabel(r))
+	}
+}
+
+// rdmPostgresRulesEditDescription formats the current rules for the
+// "Edit RDM Postgres config" Select's own Description -- same
+// wipe-avoidance rationale as backupDirectoryRulesEditDescription above.
+func rdmPostgresRulesEditDescription(rules []config.RDMPostgresRule) string {
+	if len(rules) == 0 {
+		return "No RDM Postgres config rules configured yet."
+	}
+	var b strings.Builder
+	b.WriteString("Current rules (first match wins):")
+	for _, r := range rules {
+		fmt.Fprintf(&b, "\n  %s", rdmPostgresRuleLabel(r))
+	}
+	return b.String()
+}
+
+// editRDMPostgresChoices is the Edit RDM Postgres config sub-menu, same
+// bounded-loop shape as editBackupDirChoices.
+var editRDMPostgresChoices = []string{"Add a rule", "Remove a rule", "Done"}
+
+// editRDMPostgresRules lets the operator add/remove entries in
+// cfg.RDMPostgresConfig in place, appending new rules to the end
+// (first-match-wins order, per config.RDMPostgresConfigFor).
+// ContainerName/DBName/DBUser are each independently optional -- only
+// Pattern is required to add a rule.
+func editRDMPostgresRules(w io.Writer, cfg *config.Config, input io.Reader, output io.Writer) (bool, error) {
+	changed := false
+	for {
+		displayRDMPostgresRulesList(w, cfg.RDMPostgresConfig)
+		action, err := pickString(w, "Edit RDM Postgres config", rdmPostgresRulesEditDescription(cfg.RDMPostgresConfig), hintGoBack, editRDMPostgresChoices, input, output)
+		if err != nil {
+			return changed, cancelledIsNil(w, err)
+		}
+
+		switch action {
+		case "Add a rule":
+			pattern, err := ui.Prompt(`Glob pattern (matched against an instance's Name tag, e.g. "caltechauthors")`, ui.WithIO(input, output))
+			if err != nil {
+				return changed, cancelledIsNil(w, err)
+			}
+			pattern = strings.TrimSpace(pattern)
+			if pattern == "" {
+				fmt.Fprintln(w, "No pattern entered.")
+				continue
+			}
+			containerName, err := ui.Prompt("Container name (blank = discover automatically via docker ps)", ui.WithIO(input, output))
+			if err != nil {
+				return changed, cancelledIsNil(w, err)
+			}
+			dbName, err := ui.Prompt("Database name (blank = use the instance's own Name tag)", ui.WithIO(input, output))
+			if err != nil {
+				return changed, cancelledIsNil(w, err)
+			}
+			dbUser, err := ui.Prompt("Database user (blank = use the instance's own Name tag)", ui.WithIO(input, output))
+			if err != nil {
+				return changed, cancelledIsNil(w, err)
+			}
+			cfg.RDMPostgresConfig = append(cfg.RDMPostgresConfig, config.RDMPostgresRule{
+				Pattern:       pattern,
+				ContainerName: strings.TrimSpace(containerName),
+				DBName:        strings.TrimSpace(dbName),
+				DBUser:        strings.TrimSpace(dbUser),
+			})
+			changed = true
+		case "Remove a rule":
+			if len(cfg.RDMPostgresConfig) == 0 {
+				fmt.Fprintln(w, "No rules to remove.")
+				continue
+			}
+			labels := make([]string, len(cfg.RDMPostgresConfig))
+			for i, r := range cfg.RDMPostgresConfig {
+				labels[i] = rdmPostgresRuleLabel(r)
+			}
+			label, err := pickString(w, "Remove which rule?", "", hintGoBack, labels, input, output)
+			if err != nil {
+				return changed, cancelledIsNil(w, err)
+			}
+			if idx := slices.Index(labels, label); idx >= 0 {
+				cfg.RDMPostgresConfig = slices.Delete(cfg.RDMPostgresConfig, idx, idx+1)
 				changed = true
 			}
 		case "Done":

@@ -38,7 +38,6 @@ func testMenuActions(refreshCalls *int) MenuActions {
 		CreateAMIFromInstance:             noop,
 		RemoveAMI:                         noop,
 		ShowCloudInit:                     noop,
-		BackupArchiveAndTrim:              noop,
 		ShowLaunchTemplate:                noop,
 		CreateLaunchTemplateFromCloudInit: noop,
 		CreateInstanceFromLaunchTemplate:  noop,
@@ -294,8 +293,8 @@ func TestRunMainMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestMainMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(mainMenuItems) != 25 {
-		t.Fatalf("len(mainMenuItems) = %d, want 25 (no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
+	if len(mainMenuItems) != 24 {
+		t.Fatalf("len(mainMenuItems) = %d, want 24 (Archive stale backups relocated to the RDM Backup & Restore domain, Phase 20.48; no more \"Back to domain picker\" -- 'q' is the only way back now)", len(mainMenuItems))
 	}
 	for _, item := range mainMenuItems {
 		if item.action == nil {

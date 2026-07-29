@@ -29,7 +29,7 @@ func sdkImageDetailed(id string) types.Image {
 			},
 		},
 		Tags: []types.Tag{
-			{Key: aws.String("Project"), Value: aws.String("granian")},
+			{Key: aws.String("project"), Value: aws.String("granian")},
 			{Key: aws.String("Environment"), Value: aws.String("test")},
 			{Key: aws.String("Owner"), Value: aws.String("rsdoiel")},
 		},
@@ -59,7 +59,7 @@ func TestDescribeImageDetail_Found(t *testing.T) {
 		Project:     "granian",
 		Environment: "test",
 		Tags: map[string]string{
-			"Project":     "granian",
+			"project":     "granian",
 			"Environment": "test",
 			"Owner":       "rsdoiel",
 		},

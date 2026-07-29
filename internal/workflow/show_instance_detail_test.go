@@ -27,7 +27,7 @@ func TestShowInstanceDetail_DisplaysCuratedFieldsAndVolumes(t *testing.T) {
 		publicIP:                    "1.2.3.4",
 		instanceTags: []types.Tag{
 			{Key: aws.String("Name"), Value: aws.String("web-1")},
-			{Key: aws.String("Project"), Value: aws.String("caltechauthors")},
+			{Key: aws.String("project"), Value: aws.String("caltechauthors")},
 			{Key: aws.String("Environment"), Value: aws.String("production")},
 		},
 		describeVolumesOutput: []types.Volume{

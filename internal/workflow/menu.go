@@ -36,7 +36,6 @@ type MenuActions struct {
 	CreateAMIFromInstance             func(ctx context.Context) error
 	RemoveAMI                         func(ctx context.Context) error
 	ShowCloudInit                     func(ctx context.Context) error
-	BackupArchiveAndTrim              func(ctx context.Context) error
 	// Launch-template actions (DESIGN.md, "Launch Templates").
 	ShowLaunchTemplate                func(ctx context.Context) error
 	CreateLaunchTemplateFromCloudInit func(ctx context.Context) error
@@ -134,8 +133,6 @@ var mainMenuItems = []menuItem{
 	{"Promote a launch template version to default", func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
 	{"Delete launch template version(s)", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
 	{"Delete a launch template", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},
-	// Maintenance
-	{"Archive stale backups to S3 and trim disk space", func(a MenuActions, ctx context.Context) error { return a.BackupArchiveAndTrim(ctx) }},
 }
 
 // pickMainMenuItem runs the Compute main menu's huh.Select and returns
@@ -154,7 +151,7 @@ func pickMainMenuItem(w io.Writer, input io.Reader, output io.Writer) (menuItem,
 	var idx int
 	field := huh.NewSelect[int]().
 		Title("Choose an option").
-		Description("Manage EC2 instances, AMIs, and launch templates, or archive stale backups to S3.").
+		Description("Manage EC2 instances, AMIs, and launch templates.").
 		Options(opts...).
 		Value(&idx)
 

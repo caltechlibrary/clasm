@@ -239,6 +239,121 @@ func TestSave_UnwritablePathErrors(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesRDMPostgresConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "awsops-config")
+	content := "rdm_postgres_config:\n" +
+		"  - pattern: \"caltechauthors\"\n" +
+		"    container_name: \"caltechauthors-db-1\"\n" +
+		"    db_name: \"caltechauthors\"\n" +
+		"    db_user: \"caltechauthors\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1", DBName: "caltechauthors", DBUser: "caltechauthors"},
+	}
+	if len(cfg.RDMPostgresConfig) != len(want) || cfg.RDMPostgresConfig[0] != want[0] {
+		t.Errorf("RDMPostgresConfig = %v, want %v", cfg.RDMPostgresConfig, want)
+	}
+}
+
+func TestRDMPostgresConfigFor_MatchesGlobPattern(t *testing.T) {
+	rules := []RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1", DBName: "caltechauthors", DBUser: "caltechauthors"},
+	}
+	containerName, dbName, dbUser := RDMPostgresConfigFor(rules, "caltechauthors", "caltechauthors")
+	if containerName != "caltechauthors-db-1" || dbName != "caltechauthors" || dbUser != "caltechauthors" {
+		t.Errorf("got (%q, %q, %q), want (%q, %q, %q)", containerName, dbName, dbUser, "caltechauthors-db-1", "caltechauthors", "caltechauthors")
+	}
+}
+
+func TestRDMPostgresConfigFor_BlankDBFieldsFallBackToFallbackIdentifier(t *testing.T) {
+	rules := []RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1"},
+	}
+	containerName, dbName, dbUser := RDMPostgresConfigFor(rules, "caltechauthors", "caltechauthors")
+	if containerName != "caltechauthors-db-1" {
+		t.Errorf("containerName = %q, want %q", containerName, "caltechauthors-db-1")
+	}
+	if dbName != "caltechauthors" || dbUser != "caltechauthors" {
+		t.Errorf("dbName/dbUser = %q/%q, want both to fall back to the fallback identifier %q", dbName, dbUser, "caltechauthors")
+	}
+}
+
+// TestRDMPostgresConfigFor_FallbackIdentifierIsIndependentOfMatchName
+// reproduces the real 2026-07-29 CaltechAUTHORS incident directly:
+// instanceName (used for Pattern matching, e.g. an EC2 Name tag) can
+// differ from the identifier that should actually back-fill dbName/
+// dbUser (e.g. a Project tag) -- caltechauthors-db-1's own EC2 Name tag
+// is literally "newauthors", while its Project tag is "caltechauthors".
+func TestRDMPostgresConfigFor_FallbackIdentifierIsIndependentOfMatchName(t *testing.T) {
+	containerName, dbName, dbUser := RDMPostgresConfigFor(nil, "newauthors", "caltechauthors")
+	if containerName != "" {
+		t.Errorf("containerName = %q, want empty (no rule at all)", containerName)
+	}
+	if dbName != "caltechauthors" || dbUser != "caltechauthors" {
+		t.Errorf("dbName/dbUser = %q/%q, want both to use the fallback identifier %q, not the match name %q", dbName, dbUser, "caltechauthors", "newauthors")
+	}
+}
+
+func TestRDMPostgresConfigFor_NoMatchFallsBackForDBFieldsOnlyNotContainer(t *testing.T) {
+	rules := []RDMPostgresRule{
+		{Pattern: "caltechdata", ContainerName: "caltechdata-db-1"},
+	}
+	containerName, dbName, dbUser := RDMPostgresConfigFor(rules, "caltechauthors", "caltechauthors")
+	if containerName != "" {
+		t.Errorf("containerName = %q, want empty -- container name is never assumed, only discovered", containerName)
+	}
+	if dbName != "caltechauthors" || dbUser != "caltechauthors" {
+		t.Errorf("dbName/dbUser = %q/%q, want both to fall back to instanceName %q on no match", dbName, dbUser, "caltechauthors")
+	}
+}
+
+func TestUpsertRDMPostgresRule_UpdatesExistingPatternPreservingDBFields(t *testing.T) {
+	rules := []RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors_db_1", DBName: "custom_db", DBUser: "custom_user"},
+	}
+	got := UpsertRDMPostgresRule(rules, "caltechauthors", "caltechauthors-db-1")
+	want := []RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1", DBName: "custom_db", DBUser: "custom_user"},
+	}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestUpsertRDMPostgresRule_AppendsNewRuleWhenPatternDoesNotExist(t *testing.T) {
+	rules := []RDMPostgresRule{
+		{Pattern: "caltechdata", ContainerName: "caltechdata-db-1"},
+	}
+	got := UpsertRDMPostgresRule(rules, "caltechauthors", "caltechauthors-db-1")
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0] != rules[0] {
+		t.Errorf("existing rule was modified: got[0] = %v, want unchanged %v", got[0], rules[0])
+	}
+	want := RDMPostgresRule{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1"}
+	if got[1] != want {
+		t.Errorf("got[1] = %v, want %v", got[1], want)
+	}
+}
+
+func TestUpsertRDMPostgresRule_NoChangeReturnsEquivalentSlice(t *testing.T) {
+	rules := []RDMPostgresRule{
+		{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1", DBName: "caltechauthors", DBUser: "caltechauthors"},
+	}
+	got := UpsertRDMPostgresRule(rules, "caltechauthors", "caltechauthors-db-1")
+	if len(got) != 1 || got[0] != rules[0] {
+		t.Errorf("got %v, want unchanged %v", got, rules)
+	}
+}
+
 func TestDefaultPath_ReturnsHomeDirClasm(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

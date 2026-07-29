@@ -20,7 +20,12 @@ type ConfigureActions struct {
 	ShowCurrentConfig        func(ctx context.Context) error
 	EditRegions              func(ctx context.Context) error
 	EditBackupDirectoryRules func(ctx context.Context) error
-	EditOriginTag            func(ctx context.Context) error
+	// EditRDMPostgresConfig edits rdm_postgres_config (DESIGN.md, "New
+	// Configuration: rdm_postgres_config") -- grouped with
+	// EditBackupDirectoryRules since both are backup-related rule
+	// editors, ahead of the more general Origin tag config.
+	EditRDMPostgresConfig func(ctx context.Context) error
+	EditOriginTag         func(ctx context.Context) error
 	// Save persists the working copy to disk (config.Save) and clears the
 	// unsaved-changes flag on success.
 	Save func(ctx context.Context) error
@@ -52,6 +57,7 @@ var configureMenuItems = []configureItem{
 	{"Show current config", func(a ConfigureActions, ctx context.Context) error { return a.ShowCurrentConfig(ctx) }},
 	{"Edit regions", func(a ConfigureActions, ctx context.Context) error { return a.EditRegions(ctx) }},
 	{"Edit backup directory rules", func(a ConfigureActions, ctx context.Context) error { return a.EditBackupDirectoryRules(ctx) }},
+	{"Edit RDM Postgres config", func(a ConfigureActions, ctx context.Context) error { return a.EditRDMPostgresConfig(ctx) }},
 	{"Edit Origin tag config", func(a ConfigureActions, ctx context.Context) error { return a.EditOriginTag(ctx) }},
 	{"Save", func(a ConfigureActions, ctx context.Context) error { return a.Save(ctx) }},
 }
@@ -106,6 +112,13 @@ func RunConfigureMenu(ctx context.Context, w io.Writer, configPath string) error
 		},
 		EditBackupDirectoryRules: func(ctx context.Context) error {
 			changed, err := editBackupDirectoryRules(w, &cfg, nil, nil)
+			if changed {
+				dirty = true
+			}
+			return err
+		},
+		EditRDMPostgresConfig: func(ctx context.Context) error {
+			changed, err := editRDMPostgresRules(w, &cfg, nil, nil)
 			if changed {
 				dirty = true
 			}

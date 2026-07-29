@@ -343,13 +343,6 @@ func main() {
 		ShowCloudInit: func(ctx context.Context) error {
 			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images)
 		},
-		BackupArchiveAndTrim: func(ctx context.Context) error {
-			return workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories, workflow.BackupHistory{
-				LastInstanceID:          appState.BackupArchive.LastInstanceID,
-				LastDirectoryByInstance: appState.BackupArchive.LastDirectoryByInstance,
-				Save:                    saveBackupHistory,
-			})
-		},
 		ShowLaunchTemplate: func(ctx context.Context) error {
 			return workflow.ShowLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
 		},
@@ -460,6 +453,57 @@ func main() {
 		},
 	}
 
+	// backupHistory is shared by RunSQLBackup and ArchiveSQL below -- both
+	// recall/persist the same instance/directory choices (DESIGN.md, "Run
+	// SQL Backup": "picking here pre-positions Archive SQL's own
+	// instance/directory defaults too, since both write through the same
+	// hist.Save callback").
+	backupHistory := workflow.BackupHistory{
+		LastInstanceID:          appState.BackupArchive.LastInstanceID,
+		LastDirectoryByInstance: appState.BackupArchive.LastDirectoryByInstance,
+		Save:                    saveBackupHistory,
+	}
+	// saveRDMPostgresRules persists rdm_postgres_config to ~/.clasm
+	// immediately -- best-effort, warn-on-failure, matching
+	// saveBackupHistory's own "convenience lost, not fatal" spirit
+	// (DECISIONS.md, "RDM Postgres container/DB naming..."). Updates the
+	// same cfg used elsewhere in main (BackupDirectories, Regions, ...),
+	// independent of the Configure clasm domain's own separately-loaded,
+	// explicit-Save working copy.
+	saveRDMPostgresRules := func(rules []config.RDMPostgresRule) error {
+		cfg.RDMPostgresConfig = rules
+		return config.Save(configPath, cfg)
+	}
+	// archiveSQLAction is Feature 11, relocated here unchanged from
+	// Compute (DESIGN.md, "RDM Backup & Restore Domain"; PLAN.md Phase
+	// 20.48) -- the closure body itself is untouched, only which struct
+	// field it's assigned to changed. Named so RunSQLBackup can invoke it
+	// directly on confirm (DESIGN.md, "Run SQL Backup"), without a
+	// struct-self-reference.
+	archiveSQLAction := func(ctx context.Context) error {
+		return workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories, backupHistory)
+	}
+
+	rdmActions := workflow.RDMBackupRestoreActions{
+		RunSQLBackup: func(ctx context.Context) error {
+			return workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules, archiveSQLAction)
+		},
+		ArchiveSQL: archiveSQLAction,
+		// ArchiveOpenSearch/RestoreSQL/RestoreOpenSearch are stubs until
+		// Phases 20.49-20.51 land (matching how configure_menu.go's items
+		// were stubbed before Phase 20.42's edit actions existed).
+		ArchiveOpenSearch: func(ctx context.Context) error {
+			return workflow.NotYetImplemented(out, "Archive OpenSearch Snapshot to S3")
+		},
+		RestoreSQL: func(ctx context.Context) error {
+			return workflow.NotYetImplemented(out, "Restore SQL Backup from S3")
+		},
+		RestoreOpenSearch: func(ctx context.Context) error {
+			return workflow.NotYetImplemented(out, "Restore OpenSearch Snapshot from S3")
+		},
+		Refresh: refresh,
+	}
+
 	domains := workflow.DomainActions{
 		Compute: func(ctx context.Context) error {
 			// Fetch and display the Compute listing on every entry into
@@ -500,6 +544,15 @@ func main() {
 		},
 		Configuration: func(ctx context.Context) error {
 			return workflow.RunConfigureMenu(ctx, out, configPath)
+		},
+		RDMBackupRestore: func(ctx context.Context) error {
+			// Fetch (not display) the instance listing on every entry
+			// into this domain, same rationale as Compute/S3 -- ArchiveSQL/
+			// RestoreSQL/RestoreOpenSearch all pick from state.instances.
+			if err := refresh(ctx); err != nil {
+				return err
+			}
+			return workflow.RunRDMBackupRestoreMenu(ctx, out, rdmActions)
 		},
 	}
 

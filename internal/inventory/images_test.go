@@ -19,7 +19,7 @@ func sdkImage(id, name, creationDate, state, project, environment string) types.
 		tags = append(tags, types.Tag{Key: aws.String("Name"), Value: aws.String(name)})
 	}
 	if project != "" {
-		tags = append(tags, types.Tag{Key: aws.String("Project"), Value: aws.String(project)})
+		tags = append(tags, types.Tag{Key: aws.String("project"), Value: aws.String(project)})
 	}
 	if environment != "" {
 		tags = append(tags, types.Tag{Key: aws.String("Environment"), Value: aws.String(environment)})
@@ -55,9 +55,9 @@ func TestListImages_AggregatesAcrossRegions(t *testing.T) {
 
 	want := []Image{
 		{ImageID: "ami-1", Name: "base-ubuntu", CreationDate: "2026-01-15", Region: "us-east-1", Project: "caltechauthors", Environment: "production",
-			Tags: map[string]string{"Name": "base-ubuntu", "Project": "caltechauthors", "Environment": "production"}},
+			Tags: map[string]string{"Name": "base-ubuntu", "project": "caltechauthors", "Environment": "production"}},
 		{ImageID: "ami-2", Name: "app-server-v2", CreationDate: "2026-02-20", Region: "us-west-2", Project: "caltechdata", Environment: "development",
-			Tags: map[string]string{"Name": "app-server-v2", "Project": "caltechdata", "Environment": "development"}},
+			Tags: map[string]string{"Name": "app-server-v2", "project": "caltechdata", "Environment": "development"}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d images, want %d: %+v", len(got), len(want), got)

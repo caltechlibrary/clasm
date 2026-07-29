@@ -39,6 +39,14 @@ type Config struct {
 	Regions           []string              `yaml:"regions"`
 	BackupDirectories []BackupDirectoryRule `yaml:"backup_directories"`
 	OriginTag         OriginTagConfig       `yaml:"origin_tag"`
+	// RDMPostgresConfig holds per-instance Postgres container/database
+	// identity for Run SQL Backup and Restore SQL Backup (DESIGN.md,
+	// "New Configuration: rdm_postgres_config"). Populated by
+	// discovery-and-save (ContainerName is never assumed, only
+	// discovered live via `docker ps` and reconciled here every run),
+	// but still hand-editable via the Configure clasm domain for any
+	// instance customized beyond Invenio RDM's shipped defaults.
+	RDMPostgresConfig []RDMPostgresRule `yaml:"rdm_postgres_config"`
 }
 
 // OriginTagConfig names the tag clasm treats as the IAM
@@ -78,6 +86,80 @@ func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string
 		}
 	}
 	return ""
+}
+
+// RDMPostgresRule maps a glob-style pattern (path.Match syntax, matched
+// against an instance's Name tag) to the Postgres container/database
+// identity Run SQL Backup and Restore SQL Backup should use for matching
+// instances (DESIGN.md, "New Configuration: rdm_postgres_config"). Same
+// shape/semantics as BackupDirectoryRule, with three overridable fields
+// instead of one. ContainerName is only ever set by discovery-and-save
+// (see internal/workflow/rdm_postgres_config.go) or a manual edit --
+// RDMPostgresConfigFor never invents a default for it, unlike DBName/
+// DBUser, which fall back to the instance's own Name tag.
+type RDMPostgresRule struct {
+	Pattern       string `yaml:"pattern"`
+	ContainerName string `yaml:"container_name"`
+	DBName        string `yaml:"db_name"`
+	DBUser        string `yaml:"db_user"`
+}
+
+// RDMPostgresConfigFor returns the resolved (containerName, dbName,
+// dbUser) for instanceName: the first rule in rules whose Pattern
+// matches, checked in list order (first-match-wins, same semantics as
+// BackupDirectoryFor), with dbName/dbUser each independently falling
+// back to fallbackIdentifier if left blank in the matched rule -- or if
+// no rule matches at all. fallbackIdentifier is deliberately a separate
+// parameter from instanceName (the Pattern-matching key, an EC2 Name
+// tag, same convention as BackupDirectoryFor) -- confirmed via a real
+// incident (2026-07-29, DECISIONS.md, "Default db_name/db_user to the
+// instance's Project tag...") that an instance's Name tag can be a
+// legacy/historical label unrelated to its actual RDM project shortname,
+// while a separate Project tag holds the reliable value; callers pass
+// that here, not instanceName again. containerName has no such
+// fallback: it's blank ("") whenever no rule matches or the matched rule
+// leaves it blank, since a container name is never safe to assume, only
+// to discover (DECISIONS.md, "RDM Postgres container/DB naming:
+// discover via docker ps every run, reconcile with rdm_postgres_config").
+func RDMPostgresConfigFor(rules []RDMPostgresRule, instanceName, fallbackIdentifier string) (containerName, dbName, dbUser string) {
+	dbName, dbUser = fallbackIdentifier, fallbackIdentifier
+	for _, rule := range rules {
+		if ok, err := path.Match(rule.Pattern, instanceName); err == nil && ok {
+			containerName = rule.ContainerName
+			if rule.DBName != "" {
+				dbName = rule.DBName
+			}
+			if rule.DBUser != "" {
+				dbUser = rule.DBUser
+			}
+			return containerName, dbName, dbUser
+		}
+	}
+	return containerName, dbName, dbUser
+}
+
+// UpsertRDMPostgresRule updates the ContainerName of the existing rule
+// in rules whose Pattern exactly equals pattern (preserving that rule's
+// DBName/DBUser untouched), or appends a new rule if none matches --
+// matching by exact string equality, not path.Match, since pattern here
+// is always the specific value a caller resolved a rule for (typically
+// an instance's own Name), not a glob to test against. Returns a new
+// slice; if containerName already equals the existing rule's
+// ContainerName, the returned slice is equal in value to rules, so
+// callers can cheaply tell whether a save is actually needed.
+func UpsertRDMPostgresRule(rules []RDMPostgresRule, pattern, containerName string) []RDMPostgresRule {
+	for i, rule := range rules {
+		if rule.Pattern == pattern {
+			if rule.ContainerName == containerName {
+				return rules
+			}
+			updated := make([]RDMPostgresRule, len(rules))
+			copy(updated, rules)
+			updated[i].ContainerName = containerName
+			return updated
+		}
+	}
+	return append(append([]RDMPostgresRule{}, rules...), RDMPostgresRule{Pattern: pattern, ContainerName: containerName})
 }
 
 // Save marshals cfg to YAML and writes it to path (0644 -- no secrets
