@@ -95,6 +95,28 @@ func TestListInstanceProfiles_PropagatesError(t *testing.T) {
 	}
 }
 
+// TestListInstanceProfiles_PaginatesAcrossMultiplePages reproduces a
+// real bug found via live use, 2026-08-12: a single un-paginated
+// ListInstanceProfiles call silently drops every instance profile past
+// the first page, the same truncation inventory.listAllInstanceProfiles
+// was already fixed for, 2026-07-23 (internal/inventory/iam.go) -- this
+// sibling helper (used by promptIAMInstanceProfileOrCreate's picker,
+// not the IAM domain's "Show Instance Profiles" screen) never got the
+// same fix.
+func TestListInstanceProfiles_PaginatesAcrossMultiplePages(t *testing.T) {
+	fake := &fakeIAMClient{
+		instanceProfiles:      []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("page1-profile")}},
+		instanceProfilesPage2: []iamtypes.InstanceProfile{{InstanceProfileName: aws.String("page2-profile")}},
+	}
+	got, err := listInstanceProfiles(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "page1-profile" || got[1].Name != "page2-profile" {
+		t.Errorf("got %+v, want both page1-profile and page2-profile", got)
+	}
+}
+
 func TestListRoles_Success(t *testing.T) {
 	fake := &fakeIAMClient{roles: []iamtypes.Role{
 		{RoleName: aws.String("ec2-invenio-role"), Description: aws.String("EC2 instance role for Invenio RDM")},
@@ -113,5 +135,27 @@ func TestListRoles_PropagatesError(t *testing.T) {
 	_, err := listRoles(context.Background(), fake)
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+// TestListRoles_PaginatesAcrossMultiplePages reproduces a real bug
+// found via live use, 2026-08-12: a single un-paginated ListRoles call
+// silently drops every role past the first page -- an account with
+// enough roles that a newly-created one (IAM doesn't sort ListRoles by
+// creation date) lands on a later page never sees it in "Select a role
+// to attach" (createInstanceProfileInteractive), even though the IAM
+// domain's "Show Roles" screen (inventory.listAllRoles, fixed
+// 2026-07-23) shows it correctly.
+func TestListRoles_PaginatesAcrossMultiplePages(t *testing.T) {
+	fake := &fakeIAMClient{
+		roles:      []iamtypes.Role{{RoleName: aws.String("page1-role")}},
+		rolesPage2: []iamtypes.Role{{RoleName: aws.String("page2-role")}},
+	}
+	got, err := listRoles(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "page1-role" || got[1].Name != "page2-role" {
+		t.Errorf("got %+v, want both page1-role and page2-role", got)
 	}
 }

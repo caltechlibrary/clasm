@@ -17,9 +17,17 @@ import (
 // real interface so any unimplemented method panics loudly if a test
 // exercises a path that needs it, and override just what's used.
 type fakeIAMClient struct {
-	instanceProfiles             []iamtypes.InstanceProfile
+	instanceProfiles []iamtypes.InstanceProfile
+	// instanceProfilesPage2/rolesPage2 let a test simulate IAM's real
+	// pagination, same fixture shape as inventory package's fake
+	// (internal/inventory/iam_test.go) -- when set, the first
+	// ListInstanceProfiles/ListRoles call returns IsTruncated=true plus
+	// a Marker, and a follow-up call with that Marker returns the
+	// "page2" fixture.
+	instanceProfilesPage2        []iamtypes.InstanceProfile
 	listInstanceProfilesErr      error
 	roles                        []iamtypes.Role
+	rolesPage2                   []iamtypes.Role
 	listRolesErr                 error
 	createInstanceProfileErr     error
 	createInstanceProfileErrOnce bool // if true, only the first CreateInstanceProfile call errors
@@ -370,12 +378,24 @@ func (f *fakeIAMClient) ListInstanceProfiles(ctx context.Context, params *iam.Li
 	if f.listInstanceProfilesErr != nil {
 		return nil, f.listInstanceProfilesErr
 	}
+	if aws.ToString(params.Marker) == "page2" {
+		return &iam.ListInstanceProfilesOutput{InstanceProfiles: f.instanceProfilesPage2}, nil
+	}
+	if f.instanceProfilesPage2 != nil {
+		return &iam.ListInstanceProfilesOutput{InstanceProfiles: f.instanceProfiles, IsTruncated: true, Marker: aws.String("page2")}, nil
+	}
 	return &iam.ListInstanceProfilesOutput{InstanceProfiles: f.instanceProfiles}, nil
 }
 
 func (f *fakeIAMClient) ListRoles(ctx context.Context, params *iam.ListRolesInput, optFns ...func(*iam.Options)) (*iam.ListRolesOutput, error) {
 	if f.listRolesErr != nil {
 		return nil, f.listRolesErr
+	}
+	if aws.ToString(params.Marker) == "page2" {
+		return &iam.ListRolesOutput{Roles: f.rolesPage2}, nil
+	}
+	if f.rolesPage2 != nil {
+		return &iam.ListRolesOutput{Roles: f.roles, IsTruncated: true, Marker: aws.String("page2")}, nil
 	}
 	return &iam.ListRolesOutput{Roles: f.roles}, nil
 }
