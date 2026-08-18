@@ -177,9 +177,26 @@ func detectExistingSQLData(ctx context.Context, client awsclient.SSMAPI, instanc
 // dbName is SQL-identifier-quoted in the DROP/CREATE statements
 // (quoteSQLIdentifier); in the load command it's a plain psql
 // connection-target argument, not SQL syntax, so it's only shell-quoted.
+//
+// dropCmd explicitly terminates every other backend connected to dbName
+// (`pg_terminate_backend`, excluding its own connection via
+// `pg_backend_pid()`) before running DROP DATABASE IF EXISTS itself --
+// found real, live (2026-08-18, restoring caltechdata-restore-test):
+// DROP DATABASE refuses outright if *any* other session is connected,
+// even an entirely idle one, and stopping the target's own app wasn't
+// sufficient on its own -- a stale connection-pool's already-open
+// sockets can linger for a long time after the process that opened them
+// is killed (governed by TCP keepalive timing, not app shutdown), well
+// past when an operator would reasonably expect "the app is stopped" to
+// mean "no more connections." The real invenio-sql-restore.bash doesn't
+// do this itself (it assumes the operator has already ensured zero
+// other connections), but that assumption held up worse in practice
+// than expected, so this restore doesn't repeat it.
 func buildRestoreSQLCommands(containerName, dbName, dbUser, sqlFilePath string) (dropCmd, createCmd, loadCmd string) {
 	quotedDB := quoteSQLIdentifier(dbName)
-	dropCmd = fmt.Sprintf("{ docker exec %s psql --username=%s --dbname postgres -c %s; } 2>&1",
+	terminateStmt := fmt.Sprintf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s AND pid <> pg_backend_pid()", sqlStringLiteral(dbName))
+	dropCmd = fmt.Sprintf("{ docker exec %s psql --username=%s --dbname postgres -c %s; docker exec %s psql --username=%s --dbname postgres -c %s; } 2>&1",
+		shellQuote(containerName), shellQuote(dbUser), shellQuote(terminateStmt),
 		shellQuote(containerName), shellQuote(dbUser), shellQuote("DROP DATABASE IF EXISTS "+quotedDB))
 	createCmd = fmt.Sprintf("{ docker exec %s psql --username=%s --dbname postgres -c %s; } 2>&1",
 		shellQuote(containerName), shellQuote(dbUser), shellQuote("CREATE DATABASE "+quotedDB))

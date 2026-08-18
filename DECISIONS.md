@@ -145,6 +145,32 @@ original always-decompress design, not just a workaround.
 (the raw file) when no decompression happened, `remoteRestoreSQLPath`
 otherwise.
 
+**Fourth same-day follow-up, same phase, same live-testing pass: `DROP
+DATABASE` itself refuses while any other session is connected, and
+stopping the target's own app wasn't sufficient to guarantee zero
+connections.** With all three prior fixes in place, the restore reached
+the actual drop/create/load sequence for the first time and hit
+`ERROR: database "rdm14-granian" is being accessed by other users`.
+Stopping `rdm.target` (the target's own RDM app) did not clear it --
+`pg_stat_activity` still showed 3 idle connections from
+`172.18.0.1` (the Docker bridge) more than two minutes after the app
+process was confirmed stopped. A killed process's already-open TCP
+connections to Postgres can linger in `pg_stat_activity` until
+Postgres's own TCP keepalive notices the dead peer -- governed by
+keepalive timing, not app shutdown, and not something an operator
+stopping the app can rely on happening promptly. The real
+`invenio-sql-restore.bash` doesn't handle this either (it just assumes
+zero other connections); that assumption held up worse in practice here
+than the design originally expected. `buildRestoreSQLCommands`'
+`dropCmd` now runs `SELECT pg_terminate_backend(pid) FROM
+pg_stat_activity WHERE datname=<dbName> AND pid <> pg_backend_pid()`
+before `DROP DATABASE IF EXISTS`, in the same command group -- excludes
+its own connection (`pg_backend_pid()`), scoped only to the target
+database, and safe regardless of whether the database is empty,
+already correctly emptied, or (as here) still holding stale idle
+connections. New regression test
+`TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst`.
+
 ---
 
 ## 2026-08-18 — Restore SQL Backup: quote the database name as a SQL identifier, not just shell-quote it

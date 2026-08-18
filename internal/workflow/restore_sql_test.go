@@ -182,6 +182,36 @@ func TestBuildRestoreSQLCommands_HyphenatedDBNameIsQuotedAsIdentifier(t *testing
 	}
 }
 
+// TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst is a
+// regression test for a real incident (2026-08-18, restoring
+// caltechdata-restore-test): `DROP DATABASE IF EXISTS` refuses outright
+// if any other session is connected, even an entirely idle one --
+// confirmed live that stopping the target's own app (`rdm.target`)
+// wasn't sufficient on its own: 3 idle connections from a stale
+// connection-pool lingered for minutes afterward (systemd killing a
+// process doesn't guarantee Postgres notices the dropped TCP connection
+// promptly -- that's governed by TCP keepalive timing, not app
+// shutdown). `dropCmd` now explicitly terminates every other backend
+// connected to dbName (`pg_terminate_backend`, excluding its own
+// connection via `pg_backend_pid()`) before running DROP DATABASE
+// itself, rather than assuming the operator has already ensured zero
+// other connections exist.
+func TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst(t *testing.T) {
+	dropCmd, _, _ := buildRestoreSQLCommands("caltechauthors-db-1", "caltechauthors", "caltechauthors", "/tmp/backup.sql")
+	if !strings.Contains(dropCmd, "pg_terminate_backend") {
+		t.Errorf("dropCmd = %q, want it to terminate other sessions before dropping", dropCmd)
+	}
+	if !strings.Contains(dropCmd, "pg_backend_pid") {
+		t.Errorf("dropCmd = %q, want it to exclude its own connection from termination", dropCmd)
+	}
+	if !strings.Contains(dropCmd, "datname=") || !strings.Contains(dropCmd, "caltechauthors") {
+		t.Errorf("dropCmd = %q, want the terminate query scoped to the target database", dropCmd)
+	}
+	if !strings.Contains(dropCmd, `DROP DATABASE IF EXISTS "caltechauthors"`) {
+		t.Errorf("dropCmd = %q, still want the DROP DATABASE statement itself", dropCmd)
+	}
+}
+
 func TestDetectExistingSQLData_ExistingDatabase(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "1\n"}
 	got, err := detectExistingSQLData(context.Background(), fake, "i-1", "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)

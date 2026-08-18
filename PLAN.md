@@ -6773,6 +6773,19 @@ anything else skips `gunzip` entirely and returns
 by the user mid-live-test. See DECISIONS.md's third same-day follow-up
 entry under this phase's own heading.
 
+**Fourth same-day follow-up, same phase:** with all three prior fixes
+in place, the restore reached the actual drop/create/load sequence for
+the first time and hit Postgres's own `DROP DATABASE` precondition --
+refuses while any other session is connected, and stopping the
+target's own app wasn't sufficient to guarantee that (stale idle
+connections lingered past app shutdown, governed by TCP keepalive
+timing). `buildRestoreSQLCommands`' `dropCmd` now runs
+`pg_terminate_backend` against every other session on the target
+database before `DROP DATABASE IF EXISTS`. New regression test
+`TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst`. See
+DECISIONS.md's fourth same-day follow-up entry under this phase's own
+heading.
+
 ### Files
 
 `internal/workflow/{restore_sql.go,restore_sql_test.go}` (extended, not
