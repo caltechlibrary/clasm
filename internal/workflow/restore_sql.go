@@ -19,9 +19,18 @@ import (
 )
 
 // DefaultSQLRestoreTimeout bounds the download/decompress and load SSM
-// commands -- both can legitimately take a while for a large dump,
-// mirroring DefaultBackupUploadTimeout's 30-minute bound.
-const DefaultSQLRestoreTimeout = 30 * time.Minute
+// commands. Originally matched DefaultBackupUploadTimeout's 30-minute
+// bound, but found real, live (2026-08-18, restoring caltechdata-restore-test)
+// to be too short: the user's own experience manually restoring
+// CaltechAUTHORS-scale data is ~45 minutes, since `--column-inserts`
+// dumps load as individual INSERT statements, not a bulk COPY -- a real
+// in-progress restore was at genuine risk of being killed by this
+// timeout well before it would have finished on its own. Widened to 2
+// hours, matching DefaultSnapshotCreateTimeout's own precedent for "this
+// can legitimately be big and slow" (opensearch_snapshot.go) -- the
+// download step finishes in a small fraction of this regardless, so
+// over-provisioning it costs nothing.
+const DefaultSQLRestoreTimeout = 2 * time.Hour
 
 // remoteRestoreDownloadPath/remoteRestoreSQLPath are fixed scratch paths
 // a restore downloads a backup to and decompresses it into --

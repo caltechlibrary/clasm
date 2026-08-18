@@ -6786,6 +6786,14 @@ database before `DROP DATABASE IF EXISTS`. New regression test
 DECISIONS.md's fourth same-day follow-up entry under this phase's own
 heading.
 
+**Fifth same-day follow-up, same phase:** `DefaultSQLRestoreTimeout`
+(30 minutes) was itself too short for real production-scale data --
+confirmed against the user's own ~45-minute experience manually
+restoring CaltechAUTHORS-scale data (`--column-inserts` loads as
+individual `INSERT`s, not bulk `COPY`). Widened to 2 hours, matching
+`DefaultSnapshotCreateTimeout`'s own precedent. See DECISIONS.md's fifth
+same-day follow-up entry under this phase's own heading.
+
 ### Files
 
 `internal/workflow/{restore_sql.go,restore_sql_test.go}` (extended, not

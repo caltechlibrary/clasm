@@ -171,6 +171,24 @@ already correctly emptied, or (as here) still holding stale idle
 connections. New regression test
 `TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst`.
 
+**Fifth same-day follow-up, same phase, same live-testing pass:
+`DefaultSQLRestoreTimeout` (30 minutes, matching
+`DefaultBackupUploadTimeout`'s own bound) was itself too short.** With
+the connection-termination fix in place, the restore finally reached
+the load step and ran long enough for the user to note, from direct
+experience manually restoring CaltechAUTHORS-scale data, that a real
+load like this typically takes **~45 minutes** -- `--column-inserts`
+dumps load as individual `INSERT` statements, not a bulk `COPY`, so this
+is expected, not a hang. The 30-minute bound risked killing a
+genuinely-still-progressing restore before it could finish. Widened to
+2 hours, matching `DefaultSnapshotCreateTimeout`'s own precedent
+(`opensearch_snapshot.go`) for "this can legitimately be big and slow"
+-- the (much faster) download step costs nothing by sharing the same
+generous bound. No test changes needed (no test asserted the specific
+timeout value). Note: this fix could not rescue the in-flight restore
+attempt that surfaced it -- that process already had the old 30-minute
+bound compiled in; only a subsequent rebuild benefits.
+
 ---
 
 ## 2026-08-18 — Restore SQL Backup: quote the database name as a SQL identifier, not just shell-quote it
