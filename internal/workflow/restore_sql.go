@@ -23,8 +23,8 @@ import (
 // mirroring DefaultBackupUploadTimeout's 30-minute bound.
 const DefaultSQLRestoreTimeout = 30 * time.Minute
 
-// remoteRestoreDownloadPath/remoteRestoreSQLPath are fixed /tmp scratch
-// paths a restore downloads a backup to and decompresses it into --
+// remoteRestoreDownloadPath/remoteRestoreSQLPath are fixed scratch paths
+// a restore downloads a backup to and decompresses it into --
 // deliberately *not* derived from the S3 object's own key/basename (an
 // earlier version was). Found real, live, restoring CaltechDATA
 // production's own archived backup (2026-08-18): its key is
@@ -35,9 +35,20 @@ const DefaultSQLRestoreTimeout = 30 * time.Minute
 // of whether the bytes are actually gzip data. Fixed paths sidestep this
 // category of surprise entirely, and only one restore ever runs against
 // a given instance at a time, so a fixed name doesn't risk collision.
+//
+// Under `/var/tmp`, not `/tmp` -- also found real, live, the same
+// session: this project's own RDM cloud-init images mount `/tmp` as a
+// fixed-size tmpfs (confirmed live, `caltechdata-restore-test`: ~3.9GB,
+// RAM-backed, entirely separate from the root disk's own free space),
+// so a multi-gigabyte SQL dump downloaded there can hit "No space left
+// on device" even while the actual disk has tens of gigabytes free.
+// `/var/tmp` is the FHS-conventional location for exactly this kind of
+// larger, disk-backed scratch file, and confirmed live (via `df`/`mount`)
+// to be plain root-disk space on this same instance, not a separate
+// mount at all.
 const (
-	remoteRestoreDownloadPath = "/tmp/clasm-sql-restore.download"
-	remoteRestoreSQLPath      = "/tmp/clasm-sql-restore.sql"
+	remoteRestoreDownloadPath = "/var/tmp/clasm-sql-restore.download"
+	remoteRestoreSQLPath      = "/var/tmp/clasm-sql-restore.sql"
 )
 
 // buildDownloadAndDecompressCommand downloads bucket/key to

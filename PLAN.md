@@ -6752,6 +6752,15 @@ restoring CaltechDATA production's own real archived backup.
 - [x] `TestBuildRestoreSQLCommands_ExactShape` extended to assert `2>&1`
       is present on all three commands
 
+**Same-day follow-up, same phase:** with the stderr fix in place, the
+very next retry surfaced a second, distinct real gap --
+`remoteRestoreDownloadPath`/`remoteRestoreSQLPath` moved from `/tmp` to
+`/var/tmp`. Confirmed live (`df`/`mount`) that this project's RDM
+cloud-init images mount `/tmp` as a fixed ~3.9GB tmpfs, separate from
+the root disk's own free space; `/var/tmp` confirmed to be plain
+root-disk space on the same instance. See DECISIONS.md's same-day
+follow-up entry under this phase's own heading.
+
 ### Files
 
 `internal/workflow/{restore_sql.go,restore_sql_test.go}` (extended, not

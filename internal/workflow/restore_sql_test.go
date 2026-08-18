@@ -97,7 +97,7 @@ func TestDownloadAndDecompressSQLBackup_SSMFailurePropagatesBody(t *testing.T) {
 // stream RunShellCommand captures ("{ ...; } 2>&1"), so a real remote
 // failure's actual message reaches the reported error.
 func TestDownloadAndDecompressSQLBackup_SurfacesStderr(t *testing.T) {
-	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "gzip: /tmp/clasm-sql-restore.download: unknown suffix -- ignored"}
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "gzip: /var/tmp/clasm-sql-restore.download: unknown suffix -- ignored"}
 	_, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "my-bucket", "new-data/backup.sql", testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
@@ -240,7 +240,7 @@ func restoreSQLFake(discoveryStdout, detectStdout string, downloadStatus, loadSt
 			{substring: "aws s3 cp", status: downloadStatus},
 			{substring: "DROP DATABASE", status: loadStatus},
 			{substring: "CREATE DATABASE", status: loadStatus},
-			{substring: "< /tmp/", status: loadStatus},
+			{substring: "docker exec -i", status: loadStatus},
 			{substring: "information_schema.tables", stdout: "7\n", status: types.CommandInvocationStatusSuccess},
 		},
 	}

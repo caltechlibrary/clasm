@@ -1,4 +1,4 @@
-%clasm(1) user manual | version 0.0.6 640c2b5
+%clasm(1) user manual | version 0.0.6 011e369
 % R. S. Doiel
 % 2026-07-28
 

@@ -108,6 +108,24 @@ TODO.md as a Nice to have, scoped as its own future design pass (widen
 whether/how to fold it into an error message) rather than fixed
 project-wide here. See PLAN.md Phase 20.59.
 
+**Same-day follow-up, same phase: the fixed scratch paths above were
+initially placed under `/tmp`, which turned out to be a second, distinct
+real gap.** With the stderr fix in place, the very next retry surfaced a
+genuine, different failure: `[Errno 28] No space left on device`.
+Confirmed live (`df`/`mount` on `caltechdata-restore-test`) that this
+project's own RDM cloud-init images mount `/tmp` as a **fixed-size
+tmpfs** (~3.9GB, RAM-backed via systemd's default `tmp.mount` sizing) --
+entirely separate from the root disk, which had 44GB genuinely free at
+the time. A multi-gigabyte SQL dump downloaded to `/tmp` can exhaust
+that fixed cap regardless of how much real disk space exists.
+`remoteRestoreDownloadPath`/`remoteRestoreSQLPath` moved to `/var/tmp`
+instead -- confirmed live, via the identical `df`/`mount` check, to be
+plain root-disk space on this same instance, not a separate mount at
+all, matching FHS's own convention that `/var/tmp` (unlike `/tmp`) is
+for larger, persistent-across-reboots scratch files. No test changes
+needed beyond updating the one fixture that matched on the literal old
+path.
+
 ---
 
 ## 2026-08-18 — Restore SQL Backup: quote the database name as a SQL identifier, not just shell-quote it
