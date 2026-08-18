@@ -4,6 +4,188 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-08-18 — Associate/Replace IAM instance profile: recoverable `EntityAlreadyExists`
+
+**Context.** Found 2026-08-18 creating the `rdm-backups` role
+(`agents/knowledge.db` clasm observation id 177): in
+`AssociateOrReplaceInstanceProfile`'s "create a new instance profile"
+path, `createInstanceProfileForRole`'s "New instance profile name"
+prompt defaults to the picked role's own name (`ui.WithDefault(role.Name)`)
+-- exactly the name likely to already exist if a profile was created for
+that role before, as happened here. On `EntityAlreadyExists`, the loop
+only re-prompts for a *different* name -- no way to say "use the
+existing one instead." Cancelling that prompt (Esc/Ctrl+C) propagates a
+raw error all the way up through `promptIAMInstanceProfileOrCreate`/
+`createInstanceProfileInteractive`, aborting the entire Associate/replace
+workflow instead of returning to the instance-profile picker -- recovery
+required a full clasm restart.
+
+**Decision.** Fix both halves of the trap, combining TODO.md's options
+(b) and (c) ((a) is subsumed by (b)):
+1. On `EntityAlreadyExists`, `createInstanceProfileForRole` offers "use
+   the existing instance profile" alongside "type a different name,"
+   instead of only ever re-prompting for a name. Picking "use existing"
+   returns that profile's name with `created=false` -- the same shape
+   `createInstanceProfileInteractive` already returns for its "no
+   SSM-capable roles" case, not a fabricated `created=true`.
+2. A cancellation from `ui.Prompt`/`pickRole` inside this flow is treated
+   as "no profile created, not an error" (mirroring that same existing
+   `created=false, err=nil` return), so `promptIAMInstanceProfileOrCreate`'s
+   outer loop redisplays the instance-profile picker instead of the error
+   propagating out of `AssociateOrReplaceInstanceProfile` entirely --
+   matches this codebase's own established `cancelledIsNil` convention,
+   applied here for the first time to a *nested* prompt inside a picker
+   loop rather than the loop's own top-level pick.
+
+**Rationale.**
+- The actual reported case is "the default name collided" -- offering
+  "use existing" fixes that directly, rather than relying on the operator
+  to notice and explicitly filter for the existing entry in the outer
+  picker (option (a)), which is the same discoverability problem that
+  caused the original confusion.
+- The cancel-recoverability fix matches a pattern already applied
+  everywhere else in this codebase (Phase 20.3-era `cancelledIsNil`) --
+  extending it here is consistent, not a new mechanism.
+
+**Consequences.** No change to the instance-profile picker's own
+filtering/display -- this is about not trapping someone who picks
+"Create new" instead of the existing entry, not about making the picker
+smarter. See PLAN.md Phase 20.56, DESIGN.md "Associate/Replace IAM
+Instance Profile: Recoverable `EntityAlreadyExists`."
+
+---
+
+## 2026-08-18 — Delete Role: correct the wrong-remedy message, add the missing instance-profile-membership actions
+
+**Context.** Found 2026-08-18 cleaning up the now-unused
+`rdm-opensearch-backup` role after rolling out the consolidated
+`rdm-backups` role (`agents/knowledge.db` clasm observation id 180).
+Delete Role refused with "role %q is still referenced by instance
+profile(s) %s -- detach it first (Compute domain, \"Associate/replace IAM
+instance profile\")" -- but that refusal (`IAMRoleDetail.ReferencedByProfiles`,
+`iam_detail.go`) is based on `iam:ListInstanceProfiles`' `Roles` field,
+i.e. whether this role is a *member* of an instance-profile object.
+Associate/replace IAM instance profile only ever changes an EC2
+instance's *association* to a profile -- it has no effect on a profile's
+role membership. Following the message's own suggested remedy can never
+unblock this refusal. clasm has no action anywhere for
+`iam:RemoveRoleFromInstanceProfile` or `iam:DeleteInstanceProfile`
+(confirmed via a source grep, zero matches for either) -- the operator
+worked around it via the raw AWS CLI.
+
+**Decision.** Keep Delete Role's refusal exactly as scoped by the
+2026-07-23 CRUD-completion decision (below, "...support CRUD for
+DLD-owned roles") -- don't make it auto-cascade into removing the role
+from any instance profile. Instead:
+1. Correct the message to name the real relationship ("is a member of
+   instance profile(s) %s") and point at a real remedy (below), not
+   Associate/replace.
+2. Add the missing capability as two new small, standalone IAM-domain
+   actions, mirroring Attach/Detach Policy's existing shape (Phase
+   20.40) rather than folding either into Delete Role itself: **"Remove
+   role from instance profile"** (`iam:RemoveRoleFromInstanceProfile`,
+   gated the same DLD-owned-role way as every other role-mutating IAM
+   action) and **"Delete instance profile"** (`iam:DeleteInstanceProfile`,
+   which AWS itself refuses if a role is still attached -- so the
+   natural order is remove-role-then-delete-profile). Both use a plain
+   `Confirm`, not `ConfirmDestructive`, matching Attach/Detach Policy's
+   own reversibility-based tiering.
+
+**Rationale.**
+- Nothing about this finding changes the 2026-07-23 reasoning for keeping
+  "detach from a running instance" and "delete the role" as separate,
+  composable actions -- it only reveals the message described the wrong
+  mechanism and clasm was missing the actual remedy as a standalone
+  action.
+- Not auto-deleting the instance profile once it's empty: an operator
+  might intentionally keep an empty profile around (e.g. about to attach
+  a different role) -- deletion stays an explicit second step.
+
+**Rejected alternatives.**
+- *Have Delete Role auto-remove the role from any instance profile it's
+  a member of* -- rejected, same scope-creep reasoning as 2026-07-23:
+  a role-deleting workflow silently mutating instance-profile membership
+  as a side effect is a bigger blast radius than this bug warrants,
+  especially since the profile might still be genuinely in use by a
+  running instance in the general case (this specific incident's profile
+  wasn't, but the check can't distinguish that).
+
+**Consequences.** See PLAN.md Phase 20.55, DESIGN.md "Delete Role's
+Wrong-Remedy Message + Missing Instance-Profile-Membership Capability."
+
+---
+
+## 2026-08-18 — Run SQL Backup: drop the Archive-SQL auto-chain, rename to "Generate SQL Backup"
+
+**Context.** Phase 20.52 added a `Confirm("Continue to Archive SQL
+Backup to S3 now?")` chain at the end of Run SQL Backup. Live use found
+this confusing -- the user's explicit ask (TODO.md) is that this action
+should only generate the local `.sql.gz` dump and return to the RDM
+Backup & Restore menu, and that the label "Run SQL Backup" should become
+"Generate SQL Backup" to match.
+
+**Decision.** Remove the chain entirely, not just default its answer to
+"no." `runSQLBackup`'s trailing `Confirm` branch and its `archiveSQL
+func(ctx context.Context) error` parameter are removed; the function
+returns immediately after reporting the dump's success/failure.
+`RunSQLBackup`'s exported signature drops the parameter; `cmd/clasm/main.go`'s
+wiring no longer passes an `archiveSQL` closure. `rdmMenuItems`'s label
+changes from "Run SQL Backup" to "Generate SQL Backup" (`rdm_menu.go`,
+one call site) -- Go identifiers (`RunSQLBackup`/`runSQLBackup`/
+`run_sql_backup.go`) are left unchanged, per Phase 20.43's own precedent
+that user-facing labels and internal Go names don't need to match.
+
+**Rationale.**
+- Matches the user's explicit ask exactly -- no design judgment call
+  needed on scope.
+- Archive SQL Backup to S3 remains a separate, always-available menu
+  entry directly below/near this one; an operator who wants to archive
+  right after generating a dump picks it next -- same number of
+  keystrokes as confirming "yes" today, without a backup action doing
+  something beyond backing up as a surprise.
+
+**Consequences.** See PLAN.md Phase 20.54, DESIGN.md "Run SQL Backup:
+Drop the Archive-SQL Auto-Chain, Rename to \"Generate SQL Backup\"."
+
+---
+
+## 2026-08-18 — Poll-loop progress output: fix `PollSnapshotUntilComplete` ahead of Phase 20.51's sibling poller
+
+**Context.** `PollSnapshotUntilComplete` (Phase 20.49) prints nothing
+while it waits for OpenSearch to finish creating a snapshot -- the
+terminal shows whatever was last drawn (typically a picker's own hint
+line) throughout the wait. Confirmed live 2026-08-17 against
+CaltechAUTHORS production: a real 59-shard/~6.4GB snapshot took ~3
+minutes, during which the terminal looked identical to a hung prompt.
+Not a correctness bug -- the workflow completes correctly either way --
+but the user explicitly asked to close this UX gap before the next
+release (TODO.md, "target: 2026-08-18").
+
+**Decision.** Thread an `io.Writer` into the poll loop and print
+progress on every tick, not just report the end result: one line before
+the loop starts ("waiting for snapshot ... to complete -- this can take
+several minutes for a large index set") and one line per `pollInterval`
+tick showing elapsed time. Fix this now, ahead of implementing Phase
+20.51's `PollRestoreUntilComplete` (PLAN.md Phase 20.51, work item 11) --
+that new sibling poller has the identical polling shape, so factoring the
+print-on-tick behavior into a small shared helper both functions call
+means Phase 20.51 inherits progress output for free instead of repeating
+the same gap a fourth time (the third time, counting the earlier
+"silent-scroll" bug class this project has already hit twice, is a
+different mechanism but the same root lesson: a redraw/wait with no
+visible progress reads as broken).
+
+**Rationale.**
+- Scoped to the OpenSearch snapshot/restore polling family only -- other
+  poll loops in this codebase (`WaitForSSMOnline`, `checkCloudInitCompletion`)
+  already have their own established UX (a spinner or a fixed one-shot
+  wait) and haven't been reported as confusing in practice.
+
+**Consequences.** See PLAN.md Phase 20.53, DESIGN.md "Poll-Loop Progress
+Output: OpenSearch Snapshot/Restore Polling."
+
+---
+
 ## 2026-08-17 — Real bug: Archive OpenSearch Snapshot's index-match patterns used the Name tag, not the Project tag
 
 **Context.** Ran Archive OpenSearch Snapshot to S3 (Phase 20.49) against

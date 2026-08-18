@@ -1,8 +1,10 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +161,7 @@ func TestPollSnapshotUntilComplete_SucceedsAfterInProgress(t *testing.T) {
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"SUCCESS"}]}`},
 	}
-	state, err := PollSnapshotUntilComplete(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,13 +173,38 @@ func TestPollSnapshotUntilComplete_SucceedsAfterInProgress(t *testing.T) {
 	}
 }
 
+// TestPollSnapshotUntilComplete_PrintsProgressWhileWaiting is a
+// regression test for the silent-wait UX gap found live 2026-08-17
+// against CaltechAUTHORS production (DECISIONS.md, "Poll-loop progress
+// output: fix PollSnapshotUntilComplete ahead of Phase 20.51's sibling
+// poller") -- a real multi-minute wait must produce visible output, not
+// leave the terminal looking hung.
+func TestPollSnapshotUntilComplete_PrintsProgressWhileWaiting(t *testing.T) {
+	var buf bytes.Buffer
+	fake := &fakeSSMClient{
+		commandID:      "cmd-1",
+		finalStatus:    types.CommandInvocationStatusSuccess,
+		stdoutSequence: []string{`{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"SUCCESS"}]}`},
+	}
+	_, err := PollSnapshotUntilComplete(context.Background(), &buf, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "waiting for") {
+		t.Errorf("output = %q, want an initial waiting message", buf.String())
+	}
+	if got := strings.Count(buf.String(), "elapsed"); got != 2 {
+		t.Errorf("elapsed lines = %d, want 2 (one per tick before the final SUCCESS check), got:\n%s", got, buf.String())
+	}
+}
+
 func TestPollSnapshotUntilComplete_FailedStateReturnsErrorNotTimeout(t *testing.T) {
 	fake := &fakeSSMClient{
 		commandID:      "cmd-1",
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"FAILED"}]}`},
 	}
-	_, err := PollSnapshotUntilComplete(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a FAILED snapshot state")
 	}
@@ -192,7 +219,7 @@ func TestPollSnapshotUntilComplete_NeverCompletingSequenceTimesOut(t *testing.T)
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"IN_PROGRESS"}]}`},
 	}
-	_, err := PollSnapshotUntilComplete(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", 30*time.Millisecond, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", 30*time.Millisecond, testPollInterval)
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
@@ -204,7 +231,7 @@ func TestPollSnapshotUntilComplete_NeverCompletingSequenceTimesOut(t *testing.T)
 func TestPollSnapshotUntilComplete_SSMFailureIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"reason":"no such repository"},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	_, err := PollSnapshotUntilComplete(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -215,7 +242,7 @@ func TestPollSnapshotUntilComplete_SSMFailureIncludesResponseBody(t *testing.T) 
 
 func TestPollSnapshotUntilComplete_PropagatesSendCommandError(t *testing.T) {
 	fake := &fakeSSMClient{sendCommandErr: errors.New("boom")}
-	_, err := PollSnapshotUntilComplete(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

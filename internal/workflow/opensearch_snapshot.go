@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -140,37 +141,41 @@ func parseSnapshotState(body []byte) (string, error) {
 // overall timeout elapses (also an error -- unlike WaitForSSMOnline's
 // clean-skip timeout, a snapshot that never finishes is a real problem
 // this project has been burned by before with a too-short fixed timeout,
-// PLAN.md Phase 20.49).
-func PollSnapshotUntilComplete(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName string, timeout, pollInterval time.Duration) (string, error) {
-	deadline, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
+// PLAN.md Phase 20.49). Progress is printed to w throughout the wait via
+// pollWithProgress (PLAN.md Phase 20.53) -- a real snapshot can take
+// several minutes, and printing nothing until the very end reads as a
+// hung prompt (confirmed live 2026-08-17, DECISIONS.md, "Poll-loop
+// progress output...").
+func PollSnapshotUntilComplete(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, repo, snapshotName string, timeout, pollInterval time.Duration) (string, error) {
 	command := buildSnapshotStateCommand(repo, snapshotName)
-	for {
-		stdout, status, err := RunShellCommand(deadline, client, instanceID, command, DefaultSnapshotStateCheckTimeout, DefaultSSMPollInterval)
+	label := fmt.Sprintf("snapshot %s/%s on %s", repo, snapshotName, instanceID)
+
+	var finalState string
+	err := pollWithProgress(ctx, w, label, timeout, pollInterval, func(ctx context.Context) (bool, error) {
+		stdout, status, err := RunShellCommand(ctx, client, instanceID, command, DefaultSnapshotStateCheckTimeout, DefaultSSMPollInterval)
 		if err != nil {
-			return "", err
+			return false, err
 		}
 		if status != ssmtypes.CommandInvocationStatusSuccess {
-			return "", curlFailureError(fmt.Sprintf("snapshot state check for %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+			return false, curlFailureError(fmt.Sprintf("snapshot state check for %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
 		}
 		state, err := parseSnapshotState([]byte(stdout))
 		if err != nil {
-			return "", err
+			return false, err
 		}
 		switch state {
 		case "SUCCESS":
-			return state, nil
+			finalState = state
+			return true, nil
 		case "FAILED", "PARTIAL":
-			return state, fmt.Errorf("snapshot %s/%s ended in state %s", repo, snapshotName, state)
+			return false, fmt.Errorf("snapshot %s/%s ended in state %s", repo, snapshotName, state)
 		}
-
-		select {
-		case <-deadline.Done():
-			return "", fmt.Errorf("timed out waiting for snapshot %s/%s to complete on %s", repo, snapshotName, instanceID)
-		case <-time.After(pollInterval):
-		}
+		return false, nil
+	})
+	if err != nil {
+		return "", err
 	}
+	return finalState, nil
 }
 
 // buildDeleteSnapshotCommand builds the curl command that deletes

@@ -2637,6 +2637,195 @@ named entirely differently from "postgres" (not just a different tag --
 limitation, not designed around here -- all left for the
 implementation plan.
 
+## Poll-Loop Progress Output: OpenSearch Snapshot/Restore Polling (Design Addendum, 2026-08-18, PLAN.md Phase 20.53)
+
+**Status: designed 2026-08-18, not yet implemented.** Motivated by
+TODO.md's requested feature: `PollSnapshotUntilComplete` (Phase 20.49)
+prints nothing while it waits for OpenSearch to finish creating a
+snapshot, so the terminal shows whatever was last drawn (typically a
+picker's own hint line) throughout a real multi-minute wait -- confirmed
+live 2026-08-17 against CaltechAUTHORS production (~3 minutes for a real
+59-shard/~6.4GB snapshot). Not a correctness bug -- the workflow
+completes correctly either way -- but reads as a hung prompt, and the
+user explicitly wants this closed before the next release.
+
+**Fix: thread an `io.Writer` into the poll loop and print progress on
+every tick, not just at the end.** `PollSnapshotUntilComplete` gains a
+`w io.Writer` parameter: one line before the loop starts ("waiting for
+snapshot ... to complete -- this can take several minutes for a large
+index set") and one line per `pollInterval` tick showing elapsed time
+("... Ns elapsed"). Every call site (currently just
+`opensearch_archive.go`'s orchestrator) already has a `w` in scope, so
+this is a pure signature widen, not a new plumbing path.
+
+**Fix this now, ahead of Phase 20.51, so the new sibling poller inherits
+it for free.** Phase 20.51 (Restore OpenSearch Snapshot from S3) already
+plans a `PollRestoreUntilComplete` with the identical polling shape
+(PLAN.md Phase 20.51, work item 11) -- if the progress-output pattern
+isn't established first, that new function would either repeat the
+identical silent-wait gap or need its own separate fix later. Factoring
+the print-on-tick logic into a small shared helper (e.g.
+`pollWithProgress`) that both `PollSnapshotUntilComplete` and the future
+`PollRestoreUntilComplete` call gives both the same behavior from one
+place.
+
+**Not extended to every other poll loop in this codebase** (e.g.
+`WaitForSSMOnline`, `checkCloudInitCompletion`) -- those already have
+their own established UX (a spinner or a fixed one-shot wait), and
+neither has been reported as confusing in practice. Scoped to the
+OpenSearch snapshot/restore polling family only, since that's the one
+with a real live-testing complaint against it.
+
+### Not decided yet
+
+Exact wording of the progress line, and whether elapsed time is printed
+as a running total or just per-tick -- left to implementation, not
+load-bearing.
+
+## Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to "Generate SQL Backup" (Design Addendum, 2026-08-18, PLAN.md Phase 20.54)
+
+**Status: designed 2026-08-18, not yet implemented.** Motivated by
+TODO.md's requested bug fix: chaining straight into Archive SQL Backup
+to S3 after Run SQL Backup (via a `Confirm` prompt, added by Phase
+20.52) turned out to be confusing in practice -- the user's explicit ask
+is that this action should only generate the local `.sql.gz` dump file
+and return to the RDM Backup & Restore menu, nothing more.
+
+**Fix: remove the chain entirely, not just default it to "no."**
+`runSQLBackup`'s trailing `Confirm("Continue to Archive SQL Backup to S3
+now?")` branch and its `archiveSQL func(ctx context.Context) error`
+parameter are removed -- the function now returns immediately after
+reporting the dump's success/failure. `RunSQLBackup`'s exported
+signature drops the parameter too; `RDMBackupRestoreActions.RunSQLBackup`'s
+wiring in `cmd/clasm/main.go` no longer passes the `archiveSQL` closure.
+Archive SQL Backup to S3 remains a separate, always-available menu
+entry -- an operator who wants to archive right after generating a dump
+just picks it next, same number of steps as confirming "yes" today, but
+without the surprise of a backup action doing something beyond backing
+up.
+
+**Rename the menu label, not the Go identifiers.** `rdmMenuItems`'s "Run
+SQL Backup" entry becomes "Generate SQL Backup" (`rdm_menu.go`, one call
+site) -- matches what the action now unambiguously does. `RunSQLBackup`/
+`runSQLBackup`/`run_sql_backup.go` stay as-is; renaming Go identifiers to
+match would touch every test and call site for a purely cosmetic gain,
+and this project's own Phase 20.43 precedent (menu label cleanup) already
+established that user-facing labels and internal Go names don't need to
+match 1:1.
+
+### Not decided yet
+
+None -- this is a small, fully-scoped fix.
+
+## Delete Role's Wrong-Remedy Message + Missing Instance-Profile-Membership Capability (Design Addendum, 2026-08-18, PLAN.md Phase 20.55)
+
+**Status: designed 2026-08-18, not yet implemented.** Found 2026-08-18
+cleaning up the now-unused `rdm-opensearch-backup` role (`agents/knowledge.db`
+clasm observation id 180): Delete Role refuses with "role %q is still
+referenced by instance profile(s) %s -- detach it first (Compute domain,
+\"Associate/replace IAM instance profile\")" whenever `iam:ListInstanceProfiles`'
+`Roles` shows this role as a *member* of an instance-profile object
+(`IAMRoleDetail.ReferencedByProfiles`, `iam_detail.go`) -- but
+Associate/replace IAM instance profile only ever changes an EC2
+instance's *association* to a profile, never a profile's own role
+membership. Following the message's own suggested remedy can never
+unblock this refusal. clasm has no action anywhere for
+`iam:RemoveRoleFromInstanceProfile` or `iam:DeleteInstanceProfile`
+(confirmed via a source grep, zero matches for either).
+
+**Keep Delete Role's refusal exactly as scoped in 2026-07-23 (DECISIONS.md,
+"...support CRUD for DLD-owned roles") -- don't make it auto-cascade.**
+That decision deliberately kept "detach from a running instance" and
+"delete the role" as two separate, composable actions rather than one
+action silently doing both; nothing about today's finding changes the
+reasoning (an instance profile *can* still be actively associated with a
+running instance even when this exact bug isn't in play) -- it only
+reveals that the *message* describes the wrong mechanism and clasm is
+missing the actual remedy as a standalone action.
+
+**Fix, two parts:**
+1. **Correct the message.** `deleteIAMRoleConfirmed`'s refusal
+   (`iam_lifecycle.go`, both the hard-refuse and the earlier
+   `iam_menu`-level pre-check) now says the role is *a member of* the
+   listed instance profile(s), and points at a new action (below)
+   rather than Associate/replace.
+2. **Add the missing capability as two new small, standalone
+   IAM-domain actions**, mirroring Attach/Detach Policy's existing shape
+   (Phase 20.40) rather than folding either into Delete Role: **"Remove
+   role from instance profile"** (`iam:RemoveRoleFromInstanceProfile`,
+   DLD-owned-role-gated like every other role-mutating IAM action) and
+   **"Delete instance profile"** (`iam:DeleteInstanceProfile`, refuses if
+   the profile still has a role attached -- AWS's own precondition -- so
+   the natural order is Remove-role-from-profile, then
+   Delete-instance-profile if it's now empty and no longer wanted). Both
+   use a plain `Confirm`, not `ConfirmDestructive`, matching Attach/Detach
+   Policy's own reversibility-based tiering (removing a role from a
+   profile is trivially reversible by re-adding it; deleting an empty,
+   unused instance profile is low-stakes since nothing can reference it
+   once no role is attached).
+
+**Not auto-deleting the instance profile when it becomes empty.** An
+operator might intentionally keep an empty instance profile around (e.g.
+about to attach a different role) -- "Delete instance profile" stays a
+distinct, explicit second step, not an automatic side effect of "Remove
+role from instance profile."
+
+### Not decided yet
+
+Whether "Remove role from instance profile" should live under the Role
+detail/actions menu, the Instance Profile detail/actions menu, or both
+(as two entry points to the same testable core) -- left for the
+implementation plan; existing precedent (Attach/Detach Policy) hangs off
+the Role side only, which is the simpler default absent a reason to
+duplicate it.
+
+## Associate/Replace IAM Instance Profile: Recoverable `EntityAlreadyExists` (Design Addendum, 2026-08-18, PLAN.md Phase 20.56)
+
+**Status: designed 2026-08-18, not yet implemented.** Found 2026-08-18
+creating the `rdm-backups` role (`agents/knowledge.db` clasm observation
+id 177): in `AssociateOrReplaceInstanceProfile`'s "create a new instance
+profile" path, `createInstanceProfileForRole`'s "New instance profile
+name" prompt defaults to the picked role's own name
+(`ui.WithDefault(role.Name)`) -- exactly the name likely to already exist
+as an instance profile if one was created for that role before, as
+happened here. On `EntityAlreadyExists`, the loop only re-prompts for a
+*different* name; there's no way to say "use the existing one instead."
+Cancelling that prompt (Esc/Ctrl+C) propagates a raw error all the way up
+through `promptIAMInstanceProfileOrCreate`/`createInstanceProfileInteractive`,
+aborting the entire Associate/replace workflow rather than returning to
+the instance-profile picker -- recovery required a full clasm restart.
+
+**Fix, two independent parts (both TODO.md options (b) and (c); (a) is
+subsumed by (b)):**
+1. **On `EntityAlreadyExists`, offer to use the existing profile instead
+   of only asking for a different name.** `createInstanceProfileForRole`'s
+   retry loop, on catching `isDuplicateInstanceProfileError`, prompts a
+   choice ("Use the existing instance profile %q" / "Type a different
+   name") instead of unconditionally re-prompting for a name; picking
+   "use existing" returns that profile's name with `created=false` (same
+   shape `createInstanceProfileInteractive` already returns for its "no
+   SSM-capable roles" case) rather than fabricating a `created=true`.
+2. **Make cancelling the name prompt recoverable, not fatal to the whole
+   workflow.** Matches this codebase's own established `cancelledIsNil`
+   pattern (used at every other pick/prompt cancellation site) --
+   `createInstanceProfileForRole` and `createInstanceProfileInteractive`
+   treat a cancellation from `ui.Prompt`/`pickRole` as "no profile
+   created, not an error" (mirroring the existing "no SSM-capable roles"
+   `created=false, err=nil` return), so `promptIAMInstanceProfileOrCreate`'s
+   outer loop redisplays the instance-profile picker instead of the error
+   propagating out of `AssociateOrReplaceInstanceProfile` entirely.
+
+**No change to the instance-profile picker's own default filtering/display**
+-- the picker already lists the existing entry (the operator just has to
+notice it among unrelated ones, e.g. SageMaker service-catalog defaults);
+this fix is about not trapping someone who picks "Create new" instead,
+not about making the picker itself smarter.
+
+### Not decided yet
+
+None -- this is a small, fully-scoped fix, resolved by combining two of
+the three options already sketched in TODO.md.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

@@ -167,7 +167,7 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err := CreateSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if _, err := PollSnapshotUntilComplete(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
+	if _, err := PollSnapshotUntilComplete(ctx, w, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
 		return err
 	}
 

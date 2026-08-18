@@ -6335,6 +6335,220 @@ phase is independently buildable once Phase 20.48 exists.
 
 ---
 
+## Phase 20.53 — Poll-Loop Progress Output (`PollSnapshotUntilComplete`)
+
+**Status: designed and implemented 2026-08-18, test-first throughout,
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
+"Poll-Loop Progress Output: OpenSearch Snapshot/Restore Polling";
+DECISIONS.md, "Poll-loop progress output: fix `PollSnapshotUntilComplete`
+ahead of Phase 20.51's sibling poller"). User's explicit "before the next
+release" target. Not yet real-AWS-verified (next real Archive OpenSearch
+Snapshot run against any instance will exercise it live).
+
+### Work Items
+
+- [x] New `internal/workflow/poll_progress.go`: `pollWithProgress(ctx, w
+      io.Writer, label string, timeout, pollInterval time.Duration, check
+      func(ctx context.Context) (done bool, err error)) error` -- prints
+      `"waiting for %s to complete -- this can take several minutes for a
+      large index set\n"` once before the loop, then on every
+      `pollInterval` tick (after a non-final check, before the next one)
+      prints elapsed time (`"... %s elapsed\n"`,
+      `time.Since(start).Round(time.Second)`); returns `check`'s error
+      immediately if non-nil (no extra tick printed), otherwise loops
+      until `done` or the timeout, matching
+      `PollSnapshotUntilComplete`'s original timeout/deadline shape
+      exactly (moved here, not duplicated) -- simplified from the
+      Work Item's original signature sketch (dropped the stray double
+      `error` return)
+- [x] `opensearch_snapshot.go`: `PollSnapshotUntilComplete` gains a `w
+      io.Writer` parameter (second positional, right after `ctx`); its
+      loop body becomes the `check` closure passed to `pollWithProgress`
+      (state-check command, SUCCESS/FAILED/PARTIAL handling unchanged;
+      the FAILED/PARTIAL error path no longer also returns the state
+      string alongside the error, since no caller or test used it)
+- [x] `opensearch_archive.go`: threaded `w` through to the
+      `PollSnapshotUntilComplete` call site (already had `w` in scope)
+
+### Tests
+
+- [x] `pollWithProgress`: prints the initial message once; prints one
+      elapsed-time line per tick; returns `check`'s error immediately
+      with no extra tick; times out with a "timed out waiting for..."
+      message naming the label
+- [x] `PollSnapshotUntilComplete`: existing SUCCESS/FAILED/PARTIAL/timeout/
+      SSM-failure/send-error test cases all updated for the widened
+      signature and still pass; a new regression test
+      (`TestPollSnapshotUntilComplete_PrintsProgressWhileWaiting`)
+      confirms both the initial message and a tick-per-`IN_PROGRESS`-check
+      elapsed line actually reach `w`
+- [x] `opensearch_archive_test.go`'s existing happy-path/error-path tests
+      needed no changes -- they already pass a real `*bytes.Buffer` as
+      `w` and assert via `strings.Contains`, so the new progress lines
+      land there for free without breaking any exact-match assertion
+      (there are none)
+
+### Files
+
+New `internal/workflow/{poll_progress.go,poll_progress_test.go}`;
+`internal/workflow/{opensearch_snapshot.go,opensearch_snapshot_test.go}`
+(extended, not new); `opensearch_archive.go` (one-line call-site change,
+no test changes needed).
+
+### Dependency
+
+None -- independently buildable. Should land before Phase 20.51, whose
+`PollRestoreUntilComplete` is designed to reuse `pollWithProgress`
+directly rather than repeating the silent-wait gap a third time.
+
+## Phase 20.54 — Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to "Generate SQL Backup"
+
+**Status: designed 2026-08-18, not yet implemented** (DESIGN.md, "Run
+SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to \"Generate SQL
+Backup\""; DECISIONS.md, "Run SQL Backup: drop the Archive-SQL
+auto-chain, rename to \"Generate SQL Backup\"").
+
+### Work Items
+
+- [ ] `run_sql_backup.go`: remove `runSQLBackup`'s trailing `Confirm`
+      branch and its `archiveSQL func(ctx context.Context) error`
+      parameter (and the `input`/`output` it currently threads only for
+      that branch, if nothing else in the function still needs them --
+      confirm during implementation); `RunSQLBackup`'s exported signature
+      drops the same parameter
+- [ ] `cmd/clasm/main.go`: `RDMBackupRestoreActions.RunSQLBackup`'s
+      wiring drops the `archiveSQL` closure argument
+- [ ] `rdm_menu.go`: `rdmMenuItems`'s `"Run SQL Backup"` label becomes
+      `"Generate SQL Backup"` (Go identifiers unchanged)
+
+### Tests
+
+- [ ] `runSQLBackup`'s testable core: remove the "yes"/"no"-to-Archive-SQL
+      test cases (the branch no longer exists); confirm the happy path
+      returns immediately after a successful dump with no further
+      prompt; confirm no `archiveSQL`-shaped closure is called
+- [ ] Any test currently asserting on `rdmMenuItems`' label text or
+      numeric index for this entry updated for the new label (index
+      unchanged, in place)
+
+### Files
+
+`internal/workflow/{run_sql_backup.go,run_sql_backup_test.go,rdm_menu.go,
+rdm_menu_test.go}` (extended, not new); `cmd/clasm/main.go`.
+
+### Dependency
+
+None -- independently buildable.
+
+## Phase 20.55 — Delete Role's Wrong-Remedy Message + Missing Instance-Profile-Membership Capability
+
+**Status: designed 2026-08-18, not yet implemented** (DESIGN.md, "Delete
+Role's Wrong-Remedy Message + Missing Instance-Profile-Membership
+Capability"; DECISIONS.md, "Delete Role: correct the wrong-remedy
+message, add the missing instance-profile-membership actions").
+
+### Work Items
+
+- [ ] `iam_lifecycle.go`: `deleteIAMRoleConfirmed`'s refusal message
+      (both the hard-refuse in `deleteIAMRole` and the earlier
+      `iam_menu`-level pre-check) rewords from "detach it first
+      (Compute domain, ...)" to name the real relationship and point at
+      the new action below, e.g. "role %q is a member of instance
+      profile(s) %s -- remove it from each first (IAM domain, \"Remove
+      role from instance profile\")"
+- [ ] New `internal/workflow/iam_instance_profile_membership.go`:
+      `removeRoleFromInstanceProfile(ctx, client awsclient.IAMAPI,
+      profileName, roleName string) error` (wraps
+      `iam:RemoveRoleFromInstanceProfile`); `deleteInstanceProfile(ctx,
+      client awsclient.IAMAPI, profileName string) error` (wraps
+      `iam:DeleteInstanceProfile`, letting AWS's own
+      "still has a role attached" precondition surface as-is rather than
+      pre-checking it client-side); both DLD-owned-role-gated the same
+      way Attach/Detach Policy already are
+- [ ] `RemoveRoleFromInstanceProfile(ctx, w, client, roles
+      []RoleInfo) error` / `DeleteInstanceProfile(ctx, w, client, profiles
+      []InstanceProfileInfo) error`: pick-then-confirm-then-act wrappers
+      (plain `Confirm`, not `ConfirmDestructive`, matching Attach/Detach
+      Policy's tiering), same shape as `AttachPolicyToRole`/
+      `DetachPolicyFromRole`
+- [ ] `iam_menu.go`: `IAMActions` gains
+      `RemoveRoleFromInstanceProfile`/`DeleteInstanceProfile`; new menu
+      entries added to the Role actions group, ordered after
+      Attach/Detach Policy and before Delete Role (reversible-before-
+      irreversible, matching Phase 20.43's own ordering convention)
+
+### Tests
+
+- [ ] Reworded-message assertion: a role with `ReferencedByProfiles`
+      set produces the new wording, not the old one
+- [ ] `removeRoleFromInstanceProfile`/`deleteInstanceProfile`: success
+      and API-error passthrough, table-driven against a fake IAM client
+- [ ] `RemoveRoleFromInstanceProfile`/`DeleteInstanceProfile`'s testable
+      cores: non-DLD-owned role/profile refused; confirm declined does
+      nothing; confirm accepted calls the wrapped API function exactly
+      once
+
+### Files
+
+New `internal/workflow/{iam_instance_profile_membership.go,
+iam_instance_profile_membership_test.go}`; `internal/workflow/
+{iam_lifecycle.go,iam_lifecycle_test.go,iam_menu.go,iam_menu_test.go}`
+(extended, not new).
+
+### Dependency
+
+None -- independently buildable; reuses IAM domain scaffolding from
+Phases 20.36-20.40 (RequireDLDOwned, IAMActions, menu shape) unchanged.
+
+## Phase 20.56 — Associate/Replace IAM Instance Profile: Recoverable `EntityAlreadyExists`
+
+**Status: designed 2026-08-18, not yet implemented** (DESIGN.md,
+"Associate/Replace IAM Instance Profile: Recoverable
+`EntityAlreadyExists`"; DECISIONS.md, "Associate/Replace IAM instance
+profile: recoverable `EntityAlreadyExists`").
+
+### Work Items
+
+- [ ] `create_instance_profile.go`: `createInstanceProfileForRole`'s
+      `EntityAlreadyExists` branch, instead of unconditionally printing a
+      message and looping back to the name prompt, offers a choice ("Use
+      the existing instance profile %q" / "Type a different name"); "use
+      existing" returns `(profileName, false, nil)` immediately
+- [ ] Cancellation from the name prompt (`ui.Prompt`) or the new
+      use-existing-vs-retry choice is treated as `(", false, nil)"` (no
+      profile created, not an error) rather than propagating the raw
+      cancellation error -- matches the function's own existing "no
+      SSM-capable roles" return shape
+- [ ] `createInstanceProfileInteractive`/`promptIAMInstanceProfileOrCreate`:
+      confirm the existing "redisplay the picker on created=false"
+      behavior already covers this (per the comment at
+      `promptIAMInstanceProfileOrCreate`'s loop end) -- no change
+      expected here, but verify with a test rather than assuming
+
+### Tests
+
+- [ ] `createInstanceProfileForRole`: `EntityAlreadyExists` +
+      "use existing" returns the existing name, `created=false`, no
+      further API calls; `EntityAlreadyExists` + "type a different name"
+      re-prompts as before; a cancellation at the name prompt returns
+      `created=false, err=nil` (not the raw cancel error)
+- [ ] `promptIAMInstanceProfileOrCreate`: a `created=false` result from
+      the "use existing" path redisplays the instance-profile picker
+      rather than erroring out, via the existing loop -- a dedicated
+      regression test reproducing this session's scenario (pick "create
+      new," collide on the role's own name, choose "use existing")
+
+### Files
+
+`internal/workflow/{create_instance_profile.go,create_instance_profile_test.go}`
+(extended, not new).
+
+### Dependency
+
+None -- independently buildable.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
