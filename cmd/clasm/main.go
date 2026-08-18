@@ -526,7 +526,7 @@ func main() {
 			return workflow.ArchiveOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories, openSearchArchiveHistory)
 		},
 		RestoreSQL: func(ctx context.Context) error {
-			return workflow.NotYetImplemented(out, "Restore SQL Backup from S3")
+			return workflow.RestoreSQLBackup(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules)
 		},
 		RestoreOpenSearch: func(ctx context.Context) error {
 			return workflow.NotYetImplemented(out, "Restore OpenSearch Snapshot from S3")

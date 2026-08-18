@@ -2497,10 +2497,7 @@ design).
 1. Pick a target instance. Assumes Postgres is already running on it --
    either freshly provisioned and empty, or already populated with data
    to be replaced. This workflow does not provision an instance.
-2. Pick the source backup: browse the SQL bucket's
-   `<source-instance-name>/` prefix, defaulting to the most recent
-   object, with the option to pick a specific dated one instead.
-3. **Discover and reconcile the target's own Postgres container/DB
+2. **Discover and reconcile the target's own Postgres container/DB
    config**, exactly the same mechanism Run SQL Backup uses on its
    source instance (client-side Postgres-image matching over an
    unfiltered `docker ps`, reconcile with `rdm_postgres_config`, resolve
@@ -2512,7 +2509,16 @@ design).
    can't just trust a config value left over from an unrelated instance,
    or assume the target's Name tag blindly. See DECISIONS.md, "Restore
    SQL Backup also discovers-and-reconciles its own target, not just Run
-   SQL Backup's source."
+   SQL Backup's source." **Runs before picking the source backup below**
+   (corrected 2026-08-18 from this section's original ordering -- see
+   DECISIONS.md, "Restore SQL Backup: resolve the Postgres target before
+   any S3 prompt, not after"): a broken target is fatal regardless of
+   which backup gets picked, so failing fast here avoids walking through
+   the bucket/source-name/object-pick prompts first only to hit the
+   identical failure right before the load step.
+3. Pick the source backup: browse the SQL bucket's
+   `<source-instance-name>/` prefix, defaulting to the most recent
+   object, with the option to pick a specific dated one instead.
 4. If the target already has live data, this is destructive --
    `ConfirmDestructive` (type-to-confirm), the same tier as Feature 9
    (Remove AMI) and IAM's Delete Role, before anything is overwritten.
@@ -2525,9 +2531,16 @@ design).
      postgres -c "DROP DATABASE IF EXISTS <db_name>"`
    - `docker exec <container> psql --username=<db_user> --dbname
      postgres -c "CREATE DATABASE <db_name>"`
-   - pipe the decompressed `.sql` file into `docker exec -i <container>
+   - load the decompressed `.sql` file into `docker exec -i <container>
      psql --username=<db_user> <db_name>` -- drop-and-recreate, not
      restore-in-place.
+   `db_name` is wrapped as a proper SQL quoted identifier in the DROP/
+   CREATE statements (not the bare, unquoted form
+   `invenio-sql-restore.bash` itself uses) -- found real, live, setting
+   up a restore-test instance whose actual `db_name` contains a hyphen,
+   not a valid unquoted Postgres identifier. See DECISIONS.md, "Restore
+   SQL Backup: quote the database name as a SQL identifier, not just
+   shell-quote it."
 6. Post-restore sanity check (row/table counts) before declaring
    success.
 

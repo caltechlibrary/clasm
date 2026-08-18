@@ -4,6 +4,82 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-08-18 — Restore SQL Backup: quote the database name as a SQL identifier, not just shell-quote it
+
+**Context.** Implementing Phase 20.50 against a real target
+(`caltechdata-restore-test`, whose actual Postgres database is named
+`rdm14-granian`, hyphenated -- `docker-services.yml`'s own
+`POSTGRES_DB`/`POSTGRES_USER` use the instance's real, hyphenated
+`INSTANCE_NAME` directly, not the underscored `PACKAGE_NAME` used only
+for the Python module) surfaced that DECISIONS.md's already-committed
+"SQL restore load command" entry (2026-07-29, below) describes the
+DROP/CREATE DATABASE statements as unquoted, matching
+`invenio-sql-restore.bash`'s own real, unquoted statements verbatim.
+That's syntactically invalid for any `dbName` containing a hyphen (or
+any other character not valid in a bare identifier) --
+`DROP DATABASE IF EXISTS rdm14-granian` parses as `rdm14 - granian`
+(subtraction), not a single identifier. Every production instance's real
+`dbName` so far has been a plain lowercase word, so this gap never
+surfaced there.
+
+**Decision.** `buildRestoreSQLCommands` wraps `dbName` in a proper SQL
+quoted identifier (`quoteSQLIdentifier`: double-quote wrapped, embedded
+double quotes doubled) inside the DROP/CREATE statements specifically --
+not the load command's own `psql --username=<user> <dbName>` argument,
+which is a plain connection-target string, not SQL syntax, and stays
+shell-quoted only (`shellQuote`, unchanged).
+
+**Rationale.**
+- A quoted identifier is a strict superset: for every existing
+  production `dbName` (all plain lowercase words), quoting changes
+  nothing observable -- Postgres treats `"caltechauthors"` and
+  `caltechauthors` identically. This isn't a divergence from the real
+  script's *intent* (drop-and-recreate a database by name), only a
+  necessary correction for names the original scripts never had to
+  handle.
+- Confirmed via `TestBuildRestoreSQLCommands_HyphenatedDBNameIsQuotedAsIdentifier`,
+  grounded directly in this real instance's own `dbName`, not a
+  synthetic example.
+
+**Consequences.** None to the already-decided load command's overall
+*structure* (drop -> create -> load, still three separate commands) --
+only the DROP/CREATE statements' own SQL text changed. See PLAN.md Phase
+20.50.
+
+---
+
+## 2026-08-18 — Restore SQL Backup: resolve the Postgres target before any S3 prompt, not after
+
+**Context.** PLAN.md Phase 20.50's originally-sketched work-item order
+(2026-07-28) put `resolveRDMPostgresConfig` (Postgres-container
+discovery) *after* the bucket/source-name/object-pick prompts and the S3
+listing -- but that same document's own Tests section, for the identical
+phase, describes a test as "zero or multiple `docker ps` results for the
+target aborts before any S3 activity." Implementing both literally would
+have been self-contradictory: discovery happening after S3 listing means
+a broken Postgres target can never be caught "before any S3 activity,"
+since the S3 activity already happened by the time discovery runs.
+
+**Decision.** Moved Postgres-target discovery to run immediately after
+the AWS-CLI preflight check, before the bucket prompt, the source-
+instance-name prompt, the S3 object listing, and the object pick.
+
+**Rationale.**
+- A broken target (no running Postgres container, or more than one) is
+  fatal to the whole restore regardless of which S3 object ends up
+  picked -- there's no scenario where continuing through the bucket/
+  object-pick prompts first is useful. Failing fast avoids making the
+  operator pick a bucket and a potentially large object only to hit the
+  identical failure right before the load step.
+- Matches the Tests section's own evident intent, confirmed by a new
+  regression test, `TestRestoreSQLBackup_DiscoveryFailureAbortsBeforeAnyS3Activity`,
+  which asserts zero S3 calls of any kind on a discovery failure.
+
+**Consequences.** No other step's relative order changed. See PLAN.md
+Phase 20.50 (work items renumbered to match the implemented order).
+
+---
+
 ## 2026-08-18 — Real bug: instance/AMI creation wrote the Project tag key capitalized, the fleet convention is lowercase
 
 **Context.** Found while preparing to launch a fresh dev/restore-test

@@ -5842,32 +5842,48 @@ parameters the same way `BackupArchiveAndTrim` does).
 
 ## Phase 20.50 — Restore SQL Backup from S3
 
-**Status: designed 2026-07-28, load command and target-side container
-discovery resolved 2026-07-29, not yet implemented** (DESIGN.md, "RDM
-Backup & Restore Domain" -> "Restore SQL Backup from S3"). Load command
-confirmed against the real `invenio-sql-backup.bash`/
-`invenio-sql-restore.bash` (`~/WorkLab/caltechauthors`) -- plain-text
-`pg_dump --column-inserts` output (gzip'd, not `--format=custom`),
-restored via `DROP DATABASE IF EXISTS` -> `CREATE DATABASE` -> pipe into
-`psql`, all run inside the target's Postgres container via `docker exec`.
-The container itself is never assumed -- this phase now shares Phase
-20.52's live discover-and-reconcile helper (client-side Postgres-image
-matching over an unfiltered `docker ps`, reconciled with
-`rdm_postgres_config` -- not Docker's own `--filter ancestor=`, which
-real-AWS testing found doesn't match a tagged image, DECISIONS.md, "Real
-bug: `docker ps --filter ancestor=postgres` doesn't match a tagged
-image...") to resolve it on the *target* instance, since a restore
-target can be a completely
-different instance than whatever last touched that config. See
-DECISIONS.md, "SQL restore load command: grounded in the real
-invenio-sql-backup.bash/invenio-sql-restore.bash, not guessed," and
-"Restore SQL Backup also discovers-and-reconciles its own target, not
-just Run SQL Backup's source." No longer blocked, but now depends on
-Phase 20.52's shared helper existing (see Dependency, below).
+**Status: designed 2026-07-28/29, implemented and unit-tested 2026-08-18,
+test-first throughout, `go build`/`go vet`/`go test ./... -race`/
+`gofmt -l` all clean** (DESIGN.md, "RDM Backup & Restore Domain" ->
+"Restore SQL Backup from S3"). Load command confirmed against the real
+`invenio-sql-backup.bash`/`invenio-sql-restore.bash`
+(`~/WorkLab/caltechauthors`) -- plain-text `pg_dump --column-inserts`
+output (gzip'd, not `--format=custom`), restored via `DROP DATABASE IF
+EXISTS` -> `CREATE DATABASE` -> load into `psql`, all run inside the
+target's Postgres container via `docker exec`. The container itself is
+never assumed -- this phase shares Phase 20.52's live discover-and-
+reconcile helper (`resolveRDMPostgresConfig`) to resolve it on the
+*target* instance, since a restore target can be a completely different
+instance than whatever last touched that config. See DECISIONS.md, "SQL
+restore load command: grounded in the real invenio-sql-backup.bash/
+invenio-sql-restore.bash, not guessed," "Restore SQL Backup also
+discovers-and-reconciles its own target, not just Run SQL Backup's
+source," and this phase's own two 2026-08-18 entries below (step order,
+SQL-identifier quoting).
+
+**Two implementation-time corrections to this original design, both
+caught before/while implementing, both with dedicated DECISIONS.md
+entries:**
+1. **Step order.** Postgres-target discovery
+   (`resolveRDMPostgresConfig`) now runs immediately after the AWS-CLI
+   preflight, *before* the bucket/source-name/object-pick prompts --
+   not after, as originally sketched below. The original Work Items
+   order contradicted this phase's own Tests section ("aborts before
+   any S3 activity"); the corrected order actually satisfies that intent
+   and fails fast on a broken target. See DECISIONS.md, "Restore SQL
+   Backup: resolve the Postgres target before any S3 prompt, not after."
+2. **SQL-identifier quoting.** The DROP/CREATE DATABASE statements now
+   wrap `dbName` in a proper SQL quoted identifier
+   (`quoteSQLIdentifier`), not the bare, unquoted form
+   `invenio-sql-restore.bash` itself uses -- found real, live, while
+   setting up `caltechdata-restore-test`, whose actual database name is
+   `rdm14-granian` (hyphenated, not a valid *unquoted* Postgres
+   identifier). See DECISIONS.md, "Restore SQL Backup: quote the
+   database name as a SQL identifier, not just shell-quote it."
 
 ### Work Items
 
-- [ ] New `internal/workflow/restore_common.go` (shared with Phase
+- [x] New `internal/workflow/restore_common.go` (shared with Phase
       20.51, not duplicated): `S3Object{Key string, SizeBytes int64,
       LastModified time.Time}`; `ListObjectsByPrefix(ctx, client
       awsclient.S3API, bucket, prefix string) ([]S3Object, error)` --
@@ -5879,96 +5895,108 @@ Phase 20.52's shared helper existing (see Dependency, below).
       browsable/pickable, no separate "use latest?" confirm step needed
       (mirrors Phase 20.21's `InitialCursor` precedent: sorted-to-front
       is itself the default, not a second UI step)
-- [ ] New `internal/workflow/restore_sql.go`:
+- [x] New `internal/workflow/restore_sql.go`:
       `RestoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client,
-      instances []inventory.Instance) error` (picks target instance via
-      `pickInstanceDefaulted`) delegating to testable core
-      `restoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client, inst,
-      input, output) error`:
+      instances []inventory.Instance, rdmPostgresRules
+      []config.RDMPostgresRule, saveRDMPostgresRules
+      func([]config.RDMPostgresRule) error) error` (picks target
+      instance via a plain `pickInstance` -- no `BackupHistory`/recall
+      parameter in this signature, unlike Run SQL Backup/Archive SQL;
+      restoring is a rare, deliberate action, not a routine one worth
+      pre-positioning) delegating to testable core `restoreSQLBackup(ctx,
+      w, ssmClients, s3Client, newS3Client, inst, rdmPostgresRules,
+      saveRDMPostgresRules, input, output) error`, in this order
+      (corrected from the original sketch, see above):
       1. `resolveSSM` + `CheckAWSCLIAvailable` (reused)
-      2. Prompt bucket (`promptBackupBucketFunc`, reused) + region/
+      2. `resolveRDMPostgresConfig` (Phase 20.52's shared helper, reused
+         not reimplemented) -- discovers the target's live Postgres
+         container via an unfiltered `docker ps` plus client-side image
+         matching, reconciles with `rdm_postgres_config`, resolves
+         `dbName`/`dbUser` (config override else `cmp.Or(inst.Project,
+         inst.Name)`, same fallback as Run SQL Backup). If
+         `updatedRules` differs from the rules passed in, persist via
+         `saveRDMPostgresRules` and report the change
+      3. Prompt bucket (`promptBackupBucketFunc`, reused) + region/
          access-check sequence (reused, same as Feature 11/Phase 20.49)
-      3. Prompt source-instance-name (`ui.Prompt`, default = target
+      4. Prompt source-instance-name (`ui.Prompt`, default = target
          `inst.Name` -- the common case is restoring an instance's own
          most recent backup, but cross-instance restore, e.g. onto a
          fresh clone, needs this editable)
-      4. `ListObjectsByPrefix(bucket, sourceName+"/")`, `pickS3Object`
-      5. `resolveRDMPostgresConfig(ctx, w, ssmClient, inst.InstanceID,
-         inst.Name, rdmPostgresRules) (containerName, dbName, dbUser
-         string, updatedRules []config.RDMPostgresRule, error)` (Phase
-         20.52's shared helper, reused not reimplemented) -- discovers
-         the target's live Postgres container via an unfiltered
-         `docker ps` plus client-side image matching, reconciles with
-         `rdm_postgres_config`, resolves `dbName`/`dbUser` (config
-         override else `inst.Name`).
-         If `updatedRules` differs from the rules passed in, persist via
-         `config.Save` and report the change, same as Run SQL Backup
-      6. `detectExistingSQLData(ctx, ssmClient, inst.InstanceID,
-         containerName, dbName, dbUser string) (bool, error)`: SSM-run
-         `docker exec <containerName> psql --username=<dbUser> --dbname
-         postgres -tAc "SELECT 1 FROM pg_database WHERE datname=
-         '<dbName>'"` -- true if the database already exists (any row
-         returned), matching `invenio-sql-restore.bash`'s own `DROP
-         DATABASE IF EXISTS` precondition
+      5. `ListObjectsByPrefix(bucket, sourceName+"/")`; empty result is a
+         clean "no backups found" message, not an error; `pickS3Object`
+      6. `detectExistingSQLData(ctx, client, instanceID, containerName,
+         dbName, dbUser string, timeout, pollInterval) (bool, error)`:
+         SSM-runs `docker exec <containerName> psql --username=<dbUser>
+         --dbname postgres -tAc "SELECT 1 FROM pg_database WHERE
+         datname=<sqlStringLiteral(dbName)>"` -- true if the database
+         already exists, matching `invenio-sql-restore.bash`'s own
+         `DROP DATABASE IF EXISTS` precondition
       7. If existing data detected:
          `ConfirmDestructive([]string{inst.InstanceID, inst.Name})`
          (reused verbatim, same tier as Feature 9/IAM's Delete Role)
-      8. Download the chosen object to the target (SSM, `aws s3 cp`) --
-         new `buildDownloadCommand`/`DownloadBackupObject`, mirroring
-         `buildUploadCommand`/`UploadBackupFiles`'s shape but in the
-         opposite direction (single file, not a batch, so no per-file
-         progress ticker needed -- a single OK/FAIL is enough); then
-         `gunzip` it on the target
-      9. Load into the target's Postgres container (SSM), new
-         `buildRestoreSQLCommand(containerName, dbName, dbUser,
-         sqlFilePath string) []string` producing exactly the real
-         script's sequence wrapped in `docker exec`: `docker exec
+      8. `downloadAndDecompressSQLBackup` -- one combined SSM command
+         (`set -e; aws s3 cp --only-show-errors ...; gunzip -f ...`,
+         matching `buildSQLDumpCommand`'s own established two-step-
+         joined-by-`set -e` shape) downloads the chosen object to a
+         fixed `/tmp/<basename>` scratch path on the target and
+         decompresses it there
+      9. `runRestoreSQLCommands` -- `buildRestoreSQLCommands` produces
+         the real script's drop/create/load sequence, each its own
+         separate SSM round trip (not joined by `&&`, matching this
+         project's established multi-step-remote-sequence pattern --
+         OpenSearch's register/create/poll/delete): `docker exec
          <containerName> psql --username=<dbUser> --dbname postgres -c
-         "DROP DATABASE IF EXISTS <dbName>"`, then `docker exec
-         <containerName> psql --username=<dbUser> --dbname postgres -c
-         "CREATE DATABASE <dbName>"`, then `docker exec -i
+         "DROP DATABASE IF EXISTS <quoteSQLIdentifier(dbName)>"`, then
+         the same for `CREATE DATABASE`, then `docker exec -i
          <containerName> psql --username=<dbUser> <dbName> <
          <sqlFilePath>` -- drop-and-recreate, not restore-in-place,
-         matching `invenio-sql-restore.bash` exactly
-      10. Post-restore sanity check: SSM-run `docker exec <containerName>
+         matching `invenio-sql-restore.bash`'s real behavior, with the
+         identifier-quoting correction noted above
+      10. `countRestoredTables`: SSM-runs `docker exec <containerName>
           psql --username=<dbUser> <dbName> -tAc "SELECT count(*) FROM
           information_schema.tables WHERE table_schema='public'"`,
-          surface the table count in the report rather than silently
+          surfaces the table count in the report rather than silently
           declaring success on an empty database
       11. Report summary
 
 ### Tests
 
-- [ ] `ListObjectsByPrefix`: pagination (multiple pages via
+- [x] `ListObjectsByPrefix`: pagination (multiple pages via
       `IsTruncated`), sort-by-`LastModified`-descending, empty-prefix
-      case
-- [ ] `pickS3Object`: most-recent is the first/default-selected entry,
+      case, error propagation
+- [x] `pickS3Object`: most-recent is the first/default-selected entry,
       still able to pick any other
-- [ ] `restoreSQLBackup`'s testable core: happy path with no existing
-      data (no confirm prompt shown); existing-data path requires
-      `ConfirmDestructive`, mismatch cancels before download; download
-      failure aborts before any load attempt; zero or multiple
-      `docker ps` results for the target aborts before any S3 activity,
-      same as Run SQL Backup's own discovery-failure test
-- [ ] `buildRestoreSQLCommand`: exact three-`docker exec`-wrapped-statement
-      sequence (DROP/CREATE/load), table-driven against a couple of
-      containerName/dbName/dbUser combinations
-- [ ] `detectExistingSQLData`: existing-db and no-db fixture responses
+- [x] `restoreSQLBackup`'s testable core: no-backups-found message;
+      happy path with no existing data (no confirm prompt shown,
+      reports the restored table count); existing-data path requires
+      `ConfirmDestructive`, decline cancels before any download attempt,
+      confirm proceeds; download failure aborts before any load
+      attempt; Postgres discovery failure aborts before any S3 call at
+      all (`TestRestoreSQLBackup_DiscoveryFailureAbortsBeforeAnyS3Activity`,
+      the corrected-order regression test); `rdm_postgres_config` save/
+      no-save on changed/unchanged rules; AWS-CLI-unavailable aborts
+      before any prompt
+- [x] `buildRestoreSQLCommands`: exact three-command sequence for a
+      simple name, plus a dedicated regression test
+      (`TestBuildRestoreSQLCommands_HyphenatedDBNameIsQuotedAsIdentifier`)
+      reproducing `caltechdata-restore-test`'s own real hyphenated
+      `dbName`
+- [x] `quoteSQLIdentifier`/`sqlStringLiteral`: simple name, hyphenated
+      name, embedded quote-doubling for each
+- [x] `detectExistingSQLData`/`countRestoredTables`: existing-db/no-db/
+      SSM-failure fixture responses; count parsing
 
 ### Files
 
 New `internal/workflow/{restore_common.go,restore_common_test.go,
-restore_sql.go,restore_sql_test.go}`.
+restore_sql.go,restore_sql_test.go}`; `cmd/clasm/main.go` (wire
+`RestoreSQLBackup` in place of its `NotYetImplemented` stub).
 
 ### Dependency
 
-Phase 20.48 (menu entry point) -- the load-command dependency that
-previously blocked Work Items 6/9/10 is resolved (see status note
-above). New dependency: Phase 20.52's `internal/workflow/
-rdm_postgres_config.go` (shared container discover-and-reconcile
-helper) -- if Phase 20.52 hasn't landed yet when this phase starts, that
-shared helper's own work items need to land first (or as part of this
-phase, since both need it equally).
+Phase 20.48 (menu entry point) -- already existed. Phase 20.52's
+`internal/workflow/rdm_postgres_config.go` (shared container discover-
+and-reconcile helper) -- already existed, reused unchanged.
 
 ## Phase 20.51 — Restore OpenSearch Snapshot from S3
 
