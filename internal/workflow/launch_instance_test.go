@@ -82,8 +82,8 @@ func TestCollectLaunchInstanceParams(t *testing.T) {
 	if got.Tags["Name"] != "authorstest" {
 		t.Errorf("Tags[Name] = %q, want %q", got.Tags["Name"], "authorstest")
 	}
-	if got.Tags["Project"] != "caltechauthors" {
-		t.Errorf("Tags[Project] = %q, want default %q", got.Tags["Project"], "caltechauthors")
+	if got.Tags["project"] != "caltechauthors" {
+		t.Errorf("Tags[project] = %q, want default %q", got.Tags["project"], "caltechauthors")
 	}
 	if got.Tags["Environment"] != "test" {
 		t.Errorf("Tags[Environment] = %q, want %q", got.Tags["Environment"], "test")

@@ -175,7 +175,7 @@ func collectLaunchInstanceParams(ctx context.Context, w io.Writer, ec2Clients ma
 		RootVolumeSizeGB:   rootVolumeSizeGB,
 		Tags: map[string]string{
 			"Name":        name,
-			"Project":     project,
+			"project":     project,
 			"Environment": environment,
 		},
 	}, ec2Client, ssmClient, nil

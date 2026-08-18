@@ -128,7 +128,7 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		RootVolumeSizeGB:   rootVolumeSizeGB,
 		Tags: map[string]string{
 			"Name":        name,
-			"Project":     project,
+			"project":     project,
 			"Environment": environment,
 		},
 	}, ec2Client, ssmClient, nil

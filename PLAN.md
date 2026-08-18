@@ -6604,6 +6604,51 @@ None -- independently buildable.
 
 ---
 
+## Phase 20.57 — Real Bug: Project Tag Key Written Capitalized, Should Be Lowercase
+
+**Status: found, fixed, and unit-tested 2026-08-18, test-first** (DECISIONS.md,
+"Real bug: instance/AMI creation wrote the Project tag key capitalized,
+the fleet convention is lowercase"). Found while preparing to launch a
+fresh dev/restore-test instance, ahead of Phases 20.50/20.51.
+
+### Work Items
+
+- [x] `launch_instance.go`, `launch_from_cloud_init.go`,
+      `create_ami_from_instance.go`: each `Tags: map[string]string{...}`
+      literal's `"Project"` key changed to `"project"`, matching
+      `inventory.tagValues`' exact-match lowercase read side. No change
+      to the "Project tag" prompt label itself.
+
+### Tests
+
+- [x] `TestCollectLaunchInstanceParams`,
+      `TestCollectLaunchInstanceParamsFromCloudInit_HappyPath`: existing
+      `Tags["Project"]` assertions updated to `Tags["project"]`
+- [x] New `TestCollectCreateAMIParams_ProjectTagKeyIsLowercase`: this
+      call site had no pre-existing assertion on the tag key at all;
+      asserts the lowercase key is set and the capitalized key is absent
+- [x] Confirmed (by reading each file, not assuming) that every other
+      test-file reference to `"Project"` (`bucket_tags_test.go`,
+      `manage_tags_test.go`, `tag_management_test.go`,
+      `create_ami_execute_test.go`, `launch_execute_test.go`,
+      `launch_template_create_test.go`) is either a generic/arbitrary
+      example tag key unrelated to this convention, or an execute/build-
+      layer test that just forwards an already-built `Tags` map verbatim
+      -- none needed changes
+
+### Files
+
+`internal/workflow/{launch_instance.go,launch_instance_test.go,
+launch_from_cloud_init.go,launch_from_cloud_init_test.go,
+create_ami_from_instance.go,create_ami_from_instance_test.go}`
+(extended, not new).
+
+### Dependency
+
+None -- independently buildable.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

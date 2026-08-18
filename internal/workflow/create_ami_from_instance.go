@@ -72,7 +72,7 @@ func CollectCreateAMIParams(w io.Writer, inst inventory.Instance, now time.Time,
 		NoReboot:    noReboot,
 		Tags: map[string]string{
 			"Name":        name,
-			"Project":     project,
+			"project":     project,
 			"Environment": environment,
 		},
 	}, nil

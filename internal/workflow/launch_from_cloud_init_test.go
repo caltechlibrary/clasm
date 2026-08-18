@@ -71,8 +71,8 @@ func TestCollectLaunchInstanceParamsFromCloudInit_HappyPath(t *testing.T) {
 	if got.InstanceType != "t3.large" {
 		t.Errorf("InstanceType = %q, want %q", got.InstanceType, "t3.large")
 	}
-	if got.Tags["Project"] != "caltechauthors" {
-		t.Errorf("Tags[Project] = %q, want default %q", got.Tags["Project"], "caltechauthors")
+	if got.Tags["project"] != "caltechauthors" {
+		t.Errorf("Tags[project] = %q, want default %q", got.Tags["project"], "caltechauthors")
 	}
 	if got.Tags["Environment"] != "development" {
 		t.Errorf("Tags[Environment] = %q, want %q", got.Tags["Environment"], "development")

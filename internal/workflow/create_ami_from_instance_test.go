@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -123,6 +124,34 @@ func TestCreateAMIFromInstance_ReportsFailedState(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "failed") {
 		t.Errorf("expected a failure message in output, got:\n%s", buf.String())
+	}
+}
+
+// TestCollectCreateAMIParams_ProjectTagKeyIsLowercase is a regression
+// test for PLAN.md Phase 20.57 (DECISIONS.md, "Real bug: instance/AMI
+// creation wrote the Project tag key capitalized, the fleet convention
+// is lowercase"): every AMI/instance clasm creates must write the
+// Project tag under the same lowercase "project" key
+// inventory.tagValues actually reads back, or the new resource's own
+// Project field silently reads empty forever after.
+func TestCollectCreateAMIParams_ProjectTagKeyIsLowercase(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", State: "running"}
+	input := "\n" + // AMI name (blank -> default)
+		"\n" + // description (blank)
+		"y\n" + // no-reboot confirm
+		"caltechauthors\n" + // Project
+		"production\n" // Environment
+
+	term, le, buf := newPipeEditor(input)
+	got, err := CollectCreateAMIParams(term, inst, time.Now(), le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Tags["project"] != "caltechauthors" {
+		t.Errorf("Tags[project] = %q, want %q", got.Tags["project"], "caltechauthors")
+	}
+	if _, capitalized := got.Tags["Project"]; capitalized {
+		t.Errorf("did not expect a capitalized \"Project\" key, got: %+v", got.Tags)
 	}
 }
 
