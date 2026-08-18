@@ -6534,41 +6534,64 @@ Phases 20.36-20.40 (RequireDLDOwned, IAMActions, menu shape) unchanged.
 
 ## Phase 20.56 — Associate/Replace IAM Instance Profile: Recoverable `EntityAlreadyExists`
 
-**Status: designed 2026-08-18, not yet implemented** (DESIGN.md,
+**Status: designed and implemented 2026-08-18, test-first throughout,
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
 "Associate/Replace IAM Instance Profile: Recoverable
 `EntityAlreadyExists`"; DECISIONS.md, "Associate/Replace IAM instance
-profile: recoverable `EntityAlreadyExists`").
+profile: recoverable `EntityAlreadyExists`" and its same-day correction
+entry). Not yet real-AWS-verified.
 
 ### Work Items
 
-- [ ] `create_instance_profile.go`: `createInstanceProfileForRole`'s
+- [x] `create_instance_profile.go`: `createInstanceProfileForRole`'s
       `EntityAlreadyExists` branch, instead of unconditionally printing a
-      message and looping back to the name prompt, offers a choice ("Use
-      the existing instance profile %q" / "Type a different name"); "use
-      existing" returns `(profileName, false, nil)` immediately
-- [ ] Cancellation from the name prompt (`ui.Prompt`) or the new
-      use-existing-vs-retry choice is treated as `(", false, nil)"` (no
-      profile created, not an error) rather than propagating the raw
-      cancellation error -- matches the function's own existing "no
-      SSM-capable roles" return shape
-- [ ] `createInstanceProfileInteractive`/`promptIAMInstanceProfileOrCreate`:
-      confirm the existing "redisplay the picker on created=false"
-      behavior already covers this (per the comment at
-      `promptIAMInstanceProfileOrCreate`'s loop end) -- no change
-      expected here, but verify with a test rather than assuming
+      message and looping back to the name prompt, asks a plain
+      `Confirm` ("Instance profile %q already exists -- use it instead
+      of creating a new one?"); "use existing" returns `(profileName,
+      true, nil)` immediately -- **corrected from this work item's
+      original `created=false` sketch during implementation** (traced
+      `promptIAMInstanceProfileOrCreate`'s own caller, which only ever
+      returns a resolved name when `created` is `true`; `false` would
+      have silently discarded the confirmed existing name and looped
+      back to the picker instead of using it -- see DECISIONS.md's
+      dedicated correction entry)
+- [x] Cancellation from the name prompt is treated as `("", false, nil)`
+      (no profile resolved, not an error) rather than propagating the
+      raw cancellation error -- matches the function's own existing "no
+      SSM-capable roles" return shape. New package-level
+      `promptInstanceProfileNameFunc` var (same seam shape as
+      `backup_archive.go`'s `promptBackupBucketFunc`) makes this
+      testable via a substitutable fake returning `huh.ErrUserAborted`.
+      The paired "use existing?" `Confirm`'s own cancellation is left as
+      an ordinary propagated error, matching every other `Confirm` call
+      site in the IAM domain -- not converted to nil, since nothing in
+      this fix's scope calls for a broader convention change
+- [x] `createInstanceProfileInteractive`/`promptIAMInstanceProfileOrCreate`:
+      confirmed (by tracing the code, not just assuming) the existing
+      "redisplay the picker on `created=false`" behavior needs no
+      changes for the cancellation path; the "use existing" path needed
+      the `created=true` correction above instead of relying on that
+      same behavior
 
 ### Tests
 
-- [ ] `createInstanceProfileForRole`: `EntityAlreadyExists` +
-      "use existing" returns the existing name, `created=false`, no
-      further API calls; `EntityAlreadyExists` + "type a different name"
-      re-prompts as before; a cancellation at the name prompt returns
-      `created=false, err=nil` (not the raw cancel error)
-- [ ] `promptIAMInstanceProfileOrCreate`: a `created=false` result from
-      the "use existing" path redisplays the instance-profile picker
-      rather than erroring out, via the existing loop -- a dedicated
-      regression test reproducing this session's scenario (pick "create
-      new," collide on the role's own name, choose "use existing")
+- [x] `createInstanceProfileForRole`: `EntityAlreadyExists` + "use
+      existing" (`TestCreateInstanceProfileForRole_CollisionOffersUseExisting`)
+      returns the existing name with `created=true`, no
+      `AddRoleToInstanceProfile` call; `EntityAlreadyExists` + "type a
+      different name" (`TestCreateInstanceProfileForRole_NameCollisionRetries`,
+      updated for the new confirm step) re-prompts and the retry
+      succeeds; a cancellation at the name prompt
+      (`TestCreateInstanceProfileForRole_CancelAtNamePromptReturnsWithoutError`,
+      via the new seam) returns `created=false, err=nil`, not the raw
+      cancel error, with no `CreateInstanceProfile` call at all
+- [x] No further-up regression test at `promptIAMInstanceProfileOrCreate`'s
+      own level -- confirmed (not assumed) that its only pipe-testable
+      path is the list-fetch-error free-text fallback, which bypasses
+      `createInstanceProfileInteractive`/`createInstanceProfileForRole`
+      entirely; the real picker call is Picker-tier and not pipe-testable,
+      the same already-accepted limitation documented at this test
+      file's own `TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails`
 
 ### Files
 

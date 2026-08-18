@@ -221,24 +221,61 @@ func createInstanceProfileInteractive(ctx context.Context, w io.Writer, client a
 	return createInstanceProfileForRole(ctx, w, client, picked.role, input, output)
 }
 
+// promptInstanceProfileNameFunc indirects createInstanceProfileForRole's
+// "New instance profile name" prompt through a package-level var -- the
+// same seam shape as backup_archive.go's promptBackupBucketFunc -- so a
+// test can substitute a fake that returns huh.ErrUserAborted directly.
+// Real Ctrl+C cancellation is caught at the Form level (huh's own
+// keymap.Quit, independent of any per-field keymap) and does return
+// huh.ErrUserAborted from ui.Prompt in a real interactive terminal, but
+// accessible mode's plain io.Reader/io.Writer pipe has no keyboard to
+// interrupt, so this is the only way to exercise this function's own
+// handling of a cancelled name prompt (DECISIONS.md, "Associate/Replace
+// IAM instance profile: recoverable EntityAlreadyExists").
+var promptInstanceProfileNameFunc = ui.Prompt
+
 // createInstanceProfileForRole is createInstanceProfileInteractive's
 // testable core, once a role is resolved -- role selection runs a real
 // bubbletea Program (tui.RunPicker, DESIGN.md's full conversion punch
 // list) that can't be driven by a test's pipe input, same limitation as
 // every other Picker-tier conversion this session.
+//
+// Revised 2026-08-18 (PLAN.md Phase 20.56, DECISIONS.md, "Associate/
+// Replace IAM instance profile: recoverable EntityAlreadyExists"): the
+// default profile name is the role's own name, exactly the name most
+// likely to already exist if a profile was created for that role
+// before -- so an EntityAlreadyExists collision now offers "use the
+// existing profile" instead of only ever asking for a different name,
+// and a cancelled name prompt returns (false, nil) rather than
+// propagating a raw error that would abort the entire calling workflow
+// (e.g. Associate/replace IAM instance profile). "created" here means
+// "a usable profile name was resolved," not literally "a new profile
+// was created" -- promptIAMInstanceProfileOrCreate's own caller only
+// ever inspects that boolean to decide whether to use the returned name
+// or redisplay its picker, so "use existing" returns true.
 func createInstanceProfileForRole(ctx context.Context, w io.Writer, client awsclient.IAMAPI, role RoleInfo, input io.Reader, output io.Writer) (name string, created bool, err error) {
 	for {
-		profileName, err := ui.Prompt("New instance profile name", ui.WithDefault(role.Name), ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
+		profileName, err := promptInstanceProfileNameFunc("New instance profile name", ui.WithDefault(role.Name), ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
 		if err != nil {
-			return "", false, err
+			return "", false, nil
 		}
 
 		if err := createInstanceProfileFromRole(ctx, client, profileName, role.Name); err != nil {
-			if isDuplicateInstanceProfileError(err) {
-				fmt.Fprintf(w, "invalid input: an instance profile named %q already exists -- choose a different name\n", profileName)
-				continue
+			if !isDuplicateInstanceProfileError(err) {
+				return "", false, err
 			}
-			return "", false, err
+
+			useExisting, err := Confirm(fmt.Sprintf("Instance profile %q already exists -- use it instead of creating a new one?", profileName), WithConfirmIO(input, output))
+			if err != nil {
+				return "", false, err
+			}
+			if useExisting {
+				fmt.Fprintf(w, "Using existing instance profile %q.\n", profileName)
+				return profileName, true, nil
+			}
+
+			fmt.Fprintf(w, "invalid input: an instance profile named %q already exists -- choose a different name\n", profileName)
+			continue
 		}
 
 		fmt.Fprintf(w, "Created instance profile %q attached to role %q. Note: newly created instance profiles can take a few seconds to propagate -- if launching the instance fails with an instance-profile-not-found error, wait a moment and retry.\n", profileName, role.Name)

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/smithy-go"
+	"github.com/charmbracelet/huh"
+
+	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
 // fakeIAMClient is the workflow package's fake for awsclient.IAMAPI,
@@ -553,17 +557,21 @@ func TestCreateInstanceProfileInteractive_NoSSMCapableRolesReturnsWithoutError(t
 	}
 }
 
+// TestCreateInstanceProfileForRole_NameCollisionRetries covers the
+// "type a different name" branch of the EntityAlreadyExists choice
+// (DECISIONS.md, "Associate/Replace IAM instance profile: recoverable
+// EntityAlreadyExists"): decline "use existing" ("n"), and the retry
+// with a fresh name succeeds. huh's accessible-mode input never
+// surfaces EOF as an error (it falls back to the field's default
+// instead, DESIGN.md's own accepted limitation for this mode) -- so a
+// fake that always errors would retry forever rather than eventually
+// surfacing an error the way termlib's LineEditor.Prompt used to.
+// Matches TestCreateNewKeyPairInteractive_RetriesOnDuplicateName's own
+// errOnce shape: the first name collides, the retry succeeds.
 func TestCreateInstanceProfileForRole_NameCollisionRetries(t *testing.T) {
-	// huh's accessible-mode input never surfaces EOF as an error (it
-	// falls back to the field's default instead, DESIGN.md's own
-	// accepted limitation for this mode) -- so a fake that always
-	// errors would retry forever rather than eventually surfacing an
-	// error the way termlib's LineEditor.Prompt used to. Matches
-	// TestCreateNewKeyPairInteractive_RetriesOnDuplicateName's own
-	// errOnce shape: the first name collides, the retry succeeds.
 	fake := &fakeIAMClient{createInstanceProfileErr: newDuplicateInstanceProfileError(), createInstanceProfileErrOnce: true}
 	role := RoleInfo{Name: "ec2-invenio-role"}
-	term, le, buf := newPipeEditor("taken-name\nfresh-name\n")
+	term, le, buf := newPipeEditor("taken-name\nn\nfresh-name\n")
 
 	got, created, err := createInstanceProfileForRole(context.Background(), term, fake, role, le, buf)
 	if err != nil {
@@ -574,6 +582,64 @@ func TestCreateInstanceProfileForRole_NameCollisionRetries(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "already exists") {
 		t.Errorf("expected a name-collision message, got:\n%s", buf.String())
+	}
+}
+
+// TestCreateInstanceProfileForRole_CollisionOffersUseExisting covers the
+// "use the existing profile" branch of the same EntityAlreadyExists
+// choice -- the real 2026-08-18 incident this fix addresses (creating
+// the rdm-backups role, the default profile name collided with one
+// already created for that exact role).
+func TestCreateInstanceProfileForRole_CollisionOffersUseExisting(t *testing.T) {
+	fake := &fakeIAMClient{createInstanceProfileErr: newDuplicateInstanceProfileError()}
+	role := RoleInfo{Name: "ec2-invenio-role"}
+	term, le, buf := newPipeEditor("taken-name\ny\n") // collide, then accept "use existing"
+
+	got, created, err := createInstanceProfileForRole(context.Background(), term, fake, role, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !created || got != "taken-name" {
+		t.Errorf("got name=%q created=%v, want %q/true (use the existing profile)", got, created, "taken-name")
+	}
+	if fake.lastAddRoleToInstanceProfileInput != nil {
+		t.Error("did not expect AddRoleToInstanceProfile to be called -- the existing profile's own role membership is left untouched")
+	}
+	if !strings.Contains(buf.String(), "Using existing instance profile") {
+		t.Errorf("expected a using-existing message, got:\n%s", buf.String())
+	}
+}
+
+// TestCreateInstanceProfileForRole_CancelAtNamePromptReturnsWithoutError
+// is a regression test for the other half of the same fix: cancelling
+// the name prompt must return (false, nil), not propagate a raw error
+// that would abort the entire calling workflow (e.g. Associate/replace
+// IAM instance profile) instead of letting
+// promptIAMInstanceProfileOrCreate's own loop redisplay its picker. Real
+// Ctrl+C cancellation can't be driven through accessible mode's pipe
+// input (no keyboard to interrupt), so this substitutes a fake through
+// the promptInstanceProfileNameFunc seam instead, the same technique
+// backup_archive.go's promptBackupBucketFunc uses for its own
+// un-pipe-testable cancellation path.
+func TestCreateInstanceProfileForRole_CancelAtNamePromptReturnsWithoutError(t *testing.T) {
+	orig := promptInstanceProfileNameFunc
+	defer func() { promptInstanceProfileNameFunc = orig }()
+	promptInstanceProfileNameFunc = func(label string, opts ...ui.PromptOption) (string, error) {
+		return "", huh.ErrUserAborted
+	}
+
+	fake := &fakeIAMClient{}
+	role := RoleInfo{Name: "ec2-invenio-role"}
+
+	got, created, err := createInstanceProfileForRole(context.Background(), io.Discard, fake, role, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if created || got != "" {
+		t.Errorf("got name=%q created=%v, want empty/false on a cancelled name prompt", got, created)
+	}
+	if fake.lastCreateInstanceProfileInput != nil {
+		t.Error("did not expect CreateInstanceProfile to be called after a cancelled name prompt")
 	}
 }
 

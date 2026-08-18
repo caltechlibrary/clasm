@@ -2784,7 +2784,7 @@ duplicate it.
 
 ## Associate/Replace IAM Instance Profile: Recoverable `EntityAlreadyExists` (Design Addendum, 2026-08-18, PLAN.md Phase 20.56)
 
-**Status: designed 2026-08-18, not yet implemented.** Found 2026-08-18
+**Status: designed and implemented 2026-08-18.** Found 2026-08-18
 creating the `rdm-backups` role (`agents/knowledge.db` clasm observation
 id 177): in `AssociateOrReplaceInstanceProfile`'s "create a new instance
 profile" path, `createInstanceProfileForRole`'s "New instance profile
@@ -2802,21 +2802,40 @@ the instance-profile picker -- recovery required a full clasm restart.
 subsumed by (b)):**
 1. **On `EntityAlreadyExists`, offer to use the existing profile instead
    of only asking for a different name.** `createInstanceProfileForRole`'s
-   retry loop, on catching `isDuplicateInstanceProfileError`, prompts a
-   choice ("Use the existing instance profile %q" / "Type a different
-   name") instead of unconditionally re-prompting for a name; picking
-   "use existing" returns that profile's name with `created=false` (same
-   shape `createInstanceProfileInteractive` already returns for its "no
-   SSM-capable roles" case) rather than fabricating a `created=true`.
+   retry loop, on catching `isDuplicateInstanceProfileError`, asks a
+   plain `Confirm` ("Instance profile %q already exists -- use it
+   instead of creating a new one?") instead of unconditionally
+   re-prompting for a name; declining re-prompts for a different name
+   (the prior behavior, unchanged). **Implementation-time correction to
+   the plan below:** picking "use existing" returns `(profileName, true,
+   nil)`, not `created=false` as originally sketched -- tracing the
+   caller confirmed `promptIAMInstanceProfileOrCreate`'s own loop
+   (`if created { return name, nil }` else redisplay the picker) treats
+   `created` as "is this name usable," not literally "was
+   `CreateInstanceProfile` called," so a `false` here would have
+   silently discarded the resolved name and looped back to the picker
+   instead of actually using it -- the opposite of what "use existing"
+   is supposed to do.
 2. **Make cancelling the name prompt recoverable, not fatal to the whole
    workflow.** Matches this codebase's own established `cancelledIsNil`
    pattern (used at every other pick/prompt cancellation site) --
-   `createInstanceProfileForRole` and `createInstanceProfileInteractive`
-   treat a cancellation from `ui.Prompt`/`pickRole` as "no profile
-   created, not an error" (mirroring the existing "no SSM-capable roles"
-   `created=false, err=nil` return), so `promptIAMInstanceProfileOrCreate`'s
-   outer loop redisplays the instance-profile picker instead of the error
-   propagating out of `AssociateOrReplaceInstanceProfile` entirely.
+   `createInstanceProfileForRole` treats a cancellation from the name
+   prompt as `(false, nil)` (mirroring the existing "no SSM-capable
+   roles" return shape), so `promptIAMInstanceProfileOrCreate`'s outer
+   loop redisplays the instance-profile picker instead of the error
+   propagating out of `AssociateOrReplaceInstanceProfile` entirely. A new
+   package-level `promptInstanceProfileNameFunc` var (mirroring
+   `backup_archive.go`'s `promptBackupBucketFunc` seam) lets a test
+   substitute a fake returning `huh.ErrUserAborted` directly, since real
+   Ctrl+C cancellation (caught at the Form level, independent of any
+   per-field keymap) can't be driven through accessible mode's plain
+   `io.Reader`/`io.Writer` pipe. The paired "use existing?" `Confirm`'s
+   own cancellation is left as an ordinary propagated error, matching
+   every other `Confirm` call site in the IAM domain (`attachPolicyToRoleConfirmed`,
+   `detachPolicyFromRoleConfirmed`, `deleteIAMRoleConfirmed`) -- none of
+   which specially convert a `Confirm` cancellation to nil, so this stays
+   scoped to the one prompt the real incident actually hit (the name
+   prompt), not a broader convention change.
 
 **No change to the instance-profile picker's own default filtering/display**
 -- the picker already lists the existing entry (the operator just has to
@@ -2826,7 +2845,7 @@ not about making the picker itself smarter.
 
 ### Not decided yet
 
-None -- this is a small, fully-scoped fix, resolved by combining two of
+None -- this was a small, fully-scoped fix, resolved by combining two of
 the three options already sketched in TODO.md.
 
 ## Core Features
