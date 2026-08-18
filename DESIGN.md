@@ -2861,6 +2861,105 @@ not about making the picker itself smarter.
 None -- this was a small, fully-scoped fix, resolved by combining two of
 the three options already sketched in TODO.md.
 
+## Restore Progress Reporting: Extend `pollWithProgress` to the SQL/OpenSearch Restore Load Steps; No Parallel Restores (Design Addendum, 2026-08-18, PLAN.md Phase 20.60)
+
+**Status: designed 2026-08-18, not yet implemented** (user's explicit
+call: not enough time left in today's session for either this or
+Phase 20.51/OpenSearch-restore testing). Motivated directly by live-
+testing Phase 20.50 against `caltechdata-restore-test`: the load step's
+fixed timeout (Phase 20.59's fifth follow-up widened it from 30 minutes
+to 2 hours after a real ~45-minute restore) is the wrong shape of fix on
+its own -- a fixed bound can never be "long enough" for every backup
+size, and a *timeout expiring* client-side does not mean the remote
+`psql` load actually stopped (see TODO.md's still-open `RunShellCommand`-
+timeout-doesn't-cancel finding) -- it can keep running, invisibly,
+well past the point clasm has already reported failure. Confirmed live:
+the operator had to poll `ps aux`/`pg_database_size`/table counts by
+hand, via commands read out in chat, to distinguish "still genuinely
+working" from "actually stuck," for over an hour.
+
+**Fix: reuse Phase 20.53's `pollWithProgress` pattern for the load step
+itself, not just the OpenSearch snapshot/restore state-check loops it
+was built for.** Rather than a single blocking `RunShellCommand` call
+guarded only by a timeout, wrap the load step in a loop that checks a
+real progress signal on an interval and reports it via `w`, the same
+`io.Writer`-threaded shape `pollWithProgress` already establishes:
+
+- **Progress signal:** `pg_database_size(current_dbname)` (already used
+  read-only by this session's own manual polling) -- growing size is
+  direct evidence real work is happening, independent of `psql`'s own
+  exit status, which isn't available until the whole load finishes.
+  Table count (already used by `countRestoredTables`) is a coarser
+  secondary signal -- useful early, but plateaus long before a row-
+  insert-heavy load (`--column-inserts`, per Phase 20.59's fifth
+  follow-up) is actually done, so size is the primary signal and table
+  count is not solely relied on.
+- **Reporting, not just waiting:** each tick prints elapsed time *and*
+  the current database size (and its delta since the last tick, to make
+  "still growing" visually obvious without the operator doing their own
+  arithmetic), replacing the plain "elapsed" line `pollWithProgress`
+  prints for the OpenSearch case -- likely a small variant/parameter
+  rather than a verbatim reuse, since the OpenSearch case has no
+  equivalent secondary metric to show.
+- **Set expectations up front, not just during the wait.** Before
+  starting the load, print a one-time message that this step can take
+  45 minutes to over an hour for production-scale data (the real number
+  from this session's own experience), so a long wait reads as expected
+  behavior from the first tick, not just once enough ticks have
+  accumulated to suggest it.
+- **Timeout still exists, but as a true backstop, not the primary
+  signal.** A load that is monitored for real, ongoing progress doesn't
+  need as generous a fixed ceiling as one flying blind -- but exactly
+  what happens at that ceiling (surface a "may still be running, check
+  manually" warning vs. attempt `ssm:CancelCommand`) is the same open
+  question TODO.md already has on file for `RunShellCommand` generally,
+  and is not re-decided here; this addendum only commits to *reporting*
+  real progress during the wait, not to resolving cancellation
+  semantics.
+- **Same treatment applies to Phase 20.51's restore step once built** --
+  OpenSearch's own restore-status API already has a real per-shard
+  progress signal (`_cat/recovery` or the snapshot-restore status
+  endpoint) that's strictly better than SQL restore's size-growth proxy,
+  so Phase 20.51 should design its own equivalent progress signal from
+  the start rather than shipping a bare timeout and retrofitting this
+  same lesson a second time.
+
+**No parallel restores on one instance -- not a resource-safety finding,
+a validation-isolation one.** Raised directly by the user: given a fresh
+dev/restore-test instance, would it be safe to kick off SQL restore and
+OpenSearch restore at the same time to save wall-clock, rather than
+sequentially? Real `free -h` data taken mid-restore on
+`caltechdata-restore-test` (m5.large, 2 vCPU/8GB) showed 3.4GB
+"available" (the reclaimable-cache-aware figure, not the much smaller
+248MB raw "free") even with the SQL load actively running -- suggesting
+parallel execution likely would not exhaust memory outright, since
+OpenSearch's own JVM heap is normally a fixed `-Xmx` allocation rather
+than a claim that grows with the size of what's being restored. But two
+independent reasons argue against it anyway, for this specific use case:
+(1) this instance has **no swap configured at all**, so any genuine
+memory spike is a hard OOM kill, not a slowdown -- zero safety margin;
+(2) more importantly, Phase 20.50 was live-tested, and Phase 20.51 will
+be, specifically to validate each restore's own *correctness* --
+running both at once on an unvalidated new code path muddies whether a
+failure is a real Phase 20.51 bug or resource contention from running
+next to Phase 20.50. Decided: restores are run sequentially during
+validation. Whether parallel restores are viable in practice on this
+instance size is left as an open, answerable-later question, once
+Phase 20.51 has its own real peak-resource-usage data point to compare
+against -- not decided or designed further here.
+
+### Not decided yet
+
+Exact wording/format of the size-delta progress line; whether the
+existing `pollWithProgress` helper is widened with an optional secondary-
+metric callback or the SQL/OpenSearch restore steps get their own small
+sibling helper instead; the cancellation-at-timeout question (shared
+with TODO.md's existing open `RunShellCommand` finding); Phase 20.51's
+own concrete progress-signal choice (implementation detail once that
+phase is actually designed in full). None of this blocks Phase 20.50
+from being real-AWS-verified as-is -- the current fixed-timeout behavior
+is correct, just not yet the best UX.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)

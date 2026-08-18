@@ -6805,6 +6805,69 @@ None -- part of Phase 20.50, found while live-testing it.
 
 ---
 
+## Phase 20.60 — Restore Progress Reporting: Extend `pollWithProgress` to the SQL/OpenSearch Restore Load Steps; No Parallel Restores
+
+**Status: designed 2026-08-18, not yet implemented** (DESIGN.md,
+"Restore Progress Reporting: Extend `pollWithProgress` to the SQL/
+OpenSearch Restore Load Steps; No Parallel Restores"; DECISIONS.md,
+"Restore load steps should report real progress, not just wait on a
+timeout; no parallel restores during validation"). User's explicit
+call: not enough time left today for either implementation or Phase
+20.51 testing -- designed now so the intent isn't lost, implemented
+later.
+
+### Work Items
+
+- [ ] `restore_sql.go`: replace the load step's single blocking
+      `RunShellCommand` + fixed-timeout shape with a progress-reporting
+      loop built on Phase 20.53's `pollWithProgress` pattern -- ticks on
+      an interval, checks `pg_database_size(current_dbname)` (already
+      used ad hoc for manual polling this session) as the primary
+      progress signal, reports elapsed time plus size and its delta
+      since the last tick via `w`. Print a one-time "this can take 45
+      minutes to over an hour for production-scale data" message before
+      the load starts. Timeout remains a backstop, not the primary
+      completion signal.
+- [ ] Decide (design question, not yet resolved) whether `pollWithProgress`
+      itself is widened with an optional secondary-metric callback, or
+      the restore load step gets its own small sibling helper --
+      OpenSearch's snapshot/restore state-check loops have no equivalent
+      secondary metric to show, so a verbatim shared signature may not
+      fit both.
+- [ ] Phase 20.51 (not yet built): design its own progress signal from
+      the start using the same pattern, rather than shipping a bare
+      timeout and retrofitting this lesson a second time -- OpenSearch's
+      restore-status API (`_cat/recovery` or the snapshot-restore status
+      endpoint) gives it a real per-shard signal, strictly better than
+      SQL restore's size-growth proxy.
+- [ ] Explicit non-goal for this phase: does not resolve whether a
+      client-side timeout should also `ssm:CancelCommand` the remote
+      process -- that's the same open question already on file in
+      TODO.md for `RunShellCommand` generally, not re-decided here.
+
+### Tests
+
+Not yet written -- no implementation exists yet. Expect: a fake
+`RunShellCommand` sequence returning growing `pg_database_size` values
+across successive polls, asserting the progress lines reach `w`; a
+timeout-still-fires regression case if size stops growing; no change to
+existing `restore_sql_test.go` happy/error-path assertions beyond
+whatever the new loop shape requires.
+
+### Files
+
+`internal/workflow/{restore_sql.go,restore_sql_test.go,poll_progress.go}`
+(extended, not new, once implemented).
+
+### Dependency
+
+Phase 20.53 (`pollWithProgress`, done) for the reusable pattern. Should
+land before or alongside Phase 20.51, so that phase's own restore-status
+polling is designed with progress reporting from the start rather than
+retrofitted.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
