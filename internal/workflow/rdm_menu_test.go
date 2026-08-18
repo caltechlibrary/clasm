@@ -31,7 +31,7 @@ func TestRunRDMBackupRestoreMenu_DispatchesToTheChosenAction(t *testing.T) {
 	actions := testRDMBackupRestoreActions(&refreshCalls)
 	actions.RunSQLBackup = cancelingAction(&runSQLBackupCalls, cancel)
 
-	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf) // Run SQL Backup
+	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n"), buf) // Generate SQL Backup
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRunRDMBackupRestoreMenu_ActionErrorDoesNotCrashLoop(t *testing.T) {
 	// prompt (DECISIONS.md, "Pause for acknowledgment before every
 	// menu-loop redraw") consuming its own line of input after the error
 	// is printed, before the loop reprompts.
-	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n1\n"), buf) // Run SQL Backup, twice
+	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n1\n"), buf) // Generate SQL Backup, twice
 	if err != nil {
 		t.Fatalf("expected the loop to survive a single action's error and exit cleanly once ctx is cancelled, got: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestRunRDMBackupRestoreMenu_PausesForAcknowledgmentAfterARefreshError(t *te
 		return errors.New("refresh boom")
 	}
 
-	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n"), buf) // Run SQL Backup
+	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n"), buf) // Generate SQL Backup
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRunRDMBackupRestoreMenu_PausesForAcknowledgmentAfterASuccessfulAction(t
 		return nil
 	}
 
-	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n"), buf) // Run SQL Backup
+	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("1\n\n"), buf) // Generate SQL Backup
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -266,12 +266,12 @@ func TestRDMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
 	}
 }
 
-// TestRDMMenuItems_Order pins the DESIGN.md-specified order: Run SQL
-// Backup leads, then archive before restore, SQL before OpenSearch
+// TestRDMMenuItems_Order pins the DESIGN.md-specified order: Generate
+// SQL Backup leads, then archive before restore, SQL before OpenSearch
 // within each pair.
 func TestRDMMenuItems_Order(t *testing.T) {
 	want := []string{
-		"Run SQL Backup",
+		"Generate SQL Backup",
 		"Archive SQL Backup to S3",
 		"Archive OpenSearch Snapshot to S3",
 		"Restore SQL Backup from S3",

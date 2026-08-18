@@ -6403,33 +6403,41 @@ directly rather than repeating the silent-wait gap a third time.
 
 ## Phase 20.54 — Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to "Generate SQL Backup"
 
-**Status: designed 2026-08-18, not yet implemented** (DESIGN.md, "Run
-SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to \"Generate SQL
-Backup\""; DECISIONS.md, "Run SQL Backup: drop the Archive-SQL
-auto-chain, rename to \"Generate SQL Backup\"").
+**Status: designed and implemented 2026-08-18, test-first throughout,
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
+"Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to \"Generate
+SQL Backup\""; DECISIONS.md, "Run SQL Backup: drop the Archive-SQL
+auto-chain, rename to \"Generate SQL Backup\""). Not yet real-AWS-verified
+(pure local control-flow/label change; next live Generate SQL Backup run
+against any instance will exercise it).
 
 ### Work Items
 
-- [ ] `run_sql_backup.go`: remove `runSQLBackup`'s trailing `Confirm`
+- [x] `run_sql_backup.go`: removed `runSQLBackup`'s trailing `Confirm`
       branch and its `archiveSQL func(ctx context.Context) error`
-      parameter (and the `input`/`output` it currently threads only for
-      that branch, if nothing else in the function still needs them --
-      confirm during implementation); `RunSQLBackup`'s exported signature
-      drops the same parameter
-- [ ] `cmd/clasm/main.go`: `RDMBackupRestoreActions.RunSQLBackup`'s
-      wiring drops the `archiveSQL` closure argument
-- [ ] `rdm_menu.go`: `rdmMenuItems`'s `"Run SQL Backup"` label becomes
-      `"Generate SQL Backup"` (Go identifiers unchanged)
+      parameter -- `input`/`output` are kept (still used by the directory
+      prompt's `ui.WithIO`); `RunSQLBackup`'s exported signature drops the
+      same parameter
+- [x] `cmd/clasm/main.go`: `RDMBackupRestoreActions.RunSQLBackup`'s
+      wiring drops the `archiveSQLAction` closure argument (the closure
+      itself is untouched -- still assigned to `ArchiveSQL` separately)
+- [x] `rdm_menu.go`: `rdmMenuItems`'s `"Run SQL Backup"` label is now
+      `"Generate SQL Backup"` (Go identifiers unchanged, per Phase
+      20.43's precedent)
 
 ### Tests
 
-- [ ] `runSQLBackup`'s testable core: remove the "yes"/"no"-to-Archive-SQL
-      test cases (the branch no longer exists); confirm the happy path
-      returns immediately after a successful dump with no further
-      prompt; confirm no `archiveSQL`-shaped closure is called
-- [ ] Any test currently asserting on `rdmMenuItems`' label text or
-      numeric index for this entry updated for the new label (index
-      unchanged, in place)
+- [x] `runSQLBackup`'s testable core: the two "yes"/"no"-to-Archive-SQL
+      test cases were replaced with a single
+      `TestRunSQLBackup_HappyPathDumpsAndReturnsWithNoFurtherPrompt`
+      confirming the happy path returns immediately after a successful
+      dump with nothing else consumed from input; every other existing
+      test in the file updated for the narrowed signature (the now-unused
+      `archiveSQL` closures/stale trailing `"n\n"` input lines removed)
+- [x] `TestRDMMenuItems_Order` (the one test in this suite asserting on
+      literal menu-label text, per Phase 20.43's own background-search
+      precedent) updated to expect `"Generate SQL Backup"`; comment-only
+      references to the old label in `rdm_menu_test.go` updated to match
 
 ### Files
 

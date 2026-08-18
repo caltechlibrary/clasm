@@ -13,10 +13,12 @@ import (
 // other domains (DESIGN.md, "RDM Backup & Restore Domain"). ArchiveSQL is
 // Feature 11 (Backup Archive & Trim), relocated here unchanged from
 // Compute (PLAN.md Phase 20.48); RunSQLBackup is new (PLAN.md Phase
-// 20.52) -- an on-demand pg_dump trigger that chains into ArchiveSQL on
-// confirm, so a full backup no longer depends on invenio-sql-backup.bash
-// already being on the box; ArchiveOpenSearch/RestoreSQL/
-// RestoreOpenSearch land in Phases 20.49-20.51.
+// 20.52) -- an on-demand pg_dump trigger, generating a local dump and
+// returning (no auto-chain into ArchiveSQL -- removed 2026-08-18, PLAN.md
+// Phase 20.54, since it read as confusing in practice; see the "Generate
+// SQL Backup" menu label below), so a full backup no longer depends on
+// invenio-sql-backup.bash already being on the box; ArchiveOpenSearch/
+// RestoreSQL/RestoreOpenSearch land in Phases 20.49-20.51.
 type RDMBackupRestoreActions struct {
 	RunSQLBackup      func(ctx context.Context) error
 	ArchiveSQL        func(ctx context.Context) error
@@ -39,14 +41,18 @@ type rdmItem struct {
 	action func(RDMBackupRestoreActions, context.Context) error
 }
 
-// rdmMenuItems is DESIGN.md's RDM Backup & Restore menu, in order: Run
-// SQL Backup leads (the natural first step for an instance with no
-// existing dump yet), then archive before restore, SQL before OpenSearch
-// within each pair (DESIGN.md, "RDM Backup & Restore Domain"). No "Back
-// to domain picker" entry -- DECISIONS.md, "TUI keybinding conventions":
-// 'q' is the universal back key everywhere.
+// rdmMenuItems is DESIGN.md's RDM Backup & Restore menu, in order:
+// Generate SQL Backup leads (the natural first step for an instance with
+// no existing dump yet), then archive before restore, SQL before
+// OpenSearch within each pair (DESIGN.md, "RDM Backup & Restore Domain").
+// No "Back to domain picker" entry -- DECISIONS.md, "TUI keybinding
+// conventions": 'q' is the universal back key everywhere. "Generate SQL
+// Backup" (was "Run SQL Backup" until 2026-08-18, PLAN.md Phase 20.54 --
+// DECISIONS.md, "Run SQL Backup: drop the Archive-SQL auto-chain, rename
+// to 'Generate SQL Backup'") names what the action actually does: it
+// only ever generates the local dump file, never archives it.
 var rdmMenuItems = []rdmItem{
-	{"Run SQL Backup", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
+	{"Generate SQL Backup", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
 	{"Archive SQL Backup to S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
 	{"Archive OpenSearch Snapshot to S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
 	{"Restore SQL Backup from S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},

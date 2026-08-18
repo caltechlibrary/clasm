@@ -29,44 +29,25 @@ func sqlBackupFake(discoveryStdout string, dumpStatus types.CommandInvocationSta
 	}
 }
 
-func TestRunSQLBackup_HappyPathDumpsAndDeclinesArchive(t *testing.T) {
+// TestRunSQLBackup_HappyPathDumpsAndReturnsWithNoFurtherPrompt is a
+// regression test for Phase 20.54 (DECISIONS.md, "Run SQL Backup: drop
+// the Archive-SQL auto-chain, rename to 'Generate SQL Backup'"): once the
+// dump succeeds, runSQLBackup must return immediately -- no "Continue to
+// Archive SQL Backup to S3 now?" prompt, and nothing else consumed from
+// input.
+func TestRunSQLBackup_HappyPathDumpsAndReturnsWithNoFurtherPrompt(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n" + // directory
-		"n\n" // decline "Continue to Archive SQL Backup to S3 now?"
+	input := "/opt/rdm_sql_backups\n" // directory only -- no further prompt to answer
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
-	var archiveCalls int
-	archiveSQL := func(ctx context.Context) error { archiveCalls++; return nil }
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, archiveSQL, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if archiveCalls != 0 {
-		t.Errorf("archiveCalls = %d, want 0 (operator declined)", archiveCalls)
 	}
 	if ssmClient.sendCommandCalls() != 3 {
 		t.Errorf("sendCommandCalls = %d, want 3 (CLI check, docker ps, pg_dump)", ssmClient.sendCommandCalls())
-	}
-}
-
-func TestRunSQLBackup_HappyPathDumpsAndChainsIntoArchive(t *testing.T) {
-	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n" +
-		"y\n" // confirm "Continue to Archive SQL Backup to S3 now?"
-
-	term, le, buf := newPipeEditor(input)
-	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
-	var archiveCalls int
-	archiveSQL := func(ctx context.Context) error { archiveCalls++; return nil }
-
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, archiveSQL, le, buf)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if archiveCalls != 1 {
-		t.Errorf("archiveCalls = %d, want 1 (operator confirmed)", archiveCalls)
 	}
 }
 
@@ -76,9 +57,7 @@ func TestRunSQLBackup_DiscoveryFailureAbortsBeforeDump(t *testing.T) {
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("", types.CommandInvocationStatusSuccess) // zero containers found
-	archiveSQL := func(ctx context.Context) error { t.Fatal("archiveSQL should not be called"); return nil }
-
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, archiveSQL, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, le, buf)
 	if err == nil {
 		t.Fatal("expected a discovery-failure error")
 	}
@@ -93,9 +72,7 @@ func TestRunSQLBackup_DumpCommandFailureReported(t *testing.T) {
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusFailed)
-	archiveSQL := func(ctx context.Context) error { t.Fatal("archiveSQL should not be called"); return nil }
-
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, archiveSQL, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, le, buf)
 	if err == nil {
 		t.Fatal("expected a dump-failure error")
 	}
@@ -103,14 +80,13 @@ func TestRunSQLBackup_DumpCommandFailureReported(t *testing.T) {
 
 func TestRunSQLBackup_PreFillsDirectoryFromMatchingRule(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "rdm-prod-01", Region: "us-east-1"}
-	input := "\n" + // accept the pre-filled directory default
-		"n\n"
+	input := "\n" // accept the pre-filled directory default
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\trdm-prod-01-db-1\n", types.CommandInvocationStatusSuccess)
 	rules := []config.BackupDirectoryRule{{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"}}
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, rules, nil, BackupHistory{}, nil, nil, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, rules, nil, BackupHistory{}, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +97,7 @@ func TestRunSQLBackup_PreFillsDirectoryFromMatchingRule(t *testing.T) {
 
 func TestRunSQLBackup_SavesInstanceAndDirectoryAfterPrompt(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n" + "n\n"
+	input := "/opt/rdm_sql_backups\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
@@ -132,7 +108,7 @@ func TestRunSQLBackup_SavesInstanceAndDirectoryAfterPrompt(t *testing.T) {
 		return nil
 	}}
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, hist, nil, nil, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, hist, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +119,7 @@ func TestRunSQLBackup_SavesInstanceAndDirectoryAfterPrompt(t *testing.T) {
 
 func TestRunSQLBackup_SavesRDMPostgresRulesWhenChanged(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n" + "n\n"
+	input := "/opt/rdm_sql_backups\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
@@ -152,7 +128,7 @@ func TestRunSQLBackup_SavesRDMPostgresRulesWhenChanged(t *testing.T) {
 	var savedRules []config.RDMPostgresRule
 	saveFn := func(rules []config.RDMPostgresRule) error { savedRules = rules; return nil }
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, existing, BackupHistory{}, saveFn, nil, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, existing, BackupHistory{}, saveFn, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,7 +139,7 @@ func TestRunSQLBackup_SavesRDMPostgresRulesWhenChanged(t *testing.T) {
 
 func TestRunSQLBackup_DoesNotSaveRDMPostgresRulesWhenUnchanged(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n" + "n\n"
+	input := "/opt/rdm_sql_backups\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
@@ -172,7 +148,7 @@ func TestRunSQLBackup_DoesNotSaveRDMPostgresRulesWhenUnchanged(t *testing.T) {
 	saveCalls := 0
 	saveFn := func(rules []config.RDMPostgresRule) error { saveCalls++; return nil }
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, existing, BackupHistory{}, saveFn, nil, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, existing, BackupHistory{}, saveFn, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,12 +165,12 @@ func TestRunSQLBackup_DoesNotSaveRDMPostgresRulesWhenUnchanged(t *testing.T) {
 // user, not "newauthors".
 func TestRunSQLBackup_UsesProjectTagOverNameTagForDatabaseName(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Project: "caltechauthors", Region: "us-east-1"}
-	input := "/opt/rdm_sql_backups\n" + "n\n"
+	input := "/opt/rdm_sql_backups\n"
 
 	term, le, buf := newPipeEditor(input)
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, nil, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -212,7 +188,7 @@ func TestRunSQLBackup_CLIUnavailableAbortsBeforeAnyPrompt(t *testing.T) {
 	term, le, buf := newPipeEditor("")
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, sendCommandErr: errUnavailable}
 
-	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, nil, le, buf)
+	err := runSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, inst, nil, nil, BackupHistory{}, nil, le, buf)
 	if !errors.Is(err, errUnavailable) {
 		t.Fatalf("expected errUnavailable to propagate, got: %v", err)
 	}

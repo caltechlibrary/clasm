@@ -43,17 +43,17 @@ func buildSQLDumpCommand(containerName, dbName, dbUser, directory, date string) 
 		shellQuote(containerName), shellQuote(dbUser), shellQuote(dbName), shellQuote(rawFile), shellQuote(rawFile))
 }
 
-// RunSQLBackup runs the full Run SQL Backup workflow (DESIGN.md, "Run
-// SQL Backup"): pick an instance, CheckAWSCLIAvailable, prompt for the
-// backup directory (same recall/pattern-match as Archive SQL Backup's
-// own directory step, via the same hist), discover-and-reconcile the
-// instance's live Postgres container/DB identity
-// (resolveRDMPostgresConfig), run pg_dump directly via SSM, then offer
-// to chain straight into archiveSQL (the same closure
-// RDMBackupRestoreActions.ArchiveSQL already wraps BackupArchiveAndTrim
-// in). archiveSQL may be nil (no chaining offered) for callers/tests
-// that don't need it.
-func RunSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error, archiveSQL func(ctx context.Context) error) error {
+// RunSQLBackup runs the full Generate SQL Backup workflow (DESIGN.md,
+// "Run SQL Backup"): pick an instance, CheckAWSCLIAvailable, prompt for
+// the backup directory (same recall/pattern-match as Archive SQL
+// Backup's own directory step, via the same hist), discover-and-reconcile
+// the instance's live Postgres container/DB identity
+// (resolveRDMPostgresConfig), run pg_dump directly via SSM, then return
+// -- it generates the local dump and nothing more (DECISIONS.md, "Run
+// SQL Backup: drop the Archive-SQL auto-chain, rename to 'Generate SQL
+// Backup'"; PLAN.md Phase 20.54). Archive SQL Backup to S3 remains a
+// separate menu entry for an operator who wants to archive right after.
+func RunSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
 	if len(instances) == 0 {
 		fmt.Fprintln(w, "No instances found.")
 		return nil
@@ -63,14 +63,13 @@ func RunSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
-	return runSQLBackup(ctx, w, ssmClients, inst, backupDirRules, rdmPostgresRules, hist, saveRDMPostgresRules, archiveSQL, nil, nil)
+	return runSQLBackup(ctx, w, ssmClients, inst, backupDirRules, rdmPostgresRules, hist, saveRDMPostgresRules, nil, nil)
 }
 
 // runSQLBackup is RunSQLBackup's testable core, once an instance is
 // resolved -- input/output are nil in production and supplied by tests
-// to drive every prompt/confirm in this function through its
-// accessible-mode pipe path instead.
-func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error, archiveSQL func(ctx context.Context) error, input io.Reader, output io.Writer) error {
+// to drive every prompt through its accessible-mode pipe path instead.
+func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error, input io.Reader, output io.Writer) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err
@@ -130,16 +129,5 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 		return fmt.Errorf("SQL dump failed on %s (status: %s)", inst.InstanceID, status)
 	}
 	fmt.Fprintf(w, "SQL backup created in %s on %s.\n", directory, inst.InstanceID)
-
-	if archiveSQL == nil {
-		return nil
-	}
-	ok, err := Confirm("Continue to Archive SQL Backup to S3 now?", WithConfirmIO(input, output))
-	if err != nil {
-		return cancelledIsNil(w, err)
-	}
-	if !ok {
-		return nil
-	}
-	return archiveSQL(ctx)
+	return nil
 }

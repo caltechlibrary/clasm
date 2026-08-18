@@ -2377,13 +2377,16 @@ into Archive SQL rather than replacing it."
    on failure -- fail loud, no silent partial dumps; the two-step,
    non-piped command above is what makes this actually true rather than
    just documented).
-9. Prompt: "Continue to Archive SQL Backup to S3 now?" (`Confirm`, not
-   `ConfirmDestructive` -- this step isn't destructive). On yes, invoke
-   the *same* Archive SQL closure directly -- a full, independent run of
-   `BackupArchiveAndTrim`, not a special abbreviated path, but with its
-   own instance/directory prompts already pre-positioned/pre-filled from
-   steps 1/3's shared history, so confirming through them again is one
-   keypress each rather than retyping.
+9. Return. **Superseded 2026-08-18 (PLAN.md Phase 20.54, DECISIONS.md,
+   "Run SQL Backup: drop the Archive-SQL auto-chain, rename to 'Generate
+   SQL Backup'"):** this step originally chained straight into Archive
+   SQL Backup to S3 via a `Confirm` prompt, but live use found that
+   confusing -- the action is now named "Generate SQL Backup" and does
+   exactly that, nothing more. An operator who wants to archive right
+   after generating a dump picks Archive SQL Backup to S3 next from the
+   same menu -- its own instance/directory prompts are still
+   pre-positioned/pre-filled from steps 1/3's shared history, so
+   confirming through them is one keypress each rather than retyping.
 
 ### Archive OpenSearch Snapshot to S3
 

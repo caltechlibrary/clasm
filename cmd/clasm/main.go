@@ -509,7 +509,7 @@ func main() {
 
 	rdmActions := workflow.RDMBackupRestoreActions{
 		RunSQLBackup: func(ctx context.Context) error {
-			return workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules, archiveSQLAction)
+			return workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules)
 		},
 		ArchiveSQL: archiveSQLAction,
 		// ArchiveOpenSearch lands PLAN.md Phase 20.49; RestoreSQL/
