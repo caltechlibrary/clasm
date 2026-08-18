@@ -6717,6 +6717,52 @@ None.
 
 ---
 
+## Phase 20.59 — Real Bug: Restore SQL Backup's Download/Decompress Assumed a ".gz" Key Suffix, Swallowed Stderr
+
+**Status: found, fixed, and unit-tested 2026-08-18, test-first, `go
+build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DECISIONS.md,
+"Real bug: Restore SQL Backup's download/decompress assumed every
+backup's S3 key ends in \".gz\", and swallowed stderr on failure").
+Found live-testing Phase 20.50 against `caltechdata-restore-test`,
+restoring CaltechDATA production's own real archived backup.
+
+### Work Items
+
+- [x] `restore_sql.go`: new fixed scratch-path constants
+      `remoteRestoreDownloadPath`/`remoteRestoreSQLPath` (`/tmp/clasm-
+      sql-restore.download`/`.sql`), replacing the previous key-basename-
+      derived path. `buildDownloadAndDecompressCommand(bucket, key
+      string) string` (dropped its `destPath` parameter -- now fixed)
+      decompresses via `gunzip -c <download-path> > <sql-path>`, not
+      `gunzip -f <path>` in place. Both this command and
+      `buildRestoreSQLCommands`' drop/create/load are now wrapped in a
+      `{ ...; } 2>&1` group. `detectExistingSQLData`/`countRestoredTables`
+      deliberately left unchanged (see DECISIONS.md).
+
+### Tests
+
+- [x] `TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix`:
+      the built command is identical (source key aside) whether the key
+      ends in `.sql.gz` or `.sql`
+- [x] `TestDownloadAndDecompressSQLBackup_SuccessWithKeyLackingGzSuffix`:
+      reproduces the real CaltechDATA key directly, confirms it resolves
+      to the fixed scratch path
+- [x] `TestDownloadAndDecompressSQLBackup_SurfacesStderr`: a `gunzip`-
+      shaped stderr message now reaches the reported error
+- [x] `TestBuildRestoreSQLCommands_ExactShape` extended to assert `2>&1`
+      is present on all three commands
+
+### Files
+
+`internal/workflow/{restore_sql.go,restore_sql_test.go}` (extended, not
+new).
+
+### Dependency
+
+None -- part of Phase 20.50, found while live-testing it.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

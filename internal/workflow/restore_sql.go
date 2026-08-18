@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,32 +23,60 @@ import (
 // mirroring DefaultBackupUploadTimeout's 30-minute bound.
 const DefaultSQLRestoreTimeout = 30 * time.Minute
 
-// buildDownloadAndDecompressCommand downloads bucket/key to destPath via
-// the target's own aws CLI/credentials, then decompresses it in place --
-// one shell script, two steps joined by `set -e` (matches
-// buildSQLDumpCommand's own established shape, run_sql_backup.go), so a
-// failed download aborts before gunzip ever runs on a partial or missing
-// file.
-func buildDownloadAndDecompressCommand(bucket, key, destPath string) string {
+// remoteRestoreDownloadPath/remoteRestoreSQLPath are fixed /tmp scratch
+// paths a restore downloads a backup to and decompresses it into --
+// deliberately *not* derived from the S3 object's own key/basename (an
+// earlier version was). Found real, live, restoring CaltechDATA
+// production's own archived backup (2026-08-18): its key is
+// "...2026-08-16.sql", with no ".gz" suffix, even though the content is
+// gzip'd -- `gunzip -f <path>` derives its own output filename from the
+// input path's suffix and refuses ("unknown suffix -- ignored") on
+// anything not ending in a recognized compressed extension, regardless
+// of whether the bytes are actually gzip data. Fixed paths sidestep this
+// category of surprise entirely, and only one restore ever runs against
+// a given instance at a time, so a fixed name doesn't risk collision.
+const (
+	remoteRestoreDownloadPath = "/tmp/clasm-sql-restore.download"
+	remoteRestoreSQLPath      = "/tmp/clasm-sql-restore.sql"
+)
+
+// buildDownloadAndDecompressCommand downloads bucket/key to
+// remoteRestoreDownloadPath via the target's own aws CLI/credentials,
+// then decompresses it into remoteRestoreSQLPath via `gunzip -c ... >
+// ...` -- not `gunzip -f` in place, which depends on the input's own
+// suffix to name its output (see the constants' doc comment above).
+// Wrapped in a `{ ...; } 2>&1` group so a failure's real message
+// (`gunzip`/`aws s3 cp` errors land on stderr) reaches the same stream
+// RunShellCommand actually captures (only `StandardOutputContent`,
+// never `StandardErrorContent`) -- found real, live, the same
+// incident: the pre-fix error reported only "(status: Failed)" with no
+// explanation at all, since gunzip's "unknown suffix" message went
+// entirely to stderr. Neither this command's caller nor
+// RunShellCommand's own contract ever inspects this function's stdout
+// for meaningful content on success, so merging stderr in is pure
+// upside here -- unlike detectExistingSQLData/countRestoredTables
+// below, which do parse their own stdout and are deliberately left
+// un-redirected.
+func buildDownloadAndDecompressCommand(bucket, key string) string {
 	src := fmt.Sprintf("s3://%s/%s", bucket, key)
-	return fmt.Sprintf("set -e; aws s3 cp --only-show-errors %s %s; gunzip -f %s", shellQuote(src), shellQuote(destPath), shellQuote(destPath))
+	return fmt.Sprintf("{ set -e; aws s3 cp --only-show-errors %s %s; gunzip -c %s > %s; } 2>&1",
+		shellQuote(src), shellQuote(remoteRestoreDownloadPath), shellQuote(remoteRestoreDownloadPath), shellQuote(remoteRestoreSQLPath))
 }
 
 // downloadAndDecompressSQLBackup runs buildDownloadAndDecompressCommand
-// via SSM, downloading key from bucket to a fixed /tmp scratch path on
-// instanceID (named after the object's own basename, with any source-
-// instance S3 prefix stripped) and decompressing it there. Returns the
-// resulting plain .sql file's path.
+// via SSM, downloading key from bucket and decompressing it on
+// instanceID. Returns remoteRestoreSQLPath unconditionally on success --
+// see that constant's own doc comment for why this is fixed, not
+// key-derived.
 func downloadAndDecompressSQLBackup(ctx context.Context, client awsclient.SSMAPI, instanceID, bucket, key string, timeout, pollInterval time.Duration) (string, error) {
-	destPath := "/tmp/" + path.Base(key)
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDownloadAndDecompressCommand(bucket, key, destPath), timeout, pollInterval)
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDownloadAndDecompressCommand(bucket, key), timeout, pollInterval)
 	if err != nil {
 		return "", err
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
 		return "", curlFailureError(fmt.Sprintf("downloading/decompressing s3://%s/%s on %s failed", bucket, key, instanceID), status, stdout)
 	}
-	return strings.TrimSuffix(destPath, ".gz"), nil
+	return remoteRestoreSQLPath, nil
 }
 
 // quoteSQLIdentifier double-quotes name per Postgres quoted-identifier
@@ -116,11 +143,11 @@ func detectExistingSQLData(ctx context.Context, client awsclient.SSMAPI, instanc
 // connection-target argument, not SQL syntax, so it's only shell-quoted.
 func buildRestoreSQLCommands(containerName, dbName, dbUser, sqlFilePath string) (dropCmd, createCmd, loadCmd string) {
 	quotedDB := quoteSQLIdentifier(dbName)
-	dropCmd = fmt.Sprintf("docker exec %s psql --username=%s --dbname postgres -c %s",
+	dropCmd = fmt.Sprintf("{ docker exec %s psql --username=%s --dbname postgres -c %s; } 2>&1",
 		shellQuote(containerName), shellQuote(dbUser), shellQuote("DROP DATABASE IF EXISTS "+quotedDB))
-	createCmd = fmt.Sprintf("docker exec %s psql --username=%s --dbname postgres -c %s",
+	createCmd = fmt.Sprintf("{ docker exec %s psql --username=%s --dbname postgres -c %s; } 2>&1",
 		shellQuote(containerName), shellQuote(dbUser), shellQuote("CREATE DATABASE "+quotedDB))
-	loadCmd = fmt.Sprintf("docker exec -i %s psql --username=%s %s < %s",
+	loadCmd = fmt.Sprintf("{ docker exec -i %s psql --username=%s %s < %s; } 2>&1",
 		shellQuote(containerName), shellQuote(dbUser), shellQuote(dbName), shellQuote(sqlFilePath))
 	return dropCmd, createCmd, loadCmd
 }

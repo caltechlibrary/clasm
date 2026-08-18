@@ -47,6 +47,69 @@ See PLAN.md Phase 20.58.
 
 ---
 
+## 2026-08-18 — Real bug: Restore SQL Backup's download/decompress assumed every backup's S3 key ends in ".gz", and swallowed stderr on failure
+
+**Context.** Live-testing Restore SQL Backup against
+`caltechdata-restore-test`, restoring CaltechDATA production's own real
+archived backup, hit `downloading/decompressing ... failed (status:
+Failed)` with no further explanation. The debug log's
+`StandardErrorContent` (never surfaced in clasm's own error message)
+showed the real cause: `gzip: /tmp/caltechdata-db-1-caltechdata-2026-08-16.sql:
+unknown suffix -- ignored`. Two independent real gaps:
+1. The archived object's actual key is `...2026-08-16.sql` -- no `.gz`
+   -- even though its content is gzip'd. `gunzip -f <path>` derives its
+   *output* filename from the *input* path's own suffix and refuses on
+   anything not ending in a recognized compressed extension, regardless
+   of whether the bytes are actually gzip data.
+2. `RunShellCommand` (`ssm.go`) only ever returns
+   `StandardOutputContent` -- `StandardErrorContent` is captured by SSM
+   but discarded entirely. `gunzip`'s (and generally, any shell
+   command's) own error text lands on stderr by default, so it was
+   simply never seen.
+
+**Decision.**
+1. `buildDownloadAndDecompressCommand` downloads to and decompresses
+   into two **fixed** `/tmp` scratch paths
+   (`remoteRestoreDownloadPath`/`remoteRestoreSQLPath`), no longer
+   derived from the S3 key's own basename/suffix, and decompresses via
+   `gunzip -c <download-path> > <sql-path>` -- `-c` streams to stdout
+   regardless of the input's own name, sidestepping the suffix-based
+   restriction entirely. A fixed name is safe here since only one
+   restore ever runs against a given instance at a time.
+2. That command (and `buildRestoreSQLCommands`' drop/create/load, which
+   -- like the download step -- never parse their own stdout for
+   meaningful content on success, only check the SSM invocation
+   status) are now wrapped in a `{ ...; } 2>&1` group, merging stderr
+   into the one stream `RunShellCommand` actually captures.
+   `detectExistingSQLData`/`countRestoredTables` are deliberately left
+   un-redirected -- both parse stdout content on success (a tuple
+   count/row count), and merging in a stray psql NOTICE could corrupt
+   that parsing; fixing their own error-visibility gap needs a
+   different mechanism (see Consequences).
+
+**Rationale.**
+- Fixed-path decompression is strictly more robust than name-derived
+  decompression -- it works identically whether the source key ends in
+  `.sql.gz`, `.sql`, or anything else, confirmed by a regression test
+  asserting the built command is identical (source key aside) for both
+  cases.
+- `{ ...; } 2>&1` is the minimal, safe fix for the two "status-only"
+  commands in this file; widening `RunShellCommand`'s own signature to
+  return stderr generally would ripple through every existing call site
+  across the whole `internal/workflow` package -- out of scope for this
+  live-testing pass, tracked separately (see Consequences).
+
+**Consequences.** `RunShellCommand`'s stdout-only capture is a
+project-wide gap, not unique to this file -- any command whose
+meaningful error text lands on stderr (most shell tools' default
+behavior) can hit the identical "(status: Failed)" opacity. Added to
+TODO.md as a Nice to have, scoped as its own future design pass (widen
+`RunShellCommand` to return stderr separately, let each caller decide
+whether/how to fold it into an error message) rather than fixed
+project-wide here. See PLAN.md Phase 20.59.
+
+---
+
 ## 2026-08-18 — Restore SQL Backup: quote the database name as a SQL identifier, not just shell-quote it
 
 **Context.** Implementing Phase 20.50 against a real target

@@ -17,11 +17,38 @@ import (
 )
 
 func TestBuildDownloadAndDecompressCommand_ExactShape(t *testing.T) {
-	got := buildDownloadAndDecompressCommand("sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-18.sql.gz", "/tmp/caltechdata-db-1-caltechdata-2026-08-18.sql.gz")
-	for _, want := range []string{"set -e", "aws s3 cp --only-show-errors", "s3://sql-backups.library.caltech.edu/new-data/caltechdata-db-1-caltechdata-2026-08-18.sql.gz", "gunzip -f", "/tmp/caltechdata-db-1-caltechdata-2026-08-18.sql.gz"} {
+	got := buildDownloadAndDecompressCommand("sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-18.sql.gz")
+	for _, want := range []string{"set -e", "aws s3 cp --only-show-errors", "s3://sql-backups.library.caltech.edu/new-data/caltechdata-db-1-caltechdata-2026-08-18.sql.gz", "gunzip -c", "2>&1"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("command = %q, want it to contain %q", got, want)
 		}
+	}
+}
+
+// TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix is
+// a regression test for a real incident (2026-08-18, restoring
+// CaltechDATA production's own real SQL backup): the archived object's
+// key was "...2026-08-16.sql" -- no ".gz" -- even though its content is
+// gzip'd. `gunzip -f <path>` derives its *output* filename from the
+// input path's own suffix and refuses ("unknown suffix -- ignored") on
+// anything that isn't a recognized compressed extension, regardless of
+// whether the content is actually gzip data. `gunzip -c ... > <fixed
+// path>` sidesteps this entirely -- it never needs to derive an output
+// name from the input's suffix -- so the built command (and the fixed
+// scratch paths it downloads/decompresses to) must be identical whether
+// the key ends in ".sql.gz", ".sql", or anything else.
+func TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix(t *testing.T) {
+	withGz := buildDownloadAndDecompressCommand("my-bucket", "new-data/backup.sql.gz")
+	withoutGz := buildDownloadAndDecompressCommand("my-bucket", "new-data/backup.sql")
+	if strings.Contains(withGz, ".sql.gz") == false || strings.Contains(withoutGz, "new-data/backup.sql") == false {
+		t.Fatalf("expected each command to reference its own source key -- withGz=%q withoutGz=%q", withGz, withoutGz)
+	}
+	// Strip each command's own source-key reference; what's left (the
+	// local scratch paths, the gunzip invocation shape) must be
+	// identical regardless of the key's own suffix.
+	normalize := func(cmd, key string) string { return strings.ReplaceAll(cmd, key, "<KEY>") }
+	if normalize(withGz, "new-data/backup.sql.gz") != normalize(withoutGz, "new-data/backup.sql") {
+		t.Errorf("commands differ beyond the source key itself:\n  withGz:    %q\n  withoutGz: %q", withGz, withoutGz)
 	}
 }
 
@@ -31,8 +58,23 @@ func TestDownloadAndDecompressSQLBackup_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "/tmp/backup.sql" {
-		t.Errorf("got %q, want %q", got, "/tmp/backup.sql")
+	if got != remoteRestoreSQLPath {
+		t.Errorf("got %q, want the fixed scratch path %q", got, remoteRestoreSQLPath)
+	}
+}
+
+// TestDownloadAndDecompressSQLBackup_SuccessWithKeyLackingGzSuffix is the
+// same regression as TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix,
+// one level up: a key without ".gz" must resolve to the identical fixed
+// output path, not a key-derived one.
+func TestDownloadAndDecompressSQLBackup_SuccessWithKeyLackingGzSuffix(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
+	got, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-16.sql", testPollInterval, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != remoteRestoreSQLPath {
+		t.Errorf("got %q, want the fixed scratch path %q", got, remoteRestoreSQLPath)
 	}
 }
 
@@ -44,6 +86,24 @@ func TestDownloadAndDecompressSQLBackup_SSMFailurePropagatesBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NoSuchKey") {
 		t.Errorf("expected the error to include the remote failure body, got: %v", err)
+	}
+}
+
+// TestDownloadAndDecompressSQLBackup_SurfacesStderr is a regression test
+// for the real incident's *second* gap: gunzip's "unknown suffix" message
+// went to stderr, which the pre-fix command never captured at all (only
+// stdout), so the operator-facing error showed just "(status: Failed)"
+// with no explanation. The command now redirects stderr into the same
+// stream RunShellCommand captures ("{ ...; } 2>&1"), so a real remote
+// failure's actual message reaches the reported error.
+func TestDownloadAndDecompressSQLBackup_SurfacesStderr(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "gzip: /tmp/clasm-sql-restore.download: unknown suffix -- ignored"}
+	_, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "my-bucket", "new-data/backup.sql", testPollInterval, testPollInterval)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "unknown suffix") {
+		t.Errorf("expected the error to include gunzip's own message, got: %v", err)
 	}
 }
 
@@ -74,15 +134,25 @@ func TestSQLStringLiteral_EmbeddedSingleQuote(t *testing.T) {
 	}
 }
 
+// TestBuildRestoreSQLCommands_ExactShape also confirms each command
+// captures stderr into the same stream RunShellCommand returns ("2>&1")
+// -- found real, live (2026-08-18): psql/gunzip failures land on
+// stderr, which RunShellCommand never captures at all (only
+// StandardOutputContent), so an un-redirected failure reports only
+// "(status: Failed)" with no explanation. None of these three commands
+// parse their own stdout for meaningful content on success (unlike
+// detectExistingSQLData/countRestoredTables, which do and are
+// deliberately left un-redirected to avoid a stray stderr notice
+// corrupting that parsing), so redirecting here is pure upside.
 func TestBuildRestoreSQLCommands_ExactShape(t *testing.T) {
 	dropCmd, createCmd, loadCmd := buildRestoreSQLCommands("caltechauthors-db-1", "caltechauthors", "caltechauthors", "/tmp/backup.sql")
-	if !strings.Contains(dropCmd, "docker exec") || !strings.Contains(dropCmd, "caltechauthors-db-1") || !strings.Contains(dropCmd, `DROP DATABASE IF EXISTS "caltechauthors"`) {
+	if !strings.Contains(dropCmd, "docker exec") || !strings.Contains(dropCmd, "caltechauthors-db-1") || !strings.Contains(dropCmd, `DROP DATABASE IF EXISTS "caltechauthors"`) || !strings.Contains(dropCmd, "2>&1") {
 		t.Errorf("dropCmd = %q, missing an expected element", dropCmd)
 	}
-	if !strings.Contains(createCmd, "docker exec") || !strings.Contains(createCmd, `CREATE DATABASE "caltechauthors"`) {
+	if !strings.Contains(createCmd, "docker exec") || !strings.Contains(createCmd, `CREATE DATABASE "caltechauthors"`) || !strings.Contains(createCmd, "2>&1") {
 		t.Errorf("createCmd = %q, missing an expected element", createCmd)
 	}
-	if !strings.Contains(loadCmd, "docker exec -i") || !strings.Contains(loadCmd, "caltechauthors-db-1") || !strings.Contains(loadCmd, "< '/tmp/backup.sql'") {
+	if !strings.Contains(loadCmd, "docker exec -i") || !strings.Contains(loadCmd, "caltechauthors-db-1") || !strings.Contains(loadCmd, "< '/tmp/backup.sql'") || !strings.Contains(loadCmd, "2>&1") {
 		t.Errorf("loadCmd = %q, missing an expected element", loadCmd)
 	}
 }
