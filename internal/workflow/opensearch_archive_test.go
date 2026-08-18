@@ -131,6 +131,59 @@ func TestArchiveOpenSearchSnapshot_RegistersRepoWithContainerPathNotHostDirector
 	}
 }
 
+// TestArchiveOpenSearchSnapshot_IndexPatternsUseProjectTagNotNameTag is a
+// regression test for a real incident (2026-08-17, CaltechAUTHORS
+// production, i-0c4c81336aea33d27): CreateSnapshot's indices patterns
+// were built from inst.Name, silently matching zero real indices when
+// an instance's Name tag (a legacy label, "newauthors" for this
+// instance) differs from its actual OpenSearch index prefix. The
+// instance's Project tag ("caltechauthors") matched the real index
+// prefix exactly -- confirmed live: OpenSearch reported the snapshot as
+// state SUCCESS with shards.total: 0, an entirely empty backup that
+// looked like a working one. This is the identical shape of mistake
+// Phase 20.52 already found and fixed once for Postgres db_name/db_user
+// defaulting (DECISIONS.md, "Default db_name/db_user to the instance's
+// Project tag, not its Name tag") -- same fix here: the OpenSearch
+// index-match prefix must prefer inst.Project, falling back to
+// inst.Name only when Project is blank. The S3 destination path is
+// unrelated and must keep using inst.Name unchanged (DECISIONS.md,
+// "CaltechAUTHORS's Name tag drives its S3 upload prefix, by design" --
+// cosmetic, already accepted, not part of this fix).
+func TestArchiveOpenSearchSnapshot_IndexPatternsUseProjectTagNotNameTag(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Project: "caltechauthors", Region: "us-east-1"}
+	input := "\n" +
+		"my-os-bucket\n" +
+		"\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{}}
+
+	err := archiveOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var createCmd, syncCmd string
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, `"indices"`) {
+			createCmd = c
+		}
+		if strings.Contains(c, "aws s3 sync") {
+			syncCmd = c
+		}
+	}
+	if !strings.Contains(createCmd, "caltechauthors-rdmrecords-") {
+		t.Errorf("create-snapshot command = %q, want index patterns built from the Project tag (caltechauthors-*)", createCmd)
+	}
+	if strings.Contains(createCmd, "newauthors-rdmrecords-") {
+		t.Errorf("create-snapshot command = %q, must NOT use the Name tag (newauthors-*) when Project is set", createCmd)
+	}
+	if !strings.Contains(syncCmd, "newauthors/opensearch-snapshots") {
+		t.Errorf("sync command = %q, want the S3 destination path to still use the Name tag (unaffected, cosmetic, unchanged)", syncCmd)
+	}
+}
+
 func TestArchiveOpenSearchSnapshot_ThresholdGivenButNoMatchingCandidates(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
 	input := "\n" +

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -108,10 +109,28 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 
 	// Namespaces every archived snapshot by the source instance, same
 	// convention as Feature 11's own upload prefix (backup_archive.go).
+	// This is purely an S3 key-naming choice -- CaltechAUTHORS's Name tag
+	// ("newauthors", a legacy label) is deliberately kept here even
+	// though it differs from its Project tag (DECISIONS.md,
+	// "CaltechAUTHORS's Name tag drives its S3 upload prefix, by
+	// design").
 	prefix := inst.Name
 	if prefix == "" {
 		prefix = inst.InstanceID
 	}
+
+	// Distinct from the S3 key prefix above: this is what OpenSearch
+	// itself must match against real index names, via
+	// rdmOpenSearchSnapshotIndexPatterns below. A real incident
+	// (2026-08-17, CaltechAUTHORS production) found inst.Name silently
+	// matching zero indices -- ignore_unavailable: true makes a wrong
+	// pattern fail quietly, not loudly -- because this instance's real
+	// index prefix is its Project tag ("caltechauthors"), not its Name
+	// tag ("newauthors"). Same fix shape as Phase 20.52's Postgres
+	// db_name/db_user defaulting (DECISIONS.md, "Default db_name/db_user
+	// to the instance's Project tag, not its Name tag"): prefer
+	// inst.Project, fall back to inst.Name only when Project is blank.
+	indexPrefix := cmp.Or(inst.Project, prefix)
 
 	cleanupDays, cleanupRequested, err := promptOpenSearchCleanupDays(input, output)
 	if err != nil {
@@ -144,7 +163,7 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	}
 
 	snapshotName := time.Now().UTC().Format("rdm-20060102-150405")
-	indices := rdmOpenSearchSnapshotIndexPatterns(prefix)
+	indices := rdmOpenSearchSnapshotIndexPatterns(indexPrefix)
 	if err := CreateSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}

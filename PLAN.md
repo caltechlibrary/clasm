@@ -5525,6 +5525,91 @@ OpenSearch Snapshot works end to end there, *then* consider
 CaltechAUTHORS production. Full session account:
 `agents/hand-off/2026-07-30T040000Z-clasm-opensearch-live-testing-and-production-safety.spmd`.
 
+**Real-AWS-verified end to end on CaltechDATA dev, 2026-08-12.** Redid
+the retrofit following the rewritten runbook's safe persistent-volume
+migration (`docker cp` the live 269MB data dir out, `chown 1000:1000`,
+added the persistent volume + backups mount + `path.repo` in one
+`docker-services.yml` edit, recreated `search` exactly once) -- this
+time every real index (including `stats-record-view-*`) survived the
+recreate, confirmed via `_cat/indices?v`. Registered the snapshot repo,
+then attached a new IAM role (`rdm-opensearch-backup`, RDM Repository
+Instance template: `AmazonSSMManagedInstanceCore` + scoped S3
+`ListBucket`/`GetObject`/`PutObject` on `opensearch-backups.
+library.caltech.edu`, plus a hand-added `DeleteObject` statement for
+the S3-side cleanup branch, since the template itself doesn't include
+it) to the instance for S3 access. **A fifth real bug surfaced
+attaching that role**, unrelated to OpenSearch itself: the newly-created
+role never appeared in the "Select a role to attach" picker (used when
+creating a new instance profile) even though "Show Roles" saw it fine
+-- `internal/workflow/resource_lists.go`'s `listRoles`/
+`listInstanceProfiles` each made a single un-paginated
+`iam.ListRoles`/`ListInstanceProfiles` call, the same truncation
+`internal/inventory/iam.go`'s `listAllRoles`/`listAllInstanceProfiles`
+were already fixed for on 2026-07-23 -- just a sibling call site that
+missed the same fix. Fixed test-first, identical shape to the existing
+fix. See DECISIONS.md, "Real bug: `listRoles`/`listInstanceProfiles`
+un-paginated, sibling to a fix already made elsewhere". With that
+fixed and the role attached, ran Archive OpenSearch Snapshot against
+`data.caltechlibrary.dev` for the first time ever: created snapshot
+`rdm-20260812-205453`, synced 4 objects/725 bytes to `s3://
+opensearch-backups.library.caltech.edu/data.caltechlibrary.dev/
+opensearch-snapshots/rdm-20260812-205453/`, verified, deleted the local
+EBS-side snapshot -- full lifecycle confirmed working, except the
+S3-side cleanup branch (no old snapshots existed yet to trigger it;
+untested, not blocking). **CaltechAUTHORS production still untouched**
+-- next step whenever this resumes: accumulate a few archives on
+CaltechDATA dev to exercise S3-side cleanup at least once, then repeat
+this entire sequence against production, given its much higher stakes.
+Full session account:
+`agents/hand-off/2026-08-12T220000Z-clasm-opensearch-archive-real-aws-verified-caltechdata-dev.spmd`.
+
+**CaltechAUTHORS production retrofit done and real-AWS-verified,
+2026-08-17.** Followed `~/WorkLab/rdm-opensearch-path-repo-retrofit.md`'s
+safe-migration procedure live, one command at a time: `docker cp`'d the
+live 19GB `/usr/share/opensearch/data` out (size-matched against the
+running container's own `du -sh` before proceeding), added the
+persistent-data volume + backups mount + `path.repo` to
+`docker-services.yml` in one edit (validated via `docker compose
+config` before the recreate), recreated `search` exactly once in a
+maintenance window. Every real index survived, including
+`caltechauthors-rdmrecords-records-record-v7.0.0` at 147,438 docs
+(matches the ~150K estimate) plus all `stats-*`/`events-stats-*`
+history. Snapshot repo `rdm_backup_repo` registered successfully,
+first attempt. See `agents/knowledge.db` observations 171/172 and
+`agents/hand-off/2026-08-17T231100Z-clasm-opensearch-retrofit-caltechauthors-production-verified.spmd`.
+**IAM role attached same day, then a second real bug found on the first
+live run against CaltechAUTHORS.** Reused the existing
+`rdm-opensearch-backup` role (created 2026-08-12 for CaltechDATA dev --
+IAM roles/instance profiles are account-level, no need to recreate) and
+associated it to CaltechAUTHORS via "Associate/replace IAM instance
+profile," confirmed via `DescribeInstances` (`IamInstanceProfile` went
+from `null` to the role's ARN). First live run of Archive OpenSearch
+Snapshot against CaltechAUTHORS then hit two independent, real failures,
+both diagnosed from the `--debug` JSONL log: (1) the S3 sync failed with
+`AccessDenied` -- turned out the *previous* debug session's IAM attach
+attempt hadn't actually landed before that run, so the instance was
+still using its default SSM-only role with no S3 permissions (fixed by
+the same-day re-attach above); (2) more seriously, the `CreateSnapshot`
+call itself matched **zero real indices** (`state: SUCCESS`,
+`shards.total: 0`) because its index patterns were built from
+CaltechAUTHORS's Name tag (`newauthors`) rather than its Project tag
+(`caltechauthors`, which matches the real index prefix) -- an entirely
+empty snapshot silently reporting success. Fixed test-first: see
+DECISIONS.md, "Real bug: Archive OpenSearch Snapshot's index-match
+patterns used the Name tag, not the Project tag" -- `indexPrefix :=
+cmp.Or(inst.Project, prefix)`, used only for
+`rdmOpenSearchSnapshotIndexPatterns`, mirroring Phase 20.52's identical
+`Name`-vs-`Project` fix for Postgres. New regression test
+`TestArchiveOpenSearchSnapshot_IndexPatternsUseProjectTagNotNameTag`
+confirmed failing before the fix, passing after; all pre-existing tests
+unaffected. `go build`/`vet`/`test ./... -race`/`gofmt -l` clean.
+**Still remaining: re-run Archive OpenSearch Snapshot against
+CaltechAUTHORS now that both bugs are fixed, to confirm the full
+lifecycle actually captures real data this time; then repeat the entire
+retrofit against CaltechDATA production (`data.caltech.edu`, distinct
+from the already-fixed `data.caltechlibrary.dev` dev instance), which
+has not been touched at all.**
+
 ### Work Items
 
 - [x] `internal/config/config.go`: new field
