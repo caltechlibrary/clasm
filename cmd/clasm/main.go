@@ -573,7 +573,34 @@ func main() {
 			return workflow.RunIAMMenu(ctx, out, iamActions)
 		},
 		Configuration: func(ctx context.Context) error {
-			return workflow.RunConfigureMenu(ctx, out, configPath)
+			menuErr := workflow.RunConfigureMenu(ctx, out, configPath)
+			// RunConfigureMenu loads its own separate, independent copy of
+			// configPath (config.Load, keyed only by the path -- see its
+			// own doc comment), edits it, and Save writes that copy to
+			// disk -- but every other domain's closures in this same
+			// running process (RunSQLBackup/RestoreSQL/ArchiveSQL/
+			// ArchiveOpenSearch/the IAM domain's OriginTag) read live off
+			// this outer cfg variable, which was otherwise never reloaded
+			// after startup. Without this, a Save made inside Configure
+			// clasm silently had no effect until the whole process was
+			// restarted -- a real bug found live 2026-08-18 restoring
+			// against caltechdata-restore-test (DECISIONS.md, "Configure
+			// clasm edits didn't take effect until restart -- reload cfg
+			// after returning from the Configure clasm domain"). Reassigns
+			// the same outer `cfg` (not a new `:=` shadow), so every
+			// closure that reads `cfg.XXX` at call time -- all of them do,
+			// none pre-extract a value at closure-creation time -- picks
+			// up the change immediately. Regions are the one deliberate
+			// exception: ssmClients/ec2Clients/etc. were already built
+			// from the old region list at startup and aren't recreated
+			// here, matching Configure clasm's own existing "Region
+			// changes take effect the next time clasm is launched" notice.
+			if reloaded, reloadErr := config.Load(configPath); reloadErr != nil {
+				fmt.Fprintf(out, "warning: could not reload config after Configure clasm: %v\n", reloadErr)
+			} else {
+				cfg = reloaded
+			}
+			return menuErr
 		},
 		RDMBackupRestore: func(ctx context.Context) error {
 			// Fetch (not display) the instance listing on every entry

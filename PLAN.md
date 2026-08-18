@@ -6677,6 +6677,46 @@ None -- independently buildable.
 
 ---
 
+## Phase 20.58 — Real Bug: Configure Clasm Edits Didn't Take Effect Until Restart
+
+**Status: found, fixed 2026-08-18, no dedicated test (pure `main()`
+wiring, no existing test harness for `cmd/clasm`) -- verified via the
+live use that surfaced it** (DECISIONS.md, "Real bug: Configure clasm
+edits didn't take effect until restart -- reload cfg after returning
+from the Configure clasm domain"). Found live testing Restore SQL
+Backup against `caltechdata-restore-test`.
+
+### Work Items
+
+- [x] `cmd/clasm/main.go`: the `Configuration` domain closure now
+      reloads `configPath` via `config.Load` immediately after
+      `RunConfigureMenu` returns, reassigning the same outer `cfg`
+      variable (not a new `:=` shadow) so every other domain's
+      closures -- confirmed by reading each one, all read `cfg.XXX`
+      live at call time -- pick up the change without a restart. Regions
+      stay the one deliberate exception (unchanged): region-dependent
+      clients (`ssmClients`/`ec2Clients`/etc.) are still only built once
+      at startup.
+
+### Tests
+
+- None -- `cmd/clasm` has no existing test harness (unlike the
+  `workflow` package); this is pure procedural wiring, not business
+  logic with edge cases to unit-test. Verified live: the exact
+  repro (edit `rdm_postgres_config` via Configure clasm, Save, re-run
+  Restore SQL Backup in the same process without restarting) is the
+  regression check.
+
+### Files
+
+`cmd/clasm/main.go` (extended, not new).
+
+### Dependency
+
+None.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives
