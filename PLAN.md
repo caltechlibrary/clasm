@@ -6450,58 +6450,82 @@ None -- independently buildable.
 
 ## Phase 20.55 — Delete Role's Wrong-Remedy Message + Missing Instance-Profile-Membership Capability
 
-**Status: designed 2026-08-18, not yet implemented** (DESIGN.md, "Delete
-Role's Wrong-Remedy Message + Missing Instance-Profile-Membership
+**Status: designed and implemented 2026-08-18, test-first throughout,
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
+"Delete Role's Wrong-Remedy Message + Missing Instance-Profile-Membership
 Capability"; DECISIONS.md, "Delete Role: correct the wrong-remedy
-message, add the missing instance-profile-membership actions").
+message, add the missing instance-profile-membership actions"). Not yet
+real-AWS-verified.
 
 ### Work Items
 
-- [ ] `iam_lifecycle.go`: `deleteIAMRoleConfirmed`'s refusal message
+- [x] `iam_lifecycle.go`: `deleteIAMRoleConfirmed`'s refusal message
       (both the hard-refuse in `deleteIAMRole` and the earlier
-      `iam_menu`-level pre-check) rewords from "detach it first
+      `iam_menu`-level pre-check) reworded from "detach it first
       (Compute domain, ...)" to name the real relationship and point at
-      the new action below, e.g. "role %q is a member of instance
-      profile(s) %s -- remove it from each first (IAM domain, \"Remove
-      role from instance profile\")"
-- [ ] New `internal/workflow/iam_instance_profile_membership.go`:
+      the new action below: "role %q is a member of instance profile(s)
+      %s -- remove it from each first (IAM domain, \"Remove role from
+      instance profile\")"
+- [x] New `internal/workflow/iam_instance_profile_membership.go`:
       `removeRoleFromInstanceProfile(ctx, client awsclient.IAMAPI,
       profileName, roleName string) error` (wraps
       `iam:RemoveRoleFromInstanceProfile`); `deleteInstanceProfile(ctx,
       client awsclient.IAMAPI, profileName string) error` (wraps
       `iam:DeleteInstanceProfile`, letting AWS's own
       "still has a role attached" precondition surface as-is rather than
-      pre-checking it client-side); both DLD-owned-role-gated the same
-      way Attach/Detach Policy already are
-- [ ] `RemoveRoleFromInstanceProfile(ctx, w, client, roles
-      []RoleInfo) error` / `DeleteInstanceProfile(ctx, w, client, profiles
-      []InstanceProfileInfo) error`: pick-then-confirm-then-act wrappers
-      (plain `Confirm`, not `ConfirmDestructive`, matching Attach/Detach
-      Policy's tiering), same shape as `AttachPolicyToRole`/
-      `DetachPolicyFromRole`
-- [ ] `iam_menu.go`: `IAMActions` gains
-      `RemoveRoleFromInstanceProfile`/`DeleteInstanceProfile`; new menu
-      entries added to the Role actions group, ordered after
-      Attach/Detach Policy and before Delete Role (reversible-before-
-      irreversible, matching Phase 20.43's own ordering convention)
+      pre-checking it client-side); new `filterDLDOwnedInstanceProfiles`
+      (same "filter, don't annotate-and-reject" shape as
+      `filterDLDOwnedRoles`)
+- [x] `RemoveRoleFromInstanceProfile(ctx, w, client, originTag) error` /
+      `DeleteInstanceProfile(ctx, w, client, originTag) error`:
+      pick-then-confirm-then-act wrappers (plain `Confirm`, not
+      `ConfirmDestructive`, matching Attach/Detach Policy's tiering),
+      same shape as `AttachPolicyToRole`/`DetachPolicyFromRole` --
+      Remove Role from Instance Profile picks a DLD-owned role
+      (`pickIAMRole`) then which profile it's a member of, if more than
+      one (`pickComparable` over `IAMRoleDetail.ReferencedByProfiles`,
+      reusing the list `fetchIAMRoleDetail` already assembles rather than
+      a fresh fetch); Delete Instance Profile picks a DLD-owned instance
+      profile directly (`pickIAMInstanceProfile`)
+- [x] `iam_menu.go`: `IAMActions` gains
+      `RemoveRoleFromInstanceProfile`/`DeleteInstanceProfile`; two new
+      menu entries inserted after Detach Policy from Role and before
+      Delete Role, in the natural remedy order (remove role from
+      profile, delete the now-empty profile, delete the role) --
+      reversible-before-irreversible, matching Phase 20.43's own
+      ordering convention
+- [x] `internal/awsclient/iam.go`: `IAMAPI` gains
+      `RemoveRoleFromInstanceProfile`/`DeleteInstanceProfile`;
+      `logging_iam.go`'s `loggingIAMClient` wrapper gets matching methods
+      (not called out in the original work-item sketch, but required for
+      `loggingIAMClient` to keep satisfying `IAMAPI`)
 
 ### Tests
 
-- [ ] Reworded-message assertion: a role with `ReferencedByProfiles`
-      set produces the new wording, not the old one
-- [ ] `removeRoleFromInstanceProfile`/`deleteInstanceProfile`: success
-      and API-error passthrough, table-driven against a fake IAM client
-- [ ] `RemoveRoleFromInstanceProfile`/`DeleteInstanceProfile`'s testable
-      cores: non-DLD-owned role/profile refused; confirm declined does
-      nothing; confirm accepted calls the wrapped API function exactly
-      once
+- [x] Reworded-message assertions (`TestDeleteIAMRole_RefusalMessageNamesTheRealRemedy`,
+      `TestDeleteIAMRoleConfirmed_RefusalMessageNamesTheRealRemedy`):
+      confirm the new wording ("member of", "Remove role from instance
+      profile") and confirm the old, no-longer-fixable remedy
+      ("Associate/replace IAM instance profile") no longer appears
+- [x] `removeRoleFromInstanceProfileConfirmed`/`deleteInstanceProfileConfirmed`'s
+      testable cores: non-DLD-owned role/profile refused; not-a-member
+      case refuses cleanly before any picker/confirm; confirm declined
+      does nothing; confirm accepted calls the wrapped API function
+      exactly once with the right names; the wrapped API's own error
+      (including AWS's `DeleteConflict` for an in-use profile) propagates
+      verbatim
+- [x] `removeRoleFromInstanceProfileWorkflow`/`deleteInstanceProfileWorkflow`:
+      no-DLD-owned-roles/profiles-found message
 
 ### Files
 
 New `internal/workflow/{iam_instance_profile_membership.go,
 iam_instance_profile_membership_test.go}`; `internal/workflow/
 {iam_lifecycle.go,iam_lifecycle_test.go,iam_menu.go,iam_menu_test.go}`
-(extended, not new).
+(extended, not new); `internal/awsclient/{iam.go,logging_iam.go}`
+(extended, not new); `internal/workflow/create_instance_profile_test.go`
+(extended -- shared `fakeIAMClient` fixture gained the two new methods);
+`cmd/clasm/main.go`.
 
 ### Dependency
 

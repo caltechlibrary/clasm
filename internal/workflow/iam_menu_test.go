@@ -14,15 +14,17 @@ import (
 func testIAMActions() IAMActions {
 	noop := func(ctx context.Context) error { return nil }
 	return IAMActions{
-		ShowRoles:                 noop,
-		ShowInstanceProfiles:      noop,
-		ShowPolicies:              noop,
-		ViewRoleDetail:            noop,
-		ViewInstanceProfileDetail: noop,
-		CreateRoleFromTemplate:    noop,
-		DeleteRole:                noop,
-		AttachPolicyToRole:        noop,
-		DetachPolicyFromRole:      noop,
+		ShowRoles:                     noop,
+		ShowInstanceProfiles:          noop,
+		ShowPolicies:                  noop,
+		ViewRoleDetail:                noop,
+		ViewInstanceProfileDetail:     noop,
+		CreateRoleFromTemplate:        noop,
+		DeleteRole:                    noop,
+		AttachPolicyToRole:            noop,
+		DetachPolicyFromRole:          noop,
+		RemoveRoleFromInstanceProfile: noop,
+		DeleteInstanceProfile:         noop,
 	}
 }
 
@@ -225,7 +227,7 @@ func TestRunIAMMenu_DispatchesToDeleteRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.DeleteRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Delete Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Delete Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -269,12 +271,52 @@ func TestRunIAMMenu_DispatchesToDetachPolicyFromRole(t *testing.T) {
 }
 
 func TestIAMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(iamMenuItems) != 9 {
-		t.Fatalf("len(iamMenuItems) = %d, want 9 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
+	if len(iamMenuItems) != 11 {
+		t.Fatalf("len(iamMenuItems) = %d, want 11 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
 	}
 	for _, item := range iamMenuItems {
 		if item.action == nil {
 			t.Errorf("found a nil-action item %q", item.label)
 		}
+	}
+}
+
+// TestRunIAMMenu_DispatchesToRemoveRoleFromInstanceProfile/
+// TestRunIAMMenu_DispatchesToDeleteInstanceProfile are regression tests
+// for Phase 20.55's two new menu entries, inserted after Detach Policy
+// from Role and before Delete Role (DECISIONS.md, "Delete Role: correct
+// the wrong-remedy message, add the missing instance-profile-membership
+// actions").
+func TestRunIAMMenu_DispatchesToRemoveRoleFromInstanceProfile(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.RemoveRoleFromInstanceProfile = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Remove Role from Instance Profile
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRunIAMMenu_DispatchesToDeleteInstanceProfile(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.DeleteInstanceProfile = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("10\n"), buf) // Delete Instance Profile
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
 	}
 }

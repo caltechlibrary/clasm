@@ -465,6 +465,12 @@ func main() {
 		DetachPolicyFromRole: func(ctx context.Context) error {
 			return workflow.DetachPolicyFromRole(ctx, out, iamClient, cfg.OriginTag)
 		},
+		RemoveRoleFromInstanceProfile: func(ctx context.Context) error {
+			return workflow.RemoveRoleFromInstanceProfile(ctx, out, iamClient, cfg.OriginTag)
+		},
+		DeleteInstanceProfile: func(ctx context.Context) error {
+			return workflow.DeleteInstanceProfile(ctx, out, iamClient, cfg.OriginTag)
+		},
 	}
 
 	// backupHistory is shared by RunSQLBackup and ArchiveSQL below -- both

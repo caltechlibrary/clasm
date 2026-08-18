@@ -39,6 +39,28 @@ func TestDeleteIAMRole_RefusesWhenReferencedByProfiles(t *testing.T) {
 	}
 }
 
+// TestDeleteIAMRole_RefusalMessageNamesTheRealRemedy is deleteIAMRole's
+// own hard-refuse counterpart to TestDeleteIAMRoleConfirmed_RefusalMessageNamesTheRealRemedy
+// -- same wording fix, different call site (PLAN.md Phase 20.55).
+func TestDeleteIAMRole_RefusalMessageNamesTheRealRemedy(t *testing.T) {
+	fake := &fakeIAMClient{}
+	detail := IAMRoleDetail{Name: "air-sampling", ReferencedByProfiles: []string{"air-sampling-profile"}}
+
+	err := deleteIAMRole(context.Background(), fake, detail)
+	if err == nil {
+		t.Fatal("expected an error when the role is still referenced by an instance profile")
+	}
+	if !strings.Contains(err.Error(), "member of") {
+		t.Errorf("expected the error to describe instance-profile *membership*, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Remove role from instance profile") {
+		t.Errorf("expected the error to point at the real remedy, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "Associate/replace IAM instance profile") {
+		t.Errorf("expected the error not to point at Associate/replace, which cannot fix this, got: %v", err)
+	}
+}
+
 func TestDeleteIAMRole_DeletesInlinePoliciesDetachesManagedAndDeletesRole(t *testing.T) {
 	fake := &fakeIAMClient{
 		entitiesByPolicyArn: map[string]iam.ListEntitiesForPolicyOutput{
@@ -238,6 +260,39 @@ func TestDeleteIAMRoleConfirmed_RefusesWhenReferencedByProfilesBeforeConfirming(
 	}
 	if !strings.Contains(buf.String(), "test-role-profile") {
 		t.Errorf("expected the error message to name the referencing profile, got:\n%s", buf.String())
+	}
+}
+
+// TestDeleteIAMRoleConfirmed_RefusalMessageNamesTheRealRemedy is a
+// regression test for Phase 20.55 (DECISIONS.md, "Delete Role: correct
+// the wrong-remedy message, add the missing instance-profile-membership
+// actions"): the refusal must describe the real relationship (role is a
+// *member of* an instance profile) and point at "Remove role from
+// instance profile" -- not "Associate/replace IAM instance profile",
+// which changes a different relationship (EC2-to-profile association)
+// and can never unblock this.
+func TestDeleteIAMRoleConfirmed_RefusalMessageNamesTheRealRemedy(t *testing.T) {
+	term, buf := newTermOnly()
+	fake := &fakeIAMClient{}
+	detail := IAMRoleDetail{
+		Name:                 "test-role",
+		Tags:                 map[string]string{"Origin": "DLD"},
+		ReferencedByProfiles: []string{"test-role-profile"},
+	}
+	originTag := config.OriginTagConfig{Key: "Origin", DLDValue: "DLD"}
+
+	err := deleteIAMRoleConfirmed(context.Background(), term, fake, originTag, detail, newHuhAccessibleInput(""), buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "member of") {
+		t.Errorf("expected the message to describe instance-profile *membership*, got:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Remove role from instance profile") {
+		t.Errorf("expected the message to point at the real remedy, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "Associate/replace IAM instance profile") {
+		t.Errorf("expected the message not to point at Associate/replace, which cannot fix this, got:\n%s", buf.String())
 	}
 }
 

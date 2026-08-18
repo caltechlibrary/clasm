@@ -208,3 +208,15 @@ func (w *loggingIAMClient) ListEntitiesForPolicy(ctx context.Context, params *ia
 		return w.inner.ListEntitiesForPolicy(ctx, params, optFns...)
 	})
 }
+
+func (w *loggingIAMClient) RemoveRoleFromInstanceProfile(ctx context.Context, params *iam.RemoveRoleFromInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	return logAWSCall(w.dl, "IAM.RemoveRoleFromInstanceProfile", w.region, params, func() (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+		return w.inner.RemoveRoleFromInstanceProfile(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) DeleteInstanceProfile(ctx context.Context, params *iam.DeleteInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.DeleteInstanceProfileOutput, error) {
+	return logAWSCall(w.dl, "IAM.DeleteInstanceProfile", w.region, params, func() (*iam.DeleteInstanceProfileOutput, error) {
+		return w.inner.DeleteInstanceProfile(ctx, params, optFns...)
+	})
+}

@@ -126,6 +126,31 @@ type fakeIAMClient struct {
 	listPolicyVersionsErr         error
 	entitiesByPolicyArn           map[string]iam.ListEntitiesForPolicyOutput
 	listEntitiesForPolicyErr      error
+
+	// removeRoleFromInstanceProfileErr/lastRemoveRoleFromInstanceProfileInputs,
+	// deleteInstanceProfileErr/lastDeleteInstanceProfileInputs support
+	// Phase 20.55's "Remove role from instance profile"/"Delete instance
+	// profile" actions (iam_instance_profile_membership_test.go).
+	removeRoleFromInstanceProfileErr        error
+	lastRemoveRoleFromInstanceProfileInputs []*iam.RemoveRoleFromInstanceProfileInput
+	deleteInstanceProfileErr                error
+	lastDeleteInstanceProfileInputs         []*iam.DeleteInstanceProfileInput
+}
+
+func (f *fakeIAMClient) RemoveRoleFromInstanceProfile(ctx context.Context, params *iam.RemoveRoleFromInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	f.lastRemoveRoleFromInstanceProfileInputs = append(f.lastRemoveRoleFromInstanceProfileInputs, params)
+	if f.removeRoleFromInstanceProfileErr != nil {
+		return nil, f.removeRoleFromInstanceProfileErr
+	}
+	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
+}
+
+func (f *fakeIAMClient) DeleteInstanceProfile(ctx context.Context, params *iam.DeleteInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.DeleteInstanceProfileOutput, error) {
+	f.lastDeleteInstanceProfileInputs = append(f.lastDeleteInstanceProfileInputs, params)
+	if f.deleteInstanceProfileErr != nil {
+		return nil, f.deleteInstanceProfileErr
+	}
+	return &iam.DeleteInstanceProfileOutput{}, nil
 }
 
 func (f *fakeIAMClient) GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error) {

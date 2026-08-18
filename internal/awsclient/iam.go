@@ -106,6 +106,19 @@ type IAMAPI interface {
 	DeletePolicyVersion(ctx context.Context, params *iam.DeletePolicyVersionInput, optFns ...func(*iam.Options)) (*iam.DeletePolicyVersionOutput, error)
 	ListPolicyVersions(ctx context.Context, params *iam.ListPolicyVersionsInput, optFns ...func(*iam.Options)) (*iam.ListPolicyVersionsOutput, error)
 	ListEntitiesForPolicy(ctx context.Context, params *iam.ListEntitiesForPolicyInput, optFns ...func(*iam.Options)) (*iam.ListEntitiesForPolicyOutput, error)
+	// RemoveRoleFromInstanceProfile/DeleteInstanceProfile support Phase
+	// 20.55's "Remove role from instance profile"/"Delete instance
+	// profile" actions -- the actual remedy for Delete Role's "still
+	// referenced by instance profile(s)" refusal, which Associate/
+	// replace IAM instance profile (a different relationship: EC2-to-
+	// profile association, not profile-to-role membership) can never
+	// satisfy (DECISIONS.md, "Delete Role: correct the wrong-remedy
+	// message, add the missing instance-profile-membership actions").
+	// DeleteInstanceProfile's own "still has a role attached" precondition
+	// is deliberately not pre-checked client-side -- let AWS's own
+	// DeleteConflict surface as-is, matching "fail loud, don't guess."
+	RemoveRoleFromInstanceProfile(ctx context.Context, params *iam.RemoveRoleFromInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.RemoveRoleFromInstanceProfileOutput, error)
+	DeleteInstanceProfile(ctx context.Context, params *iam.DeleteInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.DeleteInstanceProfileOutput, error)
 }
 
 // NewIAMClient constructs an IAM client from the SDK's default credential

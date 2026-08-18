@@ -32,13 +32,18 @@ func isAWSManagedPolicyArn(arn string) bool {
 // both together" to avoid leaving an orphaned policy as new clutter).
 //
 // Refuses upfront if detail.ReferencedByProfiles is non-empty: AWS's
-// own DeleteRole documentation warns that deleting a role or instance
-// profile still associated with a running instance can break whatever
-// depends on it, and detaching a role from an instance profile is
-// already Compute's own, carefully-scoped "Associate/replace IAM
-// instance profile" action (Phase 20.33) -- automating that
-// cross-cutting side effect here would be scope creep into a workflow
-// that already exists and is deliberately separate.
+// own DeleteRole documentation warns that a role still a member of an
+// instance profile can't be deleted, and removing that membership is
+// already the IAM domain's own, carefully-scoped "Remove role from
+// instance profile" action (Phase 20.55) -- automating that cross-cutting
+// side effect here would be scope creep into a workflow that already
+// exists and is deliberately separate. The message names this exact
+// relationship (profile-to-role *membership*), not "Associate/replace
+// IAM instance profile" (Phase 20.33), which changes something else
+// entirely -- an EC2 instance's own *association* to a profile -- and
+// can never satisfy this refusal (DECISIONS.md, "Delete Role: correct
+// the wrong-remedy message, add the missing instance-profile-membership
+// actions").
 //
 // Order matches AWS's own documented precondition list for DeleteRole
 // (confirmed via the vendored SDK's doc comment, 2026-07-23): delete
@@ -47,7 +52,7 @@ func isAWSManagedPolicyArn(arn string) bool {
 // on whether DeleteRole itself succeeds, so it's done last.
 func deleteIAMRole(ctx context.Context, client awsclient.IAMAPI, detail IAMRoleDetail) error {
 	if len(detail.ReferencedByProfiles) > 0 {
-		return fmt.Errorf("role %q is still referenced by instance profile(s) %s -- detach it first (Compute domain, \"Associate/replace IAM instance profile\")", detail.Name, strings.Join(detail.ReferencedByProfiles, ", "))
+		return fmt.Errorf("role %q is a member of instance profile(s) %s -- remove it from each first (IAM domain, \"Remove role from instance profile\")", detail.Name, strings.Join(detail.ReferencedByProfiles, ", "))
 	}
 
 	for _, name := range detail.InlinePolicyNames {
@@ -185,7 +190,7 @@ func deleteIAMRoleConfirmed(ctx context.Context, w io.Writer, client awsclient.I
 	}
 
 	if len(detail.ReferencedByProfiles) > 0 {
-		fmt.Fprintf(w, "\nCannot delete: role %q is still referenced by instance profile(s): %s. Detach it first (Compute domain, \"Associate/replace IAM instance profile\").\n", detail.Name, strings.Join(detail.ReferencedByProfiles, ", "))
+		fmt.Fprintf(w, "\nCannot delete: role %q is a member of instance profile(s): %s. Remove it from each first (IAM domain, \"Remove role from instance profile\").\n", detail.Name, strings.Join(detail.ReferencedByProfiles, ", "))
 		return nil
 	}
 

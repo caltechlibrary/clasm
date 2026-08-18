@@ -44,6 +44,16 @@ type IAMActions struct {
 	DeleteRole           func(ctx context.Context) error
 	AttachPolicyToRole   func(ctx context.Context) error
 	DetachPolicyFromRole func(ctx context.Context) error
+	// RemoveRoleFromInstanceProfile/DeleteInstanceProfile are Phase
+	// 20.55's additions (DECISIONS.md, "Delete Role: correct the
+	// wrong-remedy message, add the missing instance-profile-membership
+	// actions") -- the actual remedy for Delete Role's "still a member of
+	// instance profile(s)" refusal, which Associate/replace IAM instance
+	// profile (Compute domain) can never satisfy, since that action only
+	// ever changes an EC2 instance's *association* to a profile, not a
+	// profile's own role *membership*.
+	RemoveRoleFromInstanceProfile func(ctx context.Context) error
+	DeleteInstanceProfile         func(ctx context.Context) error
 }
 
 // iamMenuItem pairs an IAM menu label with the IAMActions field it
@@ -54,11 +64,17 @@ type iamMenuItem struct {
 }
 
 // iamMenuItems is DESIGN.md's IAM domain menu, in order. Attach/Detach
-// precede Delete (MENU_REVIEW.md, 2026-07-24; DECISIONS.md, "Regroup the
-// Compute menu") -- both are trivially reversible via their paired
-// action, unlike Delete Role, so the one truly irreversible action sits
-// last. No "Back to domain picker" entry -- DECISIONS.md, "TUI keybinding
-// conventions": 'q' is the universal back key everywhere.
+// Policy and Remove Role from Instance Profile all precede Delete Role/
+// Delete Instance Profile (MENU_REVIEW.md, 2026-07-24; DECISIONS.md,
+// "Regroup the Compute menu") -- each of the former is trivially
+// reversible via its paired action or by re-adding the role, unlike
+// either delete, so the two truly irreversible actions sit last, in the
+// natural remedy order (DECISIONS.md, "Delete Role: correct the
+// wrong-remedy message, add the missing instance-profile-membership
+// actions"): remove the role from a profile before deleting that now-
+// empty profile, before deleting the role itself. No "Back to domain
+// picker" entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is
+// the universal back key everywhere.
 var iamMenuItems = []iamMenuItem{
 	{"Show Roles", func(a IAMActions, ctx context.Context) error { return a.ShowRoles(ctx) }},
 	{"Show Instance Profiles", func(a IAMActions, ctx context.Context) error { return a.ShowInstanceProfiles(ctx) }},
@@ -68,6 +84,8 @@ var iamMenuItems = []iamMenuItem{
 	{"Create Role from Template", func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
 	{"Attach Policy to Role", func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
 	{"Detach Policy from Role", func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
+	{"Remove Role from Instance Profile", func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},
+	{"Delete Instance Profile", func(a IAMActions, ctx context.Context) error { return a.DeleteInstanceProfile(ctx) }},
 	{"Delete Role", func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
 }
 
