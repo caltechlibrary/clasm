@@ -6761,6 +6761,18 @@ the root disk's own free space; `/var/tmp` confirmed to be plain
 root-disk space on the same instance. See DECISIONS.md's same-day
 follow-up entry under this phase's own heading.
 
+**Third same-day follow-up, same phase:** with both prior fixes in
+place, the next retry surfaced a third real issue -- the real
+CaltechDATA legacy backup (bare `.sql` key) is genuinely uncompressed,
+not gzip content under a misleading name as this phase's original fix
+assumed. New `needsDecompression(key string) bool` (suffix check) makes
+decompression conditional again -- `.gz` decompresses,
+`downloadAndDecompressSQLBackup` returns `remoteRestoreSQLPath`;
+anything else skips `gunzip` entirely and returns
+`remoteRestoreDownloadPath` (the raw file) directly. Suggested directly
+by the user mid-live-test. See DECISIONS.md's third same-day follow-up
+entry under this phase's own heading.
+
 ### Files
 
 `internal/workflow/{restore_sql.go,restore_sql_test.go}` (extended, not

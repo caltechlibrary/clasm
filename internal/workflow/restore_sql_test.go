@@ -25,30 +25,35 @@ func TestBuildDownloadAndDecompressCommand_ExactShape(t *testing.T) {
 	}
 }
 
-// TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix is
-// a regression test for a real incident (2026-08-18, restoring
-// CaltechDATA production's own real SQL backup): the archived object's
-// key was "...2026-08-16.sql" -- no ".gz" -- even though its content is
-// gzip'd. `gunzip -f <path>` derives its *output* filename from the
-// input path's own suffix and refuses ("unknown suffix -- ignored") on
-// anything that isn't a recognized compressed extension, regardless of
-// whether the content is actually gzip data. `gunzip -c ... > <fixed
-// path>` sidesteps this entirely -- it never needs to derive an output
-// name from the input's suffix -- so the built command (and the fixed
-// scratch paths it downloads/decompresses to) must be identical whether
-// the key ends in ".sql.gz", ".sql", or anything else.
-func TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix(t *testing.T) {
-	withGz := buildDownloadAndDecompressCommand("my-bucket", "new-data/backup.sql.gz")
-	withoutGz := buildDownloadAndDecompressCommand("my-bucket", "new-data/backup.sql")
-	if strings.Contains(withGz, ".sql.gz") == false || strings.Contains(withoutGz, "new-data/backup.sql") == false {
-		t.Fatalf("expected each command to reference its own source key -- withGz=%q withoutGz=%q", withGz, withoutGz)
+// TestBuildDownloadAndDecompressCommand_GzKeyIncludesGunzip confirms a
+// ".gz"-suffixed key still gets decompressed.
+func TestBuildDownloadAndDecompressCommand_GzKeyIncludesGunzip(t *testing.T) {
+	got := buildDownloadAndDecompressCommand("my-bucket", "new-data/backup.sql.gz")
+	if !strings.Contains(got, "gunzip -c") {
+		t.Errorf("command = %q, want it to include gunzip", got)
 	}
-	// Strip each command's own source-key reference; what's left (the
-	// local scratch paths, the gunzip invocation shape) must be
-	// identical regardless of the key's own suffix.
-	normalize := func(cmd, key string) string { return strings.ReplaceAll(cmd, key, "<KEY>") }
-	if normalize(withGz, "new-data/backup.sql.gz") != normalize(withoutGz, "new-data/backup.sql") {
-		t.Errorf("commands differ beyond the source key itself:\n  withGz:    %q\n  withoutGz: %q", withGz, withoutGz)
+}
+
+// TestBuildDownloadAndDecompressCommand_NonGzKeySkipsGunzip is a
+// regression test for a real incident (2026-08-18, restoring
+// CaltechDATA production's own real SQL backup): the archived object's
+// key is "...2026-08-16.sql" -- no ".gz" -- and, once the stderr-
+// visibility fix (above) actually surfaced the real failure, confirmed
+// live to genuinely be plain, uncompressed SQL text ("gzip: ...: not in
+// gzip format"), not gzip content under a misleading name as an earlier
+// version of this function assumed. Every backup clasm itself ever
+// produces is unconditionally gzip'd (`buildSQLDumpCommand`) and named
+// accordingly (`....sql.gz`), so the key's own suffix is a reliable
+// signal either way -- for anything not ending in ".gz", skip
+// decompression entirely rather than running gunzip against a file that
+// was never compressed to begin with.
+func TestBuildDownloadAndDecompressCommand_NonGzKeySkipsGunzip(t *testing.T) {
+	got := buildDownloadAndDecompressCommand("sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-16.sql")
+	if strings.Contains(got, "gunzip") {
+		t.Errorf("command = %q, did not expect a gunzip step for a non-.gz key", got)
+	}
+	if !strings.Contains(got, "aws s3 cp --only-show-errors") || !strings.Contains(got, "2>&1") {
+		t.Errorf("command = %q, missing an expected element", got)
 	}
 }
 
@@ -59,22 +64,22 @@ func TestDownloadAndDecompressSQLBackup_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != remoteRestoreSQLPath {
-		t.Errorf("got %q, want the fixed scratch path %q", got, remoteRestoreSQLPath)
+		t.Errorf("got %q, want the decompressed scratch path %q", got, remoteRestoreSQLPath)
 	}
 }
 
-// TestDownloadAndDecompressSQLBackup_SuccessWithKeyLackingGzSuffix is the
-// same regression as TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix,
-// one level up: a key without ".gz" must resolve to the identical fixed
-// output path, not a key-derived one.
-func TestDownloadAndDecompressSQLBackup_SuccessWithKeyLackingGzSuffix(t *testing.T) {
+// TestDownloadAndDecompressSQLBackup_NonGzKeyReturnsRawDownloadPath is
+// the same regression as TestBuildDownloadAndDecompressCommand_NonGzKeySkipsGunzip,
+// one level up: a key without ".gz" resolves to the raw downloaded
+// path directly, not the (never-created, in this case) decompressed one.
+func TestDownloadAndDecompressSQLBackup_NonGzKeyReturnsRawDownloadPath(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
 	got, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-16.sql", testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != remoteRestoreSQLPath {
-		t.Errorf("got %q, want the fixed scratch path %q", got, remoteRestoreSQLPath)
+	if got != remoteRestoreDownloadPath {
+		t.Errorf("got %q, want the raw download path %q", got, remoteRestoreDownloadPath)
 	}
 }
 

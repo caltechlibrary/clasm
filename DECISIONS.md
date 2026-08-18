@@ -126,6 +126,25 @@ for larger, persistent-across-reboots scratch files. No test changes
 needed beyond updating the one fixture that matched on the literal old
 path.
 
+**Third same-day follow-up, same phase, same live-testing pass: the
+".gz" key always meant "gzip content" assumption above was itself
+wrong.** With both prior fixes in place, the very next retry surfaced a
+*third* distinct real failure -- `gzip: /var/tmp/clasm-sql-restore.download:
+not in gzip format`. The real CaltechDATA legacy file (bare `.sql` key)
+turns out to be genuinely, plainly uncompressed -- not gzip content
+under a misleading name, which is what this phase's very first fix
+(above) assumed when it made decompression unconditional. New
+`needsDecompression(key string) bool` (suffix check: `.gz` decompresses,
+anything else doesn't) restores the conditional -- safe because every
+backup clasm itself has ever produced is unconditionally gzip'd and
+named accordingly, so the key's own suffix is a reliable signal in both
+directions once actually checked rather than assumed. Suggested
+directly by the user mid-live-test, and correct: simpler than the
+original always-decompress design, not just a workaround.
+`downloadAndDecompressSQLBackup` now returns `remoteRestoreDownloadPath`
+(the raw file) when no decompression happened, `remoteRestoreSQLPath`
+otherwise.
+
 ---
 
 ## 2026-08-18 — Restore SQL Backup: quote the database name as a SQL identifier, not just shell-quote it

@@ -51,18 +51,36 @@ const (
 	remoteRestoreSQLPath      = "/var/tmp/clasm-sql-restore.sql"
 )
 
+// needsDecompression reports whether key names a gzip-compressed file,
+// by suffix. Every backup clasm itself has ever produced is
+// unconditionally gzip'd and named accordingly (buildSQLDumpCommand
+// always redirects then `gzip -f`s, producing "....sql.gz") -- but a
+// real legacy backup found live in production S3 archives
+// (2026-08-18, CaltechDATA's own ".../2026-08-16.sql") has a bare
+// ".sql" key and is genuinely, plainly uncompressed: `gunzip` against
+// it fails outright with "not in gzip format", once its own stderr was
+// actually visible (an earlier version of this function assumed a
+// ".sql"-named key might still secretly be gzip content and always
+// tried to decompress regardless -- confirmed live, for this real
+// file, that assumption was simply wrong). The key's own suffix is a
+// reliable signal either way, so this is a suffix check, not a content
+// sniff.
+func needsDecompression(key string) bool {
+	return strings.HasSuffix(key, ".gz")
+}
+
 // buildDownloadAndDecompressCommand downloads bucket/key to
 // remoteRestoreDownloadPath via the target's own aws CLI/credentials,
-// then decompresses it into remoteRestoreSQLPath via `gunzip -c ... >
-// ...` -- not `gunzip -f` in place, which depends on the input's own
-// suffix to name its output (see the constants' doc comment above).
-// Wrapped in a `{ ...; } 2>&1` group so a failure's real message
-// (`gunzip`/`aws s3 cp` errors land on stderr) reaches the same stream
+// then -- only if needsDecompression(key) -- decompresses it into
+// remoteRestoreSQLPath via `gunzip -c ... > ...`, not `gunzip -f` in
+// place, which depends on the input's own suffix to name its output
+// (see remoteRestoreDownloadPath's own doc comment). Wrapped in a
+// `{ ...; } 2>&1` group so a failure's real message (`gunzip`/
+// `aws s3 cp` errors land on stderr) reaches the same stream
 // RunShellCommand actually captures (only `StandardOutputContent`,
 // never `StandardErrorContent`) -- found real, live, the same
 // incident: the pre-fix error reported only "(status: Failed)" with no
-// explanation at all, since gunzip's "unknown suffix" message went
-// entirely to stderr. Neither this command's caller nor
+// explanation at all. Neither this command's caller nor
 // RunShellCommand's own contract ever inspects this function's stdout
 // for meaningful content on success, so merging stderr in is pure
 // upside here -- unlike detectExistingSQLData/countRestoredTables
@@ -70,15 +88,19 @@ const (
 // un-redirected.
 func buildDownloadAndDecompressCommand(bucket, key string) string {
 	src := fmt.Sprintf("s3://%s/%s", bucket, key)
+	if !needsDecompression(key) {
+		return fmt.Sprintf("{ set -e; aws s3 cp --only-show-errors %s %s; } 2>&1",
+			shellQuote(src), shellQuote(remoteRestoreDownloadPath))
+	}
 	return fmt.Sprintf("{ set -e; aws s3 cp --only-show-errors %s %s; gunzip -c %s > %s; } 2>&1",
 		shellQuote(src), shellQuote(remoteRestoreDownloadPath), shellQuote(remoteRestoreDownloadPath), shellQuote(remoteRestoreSQLPath))
 }
 
 // downloadAndDecompressSQLBackup runs buildDownloadAndDecompressCommand
-// via SSM, downloading key from bucket and decompressing it on
-// instanceID. Returns remoteRestoreSQLPath unconditionally on success --
-// see that constant's own doc comment for why this is fixed, not
-// key-derived.
+// via SSM, downloading key from bucket (and decompressing it, if
+// needsDecompression) on instanceID. Returns remoteRestoreSQLPath if the
+// key was decompressed, or remoteRestoreDownloadPath (the raw downloaded
+// file, already plain SQL text) if it wasn't.
 func downloadAndDecompressSQLBackup(ctx context.Context, client awsclient.SSMAPI, instanceID, bucket, key string, timeout, pollInterval time.Duration) (string, error) {
 	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDownloadAndDecompressCommand(bucket, key), timeout, pollInterval)
 	if err != nil {
@@ -87,7 +109,10 @@ func downloadAndDecompressSQLBackup(ctx context.Context, client awsclient.SSMAPI
 	if status != ssmtypes.CommandInvocationStatusSuccess {
 		return "", curlFailureError(fmt.Sprintf("downloading/decompressing s3://%s/%s on %s failed", bucket, key, instanceID), status, stdout)
 	}
-	return remoteRestoreSQLPath, nil
+	if needsDecompression(key) {
+		return remoteRestoreSQLPath, nil
+	}
+	return remoteRestoreDownloadPath, nil
 }
 
 // quoteSQLIdentifier double-quotes name per Postgres quoted-identifier
