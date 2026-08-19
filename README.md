@@ -6,7 +6,7 @@ Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 insta
 
 ## Release Notes
 
-- version: 0.0.6
+- version: 0.0.7
 - status: active
 - released: 2026-08-19
 
