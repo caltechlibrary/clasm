@@ -5842,10 +5842,11 @@ parameters the same way `BackupArchiveAndTrim` does).
 
 ## Phase 20.50 — Restore SQL Backup from S3
 
-**Status: designed 2026-07-28/29, implemented and unit-tested 2026-08-18,
-test-first throughout, `go build`/`go vet`/`go test ./... -race`/
-`gofmt -l` all clean** (DESIGN.md, "RDM Backup & Restore Domain" ->
-"Restore SQL Backup from S3"). Load command confirmed against the real
+**Status: designed 2026-07-28/29, implemented and unit-tested
+2026-08-18, real-AWS-verified end to end 2026-08-19, test-first
+throughout, `go build`/`go vet`/`go test ./... -race`/`gofmt -l` all
+clean** (DESIGN.md, "RDM Backup & Restore Domain" -> "Restore SQL Backup
+from S3"). Load command confirmed against the real
 `invenio-sql-backup.bash`/`invenio-sql-restore.bash`
 (`~/WorkLab/caltechauthors`) -- plain-text `pg_dump --column-inserts`
 output (gzip'd, not `--format=custom`), restored via `DROP DATABASE IF
@@ -5880,6 +5881,33 @@ entries:**
    `rdm14-granian` (hyphenated, not a valid *unquoted* Postgres
    identifier). See DECISIONS.md, "Restore SQL Backup: quote the
    database name as a SQL identifier, not just shell-quote it."
+
+**Real-AWS verification, 2026-08-18/19, against `caltechdata-restore-test`
+using real CaltechDATA production S3 backup data -- three attempts, the
+third fully successful.** The first two live-testing passes (2026-08-18)
+found and fixed five real bugs in this phase itself (Phase 20.59:
+`.gz`-suffix assumption, `/tmp` vs `/var/tmp`, conditional decompression,
+`pg_terminate_backend` before `DROP DATABASE`, `DefaultSQLRestoreTimeout`
+widened 30min -> 2h) -- after which the restore's actual load step was
+left running overnight and, checked the next morning, was found to have
+been silently killed by two separate AWS-side execution timeouts never
+directly touched by any of those fixes, root-caused and corrected via
+Phase 20.61 (`RunShellCommand` never set `SendCommandInput.TimeoutSeconds`
+*or* the AWS-RunShellScript document's own `executionTimeout` parameter --
+both default to 3600 seconds independently of each other and of any
+client-side timeout). The third attempt (2026-08-19, run against the
+`.gz` backup variant), with both Phase 20.61 fixes rebuilt in, completed
+end to end: download+decompress, drop, create, and load all reported
+`Success` (the load itself confirmed via `aws ssm list-commands` to have
+both `TimeoutSeconds: 7200` and `executionTimeout: "7200"` actually set,
+and to have run for ~68 minutes -- past the exact 1-hour mark that
+killed both earlier attempts -- before AWS itself reported `Success`,
+not a timeout), and `countRestoredTables`' verification query reported 80
+tables. Independently cross-checked outside clasm's own report:
+`pg_database_size('rdm14-granian')` = 1710 MB, larger than either of the
+two earlier truncated attempts' final sizes (1424MB, 1454MB), consistent
+with a load that actually ran to completion rather than one cut off
+partway. **Phase 20.50 is now fully real-AWS-verified.**
 
 ### Work Items
 
@@ -6910,6 +6938,34 @@ timeout.
 None -- affects every `RunShellCommand` caller (Restore SQL Backup, Run
 SQL Backup, Archive OpenSearch Snapshot, cloud-init completion checks,
 etc.), all of which already pass timeouts comfortably above 30 seconds.
+
+**Same-day follow-up: the fix above was real but incomplete -- a
+rebuild-and-retry still died at exactly 1 hour** (DECISIONS.md, same
+heading, "Same-day follow-up, same phase..."). `aws ssm list-commands`
+confirmed `TimeoutSeconds: 7200` was genuinely set on the failing
+command, so the fix's own effect was real -- but `aws ssm
+describe-document --name AWS-RunShellScript` revealed a second,
+separate document parameter, `executionTimeout` (default 3600,
+independent of `TimeoutSeconds`, which per AWS's actual behavior only
+bounds how long a command may wait to *start* running, not how long it
+may keep running once started). `executionTimeout` was never set at
+all, so it silently applied its own 1-hour default regardless of the
+first fix.
+
+- [x] `ssm.go`: `RunShellCommand`'s `SendCommandInput.Parameters` gains
+      `"executionTimeout": [strconv.Itoa(int(timeoutSeconds))]`
+      alongside the existing `"commands"` entry -- same computed
+      `timeoutSeconds` value the `TimeoutSeconds` field already uses.
+- [x] New `TestRunShellCommand_SetsExecutionTimeoutParameterFromCallerTimeout`:
+      asserts `Parameters["executionTimeout"]` matches the `timeout`
+      argument (in seconds, as a string); confirmed failing against the
+      pre-fix code first.
+- [x] `go build`/`vet`/`test -race`/`gofmt` all clean.
+
+### Files (follow-up)
+
+`internal/workflow/{ssm.go,ssm_test.go}` (extended, not new) -- same
+files as the original fix.
 
 ---
 

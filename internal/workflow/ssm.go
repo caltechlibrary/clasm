@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -67,17 +68,25 @@ const minSSMCommandTimeoutSeconds = 30
 //
 // timeout also sets ssm:SendCommand's own TimeoutSeconds (floored at
 // AWS's 30-second minimum) -- without it, AWS silently defaults the
-// remote execution window to 3600 seconds regardless of how long this
-// function's own polling loop is willing to wait, which can silently
-// truncate a long-running remote command even after a caller widens
-// its timeout (see DECISIONS.md, "Real bug: RunShellCommand's SSM
-// SendCommand never sets TimeoutSeconds...", PLAN.md Phase 20.61).
+// delivery window (how long AWS will wait for the command to *start*
+// running) to 3600 seconds. That alone isn't sufficient, though: the
+// AWS-RunShellScript document has its own, separate "executionTimeout"
+// parameter (also defaulting to 3600 seconds) that bounds how long the
+// command may keep *running* once started, entirely independent of
+// TimeoutSeconds -- confirmed real 2026-08-19, a rebuild with only
+// TimeoutSeconds fixed still died at exactly 1 hour. Both are set from
+// the same timeout value here (see DECISIONS.md, "Real bug:
+// RunShellCommand's SSM SendCommand never sets TimeoutSeconds..." and
+// its same-day follow-up, PLAN.md Phase 20.61).
 func RunShellCommand(ctx context.Context, client awsclient.SSMAPI, instanceID, command string, timeout, pollInterval time.Duration) (stdout string, status types.CommandInvocationStatus, err error) {
 	timeoutSeconds := max(int32(timeout/time.Second), minSSMCommandTimeoutSeconds)
 	sendOut, err := client.SendCommand(ctx, &ssm.SendCommandInput{
-		InstanceIds:    []string{instanceID},
-		DocumentName:   aws.String("AWS-RunShellScript"),
-		Parameters:     map[string][]string{"commands": {command}},
+		InstanceIds:  []string{instanceID},
+		DocumentName: aws.String("AWS-RunShellScript"),
+		Parameters: map[string][]string{
+			"commands":         {command},
+			"executionTimeout": {strconv.Itoa(int(timeoutSeconds))},
+		},
 		TimeoutSeconds: aws.Int32(timeoutSeconds),
 	})
 	if err != nil {

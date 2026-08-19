@@ -26,10 +26,12 @@ type fakeSSMClient struct {
 	describeErr      error
 
 	// SendCommand
-	commandID            string
-	sendCommandErr       error
-	sendCommandCallCount int
-	lastTimeoutSeconds   *int32
+	commandID              string
+	sendCommandErr         error
+	sendCommandCallCount   int
+	lastTimeoutSeconds     *int32
+	lastExecutionTimeout   string
+	sawExecutionTimeoutKey bool
 
 	// GetCommandInvocation
 	pendingCalls    int // number of leading calls that report InProgress
@@ -89,6 +91,13 @@ func (f *fakeSSMClient) DescribeInstanceInformation(ctx context.Context, params 
 func (f *fakeSSMClient) SendCommand(ctx context.Context, params *ssm.SendCommandInput, optFns ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
 	f.sendCommandCallCount++
 	f.lastTimeoutSeconds = params.TimeoutSeconds
+	if et, ok := params.Parameters["executionTimeout"]; ok && len(et) > 0 {
+		f.sawExecutionTimeoutKey = true
+		f.lastExecutionTimeout = et[0]
+	} else {
+		f.sawExecutionTimeoutKey = false
+		f.lastExecutionTimeout = ""
+	}
 	if len(params.Parameters["commands"]) > 0 {
 		f.lastCommandText = params.Parameters["commands"][0]
 		f.sentCommands = append(f.sentCommands, f.lastCommandText)
@@ -279,5 +288,31 @@ func TestRunShellCommand_FloorsSendCommandTimeoutSecondsAtAWSMinimum(t *testing.
 	}
 	if fake.lastTimeoutSeconds == nil || *fake.lastTimeoutSeconds != minSSMCommandTimeoutSeconds {
 		t.Errorf("TimeoutSeconds = %v, want %d (AWS's own minimum)", fake.lastTimeoutSeconds, minSSMCommandTimeoutSeconds)
+	}
+}
+
+// Regression: SendCommandInput.TimeoutSeconds only bounds how long AWS
+// will wait for a command to *start* running -- the AWS-RunShellScript
+// document has its own, separate "executionTimeout" parameter (default
+// 3600s) that bounds how long it may actually run once started, and it
+// is NOT governed by TimeoutSeconds at all. Confirmed real 2026-08-19:
+// a rebuilt clasm binary with the TimeoutSeconds fix in place (Status:
+// TimedOut on ssm:SendCommand's own TimeoutSeconds was already fixed to
+// 7200) still died at exactly 1 hour, because "executionTimeout" was
+// never set and silently defaulted to 3600. See DECISIONS.md, "Real
+// bug: RunShellCommand's SSM SendCommand never sets TimeoutSeconds..."
+// (same-day follow-up), PLAN.md Phase 20.61 (same-day follow-up).
+func TestRunShellCommand_SetsExecutionTimeoutParameterFromCallerTimeout(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
+	_, _, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", 2*time.Hour, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fake.sawExecutionTimeoutKey {
+		t.Fatal("Parameters[\"executionTimeout\"] was not set, want it set from the caller's timeout")
+	}
+	want := "7200"
+	if fake.lastExecutionTimeout != want {
+		t.Errorf("executionTimeout = %q, want %q", fake.lastExecutionTimeout, want)
 	}
 }

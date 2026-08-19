@@ -61,6 +61,61 @@ Restore SQL Backup attempt's `pg_terminate_backend` step is no longer a
 collision risk. Logged as PLAN.md Phase 20.61, new TODO.md "Bugs and
 issues" entry.
 
+**Same-day follow-up, same phase: the fix above was real but targeted
+the wrong parameter -- the actual re-run still died at exactly 1 hour.**
+Rebuilt clasm with the `TimeoutSeconds` fix and re-ran Restore SQL
+Backup against `caltechdata-restore-test` (this time picking the `.gz`
+backup variant), live-monitored via the `--debug` log. The load step
+still failed with `Status: TimedOut`/`StatusDetails: ExecutionTimedOut`
+at exactly 1h0.5s (17:11:00Z -> 18:11:00Z) -- despite `aws ssm
+list-commands` confirming `TimeoutSeconds: 7200` was genuinely set on
+this exact command. Queried AWS's own document definition directly
+(`aws ssm describe-document --name AWS-RunShellScript`) rather than
+re-guessing, and found the real cause: `AWS-RunShellScript` has its own
+**`executionTimeout`** document parameter ("The time in seconds for a
+command to complete before it is considered to have failed. Default is
+3600 (1 hour)."), passed inside `Parameters` alongside `commands` --
+entirely separate from the top-level `SendCommandInput.TimeoutSeconds`
+field, which (per AWS's actual behavior) bounds how long AWS will wait
+for the command to *start* running, not how long it may keep running
+once started. `TimeoutSeconds` was therefore a real, worthwhile fix
+(the delivery/start window genuinely wasn't being bounded by the
+caller's own timeout either) but not the parameter actually responsible
+for this specific symptom -- `executionTimeout`, never set at all,
+silently applied its own 3600-second default regardless of
+`TimeoutSeconds`.
+
+**Revised decision.** Also set `Parameters["executionTimeout"]` on
+`RunShellCommand`'s `SendCommandInput` to the same computed
+`timeoutSeconds` value (as a string, `AWS-RunShellScript`'s own
+parameter type), alongside the existing `commands` parameter. Keep
+`TimeoutSeconds` as set by the original fix -- both are real, both
+matter, they just govern different phases of a command's lifecycle
+(queued-and-not-yet-started vs. running-too-long).
+
+**Consequences (revised).** `rdm14-granian` is confirmed truncated a
+second time and needs a third restore attempt once this corrected fix
+lands and clasm is rebuilt again. General lesson: confirming a fix
+against AWS's own authoritative source (the `SendCommand`/
+`GetCommandInvocation` API response the first time; the document's own
+`describe-document` parameter list the second time) rather than
+re-guessing from symptoms alone is what caught both the original bug
+and this refinement -- the symptom ("dies at ~1 hour") looked identical
+both times, but the two root causes were genuinely different
+parameters.
+
+**Resolved, 2026-08-19: the third attempt succeeded.** Rebuilt with both
+fixes in place and re-ran Restore SQL Backup (the `.gz` backup variant)
+against `caltechdata-restore-test`. `aws ssm list-commands` confirmed
+the load command carried both `TimeoutSeconds: 7200` and
+`executionTimeout: "7200"` this time; it ran for ~68 minutes -- past the
+exact 1-hour mark that killed both earlier attempts -- before AWS itself
+reported `Status: Success`, not a timeout. `countRestoredTables`
+reported 80 tables; independently cross-checked,
+`pg_database_size('rdm14-granian')` = 1710 MB, larger than either
+truncated attempt's final size (1424MB, 1454MB). Phase 20.50 (Restore
+SQL Backup from S3) is now fully real-AWS-verified end to end.
+
 ---
 
 ## 2026-08-18 — Restore load steps should report real progress, not just wait on a timeout; no parallel restores during validation
