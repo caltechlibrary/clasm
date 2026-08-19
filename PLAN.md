@@ -6036,15 +6036,20 @@ Depends on Phase 20.49's `opensearch_snapshot.go`/
 `opensearch_index_patterns.go` primitives directly (registration,
 polling, index patterns all reused, not reimplemented). See
 DECISIONS.md, "Restore OpenSearch: delete conflicting indices before
-`_restore`, don't close them", and this phase's own 2026-08-19 entry
-below (four implementation-time corrections). **Not yet real-AWS-
-verified** -- unlike Phase 20.50, this phase hasn't been run against a
-real target instance yet.
+`_restore`, don't close them", and this phase's own 2026-08-19 entries
+below (five implementation-time corrections, all now implemented and
+unit-tested, test-first). **Not yet real-AWS-verified** -- unlike Phase
+20.50, this phase hasn't been run against a real target instance yet;
+correction 5 below was found via pre-test reconnaissance while setting
+one up, now implemented ahead of that live test.
 
-**Four implementation-time corrections to this phase's original work-item
-sketch, all with one shared 2026-08-19 DECISIONS.md entry** ("Restore
-OpenSearch Snapshot from S3: four implementation-time corrections to
-PLAN.md Phase 20.51's original sketch"):
+**Five implementation-time corrections to this phase's original work-item
+sketch, four with one shared 2026-08-19 DECISIONS.md entry, the fifth
+with its own** ("Restore OpenSearch Snapshot from S3: four
+implementation-time corrections to PLAN.md Phase 20.51's original
+sketch"; "Restore OpenSearch Snapshot from S3: a fifth correction --
+the restore index prefix must be editable, not silently derived from
+the target's own tags"):
 1. Snapshot sub-prefix listing reuses `ListArchivedSnapshotPrefixes`
    (opensearch_cleanup.go) rather than a new `ListSnapshotPrefixes` --
    same listing this project already had, tested, and reused.
@@ -6068,6 +6073,16 @@ PLAN.md Phase 20.51's original sketch"):
    step-order lesson (Phase 20.50) proactively from the start, since
    which indices might conflict depends only on the target's own index
    prefix, not on which snapshot eventually gets picked.
+5. **(Found and fixed 2026-08-19, test-first, ahead of the real-AWS
+   test that would have surfaced it)** The `indexPrefix` used for both
+   conflict-detection and the restore's own `indices` scoping is now an
+   editable prompt, not silently computed and used as-is --
+   `cmp.Or(inst.Project, inst.Name)` only describes the *target*, but a
+   cross-instance restore (this session's own planned test: CaltechDATA's
+   real snapshot onto `caltechdata-restore-test`, an unrelated dev/test
+   box) needs the *source* snapshot's own real index prefix instead,
+   which can differ arbitrarily. `ignore_unavailable:true` means a wrong
+   prefix wouldn't error, it would silently restore zero indices.
 
 ### Work Items
 
@@ -6082,10 +6097,13 @@ PLAN.md Phase 20.51's original sketch"):
       newS3Client, inst, openSearchBackupDirRules, input, output)
       error`:
       1. `resolveSSM` + `CheckAWSCLIAvailable` (reused)
-      2. Compute `indexPrefix` (`cmp.Or(inst.Project, inst.Name)`, same
-         fix shape as Archive OpenSearch's own Project-tag bug) and its
-         curated index patterns (`rdmOpenSearchSnapshotIndexPatterns`,
-         reused)
+      2. Prompt for `indexPrefix` -- **correction 5**: `cmp.Or(inst.Project,
+         inst.Name)` computed as the default (same fix shape as Archive
+         OpenSearch's own Project-tag bug) but editable, not used as-is,
+         so a cross-instance restore can override it to the snapshot's
+         own real prefix. Curated index patterns
+         (`rdmOpenSearchSnapshotIndexPatterns`, reused) built from
+         whatever value is confirmed.
       3. `detectExistingOpenSearchIndices` -- correction 2/4 above; if
          any conflicts, `ConfirmDestructive` (reused) then
          `DeleteConflictingIndices` (new `buildDeleteIndicesCommand`,
@@ -6147,6 +6165,16 @@ PLAN.md Phase 20.51's original sketch"):
       confirm proceeds and issues the delete; a red-health restored
       index is reported as a WARNING; AWS-CLI-unavailable aborts before
       any prompt
+- [x] **Correction 5:** new `TestRestoreOpenSearchSnapshot_IndexPrefixPromptOverridesTargetTagDefault`
+      overrides the index-prefix prompt to a value different from
+      `cmp.Or(inst.Project, inst.Name)` (a target tagged
+      `caltechdata-restore-test`, overridden to `caltechdata`), asserts
+      no sent command references the target's own tag-derived prefix;
+      confirmed failing first (the extra prompt shifted every
+      subsequent test's input sequence until each was updated for the
+      new line). Every existing integration test above updated for the
+      new prompt's input line (default-accepting blank line in most
+      cases).
 
 ### Files
 

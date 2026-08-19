@@ -358,13 +358,28 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return err
 	}
 
-	// indexPrefix prefers the instance's Project tag over its Name tag,
-	// same reasoning as Archive OpenSearch Snapshot's own fix
+	// indexPrefix defaults to the target's own Project tag (falling back
+	// to Name), same reasoning as Archive OpenSearch Snapshot's own fix
 	// (DECISIONS.md, "Real bug: Archive OpenSearch Snapshot's
 	// index-match patterns used the Name tag, not the Project tag") --
-	// this is the target's own live index prefix, independent of which
-	// archived snapshot ends up getting restored.
-	indexPrefix := cmp.Or(inst.Project, inst.Name)
+	// but stays editable, unlike Archive's own computed-and-used-as-is
+	// value. A restore only ever connects to the *target* instance, not
+	// whichever instance the archived snapshot actually came from, so
+	// the target's own tags are just a convenient default for the
+	// common self-restore-after-disaster case (source and target are
+	// the same instance) -- a cross-instance restore (e.g. restoring a
+	// production instance's snapshot onto an unrelated dev/test box)
+	// needs this to be the snapshot's own real index prefix instead,
+	// which can differ arbitrarily from the target's tags. Silently
+	// using the wrong value wouldn't error -- ignore_unavailable:true
+	// just restores zero indices -- so this must be confirmable/
+	// overridable, not computed-and-trusted (DECISIONS.md, "Restore
+	// OpenSearch Snapshot from S3: a fifth correction...").
+	indexPrefix, err := ui.Prompt("OpenSearch index prefix in the archived snapshot to restore (e.g. caltechdata) -- may differ from the target's own tags when restoring a different instance's backup onto this one",
+		ui.WithDefault(cmp.Or(inst.Project, inst.Name)), ui.WithValidator(requireNonEmpty), ui.WithIO(input, output))
+	if err != nil {
+		return err
+	}
 	indices := rdmOpenSearchSnapshotIndexPatterns(indexPrefix)
 
 	existing, err := detectExistingOpenSearchIndices(ctx, ssmClient, inst.InstanceID, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)

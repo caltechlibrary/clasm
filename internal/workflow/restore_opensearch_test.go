@@ -293,7 +293,7 @@ func oneOpenSearchSnapshotObject(sourceName, snapshotName string) []s3types.Obje
 
 func TestRestoreOpenSearchSnapshot_NoSnapshotsFoundUnderPrefix(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
-	input := "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n"
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" // accept index-prefix default, directory, bucket, source name
 	term, le, buf := newPipeEditor(input)
 	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
 	s3Client := &fakeS3Client{}
@@ -309,7 +309,7 @@ func TestRestoreOpenSearchSnapshot_NoSnapshotsFoundUnderPrefix(t *testing.T) {
 
 func TestRestoreOpenSearchSnapshot_HappyPathNoExistingIndices(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
-	input := "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n" // directory, bucket, source name, pick the (only) snapshot
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n" // index-prefix default, directory, bucket, source name, pick the (only) snapshot
 	term, le, buf := newPipeEditor(input)
 	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 147456\n")
 	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
@@ -328,9 +328,40 @@ func TestRestoreOpenSearchSnapshot_HappyPathNoExistingIndices(t *testing.T) {
 	}
 }
 
+// TestRestoreOpenSearchSnapshot_IndexPrefixPromptOverridesTargetTagDefault
+// is the regression test for correction 5 (DECISIONS.md, "Restore
+// OpenSearch Snapshot from S3: a fifth correction -- the restore index
+// prefix must be editable, not silently derived from the target's own
+// tags"): the target instance's own tag-derived prefix
+// ("caltechdata-restore-test") must NOT be what the conflict-check/
+// restore/verify commands use once the operator overrides the new
+// index-prefix prompt to the snapshot's own real prefix ("caltechdata")
+// -- a cross-instance restore scenario this project's own real-AWS test
+// against caltechdata-restore-test needs.
+func TestRestoreOpenSearchSnapshot_IndexPrefixPromptOverridesTargetTagDefault(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata-restore-test", Region: "us-east-1"}
+	input := "caltechdata\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "new-data\n" + "\n" // override index-prefix, directory, bucket, source name, pick
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 147456\n")
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("new-data", "rdm-20260819-160031")}
+
+	err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Restored OpenSearch snapshot") {
+		t.Errorf("expected a success report, got:\n%s", buf.String())
+	}
+	for _, sent := range ssmClient.sentCommands {
+		if strings.Contains(sent, "caltechdata-restore-test") {
+			t.Errorf("sent command used the target's own tag-derived prefix instead of the overridden one: %q", sent)
+		}
+	}
+}
+
 func TestRestoreOpenSearchSnapshot_ConflictingIndicesRequireConfirmDestructive_DeclinedCancelsBeforeAnyS3Activity(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
-	input := "wrong-name\n" // decline the type-to-confirm -- no other input should even be consumed
+	input := "\n" + "wrong-name\n" // accept index-prefix default, then decline the type-to-confirm -- no other input should even be consumed
 	term, le, buf := newPipeEditor(input)
 	ssmClient := restoreOpenSearchFake("caltechdata-rdmrecords-a\n", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
 	s3Client := &fakeS3Client{}
@@ -349,7 +380,7 @@ func TestRestoreOpenSearchSnapshot_ConflictingIndicesRequireConfirmDestructive_D
 
 func TestRestoreOpenSearchSnapshot_ConflictingIndicesConfirmedDeletesThenProceeds(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
-	input := "i-1\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	input := "\n" + "i-1\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n" // index-prefix default, confirm, directory, bucket, source name, pick
 	term, le, buf := newPipeEditor(input)
 	ssmClient := restoreOpenSearchFake("caltechdata-rdmrecords-a\n", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 147456\n")
 	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
@@ -399,7 +430,7 @@ func TestRestoreOpenSearchSnapshot_ConflictDetectionAbortsBeforeAnyS3Activity(t 
 
 func TestRestoreOpenSearchSnapshot_ReportsRedHealthWarning(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
-	input := "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
 	term, le, buf := newPipeEditor(input)
 	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a red open 0\n")
 	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
