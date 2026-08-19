@@ -6028,105 +6028,141 @@ and-reconcile helper) -- already existed, reused unchanged.
 
 ## Phase 20.51 — Restore OpenSearch Snapshot from S3
 
-**Status: designed 2026-07-28, restore-conflict decided 2026-07-29, not
-yet implemented** (DESIGN.md, "RDM Backup & Restore Domain" -> "Restore
-OpenSearch Snapshot from S3"). Depends on Phase 20.49's
-`opensearch_snapshot.go`/`opensearch_index_patterns.go` primitives
-directly (registration, polling, index patterns all reused, not
-reimplemented). See DECISIONS.md, "Restore OpenSearch: delete conflicting
-indices before `_restore`, don't close them."
+**Status: designed 2026-07-28, restore-conflict decided 2026-07-29,
+implemented and unit-tested 2026-08-19, test-first throughout, `go
+build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
+"RDM Backup & Restore Domain" -> "Restore OpenSearch Snapshot from S3").
+Depends on Phase 20.49's `opensearch_snapshot.go`/
+`opensearch_index_patterns.go` primitives directly (registration,
+polling, index patterns all reused, not reimplemented). See
+DECISIONS.md, "Restore OpenSearch: delete conflicting indices before
+`_restore`, don't close them", and this phase's own 2026-08-19 entry
+below (four implementation-time corrections). **Not yet real-AWS-
+verified** -- unlike Phase 20.50, this phase hasn't been run against a
+real target instance yet.
+
+**Four implementation-time corrections to this phase's original work-item
+sketch, all with one shared 2026-08-19 DECISIONS.md entry** ("Restore
+OpenSearch Snapshot from S3: four implementation-time corrections to
+PLAN.md Phase 20.51's original sketch"):
+1. Snapshot sub-prefix listing reuses `ListArchivedSnapshotPrefixes`
+   (opensearch_cleanup.go) rather than a new `ListSnapshotPrefixes` --
+   same listing this project already had, tested, and reused.
+2. Conflicting-index detection queries two broad wildcards
+   (`<prefix>-*`, `.ds-<prefix>-*`), not the full 18-pattern curated
+   list verbatim -- avoids a real `_cat/indices` 404 risk from mixing
+   one bare exact-name pattern with wildcards in one comma-joined call,
+   confirmed live against CaltechAUTHORS production before writing any
+   parsing code.
+3. Post-restore verification reports `_cat/indices`' own observed
+   health/status/docs.count per index, not a comparison against the
+   snapshot's own internal `_status` metadata as originally sketched --
+   that data doesn't even exist locally once Archive OpenSearch's own
+   unconditional post-sync EBS-side delete has run (confirmed live,
+   `snapshot_missing_exception`), and its exact per-index doc-count JSON
+   shape was never confirmed against a real response, unlike
+   `_cat/indices`' plain-text shape (checked live, same session).
+4. Conflicting-index detection/deletion moved to immediately after the
+   AWS-CLI preflight, before any S3 prompt or the (potentially
+   multi-gigabyte) sync-down -- applying Restore SQL Backup's own
+   step-order lesson (Phase 20.50) proactively from the start, since
+   which indices might conflict depends only on the target's own index
+   prefix, not on which snapshot eventually gets picked.
 
 ### Work Items
 
-- [ ] New `internal/workflow/restore_opensearch.go`:
+- [x] New `internal/workflow/restore_opensearch.go`:
       `RestoreOpenSearchSnapshot(ctx, w, ssmClients, s3Client,
       newS3Client, instances []inventory.Instance,
       openSearchBackupDirRules []config.BackupDirectoryRule) error`
-      (picks target instance via `pickInstanceDefaulted`) delegating to
-      testable core `restoreOpenSearchSnapshot(ctx, w, ssmClients,
-      s3Client, newS3Client, inst, openSearchBackupDirRules, input,
-      output) error`:
+      (picks target instance via `pickInstance` -- no recall/default-
+      cursor history, matching Restore SQL Backup's own precedent, not
+      `pickInstanceDefaulted`) delegating to testable core
+      `restoreOpenSearchSnapshot(ctx, w, ssmClients, s3Client,
+      newS3Client, inst, openSearchBackupDirRules, input, output)
+      error`:
       1. `resolveSSM` + `CheckAWSCLIAvailable` (reused)
-      2. Prompt OpenSearch backup directory (reused pattern from Phase
+      2. Compute `indexPrefix` (`cmp.Or(inst.Project, inst.Name)`, same
+         fix shape as Archive OpenSearch's own Project-tag bug) and its
+         curated index patterns (`rdmOpenSearchSnapshotIndexPatterns`,
+         reused)
+      3. `detectExistingOpenSearchIndices` -- correction 2/4 above; if
+         any conflicts, `ConfirmDestructive` (reused) then
+         `DeleteConflictingIndices` (new `buildDeleteIndicesCommand`,
+         `DELETE <comma-joined-names>` via the OpenSearch REST API,
+         never a raw filesystem operation) -- all before any S3 prompt
+      4. Prompt OpenSearch backup directory (reused pattern from Phase
          20.49, `config.BackupDirectoryFor(openSearchBackupDirRules,
          inst.Name)` as default)
-      3. Prompt bucket + region/access-check (reused)
-      4. Prompt source-instance-name (default = target `inst.Name`,
+      5. Prompt bucket + region/access-check (reused)
+      6. Prompt source-instance-name (default = target `inst.Name`,
          same rationale as SQL restore)
-      5. List the sub-prefixes under
-         `<bucket>/<sourceName>/opensearch-snapshots/` -- **new**:
-         `ListSnapshotPrefixes(ctx, client awsclient.S3API, bucket,
-         basePrefix string) ([]string, error)`, using `ListObjectsV2`
-         with `Delimiter: "/"` to get `CommonPrefixes` (one per archived
-         snapshot) rather than every individual object -- distinct from
-         `ListObjectsByPrefix` (Phase 20.50), which lists individual
-         objects, not prefixes
-      6. Pick one (defaulting to the most recent by name, since
-         snapshot names are `rdm-<timestamp>` and therefore already
-         lexically sortable)
-      7. Sync the chosen sub-prefix down to the target's local
-         directory (SSM, `aws s3 sync` from S3 to local this time --
-         opposite direction from Phase 20.49's `SyncOpenSearchBackupsToS3`
-         but the same command-building shape); `RegisterSnapshotRepo`
-         (reused from Phase 20.49) to confirm/create the `fs` repository
-         on the target
-      8. `detectExistingOpenSearchIndices(ctx, ssmClient, instanceID
-         string, indexPatterns []string) ([]string, error)` -- checks
-         which of the snapshot's own index names already exist on the
-         target (`GET _cat/indices/<pattern>`)
-      9. If any exist: `ConfirmDestructive([]string{inst.InstanceID,
-         inst.Name})` (reused), then **delete** them before restore --
-         new `buildDeleteIndicesCommand`/`DeleteConflictingIndices`
-         (`DELETE <index-name>` via the OpenSearch REST API, never a raw
-         filesystem operation on the repo/data directory), not
-         close-then-restore. See DECISIONS.md, "Restore OpenSearch:
-         delete conflicting indices before `_restore`, don't close
-         them."
-      10. `POST /_snapshot/<repo>/<name>/_restore`, scoped to the
-          snapshot's own index list -- new `buildRestoreCommand`/
-          `RestoreSnapshot`, mirroring `opensearch_snapshot.go`'s
-          command-building shape
-      11. Poll for restore completion -- reuses
-          `PollSnapshotUntilComplete`'s shape (a new sibling
-          `PollRestoreUntilComplete`, since the status endpoint/response
-          shape for an in-progress restore differs from snapshot
-          creation's)
-      12. **Post-restore sanity check**: compare per-index `docs.count`
-          between the snapshot's own metadata (available from the
-          `_snapshot/<repo>/<name>` response, which includes per-index
-          shard stats) and `GET _cat/indices` on the freshly-restored
-          indices; surface any mismatch rather than silently declaring
-          success -- `buildRestoreVerificationCommand`/
-          `VerifyRestoredIndices`
-      13. Report summary
+      7. List archived snapshot sub-prefixes -- correction 1 above,
+         reuses `ListArchivedSnapshotPrefixes`; pick one via new
+         `pickSnapshotPrefix` (most recent first, same shape as
+         `pickS3Object`)
+      8. Sync the chosen sub-prefix down to the target's local
+         directory -- new `buildSyncFromS3Command`/
+         `SyncOpenSearchBackupsFromS3` (opposite direction from Phase
+         20.49's `SyncOpenSearchBackupsToS3`, same command-building
+         shape); `RegisterSnapshotRepo` (reused from Phase 20.49)
+      9. `POST /_snapshot/<repo>/<name>/_restore`, scoped to `indices`
+         -- new `buildRestoreSnapshotCommand`/`RestoreSnapshot`,
+         mirroring `opensearch_snapshot.go`'s command-building shape
+      10. Poll for restore completion -- new `buildRestoreRecoveryCommand`/
+          `parseRestoreRecovery`/`PollRestoreUntilComplete`, built on
+          `_cat/recovery` (restores have no named-status endpoint the
+          way snapshots do) and `pollWithProgress` (Phase 20.53/20.60)
+          from the start, not retrofitted after a bare-timeout release
+      11. Post-restore report -- correction 3 above, new
+          `buildVerifyRestoredIndicesCommand`/`parseRestoredIndices`/
+          `VerifyRestoredIndices`, flags any red-health index in the
+          summary
+      12. Report summary
 
 ### Tests
 
-- [ ] `ListSnapshotPrefixes`: `CommonPrefixes`-based listing, most-recent
-      name sorts first
-- [ ] `buildRestoreCommand`/`PollRestoreUntilComplete`/
-      `VerifyRestoredIndices`: same pure-function/fake-client-sequence
-      pattern as Phase 20.49's `buildCreateSnapshotCommand`/
-      `PollSnapshotUntilComplete`
-- [ ] `buildDeleteIndicesCommand`/`DeleteConflictingIndices`: same
-      pure-function/fake-client-sequence pattern as the other
-      command-building helpers in this phase
-- [ ] `restoreOpenSearchSnapshot`'s testable core: happy path with no
-      existing conflicting indices (no confirm prompt); conflicting-index
-      path requires `ConfirmDestructive`, mismatch cancels before delete;
-      a doc-count mismatch after restore is reported, not swallowed
+- [x] `buildSyncFromS3Command`/`buildListIndicesCommand`/
+      `matchesAnyPattern`/`parseListedIndices`/`buildDeleteIndicesCommand`/
+      `buildRestoreSnapshotCommand`/`buildRestoreRecoveryCommand`/
+      `buildVerifyRestoredIndicesCommand`: pure-function shape/content
+      assertions, same pattern as Phase 20.49's `build*Command` tests
+- [x] `detectExistingOpenSearchIndices`/`DeleteConflictingIndices`/
+      `RestoreSnapshot`/`VerifyRestoredIndices`: fake-client-sequence
+      pattern, including a real no-op assertion for `DeleteConflictingIndices`
+      called with zero indices (no SendCommand call at all)
+- [x] `parseRestoreRecovery`: table-driven -- no rows yet (not started,
+      not done), peer-only rows (ignored), in-progress/done snapshot
+      rows (singly and mixed), malformed row (error)
+- [x] `parseRestoredIndices`: multi-row parse including a red-health row;
+      malformed row errors
+- [x] `PollRestoreUntilComplete`: succeeds after in-progress polls,
+      times out on a never-completing sequence, prints progress
+- [x] `restoreOpenSearchSnapshot`'s testable core: no-snapshots-found
+      message; happy path with no existing conflicting indices (no
+      delete call sent); conflicting-index path requires
+      `ConfirmDestructive`, decline cancels before any S3 activity at
+      all (correction 4's own regression test, mirroring Phase 20.50's
+      `TestRestoreSQLBackup_DiscoveryFailureAbortsBeforeAnyS3Activity`),
+      confirm proceeds and issues the delete; a red-health restored
+      index is reported as a WARNING; AWS-CLI-unavailable aborts before
+      any prompt
 
 ### Files
 
 New `internal/workflow/{restore_opensearch.go,
-restore_opensearch_test.go}`.
+restore_opensearch_test.go}`; `cmd/clasm/main.go` (wire
+`RestoreOpenSearchSnapshot` in place of its `NotYetImplemented` stub).
 
 ### Dependency
 
-Phase 20.48 (menu entry point); Phase 20.49's `opensearch_snapshot.go`
-primitives (repo registration, poll/parse helpers) and
-`opensearch_index_patterns.go`. The close-vs-delete decision noted in
-Work Item 9 is resolved (delete) -- no longer a blocker.
+Phase 20.48 (menu entry point) -- already existed. Phase 20.49's
+`opensearch_snapshot.go` primitives (repo registration, poll/parse
+helpers), `opensearch_index_patterns.go`, and `opensearch_cleanup.go`'s
+`ListArchivedSnapshotPrefixes` (correction 1) -- all already existed,
+reused unchanged. Phase 20.53/20.60's `pollWithProgress` for the restore
+poller. The close-vs-delete decision is resolved (delete) -- no longer
+a blocker.
 
 ## Phase 20.52 — Run SQL Backup + `rdm_postgres_config`
 
@@ -6835,14 +6871,16 @@ None -- part of Phase 20.50, found while live-testing it.
 
 ## Phase 20.60 — Restore Progress Reporting: Extend `pollWithProgress` to the SQL/OpenSearch Restore Load Steps; No Parallel Restores
 
-**Status: designed 2026-08-18, not yet implemented** (DESIGN.md,
-"Restore Progress Reporting: Extend `pollWithProgress` to the SQL/
-OpenSearch Restore Load Steps; No Parallel Restores"; DECISIONS.md,
-"Restore load steps should report real progress, not just wait on a
-timeout; no parallel restores during validation"). User's explicit
-call: not enough time left today for either implementation or Phase
-20.51 testing -- designed now so the intent isn't lost, implemented
-later.
+**Status: designed 2026-08-18, partially implemented 2026-08-19**
+(DESIGN.md, "Restore Progress Reporting: Extend `pollWithProgress` to
+the SQL/OpenSearch Restore Load Steps; No Parallel Restores";
+DECISIONS.md, "Restore load steps should report real progress, not just
+wait on a timeout; no parallel restores during validation"). Work Item
+3 (Phase 20.51 designed with progress reporting from the start) is done
+-- `PollRestoreUntilComplete` (`restore_opensearch.go`) is built on
+`pollWithProgress` from day one, per this item's own recommendation.
+Work Item 1 (SQL restore's own load step) remains open -- Restore SQL
+Backup's load step still blocks silently behind a fixed timeout.
 
 ### Work Items
 
@@ -6862,12 +6900,12 @@ later.
       OpenSearch's snapshot/restore state-check loops have no equivalent
       secondary metric to show, so a verbatim shared signature may not
       fit both.
-- [ ] Phase 20.51 (not yet built): design its own progress signal from
-      the start using the same pattern, rather than shipping a bare
-      timeout and retrofitting this lesson a second time -- OpenSearch's
-      restore-status API (`_cat/recovery` or the snapshot-restore status
-      endpoint) gives it a real per-shard signal, strictly better than
-      SQL restore's size-growth proxy.
+- [x] Phase 20.51: designed and implemented with its own progress
+      signal from the start (`PollRestoreUntilComplete`, built directly
+      on `pollWithProgress`), rather than shipping a bare timeout and
+      retrofitting this lesson a second time -- uses OpenSearch's own
+      `_cat/recovery` restore-status API, a real per-shard signal,
+      strictly better than SQL restore's size-growth proxy.
 - [ ] Explicit non-goal for this phase: does not resolve whether a
       client-side timeout should also `ssm:CancelCommand` the remote
       process -- that's the same open question already on file in

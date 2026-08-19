@@ -518,10 +518,9 @@ func main() {
 			return workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules)
 		},
 		ArchiveSQL: archiveSQLAction,
-		// ArchiveOpenSearch lands PLAN.md Phase 20.49; RestoreSQL/
-		// RestoreOpenSearch remain stubs until Phases 20.50-20.51 land
-		// (matching how configure_menu.go's items were stubbed before
-		// Phase 20.42's edit actions existed).
+		// ArchiveOpenSearch (Phase 20.49), RestoreSQL (Phase 20.50), and
+		// RestoreOpenSearch (Phase 20.51) all now implemented -- no
+		// remaining stubs in this domain.
 		ArchiveOpenSearch: func(ctx context.Context) error {
 			return workflow.ArchiveOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories, openSearchArchiveHistory)
 		},
@@ -529,7 +528,7 @@ func main() {
 			return workflow.RestoreSQLBackup(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules)
 		},
 		RestoreOpenSearch: func(ctx context.Context) error {
-			return workflow.NotYetImplemented(out, "Restore OpenSearch Snapshot from S3")
+			return workflow.RestoreOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories)
 		},
 		Refresh: refresh,
 	}
