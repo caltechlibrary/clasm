@@ -209,8 +209,7 @@ The Compute domain (below) keeps today’s exact shape:</p>
 │  8) Create AMI from EC2 instance (running or stopped)           │
 │  9) Remove AMI                                                  │
 │ 10) Show/export cloud-init for an instance or AMI               │
-│ 11) Archive stale backups to S3 and trim disk space             │
-│ 12) Back to domain picker                                       │
+│ 11) Back to domain picker                                       │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘</code></pre>
 <p>(Illustrative — the real listing also includes Project, Environment,
@@ -2709,6 +2708,867 @@ existing <code>aws.ToString(inst.KeyName)</code>/
 or any exported workflow signature.</p>
 <h3 id="not-decided-yet-10">Not decided yet</h3>
 <p>None – this is a small, fully-scoped fix.</p>
+<h2 id="rdm-backup-restore-domain-design-addendum-2026-07-28">RDM Backup
+&amp; Restore Domain (Design Addendum, 2026-07-28)</h2>
+<p><strong>Status: designed 2026-07-28 (PLAN.md Phases 20.48-20.51;
+DECISIONS.md, ten entries dated 2026-07-28, “A seventh Domain Picker
+entry…” through “OpenSearch archive: no confirmation on routine runs…”),
+extended 2026-07-29 with a new Run SQL Backup workflow and
+<code>rdm_postgres_config</code> (PLAN.md Phase 20.52; six more
+DECISIONS.md entries dated 2026-07-29, resolving the domain’s remaining
+open items and adding container/DB naming discovery). Phase 20.48
+(domain wiring + relocating Feature 11) and Phase 20.52 (Run SQL Backup
++ <code>rdm_postgres_config</code>) implemented and unit-tested
+2026-07-29 (730 tests passing, not yet real-AWS-verified); Phases
+20.49-20.51 not yet implemented.</strong> Motivated by
+<code>rdm-opensearch-index-exports.md</code>: RDM’s OpenSearch indices
+hold two things Postgres either can’t reconstruct in a practical time
+frame or can’t reconstruct at all. List-view/JSON-API search indices are
+fully derived from Postgres but slow to rebuild – a full reindex for a
+100,000+-record repository (CaltechAUTHORS, CaltechDATA scale) takes 6-7
+hours. Usage-statistics indices (view/download counts) are not derived
+from Postgres at all – OpenSearch is their only copy, and past
+migrations that didn’t carry the indices forward lost that history for
+good. Solving export/import for both is expected to cut migration
+downtime from a full day to something manageable, and gives new dev/test
+instances a fast path to a realistic data set instead of a multi-hour
+reindex.</p>
+<p><strong>A seventh Domain Picker entry</strong>, alongside Compute/Key
+Management/S3/ Tag Management/IAM/Configuration – grouping all four RDM
+backup/restore operations (SQL archive, OpenSearch archive, SQL restore,
+OpenSearch restore) in one place instead of splitting them across
+Compute (where Feature 11 lives today) and wherever restore would
+otherwise land. Restore is a meaningfully more dangerous class of
+operation than the routine EC2 lifecycle actions Compute otherwise
+holds, and archive/ restore for the same system share the same
+instance/bucket/directory resolution code, so keeping all four together
+reads more clearly than adding restore as a 13th, 14th item to Compute’s
+existing menu.</p>
+<ol type="1">
+<li><strong>Run SQL Backup</strong> – new, below (PLAN.md Phase 20.52).
+Triggers a fresh <code>pg_dump</code> directly via SSM, so a full backup
+no longer depends on <code>invenio-sql-backup.bash</code> (or any
+pre-installed script) already running on a schedule – see “Run SQL
+Backup”, below, and DECISIONS.md, “Run SQL Backup: a new on-demand dump
+workflow, chaining into Archive SQL rather than replacing it.”</li>
+<li><strong>Archive SQL Backup to S3</strong> – Feature 11 (Backup
+Archive &amp; Trim), relocated here unchanged. Compute’s menu loses this
+entry (PLAN.md Phase 20.48). Still its own independent workflow – it
+continues to be the thing that manages the nightly cron job’s own
+output, which stays in place regardless of Run SQL Backup’s existence
+(the cron job is production’s safety net when no operator is available
+to run clasm at all).</li>
+<li><strong>Archive OpenSearch Snapshot to S3</strong> – new, below
+(PLAN.md Phase 20.49).</li>
+<li><strong>Restore SQL Backup from S3</strong> – new, below (PLAN.md
+Phase 20.50).</li>
+<li><strong>Restore OpenSearch Snapshot from S3</strong> – new, below
+(PLAN.md Phase 20.51).</li>
+</ol>
+<h3 id="why-opensearch-snapshots-not-a-raw-index-dump">Why OpenSearch
+snapshots, not a raw index dump</h3>
+<p>OpenSearch’s native Snapshot API, not a scroll/reindex-to-NDJSON
+export, is the mechanism: it’s non-disruptive by design (a point-in-time
+reference that doesn’t block reads or writes on a live production
+instance) and it preserves index mappings/settings, which a raw document
+dump would not – important for the migration use case, where recreating
+mappings by hand for every index would defeat the purpose. See
+DECISIONS.md, “OpenSearch backup repository: local <code>fs</code> type
+synced by clasm, not direct-to-S3 via the repository-s3 plugin,” for the
+repository-location half of this same decision.</p>
+<h3 id="snapshot-scope-not-the-whole-cluster">Snapshot scope: not the
+whole cluster</h3>
+<p>Sized against a real <code>_cat/indices</code> pull from
+CaltechAUTHORS production (2026-07-28). Two categories are in scope:</p>
+<ul>
+<li><strong>Current-version RDM record/list indices</strong> –
+<code>rdmrecords-*</code>, <code>users-*</code>,
+<code>communities-*</code>, <code>requests*</code>,
+<code>requestevents-*</code>, <code>names-*</code>,
+<code>affiliations-*</code>, <code>funders-*</code>,
+<code>awards-*</code>, <code>subjects-*</code>,
+<code>vocabularies-*</code>, <code>groups-*</code>,
+<code>domains-*</code>, <code>communitymembers-*</code>. Measured at
+~1.5GB total on CaltechAUTHORS. These are the ones behind the 6-7 hour
+reindex; restoring from a snapshot is a segment-file copy, not a
+rebuild-from-Postgres pipeline, so this is what turns hours into
+minutes.</li>
+<li><strong>Usage-stats aggregates, not raw events</strong> –
+<code>stats-record-view-*</code> and <code>stats-file-download-*</code>
+(the monthly aggregates that actually back the displayed view/download
+counts) plus <code>stats-bookmarks</code>, measured at ~4.1GB. The raw
+<code>events-stats-record-view-*</code>/<code>events-stats-file-download-*</code>
+indices are deliberately <strong>excluded</strong> – measured at ~11.3GB
+and still growing roughly 1.5-2GB/month with no bound, versus ~5.6GB for
+everything else combined. Confirmed with the user that no regular or
+ad-hoc report queries these raw-event indices directly (all reporting
+comes from Postgres) – if that ever changes, this exclusion needs
+revisiting.</li>
+<li><strong><code>.ds-&lt;prefix&gt;-auditlog-audit-log-*</code></strong>
+included provisionally (~0.3GB) – also OpenSearch-only data, included on
+the same “irreplaceable if lost” reasoning as the stats aggregates,
+droppable later if it proves unneeded.</li>
+<li>System/plugin indices (<code>.opensearch-*</code>,
+<code>.kibana*</code>, <code>.plugins-*</code>) and empty zero-doc
+versioned indices left over from schema migrations
+(e.g. <code>rdmrecords-records-record-v2.0.0</code> through
+<code>v6.0.0</code>) are excluded or ride along harmlessly (208 bytes
+each) – not worth explicitly filtering.</li>
+</ul>
+<p>Target total for a CaltechAUTHORS-scale repository: under ~8GB. See
+DECISIONS.md, “OpenSearch snapshot scope: current-version record/list
+indices plus stats aggregates, excluding raw stats events and system
+indices.”</p>
+<h3 id="one-snapshot-on-ebs-at-a-time">One snapshot on EBS at a
+time</h3>
+<p>Unlike the SQL backups (several days’ <code>.sql.gz</code> files
+accumulate in <code>/opt/rdm_sql_backups</code> before Feature 11 trims
+them), EBS cost makes keeping multiple days of OpenSearch snapshots
+impractical, and OpenSearch snapshots in a shared repository are
+incremental – later snapshots’ segment files can reference earlier ones,
+so blind age-based file deletion (Feature 11’s model) is unsafe here.
+Instead: exactly one snapshot is ever live on EBS. After a snapshot is
+confirmed synced to S3, clasm deletes it via OpenSearch’s own
+<code>DELETE /_snapshot/&lt;repo&gt;/&lt;name&gt;</code> API – never a
+raw filesystem delete on the repo directory – so the repo’s metadata and
+any still-referenced segments stay consistent. Same “delete only after
+confirmed upload” spirit as Feature 11, adapted mechanism.</p>
+<p>Given the corruption seen in an earlier (2024/early-2025) attempt at
+this – root cause no longer known precisely – both new workflows poll
+<code>_snapshot/&lt;repo&gt;/&lt;name&gt;/_status</code> until
+<code>state: SUCCESS</code> before ever syncing to S3 or deleting
+locally (never touch a snapshot mid-creation), and restore includes a
+post-restore doc-count sanity check (snapshot metadata vs. the
+actually-restored index) before declaring success. See DECISIONS.md,
+“Single OpenSearch snapshot on EBS at a time…” and “Poll
+snapshot/restore status to completion and verify doc counts
+post-restore…”.</p>
+<h3
+id="repository-prerequisite-path.repo-one-time-outside-clasm">Repository
+prerequisite: <code>path.repo</code> (one-time, outside clasm)</h3>
+<p>OpenSearch refuses to use a filesystem snapshot repository unless the
+directory is bind-mounted into the container and allow-listed via
+<code>path.repo</code>. Confirmed against the real
+<code>cookiecutter-invenio-rdm</code> master-branch
+<code>docker-services.yml</code> template that neither is present by
+default – almost certainly why the 2024/early-2025 attempt never worked.
+This is infrastructure, not something clasm patches onto a running
+container:</p>
+<ul>
+<li>Already baked into <code>granian-rdm-v14</code>’s
+<code>cloud-init.yaml</code> and <code>cloud-init-multipass.yaml</code>
+for all new instances going forward (both patch the generated
+<code>docker-services.yml</code> to mount
+<code>/opt/rdm_opensearch_backups</code> and set <code>path.repo</code>
+on the <code>search</code> service, right after the existing
+<code>.invenio</code> patch step).</li>
+<li>Existing CaltechAUTHORS and CaltechDATA production instances still
+need a one-time manual retrofit – not yet done.</li>
+<li>clasm’s Archive OpenSearch Snapshot workflow (below) assumes this
+prerequisite is already in place on the target instance; it does not
+attempt to configure it.</li>
+</ul>
+<h3 id="run-sql-backup">Run SQL Backup</h3>
+<p>PLAN.md Phase 20.52. A new, on-demand action that triggers a fresh
+SQL dump directly via SSM – so a full backup no longer depends on
+<code>invenio-sql-backup.bash</code> (or any pre-installed script)
+already being on the box, matching how Restore SQL already works
+(below). Archive SQL Backup to S3 (Feature 11) stays exactly as it is
+and remains its own independent workflow – it’s still what manages the
+nightly cron job’s own output, and the cron job itself stays in place
+unchanged: it’s production’s safety net when no operator is available to
+run clasm at all (e.g. staff on leave). Run SQL Backup is additive, for
+on-demand/ad hoc situations – before a migration, standing up a fresh
+test instance, or any case needing a backup right now without first
+SSHing in. See DECISIONS.md, “Run SQL Backup: a new on-demand dump
+workflow, chaining into Archive SQL rather than replacing it.”</p>
+<ol type="1">
+<li>Pick an instance (<code>pickInstanceDefaulted</code>, recalled via
+the <em>same</em>
+<code>BackupHistory</code>/<code>backup_directories</code> Archive SQL
+already uses – picking here pre-positions Archive SQL’s own
+instance/directory defaults too, since both write through the same
+<code>hist.Save</code> callback).</li>
+<li><code>CheckAWSCLIAvailable</code> preflight (reused from Feature
+11).</li>
+<li>Prompt for the backup directory, exactly the same prompt/recall/
+pattern-match Archive SQL’s own directory step uses
+(<code>backup_directories</code> config,
+<code>hist.LastDirectoryByInstance</code>) – this is the same directory
+Archive SQL later reads from, so sharing the recall benefits both.</li>
+<li><strong>Discover the running Postgres container</strong> via SSM:
+list every running container’s image and name
+(<code>docker ps --format '{{.Image}}\t{{.Names}}'</code>) and match the
+Postgres image client-side in Go, not via Docker’s own
+<code>--filter ancestor=</code>, which real-AWS testing confirmed
+(2026-07-29, DECISIONS.md, “Real bug:
+<code>docker ps --filter ancestor=postgres</code> doesn’t match a tagged
+image…”) does not match a bare repository name against a specific tag
+(<code>postgres:14.13</code> was invisible to
+<code>--filter ancestor=postgres</code> even though the container was
+confirmed running). Run fresh, every time, not just once (DECISIONS.md,
+“RDM Postgres container/DB naming: discover via docker ps every run,
+reconcile with rdm_postgres_config”). Zero results or more than one
+result is a hard error (fail loud, don’t guess) – printed alongside the
+raw command so the operator can investigate by hand (matching
+<code>ResizeInstanceRootVolume</code>’s own manual-fallback precedent
+for an unrecognized layout).</li>
+<li><strong>Reconcile with <code>rdm_postgres_config</code></strong>
+(new config section, below): look up the existing rule for this
+instance’s Name. If the discovered container name differs from what’s
+saved (or nothing was saved yet), update/save that rule’s
+<code>container_name</code> and persist to <code>~/.clasm</code>
+immediately (same “best-effort, warn on failure, not fatal” spirit as
+<code>BackupHistory.Save</code>), and tell the operator what changed.
+<code>db_name</code>/ <code>db_user</code> are never touched by this
+reconciliation – they’re not discovered (see below), only ever set by an
+explicit config edit or defaulted fresh each time.</li>
+<li>Resolve <code>db_name</code>/<code>db_user</code>: the matching
+<code>rdm_postgres_config</code> rule’s values if set, else the
+instance’s own <strong>Project tag</strong>, falling back to its Name
+tag only if Project isn’t set (DECISIONS.md, “Default db_name/db_user to
+the instance’s Project tag, not its Name tag” – confirmed via a real
+incident that an instance’s Name tag can be a legacy label unrelated to
+its actual RDM project shortname, while Project reliably holds it; the
+override exists for anything customized beyond even that). The resolved
+container/db_name/db_user are printed to the operator immediately,
+before the dump runs, so a wrong resolution is visible right away.</li>
+<li>Run the dump via SSM, inside the discovered container, matching
+<code>invenio-sql-backup.bash</code>’s own command <em>structure</em>
+exactly, not just its final filename: <code>pg_dump</code> redirects to
+a plain
+<code>&lt;directory&gt;/ &lt;container&gt;-&lt;db_name&gt;-&lt;date +%Y-%m-%d&gt;.sql</code>
+file first, then <code>gzip -f</code> compresses it as a wholly separate
+second step (<code>set -e</code> between them) – deliberately
+<strong>not</strong> <code>pg_dump | gzip &gt; file.sql.gz</code> (a
+real bug, confirmed 2026-07-29: a pipe’s exit status is its last
+command’s, so a failed <code>pg_dump</code> still reported
+<code>Success</code> since <code>gzip</code> always succeeds regardless
+of what it’s compressing – see DECISIONS.md, “Real bug: pg_dump | gzip
+masks pg_dump’s own exit status…”). The final filename convention is
+unchanged either way, so files Run SQL Backup produces remain
+indistinguishable from the cron job’s own output once they land in the
+same directory.</li>
+<li>Report success or failure (surface <code>pg_dump</code>’s own exit
+status/stderr on failure – fail loud, no silent partial dumps; the
+two-step, non-piped command above is what makes this actually true
+rather than just documented).</li>
+<li>Return. <strong>Superseded 2026-08-18 (PLAN.md Phase 20.54,
+DECISIONS.md, “Run SQL Backup: drop the Archive-SQL auto-chain, rename
+to ‘Generate SQL Backup’”):</strong> this step originally chained
+straight into Archive SQL Backup to S3 via a <code>Confirm</code>
+prompt, but live use found that confusing – the action is now named
+“Generate SQL Backup” and does exactly that, nothing more. An operator
+who wants to archive right after generating a dump picks Archive SQL
+Backup to S3 next from the same menu – its own instance/directory
+prompts are still pre-positioned/pre-filled from steps 1/3’s shared
+history, so confirming through them is one keypress each rather than
+retyping.</li>
+</ol>
+<h3 id="archive-opensearch-snapshot-to-s3">Archive OpenSearch Snapshot
+to S3</h3>
+<p>PLAN.md Phase 20.49. Steps 3-4/10 implement DECISIONS.md,
+“App-managed S3-side cleanup for OpenSearch backups, not a bucket
+lifecycle policy” and “OpenSearch cleanup: optional day threshold, one
+upfront confirm against a fixed candidate list, delete only after the
+new snapshot is safely synced.” Step 7’s S3 layout implements
+DECISIONS.md, “Restore defaults to the most recent OpenSearch
+snapshot…”.</p>
+<ol type="1">
+<li>Pick an instance; <code>command -v aws</code> preflight check
+(reused from Feature 11).</li>
+<li>Prompt for the OpenSearch backup directory (recalled per-instance,
+pattern-matched from the new <code>opensearch_backup_directories</code>
+config, default <code>/opt/rdm_opensearch_backups</code>), then the S3
+bucket via the same <code>promptBackupBucketFunc</code> picker Feature
+11 already uses unchanged – lists every bucket in the account fresh each
+run, no pre-selection or recall (Feature 11 itself has none either; only
+the instance and directory are recalled, see
+<code>BackupHistory</code>). The operator picks the dedicated OpenSearch
+backup bucket, <code>opensearch-backups.library.caltech.edu</code>
+(created 2026-07-28, separate from
+<code>sql-backups.library.caltech.edu</code>), from that list each run
+(or “Other” to type a bucket name directly).</li>
+<li>Prompt: “Clean up this instance’s OpenSearch backups older than how
+many days?” – <strong>optional, no default</strong>. A blank answer
+skips cleanup entirely for this run.</li>
+<li><strong>If a threshold was given</strong>: list this instance’s own
+snapshot sub-prefixes already in S3, under
+<code>&lt;bucket&gt;/&lt;instance-name&gt;/opensearch-snapshots/</code>,
+parse each one’s embedded timestamp, and identify those older than the
+threshold (the snapshot this run is about to create doesn’t exist yet,
+so there’s nothing to exempt). Show the candidates as a dry-run list
+(same transparency pattern as Feature 11’s own dry-run), then
+<code>ConfirmDestructive([]string{inst.InstanceID, inst.Name})</code> –
+<strong>once, upfront</strong>, before anything else in this run
+happens. If there’s no threshold, or the threshold matched no existing
+candidates, no confirmation is shown at all – nothing destructive is on
+the table. This candidate list is fixed here and reused unchanged at
+step 10 – never re-derived right before deleting, avoiding the same
+time-of-check/time-of-use gap Feature 11’s own delete phase already
+avoids.</li>
+<li>Trigger a new snapshot (SSM,
+<code>PUT /_snapshot/&lt;repo&gt;/&lt;generated-name&gt;</code>, name
+timestamped e.g. <code>rdm-20260728-153000</code>) scoped to exactly the
+index patterns listed above.</li>
+<li>Poll <code>_snapshot/&lt;repo&gt;/&lt;name&gt;/_status</code> until
+<code>state: SUCCESS</code> – unbounded/long poll, not a short fixed
+timeout (this project has hit the fixed-timeout version of this bug
+before, in AMI creation).</li>
+<li><strong>Sync phase</strong> (SSM):
+<code>aws s3 sync /opt/rdm_opensearch_backups s3://&lt;bucket&gt;/&lt;instance-name&gt;/opensearch-snapshots/&lt;snapshot-name&gt;/</code>
+– <strong>no <code>--delete</code></strong>, and each run gets its own
+new, uniquely-named destination prefix (the snapshot’s own name), not a
+shared one. Getting this wrong was an inconsistency in an earlier draft
+of this section: a shared prefix synced with <code>--delete</code> would
+make S3 mirror EBS exactly, meaning S3 would only ever hold the
+<em>current</em> snapshot too – defeating “pick a specific dated backup”
+below, which requires S3 to actually retain history EBS itself no longer
+does once a snapshot is deleted locally.</li>
+<li><strong>Independent verification</strong>: the tool’s own
+credentials (not the instance’s self-report) confirm the new prefix’s
+synced objects match the local repo’s current file set.</li>
+<li><strong>Delete phase (EBS side)</strong>: delete the just-synced
+snapshot via OpenSearch’s
+<code>DELETE /_snapshot/&lt;repo&gt;/&lt;name&gt;</code> API (never a
+raw <code>rm</code> on the repo directory) – enforces the
+one-snapshot-on-EBS-at-a-time constraint. Unconditional, every run,
+regardless of whether cleanup was requested – this is the tool’s
+ordinary behavior, not a separate destructive choice requiring its own
+confirmation (already covered, when applicable, by step 4’s upfront
+confirm). S3 is unaffected here – the prefix just archived stays exactly
+as synced.</li>
+<li><strong>Cleanup phase (S3 side), only if step 4 found and confirmed
+candidates</strong>: delete exactly that fixed candidate list – the
+already-existing, already-old prefixes from before this run started,
+never the one just archived. Runs strictly <em>after</em> step 9, never
+before, so a fresh snapshot is always safely in S3 before any old one is
+removed, even though both were confirmed together upfront.</li>
+<li>Report snapshot size, confirmation, and (if cleanup ran) how many
+old snapshots were removed.</li>
+</ol>
+<p><strong>Why app-managed cleanup, not an S3 bucket lifecycle
+policy</strong> (this project already has bucket lifecycle management,
+Feature 21.1, and it was the first instinct here): a lifecycle rule runs
+on its own schedule regardless of whether fresh archives are actually
+happening, so it can silently expire an instance’s <em>last
+remaining</em> backup if archiving ever stalls – a lapsed cron, a
+decommissioned habit, anyone simply forgetting to run it. Coupling
+cleanup to a successful archive run instead means cleanup only ever
+executes as a side effect of a fresh snapshot having just landed safely
+in S3 – there is no path to zero backups that doesn’t also involve a
+fresh one replacing them first. The tradeoff: this is
+<code>clasm</code>-managed logic (list, parse, dry-run, confirm,
+batch-delete), not a policy AWS enforces independently of whether anyone
+runs the tool. S3 has no atomic “delete a whole prefix” call – deleting
+one old snapshot means listing every object under its sub-prefix and
+batch- deleting them (<code>DeleteObjects</code>, up to 1,000 keys per
+call, looped for a snapshot with more segment files than that). See
+DECISIONS.md, “App-managed S3-side cleanup for OpenSearch backups, not a
+bucket lifecycle policy,” for the full rationale.</p>
+<h3 id="restore-sql-backup-from-s3">Restore SQL Backup from S3</h3>
+<p>PLAN.md Phase 20.50. Load command grounded in the real
+<code>invenio-sql-backup.bash</code>/<code>invenio-sql-restore.bash</code>
+(confirmed against the <code>caltechauthors</code> copies,
+<code>~/WorkLab/caltechauthors</code>), not guessed – see DECISIONS.md,
+“SQL restore load command: grounded in the real
+invenio-sql-backup.bash/invenio-sql-restore.bash, not guessed.”
+<code>dump-opensearch-index.bash</code> in the same directory is
+explicitly out of scope (incorrect, superseded by this domain’s own
+OpenSearch snapshot design).</p>
+<ol type="1">
+<li>Pick a target instance. Assumes Postgres is already running on it –
+either freshly provisioned and empty, or already populated with data to
+be replaced. This workflow does not provision an instance.</li>
+<li><strong>Discover and reconcile the target’s own Postgres
+container/DB config</strong>, exactly the same mechanism Run SQL Backup
+uses on its source instance (client-side Postgres-image matching over an
+unfiltered <code>docker ps</code>, reconcile with
+<code>rdm_postgres_config</code>, resolve
+<code>db_name</code>/<code>db_user</code> preferring the target’s own
+Project tag over its Name tag, per DECISIONS.md, “Default
+db_name/db_user to the instance’s Project tag, not its Name tag”) – the
+restore target can be a completely different instance than whatever Run
+SQL Backup or Archive SQL last touched (e.g. restoring onto a fresh
+clone), so this can’t just trust a config value left over from an
+unrelated instance, or assume the target’s Name tag blindly. See
+DECISIONS.md, “Restore SQL Backup also discovers-and-reconciles its own
+target, not just Run SQL Backup’s source.” <strong>Runs before picking
+the source backup below</strong> (corrected 2026-08-18 from this
+section’s original ordering – see DECISIONS.md, “Restore SQL Backup:
+resolve the Postgres target before any S3 prompt, not after”): a broken
+target is fatal regardless of which backup gets picked, so failing fast
+here avoids walking through the bucket/source-name/object-pick prompts
+first only to hit the identical failure right before the load step.</li>
+<li>Pick the source backup: browse the SQL bucket’s
+<code>&lt;source-instance-name&gt;/</code> prefix, defaulting to the
+most recent object, with the option to pick a specific dated one
+instead.</li>
+<li>If the target already has live data, this is destructive –
+<code>ConfirmDestructive</code> (type-to-confirm), the same tier as
+Feature 9 (Remove AMI) and IAM’s Delete Role, before anything is
+overwritten. See DECISIONS.md, “Build both OpenSearch/SQL restore paths
+now: fresh-instance and already-populated-instance overwrite.”</li>
+<li>Download the chosen <code>.sql.gz</code> to the target (SSM) and
+<code>gunzip</code> it. Load sequence, run inside the discovered
+container via SSM, matching <code>invenio-sql-restore.bash</code>’s own
+behavior exactly:
+<ul>
+<li><code>docker exec &lt;container&gt; psql --username=&lt;db_user&gt; --dbname postgres -c "DROP DATABASE IF EXISTS &lt;db_name&gt;"</code></li>
+<li><code>docker exec &lt;container&gt; psql --username=&lt;db_user&gt; --dbname postgres -c "CREATE DATABASE &lt;db_name&gt;"</code></li>
+<li>load the decompressed <code>.sql</code> file into
+<code>docker exec -i &lt;container&gt; psql --username=&lt;db_user&gt; &lt;db_name&gt;</code>
+– drop-and-recreate, not restore-in-place. <code>db_name</code> is
+wrapped as a proper SQL quoted identifier in the DROP/ CREATE statements
+(not the bare, unquoted form <code>invenio-sql-restore.bash</code>
+itself uses) – found real, live, setting up a restore-test instance
+whose actual <code>db_name</code> contains a hyphen, not a valid
+unquoted Postgres identifier. See DECISIONS.md, “Restore SQL Backup:
+quote the database name as a SQL identifier, not just shell-quote
+it.”</li>
+</ul></li>
+<li>Post-restore sanity check (row/table counts) before declaring
+success.</li>
+</ol>
+<h3 id="restore-opensearch-snapshot-from-s3">Restore OpenSearch Snapshot
+from S3</h3>
+<p>PLAN.md Phase 20.51 – depends directly on Phase 20.49’s OpenSearch
+primitives (repo registration, poll/parse helpers), reused not
+reimplemented.</p>
+<ol type="1">
+<li>Pick a target instance. Same assumption as SQL restore: Postgres and
+OpenSearch containers already running, fresh-empty or already-populated.
+Also assumes the <code>path.repo</code> prerequisite above is already in
+place on the target.</li>
+<li>Pick the source snapshot: list the sub-prefixes (each one full
+archived snapshot, per its own name) under the OpenSearch bucket’s
+<code>&lt;source-instance-name&gt;/opensearch-snapshots/</code> prefix,
+defaulting to the most recent, with the option to pick a specific one
+instead.</li>
+<li>Sync the chosen snapshot’s entire sub-prefix down from S3 into the
+target’s <code>/opt/rdm_opensearch_backups</code> (expected empty
+beforehand – only one snapshot is ever meant to live there);
+register/confirm the <code>fs</code> repository.</li>
+<li>If the target already has indices matching the snapshot’s index
+names, this is destructive – <code>ConfirmDestructive</code>, same tier
+as SQL restore, before those indices are touched. On confirm,
+<strong>delete</strong> the conflicting indices
+(<code>DELETE &lt;index-name&gt;</code> via the OpenSearch REST API,
+never a raw filesystem operation) – not close-then-restore. See
+DECISIONS.md, “Restore OpenSearch: delete conflicting indices before
+<code>_restore</code>, don’t close them.”</li>
+<li>Restore
+(<code>POST /_snapshot/&lt;repo&gt;/&lt;name&gt;/_restore</code>),
+scoped to the snapshot’s index list.</li>
+<li>Poll for restore completion.</li>
+<li><strong>Post-restore sanity check</strong>: compare per-index doc
+counts between the snapshot’s own metadata and the actually-restored
+indices; surface any mismatch rather than silently declaring
+success.</li>
+<li>Report summary.</li>
+</ol>
+<h3 id="new-configuration-opensearch_backup_directories">New
+Configuration: <code>opensearch_backup_directories</code></h3>
+<p>Following the existing
+<code>regions</code>/<code>backup_directories</code>/<code>origin_tag</code>
+pattern (see “Configuration,” above): a new, optional YAML section in
+<code>~/.clasm</code>, structurally identical to
+<code>backup_directories</code> but a separate list rather than an
+extension of it – <code>backup_directories</code> stays SQL-only and
+unchanged.</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">opensearch_backup_directories</span><span class="kw">:</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;rdm-*&quot;</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/rdm_opensearch_backups</span></span></code></pre></div>
+<p>Same <code>path.Match</code> glob-against-Name-tag, first-match-wins
+semantics as <code>backup_directories</code>. Pre-fills the
+Archive/Restore OpenSearch prompts’ directory field, still editable, no
+default on no match.</p>
+<h3 id="new-configuration-rdm_postgres_config">New Configuration:
+<code>rdm_postgres_config</code></h3>
+<p>Following the same
+<code>regions</code>/<code>backup_directories</code>/<code>origin_tag</code>/
+<code>opensearch_backup_directories</code> pattern: a new, optional YAML
+section in <code>~/.clasm</code>, matched by <code>path.Match</code>
+against an instance’s Name tag, first-match-wins – same shape as
+<code>backup_directories</code>, but for Postgres container/database
+identity rather than a filesystem path.</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">rdm_postgres_config</span><span class="kw">:</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;caltechauthors&quot;</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">container_name</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;caltechauthors-db-1&quot;</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_name</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;caltechauthors&quot;</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_user</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;caltechauthors&quot;</span></span></code></pre></div>
+<p>Populated by discovery-and-save – Run SQL Backup and Restore SQL
+Backup both reconcile <code>container_name</code> here every run they
+execute (DECISIONS.md, “RDM Postgres container/DB naming: discover via
+docker ps every run, reconcile with rdm_postgres_config”), not
+hand-authored up front – but still hand-editable via the Configure clasm
+domain’s new “Edit RDM Postgres config” action, for any instance
+customized beyond Invenio RDM’s shipped defaults
+(<code>db_name</code>/<code>db_user</code> specifically have no
+discovery mechanism at all, so a divergent deployment can only be
+corrected here). All three fields are independently overridable; any
+left unset fall back to the instance’s own <code>Name</code> tag (for
+<code>db_name</code>/<code>db_user</code>) or trigger the docker-ps
+discovery/error path (for <code>container_name</code>, which is never
+silently assumed).</p>
+<h3 id="not-decided-yet-11">Not decided yet</h3>
+<p>Resolved 2026-07-29 (see DECISIONS.md entries dated that day): the
+exact SQL load command, whether restoring into an already-populated
+OpenSearch target closes or deletes conflicting indices, the OpenSearch
+backup bucket name, and whether Postgres container/DB naming can be
+trusted without verification (resolved by discovering it live via
+<code>docker ps</code> every run instead of assuming a fixed convention,
+with <code>rdm_postgres_config</code> as the override/audit trail – no
+longer a bare assumption about
+<code>DB_NAME</code>/<code>DB_USERNAME</code> == instance
+<code>Name</code> tag). Still open: exact polling intervals/timeouts for
+snapshot creation and restore completion; whether
+<code>path.repo</code>’s bare-scalar env value is correctly coerced to
+the one-element list OpenSearch expects, and whether the official
+OpenSearch image’s container uid is really 1000 (both flagged for
+first-boot verification in <code>granian-rdm-v14</code>, and
+load-bearing here too); tracking/ scheduling the one-time
+<code>path.repo</code> retrofit on existing CaltechAUTHORS/ CaltechDATA
+production instances; whether
+<code>sql-backups.library.caltech.edu</code> already has its own S3
+lifecycle policy – flagged during this design pass as worth auditing
+separately
+(<code>aws s3api get-bucket-lifecycle-configuration --bucket sql-backups.library.caltech.edu</code>),
+unrelated to the app-managed cleanup decision above, since the SQL
+bucket’s own unbounded growth is a pre-existing, separate question this
+domain didn’t create; what to do if a deployment’s Postgres image is
+named entirely differently from “postgres” (not just a different tag –
+<code>isPostgresImage</code> already handles any
+tag/digest/registry-path, per the 2026-07-29 ancestor-filter bug fix,
+DECISIONS.md) – flagged as a known limitation, not designed around here
+– all left for the implementation plan.</p>
+<h2
+id="poll-loop-progress-output-opensearch-snapshotrestore-polling-design-addendum-2026-08-18-plan.md-phase-20.53">Poll-Loop
+Progress Output: OpenSearch Snapshot/Restore Polling (Design Addendum,
+2026-08-18, PLAN.md Phase 20.53)</h2>
+<p><strong>Status: designed 2026-08-18, not yet implemented.</strong>
+Motivated by TODO.md’s requested feature:
+<code>PollSnapshotUntilComplete</code> (Phase 20.49) prints nothing
+while it waits for OpenSearch to finish creating a snapshot, so the
+terminal shows whatever was last drawn (typically a picker’s own hint
+line) throughout a real multi-minute wait – confirmed live 2026-08-17
+against CaltechAUTHORS production (~3 minutes for a real 59-shard/~6.4GB
+snapshot). Not a correctness bug – the workflow completes correctly
+either way – but reads as a hung prompt, and the user explicitly wants
+this closed before the next release.</p>
+<p><strong>Fix: thread an <code>io.Writer</code> into the poll loop and
+print progress on every tick, not just at the end.</strong>
+<code>PollSnapshotUntilComplete</code> gains a <code>w io.Writer</code>
+parameter: one line before the loop starts (“waiting for snapshot … to
+complete – this can take several minutes for a large index set”) and one
+line per <code>pollInterval</code> tick showing elapsed time (“… Ns
+elapsed”). Every call site (currently just
+<code>opensearch_archive.go</code>’s orchestrator) already has a
+<code>w</code> in scope, so this is a pure signature widen, not a new
+plumbing path.</p>
+<p><strong>Fix this now, ahead of Phase 20.51, so the new sibling poller
+inherits it for free.</strong> Phase 20.51 (Restore OpenSearch Snapshot
+from S3) already plans a <code>PollRestoreUntilComplete</code> with the
+identical polling shape (PLAN.md Phase 20.51, work item 11) – if the
+progress-output pattern isn’t established first, that new function would
+either repeat the identical silent-wait gap or need its own separate fix
+later. Factoring the print-on-tick logic into a small shared helper
+(e.g. <code>pollWithProgress</code>) that both
+<code>PollSnapshotUntilComplete</code> and the future
+<code>PollRestoreUntilComplete</code> call gives both the same behavior
+from one place.</p>
+<p><strong>Not extended to every other poll loop in this
+codebase</strong> (e.g. <code>WaitForSSMOnline</code>,
+<code>checkCloudInitCompletion</code>) – those already have their own
+established UX (a spinner or a fixed one-shot wait), and neither has
+been reported as confusing in practice. Scoped to the OpenSearch
+snapshot/restore polling family only, since that’s the one with a real
+live-testing complaint against it.</p>
+<h3 id="not-decided-yet-12">Not decided yet</h3>
+<p>Exact wording of the progress line, and whether elapsed time is
+printed as a running total or just per-tick – left to implementation,
+not load-bearing.</p>
+<h2
+id="run-sql-backup-drop-the-archive-sql-auto-chain-rename-to-generate-sql-backup-design-addendum-2026-08-18-plan.md-phase-20.54">Run
+SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to “Generate SQL
+Backup” (Design Addendum, 2026-08-18, PLAN.md Phase 20.54)</h2>
+<p><strong>Status: designed 2026-08-18, not yet implemented.</strong>
+Motivated by TODO.md’s requested bug fix: chaining straight into Archive
+SQL Backup to S3 after Run SQL Backup (via a <code>Confirm</code>
+prompt, added by Phase 20.52) turned out to be confusing in practice –
+the user’s explicit ask is that this action should only generate the
+local <code>.sql.gz</code> dump file and return to the RDM Backup &amp;
+Restore menu, nothing more.</p>
+<p><strong>Fix: remove the chain entirely, not just default it to
+“no.”</strong> <code>runSQLBackup</code>’s trailing
+<code>Confirm("Continue to Archive SQL Backup to S3 now?")</code> branch
+and its <code>archiveSQL func(ctx context.Context) error</code>
+parameter are removed – the function now returns immediately after
+reporting the dump’s success/failure. <code>RunSQLBackup</code>’s
+exported signature drops the parameter too;
+<code>RDMBackupRestoreActions.RunSQLBackup</code>’s wiring in
+<code>cmd/clasm/main.go</code> no longer passes the
+<code>archiveSQL</code> closure. Archive SQL Backup to S3 remains a
+separate, always-available menu entry – an operator who wants to archive
+right after generating a dump just picks it next, same number of steps
+as confirming “yes” today, but without the surprise of a backup action
+doing something beyond backing up.</p>
+<p><strong>Rename the menu label, not the Go identifiers.</strong>
+<code>rdmMenuItems</code>’s “Run SQL Backup” entry becomes “Generate SQL
+Backup” (<code>rdm_menu.go</code>, one call site) – matches what the
+action now unambiguously does. <code>RunSQLBackup</code>/
+<code>runSQLBackup</code>/<code>run_sql_backup.go</code> stay as-is;
+renaming Go identifiers to match would touch every test and call site
+for a purely cosmetic gain, and this project’s own Phase 20.43 precedent
+(menu label cleanup) already established that user-facing labels and
+internal Go names don’t need to match 1:1.</p>
+<h3 id="not-decided-yet-13">Not decided yet</h3>
+<p>None – this is a small, fully-scoped fix.</p>
+<h2
+id="delete-roles-wrong-remedy-message-missing-instance-profile-membership-capability-design-addendum-2026-08-18-plan.md-phase-20.55">Delete
+Role’s Wrong-Remedy Message + Missing Instance-Profile-Membership
+Capability (Design Addendum, 2026-08-18, PLAN.md Phase 20.55)</h2>
+<p><strong>Status: designed 2026-08-18, not yet implemented.</strong>
+Found 2026-08-18 cleaning up the now-unused
+<code>rdm-opensearch-backup</code> role
+(<code>agents/knowledge.db</code> clasm observation id 180): Delete Role
+refuses with “role %q is still referenced by instance profile(s) %s –
+detach it first (Compute domain, "Associate/replace IAM instance
+profile")” whenever <code>iam:ListInstanceProfiles</code>’
+<code>Roles</code> shows this role as a <em>member</em> of an
+instance-profile object
+(<code>IAMRoleDetail.ReferencedByProfiles</code>,
+<code>iam_detail.go</code>) – but Associate/replace IAM instance profile
+only ever changes an EC2 instance’s <em>association</em> to a profile,
+never a profile’s own role membership. Following the message’s own
+suggested remedy can never unblock this refusal. clasm has no action
+anywhere for <code>iam:RemoveRoleFromInstanceProfile</code> or
+<code>iam:DeleteInstanceProfile</code> (confirmed via a source grep,
+zero matches for either).</p>
+<p><strong>Keep Delete Role’s refusal exactly as scoped in 2026-07-23
+(DECISIONS.md, “…support CRUD for DLD-owned roles”) – don’t make it
+auto-cascade.</strong> That decision deliberately kept “detach from a
+running instance” and “delete the role” as two separate, composable
+actions rather than one action silently doing both; nothing about
+today’s finding changes the reasoning (an instance profile <em>can</em>
+still be actively associated with a running instance even when this
+exact bug isn’t in play) – it only reveals that the <em>message</em>
+describes the wrong mechanism and clasm is missing the actual remedy as
+a standalone action.</p>
+<p><strong>Fix, two parts:</strong> 1. <strong>Correct the
+message.</strong> <code>deleteIAMRoleConfirmed</code>’s refusal
+(<code>iam_lifecycle.go</code>, both the hard-refuse and the earlier
+<code>iam_menu</code>-level pre-check) now says the role is <em>a member
+of</em> the listed instance profile(s), and points at a new action
+(below) rather than Associate/replace. 2. <strong>Add the missing
+capability as two new small, standalone IAM-domain actions</strong>,
+mirroring Attach/Detach Policy’s existing shape (Phase 20.40) rather
+than folding either into Delete Role: <strong>“Remove role from instance
+profile”</strong> (<code>iam:RemoveRoleFromInstanceProfile</code>,
+DLD-owned-role-gated like every other role-mutating IAM action) and
+<strong>“Delete instance profile”</strong>
+(<code>iam:DeleteInstanceProfile</code>, refuses if the profile still
+has a role attached – AWS’s own precondition – so the natural order is
+Remove-role-from-profile, then Delete-instance-profile if it’s now empty
+and no longer wanted). Both use a plain <code>Confirm</code>, not
+<code>ConfirmDestructive</code>, matching Attach/Detach Policy’s own
+reversibility-based tiering (removing a role from a profile is trivially
+reversible by re-adding it; deleting an empty, unused instance profile
+is low-stakes since nothing can reference it once no role is
+attached).</p>
+<p><strong>Not auto-deleting the instance profile when it becomes
+empty.</strong> An operator might intentionally keep an empty instance
+profile around (e.g. about to attach a different role) – “Delete
+instance profile” stays a distinct, explicit second step, not an
+automatic side effect of “Remove role from instance profile.”</p>
+<h3 id="not-decided-yet-14">Not decided yet</h3>
+<p>Whether “Remove role from instance profile” should live under the
+Role detail/actions menu, the Instance Profile detail/actions menu, or
+both (as two entry points to the same testable core) – left for the
+implementation plan; existing precedent (Attach/Detach Policy) hangs off
+the Role side only, which is the simpler default absent a reason to
+duplicate it.</p>
+<h2
+id="associatereplace-iam-instance-profile-recoverable-entityalreadyexists-design-addendum-2026-08-18-plan.md-phase-20.56">Associate/Replace
+IAM Instance Profile: Recoverable <code>EntityAlreadyExists</code>
+(Design Addendum, 2026-08-18, PLAN.md Phase 20.56)</h2>
+<p><strong>Status: designed and implemented 2026-08-18.</strong> Found
+2026-08-18 creating the <code>rdm-backups</code> role
+(<code>agents/knowledge.db</code> clasm observation id 177): in
+<code>AssociateOrReplaceInstanceProfile</code>’s “create a new instance
+profile” path, <code>createInstanceProfileForRole</code>’s “New instance
+profile name” prompt defaults to the picked role’s own name
+(<code>ui.WithDefault(role.Name)</code>) – exactly the name likely to
+already exist as an instance profile if one was created for that role
+before, as happened here. On <code>EntityAlreadyExists</code>, the loop
+only re-prompts for a <em>different</em> name; there’s no way to say
+“use the existing one instead.” Cancelling that prompt (Esc/Ctrl+C)
+propagates a raw error all the way up through
+<code>promptIAMInstanceProfileOrCreate</code>/<code>createInstanceProfileInteractive</code>,
+aborting the entire Associate/replace workflow rather than returning to
+the instance-profile picker – recovery required a full clasm
+restart.</p>
+<p><strong>Fix, two independent parts (both TODO.md options (b) and (c);
+(a) is subsumed by (b)):</strong> 1. <strong>On
+<code>EntityAlreadyExists</code>, offer to use the existing profile
+instead of only asking for a different name.</strong>
+<code>createInstanceProfileForRole</code>’s retry loop, on catching
+<code>isDuplicateInstanceProfileError</code>, asks a plain
+<code>Confirm</code> (“Instance profile %q already exists – use it
+instead of creating a new one?”) instead of unconditionally re-prompting
+for a name; declining re-prompts for a different name (the prior
+behavior, unchanged). <strong>Implementation-time correction to the plan
+below:</strong> picking “use existing” returns
+<code>(profileName, true,    nil)</code>, not <code>created=false</code>
+as originally sketched – tracing the caller confirmed
+<code>promptIAMInstanceProfileOrCreate</code>’s own loop
+(<code>if created { return name, nil }</code> else redisplay the picker)
+treats <code>created</code> as “is this name usable,” not literally “was
+<code>CreateInstanceProfile</code> called,” so a <code>false</code> here
+would have silently discarded the resolved name and looped back to the
+picker instead of actually using it – the opposite of what “use
+existing” is supposed to do. 2. <strong>Make cancelling the name prompt
+recoverable, not fatal to the whole workflow.</strong> Matches this
+codebase’s own established <code>cancelledIsNil</code> pattern (used at
+every other pick/prompt cancellation site) –
+<code>createInstanceProfileForRole</code> treats a cancellation from the
+name prompt as <code>(false, nil)</code> (mirroring the existing “no
+SSM-capable roles” return shape), so
+<code>promptIAMInstanceProfileOrCreate</code>’s outer loop redisplays
+the instance-profile picker instead of the error propagating out of
+<code>AssociateOrReplaceInstanceProfile</code> entirely. A new
+package-level <code>promptInstanceProfileNameFunc</code> var (mirroring
+<code>backup_archive.go</code>’s <code>promptBackupBucketFunc</code>
+seam) lets a test substitute a fake returning
+<code>huh.ErrUserAborted</code> directly, since real Ctrl+C cancellation
+(caught at the Form level, independent of any per-field keymap) can’t be
+driven through accessible mode’s plain
+<code>io.Reader</code>/<code>io.Writer</code> pipe. The paired “use
+existing?” <code>Confirm</code>’s own cancellation is left as an
+ordinary propagated error, matching every other <code>Confirm</code>
+call site in the IAM domain (<code>attachPolicyToRoleConfirmed</code>,
+<code>detachPolicyFromRoleConfirmed</code>,
+<code>deleteIAMRoleConfirmed</code>) – none of which specially convert a
+<code>Confirm</code> cancellation to nil, so this stays scoped to the
+one prompt the real incident actually hit (the name prompt), not a
+broader convention change.</p>
+<p><strong>No change to the instance-profile picker’s own default
+filtering/display</strong> – the picker already lists the existing entry
+(the operator just has to notice it among unrelated ones, e.g. SageMaker
+service-catalog defaults); this fix is about not trapping someone who
+picks “Create new” instead, not about making the picker itself
+smarter.</p>
+<h3 id="not-decided-yet-15">Not decided yet</h3>
+<p>None – this was a small, fully-scoped fix, resolved by combining two
+of the three options already sketched in TODO.md.</p>
+<h2
+id="restore-progress-reporting-extend-pollwithprogress-to-the-sqlopensearch-restore-load-steps-no-parallel-restores-design-addendum-2026-08-18-plan.md-phase-20.60">Restore
+Progress Reporting: Extend <code>pollWithProgress</code> to the
+SQL/OpenSearch Restore Load Steps; No Parallel Restores (Design
+Addendum, 2026-08-18, PLAN.md Phase 20.60)</h2>
+<p><strong>Status: designed 2026-08-18, not yet implemented</strong>
+(user’s explicit call: not enough time left in today’s session for
+either this or Phase 20.51/OpenSearch-restore testing). Motivated
+directly by live- testing Phase 20.50 against
+<code>caltechdata-restore-test</code>: the load step’s fixed timeout
+(Phase 20.59’s fifth follow-up widened it from 30 minutes to 2 hours
+after a real ~45-minute restore) is the wrong shape of fix on its own –
+a fixed bound can never be “long enough” for every backup size, and a
+<em>timeout expiring</em> client-side does not mean the remote
+<code>psql</code> load actually stopped (see TODO.md’s still-open
+<code>RunShellCommand</code>- timeout-doesn’t-cancel finding) – it can
+keep running, invisibly, well past the point clasm has already reported
+failure. Confirmed live: the operator had to poll
+<code>ps aux</code>/<code>pg_database_size</code>/table counts by hand,
+via commands read out in chat, to distinguish “still genuinely working”
+from “actually stuck,” for over an hour.</p>
+<p><strong>Fix: reuse Phase 20.53’s <code>pollWithProgress</code>
+pattern for the load step itself, not just the OpenSearch
+snapshot/restore state-check loops it was built for.</strong> Rather
+than a single blocking <code>RunShellCommand</code> call guarded only by
+a timeout, wrap the load step in a loop that checks a real progress
+signal on an interval and reports it via <code>w</code>, the same
+<code>io.Writer</code>-threaded shape <code>pollWithProgress</code>
+already establishes:</p>
+<ul>
+<li><strong>Progress signal:</strong>
+<code>pg_database_size(current_dbname)</code> (already used read-only by
+this session’s own manual polling) – growing size is direct evidence
+real work is happening, independent of <code>psql</code>’s own exit
+status, which isn’t available until the whole load finishes. Table count
+(already used by <code>countRestoredTables</code>) is a coarser
+secondary signal – useful early, but plateaus long before a row-
+insert-heavy load (<code>--column-inserts</code>, per Phase 20.59’s
+fifth follow-up) is actually done, so size is the primary signal and
+table count is not solely relied on.</li>
+<li><strong>Reporting, not just waiting:</strong> each tick prints
+elapsed time <em>and</em> the current database size (and its delta since
+the last tick, to make “still growing” visually obvious without the
+operator doing their own arithmetic), replacing the plain “elapsed” line
+<code>pollWithProgress</code> prints for the OpenSearch case – likely a
+small variant/parameter rather than a verbatim reuse, since the
+OpenSearch case has no equivalent secondary metric to show.</li>
+<li><strong>Set expectations up front, not just during the
+wait.</strong> Before starting the load, print a one-time message that
+this step can take 45 minutes to over an hour for production-scale data
+(the real number from this session’s own experience), so a long wait
+reads as expected behavior from the first tick, not just once enough
+ticks have accumulated to suggest it.</li>
+<li><strong>Timeout still exists, but as a true backstop, not the
+primary signal.</strong> A load that is monitored for real, ongoing
+progress doesn’t need as generous a fixed ceiling as one flying blind –
+but exactly what happens at that ceiling (surface a “may still be
+running, check manually” warning vs. attempt
+<code>ssm:CancelCommand</code>) is the same open question TODO.md
+already has on file for <code>RunShellCommand</code> generally, and is
+not re-decided here; this addendum only commits to <em>reporting</em>
+real progress during the wait, not to resolving cancellation
+semantics.</li>
+<li><strong>Same treatment applies to Phase 20.51’s restore step once
+built</strong> – OpenSearch’s own restore-status API already has a real
+per-shard progress signal (<code>_cat/recovery</code> or the
+snapshot-restore status endpoint) that’s strictly better than SQL
+restore’s size-growth proxy, so Phase 20.51 should design its own
+equivalent progress signal from the start rather than shipping a bare
+timeout and retrofitting this same lesson a second time.</li>
+</ul>
+<p><strong>No parallel restores on one instance – not a resource-safety
+finding, a validation-isolation one.</strong> Raised directly by the
+user: given a fresh dev/restore-test instance, would it be safe to kick
+off SQL restore and OpenSearch restore at the same time to save
+wall-clock, rather than sequentially? Real <code>free -h</code> data
+taken mid-restore on <code>caltechdata-restore-test</code> (m5.large, 2
+vCPU/8GB) showed 3.4GB “available” (the reclaimable-cache-aware figure,
+not the much smaller 248MB raw “free”) even with the SQL load actively
+running – suggesting parallel execution likely would not exhaust memory
+outright, since OpenSearch’s own JVM heap is normally a fixed
+<code>-Xmx</code> allocation rather than a claim that grows with the
+size of what’s being restored. But two independent reasons argue against
+it anyway, for this specific use case: (1) this instance has <strong>no
+swap configured at all</strong>, so any genuine memory spike is a hard
+OOM kill, not a slowdown – zero safety margin; (2) more importantly,
+Phase 20.50 was live-tested, and Phase 20.51 will be, specifically to
+validate each restore’s own <em>correctness</em> – running both at once
+on an unvalidated new code path muddies whether a failure is a real
+Phase 20.51 bug or resource contention from running next to Phase 20.50.
+Decided: restores are run sequentially during validation. Whether
+parallel restores are viable in practice on this instance size is left
+as an open, answerable-later question, once Phase 20.51 has its own real
+peak-resource-usage data point to compare against – not decided or
+designed further here.</p>
+<h3 id="not-decided-yet-16">Not decided yet</h3>
+<p>Exact wording/format of the size-delta progress line; whether the
+existing <code>pollWithProgress</code> helper is widened with an
+optional secondary- metric callback or the SQL/OpenSearch restore steps
+get their own small sibling helper instead; the cancellation-at-timeout
+question (shared with TODO.md’s existing open
+<code>RunShellCommand</code> finding); Phase 20.51’s own concrete
+progress-signal choice (implementation detail once that phase is
+actually designed in full). None of this blocks Phase 20.50 from being
+real-AWS-verified as-is – the current fixed-timeout behavior is correct,
+just not yet the best UX.</p>
 <h2 id="core-features">Core Features</h2>
 <h3 id="compute-domain-ec2-ami">Compute Domain (EC2 &amp; AMI)</h3>
 <p>Features 1 through 12 below are unchanged in behavior from the

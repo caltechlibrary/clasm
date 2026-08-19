@@ -6029,19 +6029,34 @@ and-reconcile helper) -- already existed, reused unchanged.
 ## Phase 20.51 — Restore OpenSearch Snapshot from S3
 
 **Status: designed 2026-07-28, restore-conflict decided 2026-07-29,
-implemented and unit-tested 2026-08-19, test-first throughout, `go
-build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
-"RDM Backup & Restore Domain" -> "Restore OpenSearch Snapshot from S3").
-Depends on Phase 20.49's `opensearch_snapshot.go`/
-`opensearch_index_patterns.go` primitives directly (registration,
-polling, index patterns all reused, not reimplemented). See
-DECISIONS.md, "Restore OpenSearch: delete conflicting indices before
-`_restore`, don't close them", and this phase's own 2026-08-19 entries
-below (five implementation-time corrections, all now implemented and
-unit-tested, test-first). **Not yet real-AWS-verified** -- unlike Phase
-20.50, this phase hasn't been run against a real target instance yet;
-correction 5 below was found via pre-test reconnaissance while setting
-one up, now implemented ahead of that live test.
+implemented and unit-tested 2026-08-19, real-AWS-verified end to end
+2026-08-19, test-first throughout, `go build`/`go vet`/`go test
+./... -race`/`gofmt -l` all clean** (DESIGN.md, "RDM Backup & Restore
+Domain" -> "Restore OpenSearch Snapshot from S3"). Depends on Phase
+20.49's `opensearch_snapshot.go`/`opensearch_index_patterns.go`
+primitives directly (registration, polling, index patterns all reused,
+not reimplemented). See DECISIONS.md, "Restore OpenSearch: delete
+conflicting indices before `_restore`, don't close them", and this
+phase's own 2026-08-19 entries below (five implementation-time
+corrections, all implemented and unit-tested, test-first).
+
+**Real-AWS verification, 2026-08-19, against `caltechdata-restore-test`,
+restoring CaltechDATA production's own real OpenSearch snapshot
+(`rdm-20260819-160031`, archived that same morning) -- succeeded on the
+first attempt after correction 5 landed.** Conflict check (against the
+overridden `caltechdata` index prefix -- correction 5's own real-world
+scenario) found none, sync-down/register-repo/trigger-restore all
+reported `Success`, the restore recovery poll reached `done` on all 43
+snapshot-type shard rows, and verification reported `Success`.
+Independently re-confirmed directly against the instance (not just
+clasm's own report): 42 indices restored, every one `yellow`/`open`
+(none `red`), with real, plausible doc counts --
+`caltechdata-rdmrecords-records-record-v7.0.0` at 77,258 docs,
+`caltechdata-requestevents-requestevent-v1.0.0` at 222,909,
+`caltechdata-stats-record-view-2026-06` at 518,716, and so on across
+every curated index pattern. **Phase 20.51 is now fully real-AWS-verified,
+closing out the RDM Backup & Restore domain -- Phases 20.48-20.52 and
+20.61 are all implemented, unit-tested, and real-AWS-verified.**
 
 **Five implementation-time corrections to this phase's original work-item
 sketch, four with one shared 2026-08-19 DECISIONS.md entry, the fifth
@@ -6524,12 +6539,14 @@ directly rather than repeating the silent-wait gap a third time.
 ## Phase 20.54 — Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to "Generate SQL Backup"
 
 **Status: designed and implemented 2026-08-18, test-first throughout,
-`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
-"Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to \"Generate
-SQL Backup\""; DECISIONS.md, "Run SQL Backup: drop the Archive-SQL
-auto-chain, rename to \"Generate SQL Backup\""). Not yet real-AWS-verified
-(pure local control-flow/label change; next live Generate SQL Backup run
-against any instance will exercise it).
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean,
+real-AWS-verified 2026-08-19** (DESIGN.md, "Run SQL Backup: Drop the
+Archive-SQL Auto-Chain, Rename to \"Generate SQL Backup\""; DECISIONS.md,
+"Run SQL Backup: drop the Archive-SQL auto-chain, rename to \"Generate
+SQL Backup\""). Real-AWS verification: used for real 2026-08-19 morning
+to generate SQL backups on both CaltechAUTHORS and CaltechDATA
+production after they were rebooted -- confirmed no auto-chain into
+Archive SQL Backup.
 
 ### Work Items
 
@@ -6571,11 +6588,19 @@ None -- independently buildable.
 ## Phase 20.55 — Delete Role's Wrong-Remedy Message + Missing Instance-Profile-Membership Capability
 
 **Status: designed and implemented 2026-08-18, test-first throughout,
-`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
-"Delete Role's Wrong-Remedy Message + Missing Instance-Profile-Membership
-Capability"; DECISIONS.md, "Delete Role: correct the wrong-remedy
-message, add the missing instance-profile-membership actions"). Not yet
-real-AWS-verified.
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean,
+real-AWS-verified 2026-08-19** (DESIGN.md, "Delete Role's Wrong-Remedy
+Message + Missing Instance-Profile-Membership Capability"; DECISIONS.md,
+"Delete Role: correct the wrong-remedy message, add the missing
+instance-profile-membership actions"). Real-AWS verification: a
+disposable `test-verify-2055-role`/`test-verify-2055-profile` pair
+(tagged `origin=dld` so the DLD-owned-only picker filter would surface
+them, otherwise unattached to any EC2 instance) confirmed all four
+steps -- Delete Role's corrected message, Remove Role from Instance
+Profile, Delete Instance Profile, and a final clean Delete Role -- each
+independently cross-checked via `aws iam get-role`/`get-instance-profile`
+between steps. Both fixture resources fully deleted afterward, no
+cleanup left behind.
 
 ### Work Items
 
@@ -6655,11 +6680,18 @@ Phases 20.36-20.40 (RequireDLDOwned, IAMActions, menu shape) unchanged.
 ## Phase 20.56 — Associate/Replace IAM Instance Profile: Recoverable `EntityAlreadyExists`
 
 **Status: designed and implemented 2026-08-18, test-first throughout,
-`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean** (DESIGN.md,
-"Associate/Replace IAM Instance Profile: Recoverable
-`EntityAlreadyExists`"; DECISIONS.md, "Associate/Replace IAM instance
-profile: recoverable `EntityAlreadyExists`" and its same-day correction
-entry). Not yet real-AWS-verified.
+`go build`/`go vet`/`go test ./... -race`/`gofmt -l` all clean,
+real-AWS-verified 2026-08-19** (DESIGN.md, "Associate/Replace IAM
+Instance Profile: Recoverable `EntityAlreadyExists`"; DECISIONS.md,
+"Associate/Replace IAM instance profile: recoverable
+`EntityAlreadyExists`" and its same-day correction entry). Real-AWS
+verification: a zero-net-change test against `caltechdata-restore-test`
+(its already-attached `rdm-backups` role has a same-named instance
+profile) confirmed both sub-behaviors -- the "use the existing one
+instead" offer, and cancelling the name prompt returning to the picker
+rather than aborting the whole workflow -- with the instance's own
+`IamInstanceProfile` independently confirmed unchanged (`rdm-backups`)
+via `aws ec2 describe-instances` after each path.
 
 ### Work Items
 

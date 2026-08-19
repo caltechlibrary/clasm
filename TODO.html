@@ -25,13 +25,181 @@
 </nav>
 <section id="main-content">
 <h1 id="action-items">Action items</h1>
-<h2 id="bugs">Bugs</h2>
+<h2 id="bugs-and-issues">Bugs and issues</h2>
 <ul class="task-list">
-<li><p><label><input type="checkbox" checked="" />When I try to update
-the cloud-init.yaml for the granian-rdm-v14-test launch template I get
-an error about the user data being too large, this should have been
-fixed by gzipping I think – root cause: gzip alone isn’t always enough
-for large files, and there was no pre-flight size check anywhere. Fixed
+<li><label><input type="checkbox"
+checked="" /><code>RunShellCommand</code>’s SSM <code>SendCommand</code>
+never sets <code>TimeoutSeconds</code>, so AWS silently applies its own
+1-hour execution-window default regardless of the caller’s own
+<code>timeout</code> parameter (which only ever governs the client’s
+local <code>GetCommandInvocation</code> polling loop). Found 2026-08-19
+checking on the overnight Restore SQL Backup left running against
+<code>caltechdata-restore-test</code>: <code>ps aux</code> showed the
+load process gone and <code>pg_database_size</code> had grown only
+marginally past a point where it had previously been climbing hundreds
+of MB per check, so queried AWS directly
+(<code>aws ssm get-command-invocation</code> against the load step’s own
+<code>CommandId</code>, read out of the <code>--debug</code> log)
+instead of guessing – confirmed
+<code>Status: TimedOut</code>/<code>StatusDetails: ExecutionTimedOut</code>,
+exactly 1h0.5s elapsed, independent of and shorter than Phase 20.59’s
+already-widened 2-hour client timeout (which itself had separately given
+up polling 30 minutes earlier, on the old not-yet-rebuilt binary). The
+real load was truncated as a result – <code>rdm14-granian</code> on
+<code>caltechdata-restore-test</code> is confirmed incomplete, not a
+completed restore to spot-check, and needs to be redone once clasm is
+rebuilt. Fixed same day, test-first: <code>RunShellCommand</code>’s
+<code>SendCommandInput</code> now sets <code>TimeoutSeconds</code> from
+the same <code>timeout</code> parameter already threaded through
+(floored at AWS’s own 30-second minimum via <code>max</code>).
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. <strong>Same-day follow-up:</strong> rebuilt and re-ran the
+restore (picking the <code>.gz</code> backup variant this time) – it
+still died at exactly 1 hour, <code>Status: TimedOut</code>.
+<code>aws ssm list-commands</code> confirmed
+<code>TimeoutSeconds: 7200</code> really was set;
+<code>aws ssm describe-document --name AWS-RunShellScript</code>
+revealed a second, independent document parameter,
+<code>executionTimeout</code> (default 3600s, governs how long the
+command may actually run, unlike <code>TimeoutSeconds</code> which only
+bounds how long it may wait to start) – never set at all. Fixed same
+day, test-first: <code>Parameters["executionTimeout"]</code> now set
+alongside <code>"commands"</code>, same computed value as
+<code>TimeoutSeconds</code>.
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. <code>rdm14-granian</code> needs a third restore attempt once
+rebuilt again. See DECISIONS.md, “Real bug:
+<code>RunShellCommand</code>’s SSM <code>SendCommand</code> never sets
+<code>TimeoutSeconds</code>…” (same-day follow-up), PLAN.md Phase 20.61
+(same-day follow-up).</label></li>
+<li><label><input type="checkbox" />Restore SQL Backup’s load step
+should report real progress (e.g. <code>pg_database_size</code> growth
+on an interval) instead of blocking silently behind a fixed timeout, and
+set expectations up front (“this can take 45 minutes to over an hour for
+production-scale data”) – raised by the user 2026-08-18 after having to
+hand-poll <code>ps aux</code>/<code>pg_database_size</code>/table counts
+via chat for over an hour to tell a genuinely-still-working load from a
+stuck one, once the (then 30-minute, since widened to 2-hour) timeout
+had already reported failure client-side while the real remote load kept
+running. Designed 2026-08-18 (not yet implemented, no time left that
+session): reuse Phase 20.53’s <code>pollWithProgress</code> pattern for
+the load step itself. <strong>Update 2026-08-19:</strong> the SQL-side
+load step itself (this bullet’s own subject) is still not done, but the
+other half of this item – applying the same lesson to Phase 20.51 from
+the start – is: <code>PollRestoreUntilComplete</code>
+(<code>restore_opensearch.go</code>) is built directly on
+<code>pollWithProgress</code>, not a bare timeout retrofitted later.
+Related side question, resolved: <strong>do not run SQL restore and
+OpenSearch restore in parallel on one instance</strong> during
+validation – not ruled out by real <code>free -h</code> data (3.4GB
+available mid-restore on the m5.large test instance), but this instance
+has no swap configured (zero safety margin on any spike) and running
+both at once on Phase 20.51’s still-unvalidated (not yet
+real-AWS-verified) code path would make a failure ambiguous between a
+real bug and resource contention. See DESIGN.md, “Restore Progress
+Reporting: Extend <code>pollWithProgress</code> to the SQL/OpenSearch
+Restore Load Steps; No Parallel Restores”, DECISIONS.md same title,
+PLAN.md Phase 20.60.</label></li>
+<li><label><input type="checkbox" checked="" />Restore SQL Backup’s
+download/decompress step assumed every archived SQL backup’s S3 key ends
+in <code>.gz</code>, and swallowed <code>gunzip</code>’s own stderr on
+failure. Found 2026-08-18 restoring CaltechDATA production’s own real
+backup (<code>.../2026-08-16.sql</code>, no <code>.gz</code> suffix):
+<code>gunzip -f &lt;path&gt;</code> derives its output name from the
+input’s own suffix and refuses on anything unrecognized, regardless of
+actual content, and the resulting “unknown suffix” message went entirely
+to stderr, which <code>RunShellCommand</code> never captures. Fixed same
+day: download/decompress now use fixed scratch paths +
+<code>gunzip -c ... &gt; ...</code> (suffix-independent), and the
+download/drop/create/load commands are wrapped in
+<code>{ ...; } 2&gt;&amp;1</code> so a real failure’s message is
+actually visible. <strong>Same-day follow-up:</strong> with that fix in
+place, the next retry surfaced a second real gap – the fixed scratch
+paths were under <code>/tmp</code>, which this project’s RDM cloud-init
+images mount as a fixed ~3.9GB tmpfs (confirmed live via
+<code>df</code>/<code>mount</code>), separate from the root disk’s own
+free space; a multi-gigabyte SQL dump can exhaust that regardless of
+real disk headroom. Moved to <code>/var/tmp</code> (confirmed live to be
+plain root-disk space on the same instance). <strong>Second same-day
+follow-up:</strong> the next retry after that surfaced a third real
+issue – the actual CaltechDATA legacy backup (bare <code>.sql</code>
+key) turned out to be genuinely uncompressed, not gzip content under a
+misleading name as the original fix assumed. Restored conditional
+decompression via a new <code>needsDecompression</code> suffix check
+(<code>.gz</code> decompresses; anything else is used as-is), suggested
+directly by the user mid-test. <strong>Third same-day
+follow-up:</strong> once the restore finally reached the
+drop/create/load sequence, hit Postgres’s own “database is being
+accessed by other users” – stopping the target’s own app wasn’t
+sufficient (stale idle connections lingered past app shutdown, governed
+by TCP keepalive timing, not app-stop timing). <code>dropCmd</code> now
+runs <code>pg_terminate_backend</code> against every other session on
+the target database before <code>DROP DATABASE IF EXISTS</code>.
+<strong>Fourth same-day follow-up:</strong>
+<code>DefaultSQLRestoreTimeout</code> (30 minutes) was itself too short
+– confirmed against the user’s own ~45-minute experience manually
+restoring CaltechAUTHORS-scale data (<code>--column-inserts</code> loads
+as individual <code>INSERT</code>s, not bulk <code>COPY</code>). Widened
+to 2 hours, matching <code>DefaultSnapshotCreateTimeout</code>’s own
+precedent. Test-first throughout (except this last timeout-only change,
+no test asserted the specific value),
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. See DECISIONS.md, “Real bug: Restore SQL Backup’s
+download/decompress assumed every backup’s S3 key ends in ".gz"…”,
+PLAN.md Phase 20.59.</label></li>
+<li><label><input type="checkbox" checked="" />Configure clasm edits
+(RDM Postgres config, backup directories, Origin tag) silently required
+a full clasm restart to take effect elsewhere in the same running
+process – <code>RunConfigureMenu</code> loads/saves its own independent
+copy of <code>~/.clasm</code>, but <code>main()</code>’s own
+<code>cfg</code> (what every other domain’s closures actually read) was
+never reloaded. Found 2026-08-18 live-testing Restore SQL Backup: saved
+an <code>rdm_postgres_config</code> rule via Configure clasm, confirmed
+it landed on disk, but the still-running process kept using the old
+value. Fixed same day: the <code>Configuration</code> domain closure
+reloads <code>cfg</code> from disk immediately after
+<code>RunConfigureMenu</code> returns. No dedicated test (pure
+<code>main()</code> wiring, no test harness for <code>cmd/clasm</code>);
+verified via the live repro. See DECISIONS.md, “Real bug: Configure
+clasm edits didn’t take effect until restart…”, PLAN.md Phase
+20.58.</label></li>
+<li><label><input type="checkbox" checked="" />Instance/AMI creation
+writes the <code>Project</code> tag key capitalized
+(<code>"Project"</code>), but the fleet convention (reverted 2026-07-29
+once every existing resource was retagged) is lowercase
+<code>"project"</code>, which is all <code>inventory.tagValues</code>
+matches – every instance/AMI clasm creates since that reversion has had
+a <code>Project</code> tag its own code can never read back, silently
+falling through to the <code>Name</code>-tag fallback in Run SQL
+Backup/Archive OpenSearch Snapshot. Found 2026-08-18 while preparing to
+launch a dev/restore-test instance. Fixed same day: all three creation
+call sites (<code>launch_instance.go</code>,
+<code>launch_from_cloud_init.go</code>,
+<code>create_ami_from_instance.go</code>) now write lowercase
+<code>"project"</code>. Test-first,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. See DECISIONS.md, “Real bug: instance/AMI creation wrote the
+Project tag key capitalized, the fleet convention is lowercase”, PLAN.md
+Phase 20.57.</label></li>
+<li><label><input type="checkbox" checked="" />It turns out having the
+“Run SQL Backups” automatically go to Archive SQL Backups is confusing.
+It should only generate the SQL backup .gz file and return to the
+backups menu. Rather than have the label “Run SQL Backups”, it should be
+“Generate SQL Backup” – fixed 2026-08-18: the auto-chain is removed
+entirely (the action now returns immediately after a successful dump)
+and the menu label is “Generate SQL Backup”. Test-first,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. <strong>Real-AWS-verified 2026-08-19</strong> – used for real
+that morning to generate SQL backups on both CaltechAUTHORS and
+CaltechDATA production after they were rebooted; confirmed no auto-chain
+into Archive SQL Backup. See DESIGN.md, “Run SQL Backup: Drop the
+Archive-SQL Auto-Chain, Rename to ‘Generate SQL Backup’”, DECISIONS.md
+same title, PLAN.md Phase 20.54.</label></li>
+<li><label><input type="checkbox" checked="" />When I try to update the
+cloud-init.yaml for the granian-rdm-v14-test launch template I get an
+error about the user data being too large, this should have been fixed
+by gzipping I think – root cause: gzip alone isn’t always enough for
+large files, and there was no pre-flight size check anywhere. Fixed
 2026-07-28: <code>encodeUserData</code> now uses
 <code>gzip.BestCompression</code> and hard-errors before any AWS call if
 the compressed payload still exceeds the 16384-byte limit, stating the
@@ -39,27 +207,27 @@ byte count and overage. Designed, implemented, and unit-tested. See
 DESIGN.md, “User-Data Pre-Flight Size Check”, DECISIONS.md, “User-data
 pre-flight size check: hard error, no remediation loop-back; switch to
 gzip.BestCompression”, PLAN.md Phase 20.44. Real-AWS-verified
-2026-07-28.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />Menu-loop
+2026-07-28.</label></li>
+<li><label><input type="checkbox" checked="" />Menu-loop
 output-visibility bug – fixed, real-AWS-verified, released in v0.0.4.
 See DECISIONS.md, “Pause for acknowledgment before every menu-loop
-redraw,” PLAN.md Phase 20.32.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />SSM never came online
-for the resize-verification test instances (2026-07-22) – root cause (no
+redraw,” PLAN.md Phase 20.32.</label></li>
+<li><label><input type="checkbox" checked="" />SSM never came online for
+the resize-verification test instances (2026-07-22) – root cause (no
 SSM-capable instance profile available at all) closed structurally by
 the SSM-enforcement work below. <code>growRootFilesystem</code>’s own
 OS-level <code>growpart</code>/<code>resize2fs</code> automation still
 hasn’t been specifically re-verified end-to-end with a proper instance
 profile in place – worth doing next time Resize Instance’s Root Volume
-comes up.</label></p></li>
-<li><p><label><input type="checkbox"
+comes up.</label></li>
+<li><label><input type="checkbox"
 checked="" /><code>InvalidUserData.Malformed: User data is limited to 16384 bytes</code>
 – fixed and real-AWS-verified 2026-07-22
 (<code>test-clasm-granian</code> launch template + instance). See
 DECISIONS.md, “Always gzip-compress user-data before base64-encoding
 it,” PLAN.md Phase 20.34. Not yet released – part of
-v0.0.5.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />When selecting a cloud
+v0.0.5.</label></li>
+<li><label><input type="checkbox" checked="" />When selecting a cloud
 init, there is no abvious exit, “q” is treated as a filename – fixed
 2026-07-28: <code>promptCloudInitYAMLFile</code> now treats a bare “q”
 as cancel (label hints “(q to cancel)”), matching every Select-based
@@ -72,41 +240,46 @@ implemented, unit-tested, and verified in a real interactive terminal
 2026-07-28. See DESIGN.md, “Cloud-Init Picker: Discoverable Cancel + a
 Second, Related Bug”, DECISIONS.md, “Cloud-init picker: a ‘q’ cancel
 sentinel, and a second bug found while tracing it”, PLAN.md Phase
-20.45.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />CMTools and Pandoc
-should be required software when compiling to install – fixed
-2026-07-28: <code>codemeta.json</code>’s
-<code>softwareRequirements</code> now lists both
-<code>CMTools &gt;= 0.0.46</code> and <code>Pandoc &gt;= 3.9</code>
+20.45.</label></li>
+<li><label><input type="checkbox" checked="" />CMTools and Pandoc should
+be required software when compiling to install – fixed 2026-07-28:
+<code>codemeta.json</code>’s <code>softwareRequirements</code> now lists
+both <code>CMTools &gt;= 0.0.46</code> and <code>Pandoc &gt;= 3.9</code>
 (Pandoc moved out of <code>softwareSuggestions</code>) – confirmed via
 the Makefile that both <code>cmt</code> and <code>pandoc</code> are
 invoked unconditionally by
 <code>make build</code>/<code>make man</code>, not optional.
 <code>GNU Make &gt;= 3.8</code> stays a suggestion (only needed to
 invoke <code>make</code> itself, not to build the plain Go binary via
-<code>go build</code>). ## Requested features</label></p></li>
-<li><p><label><input type="checkbox" checked="" />Produce installable
+<code>go build</code>).</label></li>
+</ul>
+<h2 id="requested-features">Requested features</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />When a new instance has been created
+the success results should show the <code>aws ssm</code> terminal
+command in addition to the example SSH command</label></li>
+<li><label><input type="checkbox" checked="" />Produce installable
 binaries via <code>make release</code> – already done:
 <code>release.bash</code>/<code>release.ps1</code> (added 2026-06-30)
 are wired into the Makefile’s <code>release</code> target, which builds
 cross-platform dist zips (Linux x86_64/aarch64/armv7l, macOS
 x86_64/arm64, Windows x86_64/arm64) and points at
-<code>release.bash</code> to publish.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />Need to be able to
-modify a launch templates’ size and EBS storage from clasm in addition
-to syncing the cloud-init – fixed 2026-07-28: new “Modify launch
-template’s instance type / EBS root volume size” action creates a new
-version with both overrides (never auto-promotes, matching Sync).
-Expanded mid-design after a concrete example (switching
-<code>granian-rdm-v14-test</code> from Graviton/arm64 to x86_64) showed
-this also needs to swap the base AMI when the new instance type’s
-architecture doesn’t match – now handled via a post-hoc architecture
-check that prompts for a new, compatible AMI only when needed. Designed,
-implemented, and unit-tested. See DESIGN.md, “Modify Launch Template
-Size”, DECISIONS.md, “Modify Launch Template Size: one combined action,
-unfiltered instance-type picker, shrink to the AMI’s snapshot floor”,
-PLAN.md Phase 20.46. Real-AWS-verified 2026-07-28.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />When spinning up a new
+<code>release.bash</code> to publish.</label></li>
+<li><label><input type="checkbox" checked="" />Need to be able to modify
+a launch templates’ size and EBS storage from clasm in addition to
+syncing the cloud-init – fixed 2026-07-28: new “Modify launch template’s
+instance type / EBS root volume size” action creates a new version with
+both overrides (never auto-promotes, matching Sync). Expanded mid-design
+after a concrete example (switching <code>granian-rdm-v14-test</code>
+from Graviton/arm64 to x86_64) showed this also needs to swap the base
+AMI when the new instance type’s architecture doesn’t match – now
+handled via a post-hoc architecture check that prompts for a new,
+compatible AMI only when needed. Designed, implemented, and unit-tested.
+See DESIGN.md, “Modify Launch Template Size”, DECISIONS.md, “Modify
+Launch Template Size: one combined action, unfiltered instance-type
+picker, shrink to the AMI’s snapshot floor”, PLAN.md Phase 20.46.
+Real-AWS-verified 2026-07-28.</label></li>
+<li><label><input type="checkbox" checked="" />When spinning up a new
 instance successfully the IP addresses and SSH ec2 user is shown, what
 would be good to also show is the SSH command to SSH in using the keys
 created and associated with the instance similar to how via the Web UI
@@ -120,19 +293,19 @@ curated/official AMI list) instead of always hardcoding “ec2-user”.
 Designed, implemented, and unit-tested. See DESIGN.md, “SSH Connection
 Info: Key Path + Username Guess”, DECISIONS.md, “SSH connection info:
 guess the key path (only if it exists on disk) and the login username”,
-PLAN.md Phase 20.47. Real-AWS-verified 2026-07-28.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />SSM-capable instance
+PLAN.md Phase 20.47. Real-AWS-verified 2026-07-28.</label></li>
+<li><label><input type="checkbox" checked="" />SSM-capable instance
 profile enforcement at launch + associate/replace retrofit for running
 instances – designed, implemented, unit-tested, and real-AWS-verified
 2026-07-22. See DESIGN.md/DECISIONS.md, “SSM-Capable Instance Profile
 Enforcement + Retrofit”, PLAN.md Phase 20.33. Not yet released – part of
-v0.0.5.</label></p></li>
-<li><p><label><input type="checkbox" checked="" />arm64/aarch64
-(Graviton) support + Ubuntu 26.04 LTS in the curated AMI/instance-type
-lists – designed, implemented, unit-tested, and real-AWS-verified
-2026-07-22. See DESIGN.md/DECISIONS.md, “ARM64 (Graviton) Support +
-Ubuntu 26.04 LTS”, PLAN.md Phase 20.35. Not yet released – part of
-v0.0.5.</label></p></li>
+v0.0.5.</label></li>
+<li><label><input type="checkbox" checked="" />arm64/aarch64 (Graviton)
+support + Ubuntu 26.04 LTS in the curated AMI/instance-type lists –
+designed, implemented, unit-tested, and real-AWS-verified 2026-07-22.
+See DESIGN.md/DECISIONS.md, “ARM64 (Graviton) Support + Ubuntu 26.04
+LTS”, PLAN.md Phase 20.35. Not yet released – part of
+v0.0.5.</label></li>
 </ul>
 <p><strong>v0.0.5 release: Phases 20.33/20.34/20.35 and now IAM Profile
 &amp; Role Management (20.36-20.40) are all done and real-AWS-verified –
@@ -269,9 +442,549 @@ implemented, and unit-tested 2026-07-24, targeted for v0.0.5. See
 DESIGN.md, “Configure clasm Domain”, DECISIONS.md, “Configure clasm
 domain: explicit Save, region changes deferred to next launch”, PLAN.md
 Phase 20.42.</label></li>
+<li><label><input type="checkbox" checked="" />RDM Backup &amp; Restore
+domain – a 7th top-level menu consolidating Run SQL Backup, SQL archive
+(Feature 11, relocated out of Compute), OpenSearch archive, SQL restore,
+and OpenSearch restore. Designed end-to-end 2026-07-28 (DESIGN.md
+addendum, 10 DECISIONS.md entries, PLAN.md Phases 20.48-20.51), extended
+2026-07-29 with Run SQL Backup + <code>rdm_postgres_config</code>
+(PLAN.md Phase 20.52, six more DECISIONS.md entries) after clarifying
+that SQL backup/restore shouldn’t depend on
+<code>invenio-sql-backup.bash</code> being pre-installed. All
+previously-open items (OpenSearch bucket name, SQL restore load command,
+OpenSearch restore-conflict handling, Postgres container/DB naming)
+resolved. Phases 20.48, 20.49, and 20.52 implemented and unit-tested
+2026-07-29; Phase 20.50 implemented and unit-tested 2026-08-18,
+real-AWS-verified end to end 2026-08-19; Phase 20.51 implemented and
+unit-tested 2026-08-19, real-AWS-verified end to end 2026-08-19
+(restoring CaltechDATA production’s real snapshot onto
+<code>caltechdata-restore-test</code>, succeeding on the first attempt
+once the fifth correction landed). <strong>All phases (20.48-20.52, plus
+the two Phase 20.61 SSM timeout fixes that made both restores work
+reliably) are now implemented, unit-tested, and real-AWS-verified – this
+domain no longer gates the release.</strong> See DESIGN.md, “RDM Backup
+&amp; Restore Domain”, PLAN.md Phases 20.48-20.52.</label>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Phase 20.48 – domain
+wiring: new “RDM Backup &amp; Restore” domain picker entry, relocate
+Feature 11 (Archive SQL Backup to S3) out of Compute. Implemented and
+unit-tested 2026-07-29,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+clean. Not yet real-AWS-verified (pure UI wiring; Archive SQL’s own
+behavior is unchanged from its already-verified Compute-menu version).
+Will need a small follow-up once Phase 20.52 lands:
+<code>rdmMenuItems</code> gains a fifth entry (“Run SQL
+Backup”).</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.49 – Archive
+OpenSearch Snapshot to S3: snapshot via OpenSearch’s native Snapshot API
+(local <code>fs</code> repo synced by clasm), scoped to current-version
+record/list indices + stats aggregates (~8GB target), one snapshot on
+EBS at a time, app-managed S3-side cleanup. Implemented and unit-tested
+2026-07-29, test-first throughout,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+clean, wired into the RDM Backup &amp; Restore menu (replacing its
+stub). <strong>Real-AWS testing started 2026-07-29 against
+CaltechAUTHORS, blocked before a snapshot could be created:</strong>
+repo registration failed (HTTP 500, most likely the still-pending
+<code>path.repo</code> retrofit) but clasm’s own error message showed
+only curl’s generic “exit status 22”, not OpenSearch’s actual error –
+fixed test-first by switching every OpenSearch <code>curl</code> command
+to <code>--fail-with-body</code> and surfacing the captured response
+body in the error message; also clarified the cleanup-threshold prompt’s
+wording (was ambiguous about local-directory vs S3). See DECISIONS.md,
+“Real bug: <code>curl -fsS</code> hid OpenSearch’s own error body…” and
+“Clarify Archive OpenSearch Snapshot to S3’s cleanup-threshold prompt
+wording”. The improved error message then confirmed the root cause
+directly (path.repo empty), and while retrofitting it a <strong>third
+real bug</strong> surfaced: repo registration used the operator-typed
+host directory as <code>location</code> instead of the fixed
+container-internal path (<code>/usr/share/opensearch/backups</code>) the
+retrofit’s bind mount actually maps to – fixed test-first via a new
+<code>DefaultOpenSearchContainerRepoPath</code> constant. See
+DECISIONS.md, “Real bug: repo registration used the host directory as
+<code>location</code>…”. <strong>A fourth, more serious issue surfaced
+attempting the retrofit itself, 2026-07-29/30 – not a clasm bug, an
+infrastructure gap in the RDM deployments’ own
+<code>docker-services.yml</code>:</strong> neither CaltechAUTHORS
+production nor CaltechDATA dev (<code>data.caltechlibrary.dev</code>)
+has a persistent volume for OpenSearch’s <code>search</code> service
+data directory. Recreating that container (required to pick up
+<code>path.repo</code>) discards every index unconditionally. Confirmed
+live on CaltechDATA dev – the retrofit attempt there wiped all indices,
+recovered same-session via
+<code>invenio rdm-records rebuild-index</code> + per-index
+<code>invenio index create</code> +
+<code>invenio communities rebuild-index</code> + generic
+<code>invenio index reindex --pid-type ...</code>/<code>invenio index run</code>
+(site confirmed working again). CaltechAUTHORS production:
+<code>path.repo</code> was added to <code>docker-services.yml</code> but
+reverted <strong>before</strong> any container recreate, via clasm’s own
+read-only SSM access – no data was lost, but production’s real risk is
+unresolved: ~150K live records plus ~10 months of
+<code>stats-record-view-*</code>/<code>stats-file-download-*</code>/<code>events-stats-*</code>
+usage history that has <strong>no source of truth outside
+OpenSearch</strong> (unlike records, not rebuildable from Postgres).
+<code>~/WorkLab/rdm-opensearch-path-repo-retrofit.md</code> rewritten
+with a mandatory persistent-volume-migration step (via
+<code>docker cp</code>) before any future retrofit attempt on either
+instance, plus the recovery procedure that worked. <strong>Both
+instances currently reverted to pre-retrofit config (no
+<code>path.repo</code> set on either).</strong>
+<strong>Real-AWS-verified end to end on CaltechDATA dev,
+2026-08-12:</strong> redid the retrofit there following the rewritten
+runbook’s safe persistent-volume migration (<code>docker cp</code> the
+live 269MB OpenSearch data dir out, <code>chown 1000:1000</code>, added
+the persistent volume + backups mount + <code>path.repo</code> in one
+<code>docker-services.yml</code> edit, recreated <code>search</code>
+once – confirmed via <code>_cat/indices?v</code> that all real indices,
+including <code>stats-record-view-*</code>, survived the recreate this
+time), then registered the snapshot repo. A new IAM role
+(<code>rdm-opensearch-backup</code>, RDM Repository Instance template:
+SSM + scoped S3 List/Get/Put/Delete on
+<code>opensearch-backups.library.caltech.edu</code>) was attached to the
+instance for S3 access. That surfaced a <strong>fifth real bug</strong>,
+unrelated to OpenSearch itself:
+<code>internal/workflow/resource_lists.go</code>’s
+<code>listRoles</code>/<code>listInstanceProfiles</code> each made a
+single un-paginated IAM call, silently dropping roles/profiles past the
+first page – the newly-created role never appeared in “Select a role to
+attach” even though “Show Roles” (which already paginates, fixed
+2026-07-23) saw it fine. Fixed test-first, same shape as the 2026-07-23
+fix it had been missing. See DECISIONS.md, “Real bug:
+<code>listRoles</code>/<code>listInstanceProfiles</code> un-paginated,
+sibling to a fix already made elsewhere”. With that fixed, ran Archive
+OpenSearch Snapshot against <code>data.caltechlibrary.dev</code> for the
+first time: created snapshot <code>rdm-20260812-205453</code>, synced 4
+objects/725 bytes to
+<code>s3://opensearch-backups.library.caltech.edu/data.caltechlibrary.dev/opensearch-snapshots/rdm-20260812-205453/</code>,
+verified, deleted the local EBS-side snapshot – full lifecycle confirmed
+working except the S3-side cleanup branch (untested; no old snapshots
+existed yet to trigger it). <strong>Attempted to exercise S3-side
+cleanup same day, found a real timing constraint (not a bug):</strong>
+<code>promptOpenSearchCleanupDays</code>’s validator deliberately
+rejects <code>0</code>/blank-is-skip, only accepting a positive integer
+&gt;=1 day; <code>FilterOlderThan</code>’s cutoff is
+<code>now - days</code>, so the smallest valid threshold (1) only flags
+snapshots created more than 24 hours ago. Both this morning’s
+<code>rdm-20260812-205453</code> and a same-day retry are under 24 hours
+old, so no valid input can exercise the cleanup branch same-day.
+Deferred – revisit once a day or more has passed and a real snapshot is
+actually old enough. <strong>Next step:</strong> once that’s exercised,
+repeat this entire sequence (persistent-volume migration,
+<code>path.repo</code> retrofit, IAM role, live test) against
+CaltechAUTHORS production – deliberately not attempted yet, given
+production’s much higher stakes (~150K records, ~10 months of
+irreplaceable usage-stats history). Same day, separately: Feature 11
+(Archive SQL Backup to S3) and Phase 20.52 (Run SQL Backup) both
+re-confirmed working against CaltechAUTHORS and CaltechDATA.
+<strong>Release held on the user’s explicit call until Phases
+20.50/20.51 (both restores) are built and verified</strong> – do not
+release with just 20.48/20.49/20.52, even once 20.49’s cleanup branch is
+confirmed. See
+<code>agents/hand-off/2026-08-12T220000Z-clasm-opensearch-archive-real-aws-verified-caltechdata-dev.spmd</code>
+for the full session account. <strong>CaltechAUTHORS production retrofit
+completed and real-AWS-verified, 2026-08-17:</strong> followed the
+runbook’s safe-migration procedure live, one command at a time –
+<code>docker cp</code>’d the live 19GB data dir out (size-matched
+against the container’s own <code>du -sh</code> before proceeding),
+edited <code>docker-services.yml</code> in one pass (persistent-data
+volume + backups mount + <code>path.repo</code>), validated via
+<code>docker compose config</code> before the recreate, recreated
+<code>search</code> exactly once in a maintenance window. Every real
+index survived, including
+<code>caltechauthors-rdmrecords-records-record-v7.0.0</code> at 147,438
+docs (matches the ~150K estimate) plus all
+<code>stats-*</code>/<code>events-stats-*</code> history – confirmed via
+<code>_cat/indices?v</code>. Snapshot repo <code>rdm_backup_repo</code>
+registered successfully, first attempt, no repeat of the earlier
+host-vs-container-path bug. See <code>agents/knowledge.db</code>
+observations 171 (<code>caltechauthors</code>)/172 (<code>clasm</code>)
+and
+<code>agents/hand-off/2026-08-17T231100Z-clasm-opensearch-retrofit-caltechauthors-production-verified.spmd</code>.
+<strong>IAM role attached, then a second real bug found and fixed
+test-first, same day:</strong> reused the existing
+<code>rdm-opensearch-backup</code> role (account-level, created
+2026-08-12), associated it to CaltechAUTHORS
+(<code>DescribeInstances</code> confirmed
+<code>IamInstanceProfile</code> went from <code>null</code> to the
+role’s ARN). First live run then hit an <code>AccessDenied</code> S3
+sync failure (a prior attach attempt hadn’t actually landed yet – fixed
+by the same-day re-attach) and, more seriously, a snapshot that reported
+<code>SUCCESS</code> with <code>shards.total: 0</code> – an entirely
+empty backup, because <code>CreateSnapshot</code>’s index patterns were
+built from the instance’s Name tag (<code>newauthors</code>) instead of
+its Project tag (<code>caltechauthors</code>, the real index prefix).
+Fixed via <code>indexPrefix := cmp.Or(inst.Project, prefix)</code>, used
+only for the index-match patterns (S3 destination path unaffected, still
+uses Name) – same fix shape as Phase 20.52’s Postgres
+<code>db_name</code>/<code>db_user</code> bug. See DECISIONS.md, “Real
+bug: Archive OpenSearch Snapshot’s index-match patterns used the Name
+tag, not the Project tag.” Regression test confirmed failing before,
+passing after;
+<code>go build</code>/<code>vet</code>/<code>test ./... -race</code>/<code>gofmt -l</code>
+clean. <strong>Re-run against CaltechAUTHORS confirmed both fixes
+worked, same day.</strong> Snapshot <code>rdm-20260817-235349</code>
+reported <code>state: SUCCESS</code> with
+<code>shards: {"total":59,"failed":0,"successful":59}</code>
+(vs. <code>total:0</code> on the broken first attempt) – real indices
+matched this time. Synced 2,976 objects / 6,425,452,659 bytes (~6.4GB)
+to
+<code>s3://opensearch-backups.library.caltech.edu/newauthors/opensearch-snapshots/rdm-20260817-235349/</code>,
+verified, EBS-side snapshot deleted – the full lifecycle confirmed
+working end to end against CaltechAUTHORS production for the first time,
+with real data. Independently confirmed against the <code>--debug</code>
+JSONL log (not just the printed summary line):
+<code>CreateSnapshot</code> accepted, status polling
+<code>IN_PROGRESS</code> for ~3 minutes then <code>SUCCESS</code>, sync
+<code>Success</code> with no stderr, delete <code>Success</code>.
+<strong>Next: CaltechDATA production (<code>data.caltech.edu</code>,
+distinct from the already-fixed <code>data.caltechlibrary.dev</code> dev
+instance) has not been touched at all – needs the entire retrofit
+sequence from scratch; Phases 20.50/20.51 still gate the
+release.</strong></label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.50 – Restore SQL
+Backup from S3: load command confirmed against the real
+<code>invenio-sql-backup.bash</code>/<code>invenio-sql-restore.bash</code>
+(drop-and-recreate via <code>docker exec</code>-wrapped
+<code>psql</code>, not <code>pg_restore</code>).
+Discovers-and-reconciles its own target’s Postgres container live
+(shares Phase 20.52’s helper) rather than assuming a naming convention.
+Implemented and unit-tested 2026-08-18, test-first throughout,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. Two implementation-time corrections, both documented in
+DECISIONS.md: Postgres-target discovery now runs before any S3 prompt
+(fail fast on a broken target); the DROP/CREATE DATABASE statements now
+SQL-identifier-quote the database name (found real, setting up
+<code>caltechdata-restore-test</code>, whose own database name
+<code>rdm14-granian</code> is hyphenated – not a valid unquoted
+identifier). <strong>Real-AWS-verified end to end 2026-08-19,</strong>
+third live attempt against <code>caltechdata-restore-test</code> (first
+two surfaced the five Phase 20.59 bugs plus the two Phase 20.61 AWS-side
+timeout bugs, all fixed test-first along the way):
+download+decompress/drop/create/load all reported <code>Success</code>
+(load itself confirmed via <code>aws ssm list-commands</code> to carry
+both <code>TimeoutSeconds: 7200</code> and
+<code>executionTimeout: "7200"</code>, ran ~68 minutes past the 1-hour
+mark that killed the first two attempts), verification reported 80
+tables, independently cross-checked <code>pg_database_size</code> = 1710
+MB (larger than either truncated attempt’s final size). Phase 20.50 is
+done.</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.51 – Restore
+OpenSearch Snapshot from S3: delete-then-restore for conflicting indices
+(decided 2026-07-29). Depends on Phase 20.49’s primitives (repo
+registration, poll/parse helpers, index patterns) and
+<code>opensearch_cleanup.go</code>‘s
+<code>ListArchivedSnapshotPrefixes</code>, all reused unchanged.
+Implemented and unit-tested 2026-08-19, test-first throughout,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. Five implementation-time corrections to the original sketch,
+all checked against real behavior rather than guessed: reuses
+<code>ListArchivedSnapshotPrefixes</code> instead of a new listing
+function; conflicting-index detection scoped to two safe wildcard
+patterns instead of the full curated list (avoids a real
+<code>_cat/indices</code> 404 risk from mixing an exact-name pattern
+into a comma-joined wildcard query, confirmed live against
+CaltechAUTHORS production); post-restore verification reports
+<code>_cat/indices</code>’ own observed state instead of comparing
+against the snapshot’s own internal <code>_status</code> metadata (that
+data doesn’t exist locally post-archive, confirmed live via a real
+<code>snapshot_missing_exception</code>); conflicting-index
+detection/deletion moved before any S3 prompt, applying Phase 20.50’s
+own step-order lesson from the start; <strong>fifth, found via pre-test
+reconnaissance setting up the real-AWS test below</strong> –
+<code>indexPrefix</code> was silently computed from the
+<em>target</em>’s own tags and used as-is, correct only for a
+same-instance self-restore and silently wrong (zero indices restored, no
+error, due to <code>ignore_unavailable:true</code>) for a cross-instance
+one like the CaltechDATA-onto-<code>caltechdata-restore-test</code> test
+this session planned – fixed same day, test-first, by making it an
+editable prompt (same computed value as the default).
+<code>PollRestoreUntilComplete</code> built on
+<code>pollWithProgress</code> (Phase 20.53/20.60) from day one, not
+retrofitted. <strong>Real-AWS-verified end to end 2026-08-19</strong>,
+first attempt after the fifth correction landed: restored CaltechDATA
+production’s real snapshot (<code>rdm-20260819-160031</code>, archived
+that same morning) onto <code>caltechdata-restore-test</code>,
+overriding the index-prefix prompt to <code>caltechdata</code>. Conflict
+check found none,
+sync-down/register-repo/trigger-restore/recovery-poll/verification all
+<code>Success</code> (recovery reached <code>done</code> on all 43
+snapshot-type shard rows); independently re-confirmed against the
+instance directly, 42 indices restored, all
+<code>yellow</code>/<code>open</code>, real doc counts throughout
+(e.g. 77,258 records, 222,909 request events, 518,716 record-view stats
+for one month alone). See DECISIONS.md, “Restore OpenSearch Snapshot
+from S3: four implementation-time corrections to PLAN.md Phase 20.51’s
+original sketch” and “…a fifth correction…”, PLAN.md Phase 20.51
+(updated, now real-AWS-verified) and Phase 20.60 (Work Item 3
+closed).</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.52 – Run SQL
+Backup + <code>rdm_postgres_config</code>: new on-demand “Run SQL
+Backup” action triggers <code>pg_dump</code> directly via SSM (no
+pre-installed script needed), chains into the existing Archive SQL
+Backup workflow on confirm. Postgres container discovered live every run
+via an unfiltered <code>docker ps</code> plus client-side image matching
+(survives naming-convention drift, e.g. the underscore-to-dash Docker
+Compose change already seen once) – reconciled with a new
+<code>rdm_postgres_config</code> section in <code>~/.clasm</code>
+(editable via the Configure clasm domain, for deployments customized
+beyond Invenio RDM’s shipped defaults). Implemented and unit-tested
+2026-07-29, test-first throughout. <strong>Four real bugs found via live
+testing against CaltechAUTHORS production the same day, all fixed
+test-first:</strong> (1) Docker’s own
+<code>--filter ancestor=postgres</code> doesn’t match a tagged image
+(<code>postgres:14.13</code>) – fixed by dropping the filter and
+matching images client-side instead; (2) <code>pg_dump | gzip</code>
+masked <code>pg_dump</code>’s own exit status (a failed dump still
+reported Success) – fixed by matching
+<code>invenio-sql-backup.bash</code>’s real non-piped two-step structure
+(<code>redirect &gt; file; gzip -f file</code>, joined by
+<code>set -e</code>); (3) <code>db_name</code>/<code>db_user</code>
+defaulted to the instance’s Name tag, which for this real instance is a
+legacy label (<code>newauthors</code>) unrelated to its actual project
+(<code>caltechauthors</code>) – fixed by preferring the Project tag over
+Name; (4) bug 3’s own fix still didn’t work at first, because
+<code>inventory.tagValues</code> matched the <code>Project</code> tag
+key by exact case and this instance’s real tag is lowercase
+<code>project</code> – fixed by matching case-insensitively at first,
+confirmed safe across the whole fleet (checked every instance across
+every local <code>--debug</code> log). <strong>Real-AWS re-verification
+succeeded</strong>: a correctly-sized (985MB), correctly-named backup
+landed, matching the pre-existing cron-produced backup for the same day.
+Follow-up same day: after confirming with a colleague that the team’s
+real standard is lowercase <code>project</code>, the user retagged every
+clasm-tagged resource using capitalized <code>Project</code> (found via
+a live <code>resourcegroupstaggingapi</code> query: one AMI, two launch
+templates, one instance) and asked to remove the case-folding –
+<code>tagValues</code> reverted to exact-match lowercase
+<code>"project"</code>, simpler code, a regression test locks in the
+reversion. Also same day: RDM Backup &amp; Restore moved before
+Configuration in the domain picker (user’s explicit call).
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+clean throughout every change. <strong>Run SQL Backup is now
+real-AWS-verified end to end.</strong></label></li>
+</ul></li>
+</ul>
+<h2 id="requested-features-1">Requested features</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><strong>Before the next
+release (user’s target: 2026-08-18):</strong> fix
+<code>PollSnapshotUntilComplete</code> (Archive OpenSearch Snapshot to
+S3, Phase 20.49) printing nothing while it waits for OpenSearch to
+finish – the terminal just sits on whatever was last drawn (e.g. the
+bucket picker’s <code>(/ filter, q to cancel)</code> hint), which can
+read as a hung prompt during what’s actually a legitimate multi-minute
+wait on a large index set (confirmed live 2026-08-17 against
+CaltechAUTHORS production: ~3 minutes for a real ~6.4GB/59-shard
+snapshot, vs. the instant response of the earlier broken 0-shard case).
+Not a bug – the workflow completes correctly either way – but a real UX
+gap the user explicitly wants closed before shipping next, not deferred
+to someday/maybe. Fixed 2026-08-18 via a new shared
+<code>pollWithProgress</code> helper (prints an initial “waiting for …
+to complete” message plus an elapsed-time line on each
+<code>pollInterval</code> tick; also feeds Phase 20.51’s sibling poller
+for free), test-first,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. Not yet real-AWS-verified. See DESIGN.md, “Poll-Loop Progress
+Output: OpenSearch Snapshot/Restore Polling”, DECISIONS.md same title,
+PLAN.md Phase 20.53.</label></li>
+<li><label><input type="checkbox" checked="" />Delete Role’s “still
+referenced by instance profile(s)” refusal points at the wrong remedy.
+Found 2026-08-18 cleaning up the now-unused
+<code>rdm-opensearch-backup</code> role after rolling out the combined
+<code>rdm-backups</code> role (see <code>agents/knowledge.db</code>
+clasm observation id 180): <code>deleteIAMRoleConfirmed</code>‘s
+<code>ReferencedByProfiles</code> check
+(<code>fetchIAMRoleDetail</code>,
+<code>internal/workflow/iam_detail.go</code>) is based on
+<code>iam:ListInstanceProfiles</code>’ <code>Roles</code> membership –
+whether the role is a member of an IAM instance-profile <em>object</em>
+– not on whether any running EC2 instance actually has that instance
+profile attached. The error message tells the operator to “Detach it
+first (Compute domain, Associate/replace IAM instance profile),” but
+that action only changes the EC2-to-instance-profile
+<em>association</em> and has no effect on role-to-instance-profile
+<em>membership</em> – so following its own suggested remedy cannot ever
+unblock this. clasm has no action anywhere for
+<code>iam:RemoveRoleFromInstanceProfile</code> or
+<code>iam:DeleteInstanceProfile</code> (confirmed via a full source
+grep, zero matches for either) – had to work around it via the raw AWS
+CLI. Fix: (a) correct the message to name the actual blocker and remedy,
+and (b) add the missing capability, either as something Delete Role
+offers to do automatically (remove the role from any instance profile
+it’s a member of, optionally delete now-empty instance profiles too) or
+as new standalone IAM-domain actions. <strong>Fixed 2026-08-18</strong>
+– (a) reworded (both <code>deleteIAMRole</code>’s hard-refuse and
+<code>deleteIAMRoleConfirmed</code>’s pre-check), (b) as two new
+standalone IAM-domain actions (“Remove role from instance profile”,
+“Delete instance profile”, inserted after Detach Policy from Role and
+before Delete Role), not auto-cascaded from Delete Role. Test-first,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. <strong>Real-AWS-verified 2026-08-19</strong> against a
+disposable
+<code>test-verify-2055-role</code>/<code>test-verify-2055-profile</code>
+pair (tagged <code>origin=dld</code> so the DLD-owned-only picker filter
+would surface them): Delete Role’s message correctly named the real
+blocker and pointed at Remove Role from Instance Profile; that action
+detached it (confirmed via <code>iam:GetInstanceProfile</code>); Delete
+Instance Profile removed the now-empty profile (confirmed
+<code>NoSuchEntity</code> afterward); Delete Role then succeeded cleanly
+once unblocked. Both fixture resources fully deleted, no cleanup left
+behind. See DESIGN.md, “Delete Role’s Wrong-Remedy Message + Missing
+Instance-Profile-Membership Capability”, DECISIONS.md same title,
+PLAN.md Phase 20.55.</label></li>
+<li><label><input type="checkbox" />Ad-hoc “run a shell command on an
+instance via SSM” action – worth exploring, raised 2026-08-18 after a
+session’s worth of debugging CaltechAUTHORS/CaltechDATA production by
+hand: <code>aws ssm send-command</code>, copy the returned
+<code>CommandId</code>, then a separate
+<code>aws ssm get-command-invocation --command-id &lt;id&gt; --instance-id &lt;id&gt;</code>
+call to see the actual result – tedious and easy to fumble across many
+iterations (this session needed it repeatedly: checking
+<code>aws sts get-caller-identity</code> to watch an IAM
+instance-profile transition, restarting <code>amazon-ssm-agent</code>,
+etc.). clasm already has the underlying primitive:
+<code>RunShellCommand</code> (<code>internal/workflow/ssm.go</code>)
+sends a command, polls <code>GetCommandInvocation</code> until a
+terminal status, and returns <code>stdout</code>/status in one call –
+it’s just not exposed as an interactive, general-purpose action, only
+used internally by specific workflows (Run SQL Backup, Archive
+OpenSearch Snapshot, etc.) with their own fixed commands. A new
+Compute-domain (or a new “Debug”/“Diagnostics” grouping) action – pick
+an instance, prompt for a shell command, run it via the existing
+<code>RunShellCommand</code> helper, print stdout/stderr/status directly
+– would remove the manual send/copy-id/fetch dance entirely for ad-hoc
+debugging. Not scoped or designed yet; a real candidate for this
+project’s usual design -&gt; plan -&gt; decision -&gt; test -&gt; code
+order before starting, including a decision on how destructive/arbitrary
+shell access should be gated (this is meaningfully different from every
+other SSM use in this codebase, which all run a small set of
+clasm-authored, reviewed commands, not arbitrary operator-typed
+ones).</label></li>
+<li><label><input type="checkbox" checked="" />Associate/replace IAM
+instance profile’s picker can trap an operator in a confusing
+<code>EntityAlreadyExists</code> loop. Found 2026-08-18 while creating
+the <code>rdm-backups</code> role (see <code>agents/knowledge.db</code>
+clasm observation id 177): if the operator doesn’t explicitly
+filter/select an already-existing profile from the picker (easy to miss
+among unrelated profiles, e.g. SageMaker service-catalog defaults),
+picking “Create new instance profile” instead re-triggers
+<code>create_instance_profile.go</code>’s flow, whose “New instance
+profile name” prompt defaults to the role’s own name via
+<code>ui.WithDefault(role.Name)</code> – exactly the name that already
+exists in a case like this one.
+<code>createInstanceProfileForRole</code> handles the resulting
+<code>EntityAlreadyExists</code> by looping and re-prompting for a
+<em>different</em> name rather than offering “use the existing one,” and
+cancelling that prompt (Esc/Ctrl+C) aborts the whole Associate/replace
+workflow instead of returning to the profile picker – recovery required
+a full clasm restart. Fix, one or more of: (a) default-select or flag an
+existing profile that exact-name-matches the role just picked in the
+create-new sub-flow; (b) have the <code>EntityAlreadyExists</code>
+handler offer “use the existing one” alongside “type a different name”;
+(c) make cancelling the name prompt return to the outer picker instead
+of aborting the whole workflow, matching the <code>cancelledIsNil</code>
+recoverable-cancel pattern already used elsewhere in this codebase.
+<strong>Fixed 2026-08-18</strong> – (b) and (c) both, (a) dropped as
+subsumed by (b); “use existing” returns the resolved name for actual use
+(<code>created=true</code>, corrected from an initial
+<code>created=false</code> sketch after tracing the caller). Test-first,
+<code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean. <strong>Real-AWS-verified 2026-08-19</strong> against
+<code>caltechdata-restore-test</code> (a zero-net-change scenario, since
+its already-attached <code>rdm-backups</code> role has a same-named
+instance profile): picking “Create new instance profile” for role
+<code>rdm-backups</code> correctly hit <code>EntityAlreadyExists</code>
+on the default name, the new “use the existing one instead” prompt
+appeared and worked (confirmed via
+<code>aws ec2 describe-instances</code> – still <code>rdm-backups</code>
+afterward); a second run cancelling the name prompt (Esc/Ctrl+C)
+correctly returned to the instance-profile picker rather than aborting
+the whole workflow, and picking the existing profile from there
+completed cleanly (confirmed unchanged again). See DESIGN.md,
+“Associate/Replace IAM Instance Profile: Recoverable
+<code>EntityAlreadyExists</code>”, DECISIONS.md same title, PLAN.md
+Phase 20.56.</label></li>
 </ul>
 <h2 id="nice-to-have">Nice to have</h2>
 <ul class="task-list">
+<li><label><input type="checkbox" /><code>RunShellCommand</code>’s
+(<code>ssm.go</code>) client-side timeout never actually cancels the
+underlying SSM command on the instance – it only stops clasm’s own
+<code>GetCommandInvocation</code> polling loop and reports a “timed out”
+error, while the real remote command can keep running to completion (or
+failure) entirely invisibly. Found real, live, 2026-08-18: Restore SQL
+Backup’s load step timed out client-side at the (then-too-short)
+30-minute bound against <code>caltechdata-restore-test</code>, but
+<code>ps aux</code> on the instance showed the actual <code>psql</code>
+load process still genuinely running and making progress (80 tables
+already created) well past that point – the operator has no way to know
+from clasm’s own “timed out” message whether the operation actually
+stopped or is quietly still in flight. General design question for a
+future pass, not fixed here: should a client-side timeout also issue
+<code>ssm:CancelCommand</code> so “timed out” reliably means “stopped,”
+or should clasm instead surface “this may still be running on the
+instance, check manually” rather than a bare timeout error? Related to
+(but distinct from) the already-filed
+<code>RunShellCommand</code>-stdout-only-capture gap above/below – both
+are about this same helper’s error/status reporting not fully reflecting
+reality. <strong>Update 2026-08-19:</strong> the specific incident this
+bullet describes turned out to have a second, AWS-side cause on top of
+the client-side gap – see the newly-fixed <code>TimeoutSeconds</code>
+bug above (Phase 20.61). AWS’s own SSM execution did eventually kill the
+real remote process, just later (1 hour) than the client had already
+given up (30 minutes then, now synced to the same value as the client
+timeout). This bullet’s own open question – whether a client-side
+give-up should also proactively <code>ssm:CancelCommand</code> – remains
+open and unresolved by that fix.</label></li>
+<li><label><input type="checkbox" /><code>RunShellCommand</code>
+(<code>ssm.go</code>) only ever returns a remote command’s
+<code>StandardOutputContent</code> – <code>StandardErrorContent</code>
+is captured by SSM but discarded entirely, project-wide, in every one of
+this codebase’s SSM-driven commands. Most shell tools’ own error text
+lands on stderr by default (confirmed real, 2026-08-18:
+<code>gunzip</code>’s “unknown suffix” message during a live Restore SQL
+Backup test, see Phase 20.59), so any command whose <em>failure</em>
+text matters can report only a bare “(status: Failed)” with the real
+explanation invisible unless a caller happens to redirect stderr into
+its own command string (as Phase 20.59’s fix now does for four of
+<code>restore_sql.go</code>’s own commands). A general fix would widen
+<code>RunShellCommand</code> to return stderr separately (not merged
+into stdout, since some callers –
+<code>detectExistingSQLData</code>/<code>countRestoredTables</code>, and
+likely others across the codebase – parse stdout content for meaningful
+data on success and can’t risk a stray stderr notice corrupting that),
+then let each caller decide whether/how to fold it into its own error
+message. Would touch every existing <code>RunShellCommand</code> call
+site (a mechanical but wide ripple across
+<code>internal/workflow</code>). Not scoped or designed
+yet.</label></li>
+<li><label><input
+type="checkbox" /><code>checkCloudInitCompletion</code>
+(<code>cloud_init_check.go</code>) collapses cloud-init’s own
+<code>--wait</code> exit code to a flat “done” or “error, check the
+instance before using it” – but cloud-init distinguishes exit 0 (clean)
+from exit 2 (“degraded”: completed, but at least one module reported a
+non-fatal <code>recoverable_errors</code> warning). Found 2026-08-18
+launching a fresh dev/restore-test instance
+(<code>caltechdata-restore-test</code>,
+<code>i-0f2483bb0885836e5</code>) from
+<code>granian-rdm-v14/cloud-init.yaml</code>: clasm reported “cloud-init
+reported an error – check the instance before using it” for what turned
+out to be two entirely harmless <code>groups:</code> warnings (“Skipping
+creation of existing group ‘staff’/‘www-data’”, both pre-existing on
+stock Ubuntu) – <code>errors: []</code> was empty the whole time.
+Required a full SSM session + <code>cloud-init status --long</code> to
+confirm it was a false alarm rather than a real failure. Fix: have
+<code>CloudInitCheckResult</code> distinguish “degraded” (exit 2, only
+<code>recoverable_errors</code>) from a hard error (exit 1, or anything
+in <code>errors</code>), and surface the actual
+<code>recoverable_errors</code>/<code>errors</code> text in the reported
+message instead of the generic “check the instance” – same “don’t hide
+the real error behind a generic message” lesson as the 2026-07-29
+<code>curl -fsS</code>/OpenSearch fix (DECISIONS.md, “Real bug:
+<code>curl -fsS</code> hid OpenSearch’s own error body…”). Not scoped or
+designed yet.</label></li>
 <li><label><input type="checkbox" />A means of reporting the details of
 our an EC2 Instance, AMI instance or launch template, that can be
 downloaded as Markdown report document</label></li>

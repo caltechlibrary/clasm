@@ -6243,6 +6243,1896 @@ their <code>_test.go</code> counterparts.</p>
 <h3 id="dependency-5">Dependency</h3>
 <p>None.</p>
 <hr />
+<h2
+id="phase-20.48-rdm-backup-restore-domain-wiring-relocate-feature-11">Phase
+20.48 — RDM Backup &amp; Restore Domain: Wiring + Relocate Feature
+11</h2>
+<p><strong>Status: designed 2026-07-28, implemented and unit-tested
+2026-07-29</strong> (DESIGN.md, “RDM Backup &amp; Restore Domain”). Pure
+UI wiring – no new AWS calls, no new workflow logic.
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/
+<code>gofmt -l</code> all clean. Not yet real-AWS-verified (nothing here
+makes an AWS call beyond the already-verified
+<code>BackupArchiveAndTrim</code>, relocated unchanged).</p>
+<h3 id="work-items-93">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/domain_menu.go</code>:
+<code>DomainActions</code> gains a seventh field,
+<code>RDMBackupRestore func(ctx context.Context) error</code> (appended
+after <code>Configuration</code>); <code>domainItems</code> gains a
+seventh entry, <code>{"RDM Backup &amp; Restore", ...}</code>, appended
+after <code>"Configuration"</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/menu.go</code>: remove the
+<code>BackupArchiveAndTrim</code> field from <code>MenuActions</code>
+and its
+<code>"Archive stale backups to S3 and     trim disk space"</code> entry
+from Compute’s own menu item list – <code>mainMenuItems</code> shrinks
+from 25 to 24</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/rdm_menu.go</code>:
+<code>RDMBackupRestoreActions</code> struct (<code>ArchiveSQL</code>,
+<code>ArchiveOpenSearch</code>, <code>RestoreSQL</code>,
+<code>RestoreOpenSearch</code>, each
+<code>func(ctx context.Context) error</code>, plus <code>Refresh</code>)
++ <code>rdmMenuItems</code> (four entries, in that order) +
+<code>RunRDMBackupRestoreMenu</code>/<code>runRDMBackupRestoreMenu</code>/
+<code>pickRDMBackupRestoreItem</code>, following
+<code>runTagMgmtMenu</code>‘s loop-until-’q’ shape (per-iteration
+<code>Refresh</code> – meaningful here, unlike Configuration’s no-op,
+since Archive OpenSearch/Restore actions do make AWS calls;
+dispatch-error doesn’t crash the loop; pause-for-acknowledgment after a
+successful action)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: relocated the existing
+<code>BackupArchiveAndTrim</code> action-closure construction
+(previously wired into <code>MenuActions</code>) into a new
+<code>rdmActions := workflow.RDMBackupRestoreActions{...}</code>’s
+<code>ArchiveSQL</code> field instead – the closure body itself is
+unchanged, only which struct field it’s assigned to changed;
+<code>ArchiveOpenSearch</code>/<code>RestoreSQL</code>/<code>RestoreOpenSearch</code>
+closures added as stubs returning
+<code>workflow.NotYetImplemented(out, "&lt;label&gt;")</code> until
+Phases 20.49-20.51 land; <code>Refresh: refresh</code> reuses the same
+shared instance-listing refresh Compute already uses (no new AWS calls,
+no new state struct);
+<code>domains := workflow.DomainActions{...}</code> gains
+<code>RDMBackupRestore</code>, calling <code>refresh(ctx)</code> on
+entry (same pattern as Compute/S3/Tag Management) before running the new
+menu</label></li>
+<li><label><input type="checkbox" checked="" />DESIGN.md’s
+Compute-domain menu ASCII box (<code>## User Experience     Flow</code>)
+updated to drop the backup-archive line and renumber “12) Back to domain
+picker” down to “11)” – already stale relative to the current 6-domain
+picker in a few other ways (a pre-existing gap, not this phase’s to
+fully fix), left otherwise untouched</label></li>
+</ul>
+<h3 id="tests-7">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>domain_menu_test.go</code>:
+<code>TestDomainItems_NoExitEntry</code>’s hardcoded <code>6</code>
+-&gt; <code>7</code>; new
+<code>TestRunDomainPicker_DispatchesToRDMBackupRestore</code>, mirroring
+the existing <code>Configuration</code>/<code>IAM</code> dispatch
+tests</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>menu_test.go</code>: removed
+<code>BackupArchiveAndTrim</code> from <code>testMenuActions</code>;
+<code>TestMainMenuItems_NoBackToDomainPickerEntry</code>’s hardcoded
+<code>25</code> -&gt; <code>24</code></label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>rdm_menu_test.go</code>, mirroring
+<code>tagmgmt_menu_test.go</code>‘s dispatch-loop coverage: each of the
+four items dispatches to its own action closure; <code>Refresh</code>
+runs once after a successful action; a single action’s error doesn’t
+crash the loop; pause-for-acknowledgment after both error and success;
+normal exit only via ctx cancellation from a test-supplied action
+closure, never by exhausting scripted input (per this project’s own
+accessible-mode-EOF gotcha, Phase 20.29);
+<code>TestRDMMenuItems_Order</code> pins the four items’
+DESIGN.md-specified order</label></li>
+</ul>
+<h3 id="files-7">Files</h3>
+<p><code>internal/workflow/{domain_menu.go,domain_menu_test.go,menu.go, menu_test.go,rdm_menu.go,rdm_menu_test.go}</code>
+(last two new), <code>cmd/clasm/main.go</code>,
+<code>DESIGN.md</code>.</p>
+<h3 id="dependency-6">Dependency</h3>
+<p>None.</p>
+<h2 id="phase-20.49-archive-opensearch-snapshot-to-s3">Phase 20.49 —
+Archive OpenSearch Snapshot to S3</h2>
+<p><strong>Status: implemented and unit-tested 2026-07-29, test-first
+throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean project-wide. Real-AWS testing started 2026-07-29 against
+CaltechAUTHORS production (<code>i-0c4c81336aea33d27</code>) but blocked
+before a snapshot could actually be created – see below.</strong> Wired
+into <code>RDMBackupRestoreActions.ArchiveOpenSearch</code> (Phase
+20.48), replacing its <code>NotYetImplemented</code> stub. One
+implementation-level decision made along the way, not pinned down by
+this phase’s own Work Items text: Archive OpenSearch Snapshot to S3’s
+<code>BackupHistory</code> is backed by a new, separate
+<code>appState.OpenSearchArchive</code> state field, not shared with Run
+SQL Backup/Archive SQL Backup’s own <code>appState.BackupArchive</code>
+– see DECISIONS.md, “Archive OpenSearch Snapshot to S3 (Phase 20.49): a
+separate BackupHistory instantiation, not a shared one.” A second,
+purely mechanical correction: <code>buildRegisterRepoCommand</code>/
+<code>buildCreateSnapshotCommand</code>/<code>buildSnapshotStateCommand</code>/
+<code>buildDeleteSnapshotCommand</code> compose the full
+<code>localhost:9200/_snapshot/ ...</code> URL first and
+<code>shellQuote</code> it as one shell word, rather than quoting
+<code>repo</code>/<code>snapshotName</code> individually inside the URL
+string (which would have embedded literal quote characters into the URL
+itself).</p>
+<p><strong>Two real issues found via the first live test run, both fixed
+test-first same day:</strong> (1) <code>RegisterSnapshotRepo</code>
+failed with <code>status: Failed</code> and no further detail – the
+<code>--debug</code> JSONL log showed OpenSearch actually returned an
+HTTP 500 (almost certainly the <code>path.repo</code> prerequisite not
+yet configured on this production instance), but
+<code>curl -fsS</code>’s <code>-f</code> flag discards the response body
+on a non-2xx status, so only curl’s own generic
+<code>exit status 22</code> ever reached clasm’s error message. Fixed by
+switching every OpenSearch <code>curl</code> command to
+<code>--fail-with-body -sS</code> (keeps <code>-f</code>’s exit-code
+detection, still writes the body to stdout on failure) and threading
+that body into every resulting error message via a new
+<code>curlFailureError</code> helper – see DECISIONS.md, “Real bug:
+<code>curl -fsS</code> hid OpenSearch’s own error body; switch to
+<code>--fail-with-body</code>”. (2) The cleanup-threshold prompt’s
+wording was ambiguous about whether it governed the instance’s own local
+directory or the archived copies in S3 – reworded to spell out both
+explicitly. See DECISIONS.md, “Clarify Archive OpenSearch Snapshot to
+S3’s cleanup-threshold prompt wording”. <strong>Root cause of the
+original 500 confirmed by the improved error message itself, same
+day:</strong>
+<code>{"error":{"reason":"[rdm_backup_repo] location [/opt/rdm_opensearch_backups] doesn't match any of the locations specified by path.repo because this setting is empty"}}</code>
+– exactly the <code>path.repo</code> retrofit prerequisite, as
+suspected. While retrofitting it, a <strong>third real bug surfaced,
+also fixed test-first same day</strong>:
+<code>RegisterSnapshotRepo</code> was passed the operator-typed
+<em>host</em> directory as <code>location</code>, but OpenSearch
+(running inside the <code>search</code> container) only ever sees the
+container-internal path the retrofit’s bind mount maps that host
+directory to (<code>/usr/share/opensearch/backups</code>) – so even a
+correctly-applied retrofit would have kept failing with the identical
+error, for a different reason. Fixed by registering with a new fixed
+constant, <code>DefaultOpenSearchContainerRepoPath</code>, never
+<code>directory</code> (which continues to mean “host path,” correctly
+used only for the <code>aws s3 sync</code> call) – see DECISIONS.md,
+“Real bug: repo registration used the host directory as
+<code>location</code>, not the container-internal <code>path.repo</code>
+path”. <strong>Still blocked on the user completing the retrofit
+itself</strong> before a full end-to-end real-AWS run (create -&gt; sync
+-&gt; verify -&gt; delete) can be confirmed.</p>
+<p><strong>A fourth issue, more serious than the first three and not a
+clasm code bug, surfaced attempting the retrofit itself
+(2026-07-29/30):</strong> both known instances’
+<code>docker-services.yml</code> lack a persistent volume for
+OpenSearch’s <code>search</code> service data directory – confirmed via
+<code>docker inspect ... Mounts</code> on both CaltechDATA dev
+(<code>data.caltechlibrary.dev</code>) and, read-only via clasm’s own
+SSM access, CaltechAUTHORS production. Recreating that container
+(unavoidable to pick up <code>path.repo</code>) discards every index
+unconditionally, independent of any <code>docker compose down -v</code>.
+<strong>Live-tested the consequence on CaltechDATA dev</strong>: the
+retrofit attempt there wiped every OpenSearch index; recovered
+same-session via <code>invenio rdm-records rebuild-index</code>
+(records/drafts/vocabularies), then per-index
+<code>invenio index create &lt;name&gt;</code> for everything else
+(<code>invenio index init</code> aborts its entire batch on the first
+already-existing index, making it unusable once partial state exists),
+then <code>invenio communities rebuild-index</code>, then the generic
+<code>invenio index reindex --pid-type &lt;type&gt;</code> +
+<code>invenio index run</code> for <code>users</code> and any type
+without its own dedicated command – site confirmed working again.
+<strong>CaltechAUTHORS production was not harmed</strong>:
+<code>path.repo</code> had been hand-added to its
+<code>docker-services.yml</code>, but the <code>search</code> container
+was never recreated before the risk was identified and the edit
+reverted. Production’s exposure would have been far worse than
+CaltechDATA dev’s, though – ~150K live records (rebuildable from
+Postgres) plus roughly 10 months of
+<code>stats-record-view-*</code>/<code>stats-file-download-*</code>/
+<code>events-stats-*</code> usage-event history that has <strong>no
+source of truth outside OpenSearch at all</strong> and would be
+permanently lost, not just delayed, by the same recreate.
+<code>~/WorkLab/rdm-opensearch-path-repo-retrofit.md</code> rewritten
+same day with a mandatory persistent-volume migration procedure (via
+<code>docker cp</code> of the live data out, before any
+<code>path.repo</code> change) and the recovery sequence that worked, so
+neither instance’s retrofit is attempted again without it. <strong>Both
+instances are currently reverted to their pre-retrofit config</strong> –
+neither has <code>path.repo</code> set. <strong>Next step when this
+resumes:</strong> redo the retrofit on CaltechDATA dev first (now
+including the persistent-volume migration), confirm Archive OpenSearch
+Snapshot works end to end there, <em>then</em> consider CaltechAUTHORS
+production. Full session account:
+<code>agents/hand-off/2026-07-30T040000Z-clasm-opensearch-live-testing-and-production-safety.spmd</code>.</p>
+<p><strong>Real-AWS-verified end to end on CaltechDATA dev,
+2026-08-12.</strong> Redid the retrofit following the rewritten
+runbook’s safe persistent-volume migration (<code>docker cp</code> the
+live 269MB data dir out, <code>chown 1000:1000</code>, added the
+persistent volume + backups mount + <code>path.repo</code> in one
+<code>docker-services.yml</code> edit, recreated <code>search</code>
+exactly once) – this time every real index (including
+<code>stats-record-view-*</code>) survived the recreate, confirmed via
+<code>_cat/indices?v</code>. Registered the snapshot repo, then attached
+a new IAM role (<code>rdm-opensearch-backup</code>, RDM Repository
+Instance template: <code>AmazonSSMManagedInstanceCore</code> + scoped S3
+<code>ListBucket</code>/<code>GetObject</code>/<code>PutObject</code> on
+<code>opensearch-backups. library.caltech.edu</code>, plus a hand-added
+<code>DeleteObject</code> statement for the S3-side cleanup branch,
+since the template itself doesn’t include it) to the instance for S3
+access. <strong>A fifth real bug surfaced attaching that role</strong>,
+unrelated to OpenSearch itself: the newly-created role never appeared in
+the “Select a role to attach” picker (used when creating a new instance
+profile) even though “Show Roles” saw it fine –
+<code>internal/workflow/resource_lists.go</code>’s
+<code>listRoles</code>/ <code>listInstanceProfiles</code> each made a
+single un-paginated
+<code>iam.ListRoles</code>/<code>ListInstanceProfiles</code> call, the
+same truncation <code>internal/inventory/iam.go</code>’s
+<code>listAllRoles</code>/<code>listAllInstanceProfiles</code> were
+already fixed for on 2026-07-23 – just a sibling call site that missed
+the same fix. Fixed test-first, identical shape to the existing fix. See
+DECISIONS.md, “Real bug:
+<code>listRoles</code>/<code>listInstanceProfiles</code> un-paginated,
+sibling to a fix already made elsewhere”. With that fixed and the role
+attached, ran Archive OpenSearch Snapshot against
+<code>data.caltechlibrary.dev</code> for the first time ever: created
+snapshot <code>rdm-20260812-205453</code>, synced 4 objects/725 bytes to
+<code>s3:// opensearch-backups.library.caltech.edu/data.caltechlibrary.dev/ opensearch-snapshots/rdm-20260812-205453/</code>,
+verified, deleted the local EBS-side snapshot – full lifecycle confirmed
+working, except the S3-side cleanup branch (no old snapshots existed yet
+to trigger it; untested, not blocking). <strong>CaltechAUTHORS
+production still untouched</strong> – next step whenever this resumes:
+accumulate a few archives on CaltechDATA dev to exercise S3-side cleanup
+at least once, then repeat this entire sequence against production,
+given its much higher stakes. Full session account:
+<code>agents/hand-off/2026-08-12T220000Z-clasm-opensearch-archive-real-aws-verified-caltechdata-dev.spmd</code>.</p>
+<p><strong>CaltechAUTHORS production retrofit done and
+real-AWS-verified, 2026-08-17.</strong> Followed
+<code>~/WorkLab/rdm-opensearch-path-repo-retrofit.md</code>’s
+safe-migration procedure live, one command at a time:
+<code>docker cp</code>’d the live 19GB
+<code>/usr/share/opensearch/data</code> out (size-matched against the
+running container’s own <code>du -sh</code> before proceeding), added
+the persistent-data volume + backups mount + <code>path.repo</code> to
+<code>docker-services.yml</code> in one edit (validated via
+<code>docker compose config</code> before the recreate), recreated
+<code>search</code> exactly once in a maintenance window. Every real
+index survived, including
+<code>caltechauthors-rdmrecords-records-record-v7.0.0</code> at 147,438
+docs (matches the ~150K estimate) plus all
+<code>stats-*</code>/<code>events-stats-*</code> history. Snapshot repo
+<code>rdm_backup_repo</code> registered successfully, first attempt. See
+<code>agents/knowledge.db</code> observations 171/172 and
+<code>agents/hand-off/2026-08-17T231100Z-clasm-opensearch-retrofit-caltechauthors-production-verified.spmd</code>.
+<strong>IAM role attached same day, then a second real bug found on the
+first live run against CaltechAUTHORS.</strong> Reused the existing
+<code>rdm-opensearch-backup</code> role (created 2026-08-12 for
+CaltechDATA dev – IAM roles/instance profiles are account-level, no need
+to recreate) and associated it to CaltechAUTHORS via “Associate/replace
+IAM instance profile,” confirmed via <code>DescribeInstances</code>
+(<code>IamInstanceProfile</code> went from <code>null</code> to the
+role’s ARN). First live run of Archive OpenSearch Snapshot against
+CaltechAUTHORS then hit two independent, real failures, both diagnosed
+from the <code>--debug</code> JSONL log: (1) the S3 sync failed with
+<code>AccessDenied</code> – turned out the <em>previous</em> debug
+session’s IAM attach attempt hadn’t actually landed before that run, so
+the instance was still using its default SSM-only role with no S3
+permissions (fixed by the same-day re-attach above); (2) more seriously,
+the <code>CreateSnapshot</code> call itself matched <strong>zero real
+indices</strong> (<code>state: SUCCESS</code>,
+<code>shards.total: 0</code>) because its index patterns were built from
+CaltechAUTHORS’s Name tag (<code>newauthors</code>) rather than its
+Project tag (<code>caltechauthors</code>, which matches the real index
+prefix) – an entirely empty snapshot silently reporting success. Fixed
+test-first: see DECISIONS.md, “Real bug: Archive OpenSearch Snapshot’s
+index-match patterns used the Name tag, not the Project tag” –
+<code>indexPrefix := cmp.Or(inst.Project, prefix)</code>, used only for
+<code>rdmOpenSearchSnapshotIndexPatterns</code>, mirroring Phase 20.52’s
+identical <code>Name</code>-vs-<code>Project</code> fix for Postgres.
+New regression test
+<code>TestArchiveOpenSearchSnapshot_IndexPatternsUseProjectTagNotNameTag</code>
+confirmed failing before the fix, passing after; all pre-existing tests
+unaffected.
+<code>go build</code>/<code>vet</code>/<code>test ./... -race</code>/<code>gofmt -l</code>
+clean. <strong>Still remaining: re-run Archive OpenSearch Snapshot
+against CaltechAUTHORS now that both bugs are fixed, to confirm the full
+lifecycle actually captures real data this time; then repeat the entire
+retrofit against CaltechDATA production (<code>data.caltech.edu</code>,
+distinct from the already-fixed <code>data.caltechlibrary.dev</code> dev
+instance), which has not been touched at all.</strong></p>
+<h3 id="work-items-94">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/config/config.go</code>: new field
+<code>OpenSearchBackupDirectories []BackupDirectoryRule</code> (same
+rule type <code>backup_directories</code> already uses –
+pattern/directory pairs – no new type needed);
+<code>config.BackupDirectoryFor</code> is already generic over
+<code>[]BackupDirectoryRule</code>, so no new resolver function, just a
+second slice to pass it</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/opensearch_index_patterns.go</code>:
+<code>rdmOpenSearchSnapshotIndexPatterns(prefix string) []string</code>,
+building the confirmed allowlist
+(<code>&lt;prefix&gt;-rdmrecords-*</code>, <code>-users-*</code>,
+<code>-communities-*</code>, <code>-requests*</code>,
+<code>-requestevents-*</code>, <code>-names-*</code>,
+<code>-affiliations-*</code>, <code>-funders-*</code>,
+<code>-awards-*</code>, <code>-subjects-*</code>,
+<code>-vocabularies-*</code>, <code>-groups-*</code>,
+<code>-domains-*</code>, <code>-communitymembers-*</code>,
+<code>-stats-record-view-*</code>, <code>-stats-file-download-*</code>,
+<code>-stats-bookmarks</code>,
+<code>.ds-&lt;prefix&gt;-auditlog-audit-log-*</code>) from DESIGN.md’s
+scope decision. <strong>Assumption to confirm before/during
+implementation</strong>: <code>prefix</code> is the picked instance’s
+Name tag, matching what was confirmed true for CaltechAUTHORS – verify
+against CaltechDATA too before relying on it generally, since a mismatch
+here would silently snapshot zero indices
+(<code>ignore_unavailable: true</code> makes a wrong pattern fail
+quietly, not loudly)</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/opensearch_snapshot.go</code>: the OpenSearch
+REST-over-SSM primitives, each a <code>buildXCommand</code> (pure, unit
+testable without a real instance) paired with a
+<code>RunShellCommand</code>-driving wrapper, mirroring
+<code>backup_delete.go</code>’s
+<code>buildDeleteCommand</code>/<code>DeleteVerifiedFiles</code> split:
+- <code>buildRegisterRepoCommand(repo, location string) string</code> –
+<code>curl -fsS -X PUT localhost:9200/_snapshot/&lt;repo&gt; -H       'Content-Type: application/json' -d       '{"type":"fs","settings":{"location":"&lt;location&gt;"}}'</code>;
+idempotent, safe to call every run -
+<code>RegisterSnapshotRepo(ctx, client, instanceID, repo, location       string, timeout, pollInterval time.Duration) error</code>
+-
+<code>buildCreateSnapshotCommand(repo, snapshotName string, indices       []string) string</code>
+– <code>PUT       /_snapshot/&lt;repo&gt;/&lt;snapshotName&gt;</code>
+with <code>indices</code> (comma-joined),
+<code>ignore_unavailable: true</code>,
+<code>include_global_state: false</code>, no
+<code>wait_for_completion</code> (polled separately, next) -
+<code>CreateSnapshot(ctx, client, instanceID, repo, snapshotName       string, indices []string, timeout, pollInterval) error</code>
+-
+<code>buildSnapshotStateCommand(repo, snapshotName string) string</code>
+– <code>GET /_snapshot/&lt;repo&gt;/&lt;snapshotName&gt;</code> (cheaper
+than <code>_status</code>; returns a <code>state</code> field directly:
+<code>IN_PROGRESS</code>/
+<code>SUCCESS</code>/<code>PARTIAL</code>/<code>FAILED</code>) -
+<code>parseSnapshotState(jsonBody []byte) (state string, err error)</code>
+– <code>encoding/json</code>, tolerant of the full response shape -
+<code>PollSnapshotUntilComplete(ctx, client, instanceID, repo,       snapshotName string, timeout, pollInterval time.Duration)       (state string, err error)</code>
+– an outer <code>context.WithTimeout</code> loop (long: creating an ~8GB
+snapshot could take a while) that calls <code>RunShellCommand</code>
+once per iteration with its own short per-call timeout, sleeping
+<code>pollInterval</code> between checks – two-tier timeout shape like
+<code>WaitForSSMOnline</code>, except each “check” here is itself a full
+SSM round trip rather than a direct API call, so
+<code>pollInterval</code> needs to be coarser (seconds, not the
+sub-second cadence a direct API poll could use) – proposed
+<code>DefaultSnapshotPollInterval = 30 * time.Second</code>,
+<code>DefaultSnapshotCreateTimeout = 2 * time.Hour</code>. Returns an
+error on <code>FAILED</code>/<code>PARTIAL</code>, not just on timeout -
+<code>buildDeleteSnapshotCommand(repo, snapshotName string) string</code>
+– <code>DELETE /_snapshot/&lt;repo&gt;/&lt;snapshotName&gt;</code> -
+<code>DeleteSnapshot(ctx, client, instanceID, repo, snapshotName       string, timeout, pollInterval time.Duration) error</code>
+– the OpenSearch-API-level delete DESIGN.md requires, never a raw
+<code>rm</code> on the repo directory</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/opensearch_sync.go</code>: -
+<code>buildSyncCommand(localDir, bucket, prefix, snapshotName       string) string</code>
+–
+<code>aws s3 sync --only-show-errors &lt;localDir&gt;       s3://&lt;bucket&gt;/&lt;prefix&gt;/opensearch-snapshots/&lt;snapshotName&gt;/</code>
+– deliberately <strong>no <code>--delete</code></strong>, and a new,
+snapshot-named destination prefix every run (see DESIGN.md’s corrected
+“Archive OpenSearch Snapshot to S3” step 5 – a shared,
+<code>--delete</code>-synced prefix would make S3 mirror EBS’s
+single-snapshot state, defeating Restore’s “pick a specific dated
+backup”) -
+<code>SyncOpenSearchBackupsToS3(ctx, client awsclient.SSMAPI,       instanceID, localDir, bucket, prefix, snapshotName string,       timeout, pollInterval time.Duration) error</code>
+– one <code>RunShellCommand</code> call (unlike Feature 11’s per-file
+OK/FAIL script, <code>aws s3 sync</code> handles the whole directory as
+one CLI invocation, closer to how <code>fstrim -av</code> is already a
+single fire-and-forget command in <code>backup_archive.go</code>) -
+<code>VerifySyncedSnapshot(ctx, client awsclient.S3API, bucket,       prefix, snapshotName string) (objectCount int, totalBytes       int64, err error)</code>
+– lists the just-synced prefix via <code>ListObjectsV2</code> (tool’s
+own credentials) and confirms it’s non-empty. <strong>Deliberately
+lighter than Feature 11’s per-file <code>HeadObject</code>
+reverification</strong> – <code>aws s3 sync</code>’s own per-object PUT
+already carries S3’s normal strong-consistency guarantee, and
+re-verifying every individual segment file (there could be many) the way
+Feature 11 does for a handful of <code>.sql.gz</code> files would be
+prohibitively slow here. Flagged as a real, deliberate difference from
+Feature 11’s model, not an oversight – worth a second look during
+review</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/opensearch_cleanup.go</code> – the S3-side
+cleanup primitives, app-managed rather than an S3 bucket lifecycle
+policy (DESIGN.md, “Why app-managed cleanup, not an S3 bucket lifecycle
+policy”): -
+<code>SnapshotPrefixInfo{Name string, CreatedAt time.Time}</code> -
+<code>parseSnapshotTimestamp(name string) (time.Time, error)</code> –
+parses the <code>rdm-20060102-150405</code> name format
+<code>CreateSnapshot</code>’s caller generates -
+<code>ListArchivedSnapshotPrefixes(ctx, client awsclient.S3API,       bucket, instancePrefix string) ([]SnapshotPrefixInfo, error)</code>
+– <code>ListObjectsV2</code> with <code>Delimiter: "/"</code> under
+<code>&lt;instancePrefix&gt;/opensearch-snapshots/</code>, one entry per
+<code>CommonPrefixes</code> result, parsed via
+<code>parseSnapshotTimestamp</code> (an unparseable prefix name is
+skipped, not fatal – matches <code>parseBackupFileList</code>’s own
+malformed-line tolerance) -
+<code>FilterOlderThan(prefixes []SnapshotPrefixInfo, days int, now       time.Time) []SnapshotPrefixInfo</code>
+– pure function, directly analogous to <code>FilterByAge</code> -
+<code>DeleteSnapshotPrefixes(ctx, client awsclient.S3API, bucket,       instancePrefix string, prefixes []SnapshotPrefixInfo) error</code>
+– for each prefix: <code>ListObjectsV2</code> every object under it,
+then <code>DeleteObjects</code> in batches of up to 1,000 keys (S3’s own
+limit) – S3 has no atomic “delete a whole prefix” call -
+<code>displayCleanupDryRun(w io.Writer, prefixes []SnapshotPrefixInfo)</code>
+– mirrors <code>displayBackupDryRun</code>’s shape</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/opensearch_archive.go</code>:
+<code>DefaultOpenSearchRepoName = "rdm_backup_repo"</code> constant;
+<code>ArchiveOpenSearchSnapshot(ctx, w, ssmClients, s3Client,     newS3Client, instances, openSearchBackupDirRules     []config.BackupDirectoryRule, hist BackupHistory) error</code>
+(picks an instance via <code>pickInstanceDefaulted</code>, reused as-is)
+delegating to testable core
+<code>archiveOpenSearchSnapshot(ctx, w, ssmClients,     s3Client, newS3Client, inst, openSearchBackupDirRules, hist,     input, output) error</code>:
+1. <code>resolveSSM</code> + <code>CheckAWSCLIAvailable</code> (both
+reused verbatim) 2. Prompt directory (reuses
+<code>ui.Prompt</code>/<code>ui.WithDefault</code>, default from
+<code>hist</code>/<code>config.BackupDirectoryFor(openSearchBackupDirRules,        inst.Name)</code>,
+same shape as <code>backupArchiveAndTrim</code>’s own directory prompt)
+– default <code>/opt/rdm_opensearch_backups</code> 3. Prompt bucket
+(<code>promptBackupBucketFunc</code>, reused as-is – it’s already
+generic over any bucket) + <code>BucketRegion</code> +
+<code>newS3Client</code> + <code>CheckS3BucketAccess</code> (all reused
+verbatim) 4. Prompt the cleanup threshold in days
+(<code>ui.Prompt</code>, blank allowed – unlike
+<code>promptAgeDays</code>, which requires a positive integer, this one
+accepts empty to mean “skip cleanup”, so it’s a new, distinct prompt
+function, not a reuse of <code>promptAgeDays</code>) 5. <strong>If a
+threshold was given</strong>: <code>ListArchivedSnapshotPrefixes</code>
++ <code>FilterOlderThan</code> against what’s <em>already</em> in S3
+(the snapshot this run is about to create doesn’t exist yet). If the
+result is non-empty: <code>displayCleanupDryRun</code>, then
+<code>ConfirmDestructive([]string{inst.InstanceID, inst.Name})</code>,
+captured once into a local <code>toCleanup []SnapshotPrefixInfo</code> –
+<strong>fixed here, never re-listed later</strong> (same
+time-of-check/time-of-use avoidance as Feature 11’s own delete phase,
+DESIGN.md Feature 11). If no threshold, or no matching candidates,
+<code>toCleanup</code> stays nil and no confirmation is shown – nothing
+destructive is on the table in that case 6.
+<code>RegisterSnapshotRepo</code> (idempotent) 7.
+<code>snapshotName := time.Now().UTC().Format("rdm-20060102-150405")</code>
+8. <code>CreateSnapshot</code>, then
+<code>PollSnapshotUntilComplete</code> 9.
+<code>SyncOpenSearchBackupsToS3</code>, then
+<code>VerifySyncedSnapshot</code> 10. If verified:
+<code>DeleteSnapshot</code> (OpenSearch API, not <code>rm</code>) –
+unconditional, every run, not gated by step 5’s confirm (that confirm
+only covers step 11’s cleanup; this EBS-side delete is the tool’s
+ordinary behavior every time, same as before this cleanup feature
+existed) 11. If <code>toCleanup</code> is non-empty:
+<code>DeleteSnapshotPrefixes</code> against exactly that captured list –
+runs <em>after</em> step 10, so the fresh snapshot is always safely in
+S3 before any old one is removed, even though both were confirmed
+together back in step 5 12. Report snapshot name, object count, total
+bytes synced, and (if cleanup ran) how many old snapshots were
+removed</label></li>
+</ul>
+<h3 id="tests-8">Tests</h3>
+<p>Test-first throughout, confirmed failing (undefined symbols) before
+each implementation exists, per [[feedback-test-before-fix]].</p>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>rdmOpenSearchSnapshotIndexPatterns</code>:
+table-driven against a fixed prefix, confirms every pattern in
+DESIGN.md’s list is present and correctly prefixed</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>buildRegisterRepoCommand</code>/<code>buildCreateSnapshotCommand</code>/
+<code>buildSnapshotStateCommand</code>/<code>buildDeleteSnapshotCommand</code>/
+<code>buildSyncCommand</code>: each a pure string-building function,
+asserted against fixed inputs</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>parseSnapshotState</code>:
+<code>SUCCESS</code>/<code>IN_PROGRESS</code>/<code>FAILED</code>/<code>PARTIAL</code>
+bodies, plus a malformed-JSON case</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>PollSnapshotUntilComplete</code>: a
+<code>fakeSSMClient</code> sequenced to return <code>IN_PROGRESS</code>
+then <code>SUCCESS</code> across successive calls; a
+<code>FAILED</code>-terminal case returns an error, not a timeout; a
+never-completing sequence times out with a clear error</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>parseSnapshotTimestamp</code>: valid
+<code>rdm-20060102-150405</code> name parses to the expected time; a
+malformed name errors</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>ListArchivedSnapshotPrefixes</code>:
+<code>CommonPrefixes</code>-based listing; one unparseable prefix name
+is skipped, not fatal, and doesn’t abort the rest of the
+listing</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>FilterOlderThan</code>: table-driven, mirrors
+<code>FilterByAge</code>’s own test shape (nothing-matches,
+everything-matches, boundary-exact-N-days)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>DeleteSnapshotPrefixes</code>: a fake S3 client with
+&gt;1,000 objects under one prefix confirms <code>DeleteObjects</code>
+is called in batches, not one oversized request; a multi-prefix case
+confirms every prefix’s objects are removed</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>archiveOpenSearchSnapshot</code>’s testable core,
+using the existing shared
+<code>fakeSSMClient</code>/<code>fakeS3Client</code> pair (per
+<code>backup_archive_test.go</code>’s own convention): happy path end to
+end with no cleanup threshold given (no confirm shown, no cleanup call
+made); happy path with a threshold but zero matching candidates (still
+no confirm shown); happy path with a threshold and real candidates
+(confirm shown once, <code>DeleteSnapshotPrefixes</code> called with
+exactly the pre-captured list, called <em>after</em> the new snapshot’s
+own <code>DeleteSnapshot</code>, not before); type-to-confirm mismatch
+on the cleanup prompt cancels the <em>entire</em> run before the new
+snapshot is even created (matches DESIGN.md step 5’s “once, upfront”
+placement); bucket-inaccessible aborts before repo registration
+(mirroring
+<code>TestBackupArchiveAndTrim_AbortsWhenBucketInaccessible</code>); a
+<code>FAILED</code> snapshot state aborts before sync/delete/cleanup; a
+sync failure aborts before the EBS-side delete (the local snapshot must
+survive an unverified sync)</label></li>
+</ul>
+<h3 id="files-8">Files</h3>
+<p><code>internal/config/config.go</code>, new
+<code>internal/workflow/{opensearch_index_patterns.go, opensearch_snapshot.go,opensearch_sync.go,opensearch_cleanup.go, opensearch_archive.go}</code>
+plus each one’s <code>_test.go</code> counterpart.</p>
+<h3 id="dependency-7">Dependency</h3>
+<p>Phase 20.48 for a menu entry point to call this from (not required to
+build/test the workflow itself, which takes its dependencies as plain
+parameters the same way <code>BackupArchiveAndTrim</code> does).</p>
+<h2 id="phase-20.50-restore-sql-backup-from-s3">Phase 20.50 — Restore
+SQL Backup from S3</h2>
+<p><strong>Status: designed 2026-07-28/29, implemented and unit-tested
+2026-08-18, real-AWS-verified end to end 2026-08-19, test-first
+throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean</strong> (DESIGN.md, “RDM Backup &amp; Restore Domain” -&gt;
+“Restore SQL Backup from S3”). Load command confirmed against the real
+<code>invenio-sql-backup.bash</code>/<code>invenio-sql-restore.bash</code>
+(<code>~/WorkLab/caltechauthors</code>) – plain-text
+<code>pg_dump --column-inserts</code> output (gzip’d, not
+<code>--format=custom</code>), restored via
+<code>DROP DATABASE IF EXISTS</code> -&gt; <code>CREATE DATABASE</code>
+-&gt; load into <code>psql</code>, all run inside the target’s Postgres
+container via <code>docker exec</code>. The container itself is never
+assumed – this phase shares Phase 20.52’s live discover-and- reconcile
+helper (<code>resolveRDMPostgresConfig</code>) to resolve it on the
+<em>target</em> instance, since a restore target can be a completely
+different instance than whatever last touched that config. See
+DECISIONS.md, “SQL restore load command: grounded in the real
+invenio-sql-backup.bash/ invenio-sql-restore.bash, not guessed,”
+“Restore SQL Backup also discovers-and-reconciles its own target, not
+just Run SQL Backup’s source,” and this phase’s own two 2026-08-18
+entries below (step order, SQL-identifier quoting).</p>
+<p><strong>Two implementation-time corrections to this original design,
+both caught before/while implementing, both with dedicated DECISIONS.md
+entries:</strong> 1. <strong>Step order.</strong> Postgres-target
+discovery (<code>resolveRDMPostgresConfig</code>) now runs immediately
+after the AWS-CLI preflight, <em>before</em> the
+bucket/source-name/object-pick prompts – not after, as originally
+sketched below. The original Work Items order contradicted this phase’s
+own Tests section (“aborts before any S3 activity”); the corrected order
+actually satisfies that intent and fails fast on a broken target. See
+DECISIONS.md, “Restore SQL Backup: resolve the Postgres target before
+any S3 prompt, not after.” 2. <strong>SQL-identifier quoting.</strong>
+The DROP/CREATE DATABASE statements now wrap <code>dbName</code> in a
+proper SQL quoted identifier (<code>quoteSQLIdentifier</code>), not the
+bare, unquoted form <code>invenio-sql-restore.bash</code> itself uses –
+found real, live, while setting up
+<code>caltechdata-restore-test</code>, whose actual database name is
+<code>rdm14-granian</code> (hyphenated, not a valid <em>unquoted</em>
+Postgres identifier). See DECISIONS.md, “Restore SQL Backup: quote the
+database name as a SQL identifier, not just shell-quote it.”</p>
+<p><strong>Real-AWS verification, 2026-08-18/19, against
+<code>caltechdata-restore-test</code> using real CaltechDATA production
+S3 backup data – three attempts, the third fully successful.</strong>
+The first two live-testing passes (2026-08-18) found and fixed five real
+bugs in this phase itself (Phase 20.59: <code>.gz</code>-suffix
+assumption, <code>/tmp</code> vs <code>/var/tmp</code>, conditional
+decompression, <code>pg_terminate_backend</code> before
+<code>DROP DATABASE</code>, <code>DefaultSQLRestoreTimeout</code>
+widened 30min -&gt; 2h) – after which the restore’s actual load step was
+left running overnight and, checked the next morning, was found to have
+been silently killed by two separate AWS-side execution timeouts never
+directly touched by any of those fixes, root-caused and corrected via
+Phase 20.61 (<code>RunShellCommand</code> never set
+<code>SendCommandInput.TimeoutSeconds</code> <em>or</em> the
+AWS-RunShellScript document’s own <code>executionTimeout</code>
+parameter – both default to 3600 seconds independently of each other and
+of any client-side timeout). The third attempt (2026-08-19, run against
+the <code>.gz</code> backup variant), with both Phase 20.61 fixes
+rebuilt in, completed end to end: download+decompress, drop, create, and
+load all reported <code>Success</code> (the load itself confirmed via
+<code>aws ssm list-commands</code> to have both
+<code>TimeoutSeconds: 7200</code> and
+<code>executionTimeout: "7200"</code> actually set, and to have run for
+~68 minutes – past the exact 1-hour mark that killed both earlier
+attempts – before AWS itself reported <code>Success</code>, not a
+timeout), and <code>countRestoredTables</code>’ verification query
+reported 80 tables. Independently cross-checked outside clasm’s own
+report: <code>pg_database_size('rdm14-granian')</code> = 1710 MB, larger
+than either of the two earlier truncated attempts’ final sizes (1424MB,
+1454MB), consistent with a load that actually ran to completion rather
+than one cut off partway. <strong>Phase 20.50 is now fully
+real-AWS-verified.</strong></p>
+<h3 id="work-items-95">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/restore_common.go</code> (shared with Phase
+20.51, not duplicated):
+<code>S3Object{Key string, SizeBytes int64,     LastModified time.Time}</code>;
+<code>ListObjectsByPrefix(ctx, client     awsclient.S3API, bucket, prefix string) ([]S3Object, error)</code>
+– paginated <code>ListObjectsV2</code> loop
+(<code>IsTruncated</code>/<code>ContinuationToken</code>), sorted by
+<code>LastModified</code> descending (most recent first);
+<code>pickS3Object(w, title, description string, objects []S3Object,     input, output io.Writer) (S3Object, error)</code>
+– <code>pickComparable</code> over the sorted list, most-recent
+naturally first but still fully browsable/pickable, no separate “use
+latest?” confirm step needed (mirrors Phase 20.21’s
+<code>InitialCursor</code> precedent: sorted-to-front is itself the
+default, not a second UI step)</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/restore_sql.go</code>:
+<code>RestoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client,     instances []inventory.Instance, rdmPostgresRules     []config.RDMPostgresRule, saveRDMPostgresRules     func([]config.RDMPostgresRule) error) error</code>
+(picks target instance via a plain <code>pickInstance</code> – no
+<code>BackupHistory</code>/recall parameter in this signature, unlike
+Run SQL Backup/Archive SQL; restoring is a rare, deliberate action, not
+a routine one worth pre-positioning) delegating to testable core
+<code>restoreSQLBackup(ctx,     w, ssmClients, s3Client, newS3Client, inst, rdmPostgresRules,     saveRDMPostgresRules, input, output) error</code>,
+in this order (corrected from the original sketch, see above): 1.
+<code>resolveSSM</code> + <code>CheckAWSCLIAvailable</code> (reused) 2.
+<code>resolveRDMPostgresConfig</code> (Phase 20.52’s shared helper,
+reused not reimplemented) – discovers the target’s live Postgres
+container via an unfiltered <code>docker ps</code> plus client-side
+image matching, reconciles with <code>rdm_postgres_config</code>,
+resolves <code>dbName</code>/<code>dbUser</code> (config override else
+<code>cmp.Or(inst.Project,        inst.Name)</code>, same fallback as
+Run SQL Backup). If <code>updatedRules</code> differs from the rules
+passed in, persist via <code>saveRDMPostgresRules</code> and report the
+change 3. Prompt bucket (<code>promptBackupBucketFunc</code>, reused) +
+region/ access-check sequence (reused, same as Feature 11/Phase 20.49)
+4. Prompt source-instance-name (<code>ui.Prompt</code>, default = target
+<code>inst.Name</code> – the common case is restoring an instance’s own
+most recent backup, but cross-instance restore, e.g. onto a fresh clone,
+needs this editable) 5.
+<code>ListObjectsByPrefix(bucket, sourceName+"/")</code>; empty result
+is a clean “no backups found” message, not an error;
+<code>pickS3Object</code> 6.
+<code>detectExistingSQLData(ctx, client, instanceID, containerName,        dbName, dbUser string, timeout, pollInterval) (bool, error)</code>:
+SSM-runs
+<code>docker exec &lt;containerName&gt; psql --username=&lt;dbUser&gt;        --dbname postgres -tAc "SELECT 1 FROM pg_database WHERE        datname=&lt;sqlStringLiteral(dbName)&gt;"</code>
+– true if the database already exists, matching
+<code>invenio-sql-restore.bash</code>’s own
+<code>DROP DATABASE IF EXISTS</code> precondition 7. If existing data
+detected:
+<code>ConfirmDestructive([]string{inst.InstanceID, inst.Name})</code>
+(reused verbatim, same tier as Feature 9/IAM’s Delete Role) 8.
+<code>downloadAndDecompressSQLBackup</code> – one combined SSM command
+(<code>set -e; aws s3 cp --only-show-errors ...; gunzip -f ...</code>,
+matching <code>buildSQLDumpCommand</code>’s own established two-step-
+joined-by-<code>set -e</code> shape) downloads the chosen object to a
+fixed <code>/tmp/&lt;basename&gt;</code> scratch path on the target and
+decompresses it there 9. <code>runRestoreSQLCommands</code> –
+<code>buildRestoreSQLCommands</code> produces the real script’s
+drop/create/load sequence, each its own separate SSM round trip (not
+joined by <code>&amp;&amp;</code>, matching this project’s established
+multi-step-remote-sequence pattern – OpenSearch’s
+register/create/poll/delete):
+<code>docker exec        &lt;containerName&gt; psql --username=&lt;dbUser&gt; --dbname postgres -c        "DROP DATABASE IF EXISTS &lt;quoteSQLIdentifier(dbName)&gt;"</code>,
+then the same for <code>CREATE DATABASE</code>, then
+<code>docker exec -i        &lt;containerName&gt; psql --username=&lt;dbUser&gt; &lt;dbName&gt; &lt;        &lt;sqlFilePath&gt;</code>
+– drop-and-recreate, not restore-in-place, matching
+<code>invenio-sql-restore.bash</code>’s real behavior, with the
+identifier-quoting correction noted above 10.
+<code>countRestoredTables</code>: SSM-runs
+<code>docker exec &lt;containerName&gt;         psql --username=&lt;dbUser&gt; &lt;dbName&gt; -tAc "SELECT count(*) FROM         information_schema.tables WHERE table_schema='public'"</code>,
+surfaces the table count in the report rather than silently declaring
+success on an empty database 11. Report summary</label></li>
+</ul>
+<h3 id="tests-9">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>ListObjectsByPrefix</code>: pagination (multiple
+pages via <code>IsTruncated</code>),
+sort-by-<code>LastModified</code>-descending, empty-prefix case, error
+propagation</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>pickS3Object</code>: most-recent is the
+first/default-selected entry, still able to pick any other</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>restoreSQLBackup</code>’s testable core:
+no-backups-found message; happy path with no existing data (no confirm
+prompt shown, reports the restored table count); existing-data path
+requires <code>ConfirmDestructive</code>, decline cancels before any
+download attempt, confirm proceeds; download failure aborts before any
+load attempt; Postgres discovery failure aborts before any S3 call at
+all
+(<code>TestRestoreSQLBackup_DiscoveryFailureAbortsBeforeAnyS3Activity</code>,
+the corrected-order regression test); <code>rdm_postgres_config</code>
+save/ no-save on changed/unchanged rules; AWS-CLI-unavailable aborts
+before any prompt</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>buildRestoreSQLCommands</code>: exact three-command
+sequence for a simple name, plus a dedicated regression test
+(<code>TestBuildRestoreSQLCommands_HyphenatedDBNameIsQuotedAsIdentifier</code>)
+reproducing <code>caltechdata-restore-test</code>’s own real hyphenated
+<code>dbName</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>quoteSQLIdentifier</code>/<code>sqlStringLiteral</code>:
+simple name, hyphenated name, embedded quote-doubling for
+each</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>detectExistingSQLData</code>/<code>countRestoredTables</code>:
+existing-db/no-db/ SSM-failure fixture responses; count
+parsing</label></li>
+</ul>
+<h3 id="files-9">Files</h3>
+<p>New
+<code>internal/workflow/{restore_common.go,restore_common_test.go, restore_sql.go,restore_sql_test.go}</code>;
+<code>cmd/clasm/main.go</code> (wire <code>RestoreSQLBackup</code> in
+place of its <code>NotYetImplemented</code> stub).</p>
+<h3 id="dependency-8">Dependency</h3>
+<p>Phase 20.48 (menu entry point) – already existed. Phase 20.52’s
+<code>internal/workflow/rdm_postgres_config.go</code> (shared container
+discover- and-reconcile helper) – already existed, reused unchanged.</p>
+<h2 id="phase-20.51-restore-opensearch-snapshot-from-s3">Phase 20.51 —
+Restore OpenSearch Snapshot from S3</h2>
+<p><strong>Status: designed 2026-07-28, restore-conflict decided
+2026-07-29, implemented and unit-tested 2026-08-19, real-AWS-verified
+end to end 2026-08-19, test-first throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean</strong> (DESIGN.md, “RDM Backup &amp; Restore Domain” -&gt;
+“Restore OpenSearch Snapshot from S3”). Depends on Phase 20.49’s
+<code>opensearch_snapshot.go</code>/<code>opensearch_index_patterns.go</code>
+primitives directly (registration, polling, index patterns all reused,
+not reimplemented). See DECISIONS.md, “Restore OpenSearch: delete
+conflicting indices before <code>_restore</code>, don’t close them”, and
+this phase’s own 2026-08-19 entries below (five implementation-time
+corrections, all implemented and unit-tested, test-first).</p>
+<p><strong>Real-AWS verification, 2026-08-19, against
+<code>caltechdata-restore-test</code>, restoring CaltechDATA
+production’s own real OpenSearch snapshot
+(<code>rdm-20260819-160031</code>, archived that same morning) –
+succeeded on the first attempt after correction 5 landed.</strong>
+Conflict check (against the overridden <code>caltechdata</code> index
+prefix – correction 5’s own real-world scenario) found none,
+sync-down/register-repo/trigger-restore all reported
+<code>Success</code>, the restore recovery poll reached
+<code>done</code> on all 43 snapshot-type shard rows, and verification
+reported <code>Success</code>. Independently re-confirmed directly
+against the instance (not just clasm’s own report): 42 indices restored,
+every one <code>yellow</code>/<code>open</code> (none <code>red</code>),
+with real, plausible doc counts –
+<code>caltechdata-rdmrecords-records-record-v7.0.0</code> at 77,258
+docs, <code>caltechdata-requestevents-requestevent-v1.0.0</code> at
+222,909, <code>caltechdata-stats-record-view-2026-06</code> at 518,716,
+and so on across every curated index pattern. <strong>Phase 20.51 is now
+fully real-AWS-verified, closing out the RDM Backup &amp; Restore domain
+– Phases 20.48-20.52 and 20.61 are all implemented, unit-tested, and
+real-AWS-verified.</strong></p>
+<p><strong>Five implementation-time corrections to this phase’s original
+work-item sketch, four with one shared 2026-08-19 DECISIONS.md entry,
+the fifth with its own</strong> (“Restore OpenSearch Snapshot from S3:
+four implementation-time corrections to PLAN.md Phase 20.51’s original
+sketch”; “Restore OpenSearch Snapshot from S3: a fifth correction – the
+restore index prefix must be editable, not silently derived from the
+target’s own tags”): 1. Snapshot sub-prefix listing reuses
+<code>ListArchivedSnapshotPrefixes</code> (opensearch_cleanup.go) rather
+than a new <code>ListSnapshotPrefixes</code> – same listing this project
+already had, tested, and reused. 2. Conflicting-index detection queries
+two broad wildcards (<code>&lt;prefix&gt;-*</code>,
+<code>.ds-&lt;prefix&gt;-*</code>), not the full 18-pattern curated list
+verbatim – avoids a real <code>_cat/indices</code> 404 risk from mixing
+one bare exact-name pattern with wildcards in one comma-joined call,
+confirmed live against CaltechAUTHORS production before writing any
+parsing code. 3. Post-restore verification reports
+<code>_cat/indices</code>’ own observed health/status/docs.count per
+index, not a comparison against the snapshot’s own internal
+<code>_status</code> metadata as originally sketched – that data doesn’t
+even exist locally once Archive OpenSearch’s own unconditional post-sync
+EBS-side delete has run (confirmed live,
+<code>snapshot_missing_exception</code>), and its exact per-index
+doc-count JSON shape was never confirmed against a real response, unlike
+<code>_cat/indices</code>’ plain-text shape (checked live, same
+session). 4. Conflicting-index detection/deletion moved to immediately
+after the AWS-CLI preflight, before any S3 prompt or the (potentially
+multi-gigabyte) sync-down – applying Restore SQL Backup’s own step-order
+lesson (Phase 20.50) proactively from the start, since which indices
+might conflict depends only on the target’s own index prefix, not on
+which snapshot eventually gets picked. 5. <strong>(Found and fixed
+2026-08-19, test-first, ahead of the real-AWS test that would have
+surfaced it)</strong> The <code>indexPrefix</code> used for both
+conflict-detection and the restore’s own <code>indices</code> scoping is
+now an editable prompt, not silently computed and used as-is –
+<code>cmp.Or(inst.Project, inst.Name)</code> only describes the
+<em>target</em>, but a cross-instance restore (this session’s own
+planned test: CaltechDATA’s real snapshot onto
+<code>caltechdata-restore-test</code>, an unrelated dev/test box) needs
+the <em>source</em> snapshot’s own real index prefix instead, which can
+differ arbitrarily. <code>ignore_unavailable:true</code> means a wrong
+prefix wouldn’t error, it would silently restore zero indices.</p>
+<h3 id="work-items-96">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/restore_opensearch.go</code>:
+<code>RestoreOpenSearchSnapshot(ctx, w, ssmClients, s3Client,     newS3Client, instances []inventory.Instance,     openSearchBackupDirRules []config.BackupDirectoryRule) error</code>
+(picks target instance via <code>pickInstance</code> – no
+recall/default- cursor history, matching Restore SQL Backup’s own
+precedent, not <code>pickInstanceDefaulted</code>) delegating to
+testable core
+<code>restoreOpenSearchSnapshot(ctx, w, ssmClients, s3Client,     newS3Client, inst, openSearchBackupDirRules, input, output)     error</code>:
+1. <code>resolveSSM</code> + <code>CheckAWSCLIAvailable</code> (reused)
+2. Prompt for <code>indexPrefix</code> – <strong>correction 5</strong>:
+<code>cmp.Or(inst.Project,        inst.Name)</code> computed as the
+default (same fix shape as Archive OpenSearch’s own Project-tag bug) but
+editable, not used as-is, so a cross-instance restore can override it to
+the snapshot’s own real prefix. Curated index patterns
+(<code>rdmOpenSearchSnapshotIndexPatterns</code>, reused) built from
+whatever value is confirmed. 3.
+<code>detectExistingOpenSearchIndices</code> – correction 2/4 above; if
+any conflicts, <code>ConfirmDestructive</code> (reused) then
+<code>DeleteConflictingIndices</code> (new
+<code>buildDeleteIndicesCommand</code>,
+<code>DELETE &lt;comma-joined-names&gt;</code> via the OpenSearch REST
+API, never a raw filesystem operation) – all before any S3 prompt 4.
+Prompt OpenSearch backup directory (reused pattern from Phase 20.49,
+<code>config.BackupDirectoryFor(openSearchBackupDirRules,        inst.Name)</code>
+as default) 5. Prompt bucket + region/access-check (reused) 6. Prompt
+source-instance-name (default = target <code>inst.Name</code>, same
+rationale as SQL restore) 7. List archived snapshot sub-prefixes –
+correction 1 above, reuses <code>ListArchivedSnapshotPrefixes</code>;
+pick one via new <code>pickSnapshotPrefix</code> (most recent first,
+same shape as <code>pickS3Object</code>) 8. Sync the chosen sub-prefix
+down to the target’s local directory – new
+<code>buildSyncFromS3Command</code>/
+<code>SyncOpenSearchBackupsFromS3</code> (opposite direction from Phase
+20.49’s <code>SyncOpenSearchBackupsToS3</code>, same command-building
+shape); <code>RegisterSnapshotRepo</code> (reused from Phase 20.49) 9.
+<code>POST /_snapshot/&lt;repo&gt;/&lt;name&gt;/_restore</code>, scoped
+to <code>indices</code> – new
+<code>buildRestoreSnapshotCommand</code>/<code>RestoreSnapshot</code>,
+mirroring <code>opensearch_snapshot.go</code>’s command-building shape
+10. Poll for restore completion – new
+<code>buildRestoreRecoveryCommand</code>/
+<code>parseRestoreRecovery</code>/<code>PollRestoreUntilComplete</code>,
+built on <code>_cat/recovery</code> (restores have no named-status
+endpoint the way snapshots do) and <code>pollWithProgress</code> (Phase
+20.53/20.60) from the start, not retrofitted after a bare-timeout
+release 11. Post-restore report – correction 3 above, new
+<code>buildVerifyRestoredIndicesCommand</code>/<code>parseRestoredIndices</code>/
+<code>VerifyRestoredIndices</code>, flags any red-health index in the
+summary 12. Report summary</label></li>
+</ul>
+<h3 id="tests-10">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>buildSyncFromS3Command</code>/<code>buildListIndicesCommand</code>/
+<code>matchesAnyPattern</code>/<code>parseListedIndices</code>/<code>buildDeleteIndicesCommand</code>/
+<code>buildRestoreSnapshotCommand</code>/<code>buildRestoreRecoveryCommand</code>/
+<code>buildVerifyRestoredIndicesCommand</code>: pure-function
+shape/content assertions, same pattern as Phase 20.49’s
+<code>build*Command</code> tests</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>detectExistingOpenSearchIndices</code>/<code>DeleteConflictingIndices</code>/
+<code>RestoreSnapshot</code>/<code>VerifyRestoredIndices</code>:
+fake-client-sequence pattern, including a real no-op assertion for
+<code>DeleteConflictingIndices</code> called with zero indices (no
+SendCommand call at all)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>parseRestoreRecovery</code>: table-driven – no rows
+yet (not started, not done), peer-only rows (ignored), in-progress/done
+snapshot rows (singly and mixed), malformed row (error)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>parseRestoredIndices</code>: multi-row parse
+including a red-health row; malformed row errors</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>PollRestoreUntilComplete</code>: succeeds after
+in-progress polls, times out on a never-completing sequence, prints
+progress</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>restoreOpenSearchSnapshot</code>’s testable core:
+no-snapshots-found message; happy path with no existing conflicting
+indices (no delete call sent); conflicting-index path requires
+<code>ConfirmDestructive</code>, decline cancels before any S3 activity
+at all (correction 4’s own regression test, mirroring Phase 20.50’s
+<code>TestRestoreSQLBackup_DiscoveryFailureAbortsBeforeAnyS3Activity</code>),
+confirm proceeds and issues the delete; a red-health restored index is
+reported as a WARNING; AWS-CLI-unavailable aborts before any
+prompt</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Correction
+5:</strong> new
+<code>TestRestoreOpenSearchSnapshot_IndexPrefixPromptOverridesTargetTagDefault</code>
+overrides the index-prefix prompt to a value different from
+<code>cmp.Or(inst.Project, inst.Name)</code> (a target tagged
+<code>caltechdata-restore-test</code>, overridden to
+<code>caltechdata</code>), asserts no sent command references the
+target’s own tag-derived prefix; confirmed failing first (the extra
+prompt shifted every subsequent test’s input sequence until each was
+updated for the new line). Every existing integration test above updated
+for the new prompt’s input line (default-accepting blank line in most
+cases).</label></li>
+</ul>
+<h3 id="files-10">Files</h3>
+<p>New
+<code>internal/workflow/{restore_opensearch.go, restore_opensearch_test.go}</code>;
+<code>cmd/clasm/main.go</code> (wire
+<code>RestoreOpenSearchSnapshot</code> in place of its
+<code>NotYetImplemented</code> stub).</p>
+<h3 id="dependency-9">Dependency</h3>
+<p>Phase 20.48 (menu entry point) – already existed. Phase 20.49’s
+<code>opensearch_snapshot.go</code> primitives (repo registration,
+poll/parse helpers), <code>opensearch_index_patterns.go</code>, and
+<code>opensearch_cleanup.go</code>’s
+<code>ListArchivedSnapshotPrefixes</code> (correction 1) – all already
+existed, reused unchanged. Phase 20.53/20.60’s
+<code>pollWithProgress</code> for the restore poller. The
+close-vs-delete decision is resolved (delete) – no longer a blocker.</p>
+<h2 id="phase-20.52-run-sql-backup-rdm_postgres_config">Phase 20.52 —
+Run SQL Backup + <code>rdm_postgres_config</code></h2>
+<p><strong>Status: designed 2026-07-29, implemented and unit-tested
+2026-07-29, real-AWS-tested same day – found and fixed four real bugs,
+then confirmed working end to end against CaltechAUTHORS
+production.</strong> Builds the shared container discover-and-reconcile
+helper both this phase and Phase 20.50 depend on – Phase 20.50 itself is
+not yet implemented, but its dependency now exists.</p>
+<p><strong>Four real bugs found via live testing against CaltechAUTHORS
+production (<code>i-0c4c81336aea33d27</code>), same day, immediately
+after this phase’s initial implementation:</strong> 1.
+<strong><code>docker ps --filter ancestor=postgres</code> doesn’t match
+a tagged image</strong> – confirmed via the <code>--debug</code> log
+(<code>Status: Success</code>, empty stdout,
+<code>ResponseCode: 0</code>) that the filter genuinely found zero
+containers even though <code>caltechauthors-db-1</code>
+(<code>postgres:14.13</code>) was running. Fixed: dropped the filter,
+list every container’s image+name
+(<code>docker ps --format '{{.Image}}\t{{.Names}}'</code>) and match the
+Postgres image client-side (<code>isPostgresImage</code>). See
+DECISIONS.md, “Real bug:
+<code>docker ps --filter ancestor=postgres</code> doesn’t match a tagged
+image…”. 2. <strong><code>pg_dump | gzip</code> masked
+<code>pg_dump</code>’s own exit status</strong> – a pipe’s status is its
+last command’s, so a failed <code>pg_dump</code> (connecting to a
+database that, per bug 3 below, didn’t exist) still reported
+<code>Success</code> with <code>gzip</code> compressing 20 bytes of
+nothing. Fixed by matching <code>invenio-sql-backup.bash</code>’s real
+(non-piped) two-step structure: <code>pg_dump</code> redirects to a
+plain <code>.sql</code> file, <code>gzip -f</code> compresses it as a
+separate step, joined by <code>set -e</code>. See DECISIONS.md, “Real
+bug: pg_dump | gzip masks pg_dump’s own exit status…”. 3.
+<strong><code>db_name</code>/<code>db_user</code> defaulted to the wrong
+tag</strong> – <code>i-0c4c81336aea33d27</code>’s Name tag is
+<code>newauthors</code> (legacy), not its actual project shortname; a
+separate Project tag correctly reads <code>caltechauthors</code>.
+<code>RDMPostgresConfigFor</code> widened to take a
+<code>fallbackIdentifier</code> parameter separate from the
+<code>Pattern</code>-matching <code>instanceName</code>; callers now
+pass <code>cmp.Or(inst.Project, inst.Name)</code>. See DECISIONS.md,
+“Default db_name/db_user to the instance’s Project tag, not its Name
+tag.” 4. <strong>Bug 3’s own fix didn’t work at first</strong> –
+re-testing (even after removing the <code>rdm_postgres_config</code>
+override entirely, to rule out a stale-config explanation) still
+resolved to <code>newauthors</code>. Root cause:
+<code>inventory.tagValues</code> matches the <code>Project</code> tag
+key by exact string equality, but this instance’s real tag is spelled
+lowercase <code>project</code>, so <code>inst.Project</code> was
+silently empty and the <code>cmp.Or</code> fallback in bug 3’s fix fell
+through to <code>Name</code> regardless. Checked every instance across
+every local <code>--debug</code> log before changing shared code: every
+real production/legacy instance uses lowercase <code>project</code>
+(predates clasm), every clasm-created test instance uses
+<code>Project</code> – no instance uses both, so case-insensitive
+matching (<code>strings.EqualFold</code>) was applied as a safe superset
+fix.</p>
+<p><strong>Real-AWS re-verification confirmed success</strong>: the
+corrected pipeline produced a correctly-sized, correctly-named backup
+(<code>985MB</code> gzip’d, matching the pre-existing cron-produced
+backup for the same day byte-for-byte in scale). Follow-up, same day:
+after confirming with a colleague that the team’s actual standard is
+lowercase <code>project</code> (not <code>Project</code>), the user
+retagged every clasm-tagged resource using capitalized
+<code>Project</code> to lowercase (found via a live
+<code>resourcegroupstaggingapi</code> query across every region, not
+just the historical <code>--debug</code>-log survey: one AMI, two launch
+templates, one EC2 instance, all account-wide) and asked to remove the
+now-unneeded case-folding. <code>tagValues</code> reverted to
+exact-match on lowercase <code>"project"</code> – simpler code, and a
+new test
+(<code>TestListInstances_DoesNotRecognizeCapitalizedProjectTag</code>)
+locks in the reversion. See DECISIONS.md, “Real bug: recognize the
+Project tag case-insensitively” and “Revert Project tag matching to
+exact-match lowercase ‘project’ – the fleet is clean now.”</p>
+<p>All four bugs fixed test-first (each reproduced via a new regression
+test confirmed failing against the pre-fix code),
+<code>go build</code>/<code>go vet</code>/
+<code>go test ./... -race</code>/<code>gofmt -l</code> all clean
+throughout and after every change, including the final reversion. Also
+same session: the RDM Backup &amp; Restore domain moved before
+Configuration in the domain picker (user’s explicit call, DECISIONS.md,
+“RDM Backup &amp; Restore moved before Configuration in the domain
+picker”).</p>
+<p><strong>Run SQL Backup is now real-AWS-verified end to end</strong>
+against CaltechAUTHORS production. See DECISIONS.md, “Run SQL Backup: a
+new on-demand dump workflow, chaining into Archive SQL rather than
+replacing it,” “RDM Postgres container/DB naming: discover via docker ps
+every run, reconcile with rdm_postgres_config,” and “Restore SQL Backup
+also discovers-and- reconciles its own target, not just Run SQL Backup’s
+source.”</p>
+<h3 id="work-items-97">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>internal/config/config.go</code>: <code>Config</code>
+gains <code>RDMPostgresConfig     []RDMPostgresRule</code>
+(<code>yaml:"rdm_postgres_config"</code>); new
+<code>RDMPostgresRule{Pattern, ContainerName, DBName, DBUser string}</code>
+(same shape as <code>BackupDirectoryRule</code>, three overridable
+fields instead of one); new
+<code>RDMPostgresConfigFor(rules     []RDMPostgresRule, instanceName, fallbackIdentifier string)     (containerName, dbName, dbUser string)</code>
+– first-match-wins via <code>path.Match</code> against
+<code>instanceName</code> (same semantics as
+<code>BackupDirectoryFor</code>);
+<code>dbName</code>/<code>dbUser</code> each independently fall back to
+<code>fallbackIdentifier</code> – deliberately a <em>separate</em>
+parameter from <code>instanceName</code>, not reused, after a real
+incident confirmed an instance’s Name tag (the
+<code>Pattern</code>-matching key) can differ from its actual RDM
+project shortname (a separate Project tag), see DECISIONS.md, “Default
+db_name/db_user to the instance’s Project tag, not its Name tag” –
+<code>containerName</code> has no fallback at all, since it’s never
+assumed, only discovered (see below). New
+<code>UpsertRDMPostgresRule(rules []RDMPostgresRule,     pattern, containerName string) []RDMPostgresRule</code>
+– updates the existing rule for <code>pattern</code> if one exists
+(preserving its <code>DBName</code>/<code>DBUser</code>), else appends a
+new one; returns the same slice unchanged (by value equality) if
+<code>containerName</code> already matches, so callers can cheaply tell
+whether a save is actually needed</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/rdm_postgres_config.go</code> (shared by this
+phase and Phase 20.50, built once here):
+<code>discoverPostgresContainer     (ctx, ssmClient awsclient.SSMAPI, instanceID string, timeout,     pollInterval time.Duration) (string, error)</code>
+– SSM-runs <code>docker ps     --format '{{.Image}}\t{{.Names}}'</code>
+(no <code>--filter</code>; real-AWS testing 2026-07-29 found Docker’s
+own <code>--filter ancestor=postgres</code> doesn’t match a tagged image
+like <code>postgres:14.13</code>, DECISIONS.md, “Real bug…”), splits the
+output into lines, matches the image column via
+<code>isPostgresImage</code> (any tag/digest/registry-path), errors
+loudly (naming the raw command in the error text, per DESIGN.md’s
+manual-fallback precedent) if zero or more than one match comes back;
+<code>resolveRDMPostgresConfig     (ctx, w io.Writer, ssmClient awsclient.SSMAPI, instanceID,     instanceName, fallbackIdentifier string, rules     []config.RDMPostgresRule) (containerName, dbName, dbUser string,     updatedRules []config.RDMPostgresRule, error)</code>
+– calls <code>discoverPostgresContainer</code>, then
+<code>config.     UpsertRDMPostgresRule</code>, then
+<code>config.RDMPostgresConfigFor</code> for the final
+<code>dbName</code>/<code>dbUser</code>; if <code>updatedRules</code>
+differs from <code>rules</code>, prints what changed (new vs. updated
+vs. unchanged) via <code>w</code> – persistence itself
+(<code>config.Save</code>) is the caller’s job (both this phase’s
+<code>RunSQLBackup</code> and Phase 20.50’s
+<code>restoreSQLBackup</code> own their own <code>~/.clasm</code> path
+and existing config-loading pattern, same as
+<code>RunConfigureMenu</code> already does), matching
+<code>BackupHistory.Save</code>’s own “warn on failure, not fatal”
+spirit – a config-write failure here is a convenience lost, not a reason
+to abort the backup/restore itself</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/run_sql_backup.go</code>:
+<code>RunSQLBackup(ctx, w,     ssmClients, instances []inventory.Instance, backupDirRules     []config.BackupDirectoryRule, rdmPostgresRules     []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules     func([]config.RDMPostgresRule) error, archiveSQL func(ctx     context.Context) error) error</code>
+(picks instance via <code>pickInstanceDefaulted</code>, recalled via the
+same <code>hist.LastInstanceID</code> Archive SQL uses) delegating to
+testable core
+<code>runSQLBackup(ctx, w,     ssmClient, inst, backupDirRules, rdmPostgresRules, hist,     saveRDMPostgresRules, archiveSQL, input, output) error</code>:
+1. <code>resolveSSM</code> + <code>CheckAWSCLIAvailable</code> (reused)
+2. Prompt backup directory – identical prompt/recall/pattern-match to
+<code>backupArchiveAndTrim</code>’s own (same
+<code>hist.LastDirectoryByInstance</code> priority over
+<code>config.BackupDirectoryFor</code>), <code>hist.Save</code> on pick
+3. <code>resolveRDMPostgresConfig</code> (this phase’s own new helper),
+called with
+<code>fallbackIdentifier = cmp.Or(inst.Project, inst.Name)</code> –
+prefer the instance’s Project tag over its Name tag for defaulting
+<code>dbName</code>/<code>dbUser</code> (DECISIONS.md, “Default db_name/
+db_user to the instance’s Project tag, not its Name tag”); if
+<code>updatedRules</code> differs,
+<code>saveRDMPostgresRules(updatedRules)</code>; then print the resolved
+container/dbName/dbUser to the operator before running the dump, so a
+wrong resolution is visible immediately 4. New
+<code>buildSQLDumpCommand(containerName, dbName, dbUser,        directory, date string) string</code>
+producing
+<code>set -e; docker exec        &lt;containerName&gt; pg_dump --username=&lt;dbUser&gt; --column-inserts        &lt;dbName&gt; &gt; &lt;directory&gt;/&lt;containerName&gt;-&lt;dbName&gt;-&lt;date&gt;.sql;        gzip -f &lt;directory&gt;/&lt;containerName&gt;-&lt;dbName&gt;-&lt;date&gt;.sql</code>
+– matches <code>invenio-sql-backup.bash</code>’s own command
+<em>structure</em> exactly (redirect-then-separately-gzip, not piped –
+see DECISIONS.md, “Real bug: pg_dump | gzip masks pg_dump’s own exit
+status…”), producing the identical final <code>...sql.gz</code> filename
+convention either way; <code>RunShellCommand</code> (reused) to execute
+it via SSM, a new <code>DefaultSQLDumpTimeout</code> (long-running,
+mirrors <code>DefaultBackupUploadTimeout</code>’s 30-minute bound) 5.
+Report success/failure (surface the command’s own exit status/stderr on
+failure – genuinely reliable now that the command has no pipe left to
+mask <code>pg_dump</code>’s own exit status) 6. <code>Confirm</code>
+(not <code>ConfirmDestructive</code> – not itself destructive):
+“Continue to Archive SQL Backup to S3 now?”; on yes, call
+<code>archiveSQL(ctx)</code> directly (the same closure
+<code>RDMBackupRestoreActions.        ArchiveSQL</code> already wraps
+<code>BackupArchiveAndTrim</code> in, passed through rather than
+reimplemented)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/configure_edit.go</code>: new
+<code>rdmPostgresRuleLabel(r     config.RDMPostgresRule) string</code>
+(<code>"&lt;pattern&gt; -&gt; &lt;container_name&gt;     (&lt;db_name&gt;/&lt;db_user&gt;)"</code>,
+blank <code>db_name</code>/<code>db_user</code> shown as
+<code>displayOrNone</code>’s “(none)”/“(instance Name)” – TBD exact
+wording during implementation);
+<code>displayRDMPostgresRulesList</code>/
+<code>rdmPostgresRulesEditDescription</code> (same wipe-avoidance pair
+as
+<code>displayBackupDirectoryRulesList</code>/<code>backupDirectoryRulesEditDescription</code>);
+new
+<code>editRDMPostgresRules(w, cfg *config.Config, input, output)     (bool, error)</code>,
+same bounded Add/Remove/Done loop shape as
+<code>editBackupDirectoryRules</code> – “Add a rule” prompts pattern,
+then container name, db name, db user (each individually optional except
+pattern, blank db name/user meaning “fall back to instance Name”);
+<code>displayConfig</code> gains a line for this new
+section</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/workflow/configure_menu.go</code>:
+<code>ConfigureActions</code> gains
+<code>EditRDMPostgresConfig func(ctx context.Context) error</code>;
+<code>configureMenuItems</code> gains “Edit RDM Postgres config”,
+inserted after “Edit backup directory rules” and before “Edit Origin tag
+config” (groups the two backup-related rule editors together);
+<code>RunConfigureMenu</code> wires it the same way
+<code>EditBackupDirectoryRules</code> is wired
+(<code>editRDMPostgresRules(w, &amp;cfg, nil, nil)</code>, sets
+<code>dirty</code> on change)</label></li>
+</ul>
+<h3 id="tests-11">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>RDMPostgresConfigFor</code>: pattern match returns
+the rule’s fields; blank <code>DBName</code>/<code>DBUser</code> fall
+back to <code>fallbackIdentifier</code>; no match falls back to
+<code>fallbackIdentifier</code> for both; <code>ContainerName</code> has
+no fallback (returns “” on no match, since it’s never assumed);
+<code>fallbackIdentifier</code> is independent of
+<code>instanceName</code> – a dedicated regression test reproduces the
+real incident directly (<code>instanceName="newauthors"</code>,
+<code>fallbackIdentifier="caltechauthors"</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>UpsertRDMPostgresRule</code>: updates an existing
+pattern’s <code>ContainerName</code> in place (preserving
+<code>DBName</code>/<code>DBUser</code>); appends a new rule when the
+pattern doesn’t exist yet; returns an equal slice (no-op) when the
+container name hasn’t changed</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>discoverPostgresContainer</code>: exactly one line
+succeeds; zero lines errors; more than one line errors; the raw command
+appears in the error text; matches a bare “postgres” image, a tagged
+one, and a fully-qualified registry-path one; does not match an image
+that merely contains “postgres” as a substring; a dedicated regression
+test replays the exact real <code>docker ps</code> output from the
+CaltechAUTHORS incident (all 7 containers) and confirms only the
+Postgres one matches</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>resolveRDMPostgresConfig</code>:
+discovery-differs-from-config triggers an update and a printed change
+message; discovery-matches-config prints nothing and returns the same
+rules; <code>DBName</code>/<code>DBUser</code> overrides in an existing
+rule are preserved through an update; <code>fallbackIdentifier</code>
+(not <code>instanceName</code>) is what a fresh rule’s
+<code>dbName</code>/<code>dbUser</code> actually default to</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>buildSQLDumpCommand</code>: exact command shape,
+table-driven against a couple of containerName/dbName/dbUser/directory
+combinations; separately asserts no <code>|</code> appears anywhere in
+the built command and that <code>set -e</code> does (regression test for
+the exit-status-masking bug)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>runSQLBackup</code>’s testable core: happy path with
+“yes” to the Archive SQL prompt calls the passed-in
+<code>archiveSQL</code> closure exactly once; “no” skips it; a discovery
+failure (zero or multiple containers) aborts before any dump attempt; a
+dump command failure is reported and does not offer the Archive SQL
+prompt; a dedicated regression test (<code>Name="newauthors"</code>,
+<code>Project="caltechauthors"</code>) confirms the dump command uses
+the Project tag, never the Name tag</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>editRDMPostgresRules</code>: add/remove a rule (same
+shape as <code>editBackupDirectoryRules</code>’s own tests); a blank
+pattern re-prompts without adding; container name/db name/db user can
+each be left blank independently on add</label></li>
+</ul>
+<h3 id="files-11">Files</h3>
+<p><code>internal/config/{config.go,config_test.go}</code> (extended,
+not new);
+<code>internal/workflow/{configure_edit.go,configure_edit_test.go, configure_menu.go,configure_menu_test.go}</code>
+(extended, not new); new
+<code>internal/workflow/{rdm_postgres_config.go,rdm_postgres_config_test.go, run_sql_backup.go,run_sql_backup_test.go}</code>;
+<code>cmd/clasm/main.go</code> (wire <code>RunSQLBackup</code>, the
+<code>archiveSQL</code> closure hand-off, and
+<code>EditRDMPostgresConfig</code>).</p>
+<h3 id="dependency-10">Dependency</h3>
+<p>Phase 20.48 (menu entry point; <code>rdmMenuItems</code> gains a
+fifth entry, “Run SQL Backup,” placed first;
+<code>RDMBackupRestoreActions</code> gains a <code>RunSQLBackup</code>
+field). None of Phases 20.49-20.51 are required – this phase is
+independently buildable once Phase 20.48 exists.</p>
+<hr />
+<h2
+id="phase-20.53-poll-loop-progress-output-pollsnapshotuntilcomplete">Phase
+20.53 — Poll-Loop Progress Output
+(<code>PollSnapshotUntilComplete</code>)</h2>
+<p><strong>Status: designed and implemented 2026-08-18, test-first
+throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean</strong> (DESIGN.md, “Poll-Loop Progress Output: OpenSearch
+Snapshot/Restore Polling”; DECISIONS.md, “Poll-loop progress output: fix
+<code>PollSnapshotUntilComplete</code> ahead of Phase 20.51’s sibling
+poller”). User’s explicit “before the next release” target. Not yet
+real-AWS-verified (next real Archive OpenSearch Snapshot run against any
+instance will exercise it live).</p>
+<h3 id="work-items-98">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/poll_progress.go</code>:
+<code>pollWithProgress(ctx, w     io.Writer, label string, timeout, pollInterval time.Duration, check     func(ctx context.Context) (done bool, err error)) error</code>
+– prints
+<code>"waiting for %s to complete -- this can take several minutes for a     large index set\n"</code>
+once before the loop, then on every <code>pollInterval</code> tick
+(after a non-final check, before the next one) prints elapsed time
+(<code>"... %s elapsed\n"</code>,
+<code>time.Since(start).Round(time.Second)</code>); returns
+<code>check</code>’s error immediately if non-nil (no extra tick
+printed), otherwise loops until <code>done</code> or the timeout,
+matching <code>PollSnapshotUntilComplete</code>’s original
+timeout/deadline shape exactly (moved here, not duplicated) – simplified
+from the Work Item’s original signature sketch (dropped the stray double
+<code>error</code> return)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>opensearch_snapshot.go</code>:
+<code>PollSnapshotUntilComplete</code> gains a
+<code>w     io.Writer</code> parameter (second positional, right after
+<code>ctx</code>); its loop body becomes the <code>check</code> closure
+passed to <code>pollWithProgress</code> (state-check command,
+SUCCESS/FAILED/PARTIAL handling unchanged; the FAILED/PARTIAL error path
+no longer also returns the state string alongside the error, since no
+caller or test used it)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>opensearch_archive.go</code>: threaded <code>w</code>
+through to the <code>PollSnapshotUntilComplete</code> call site (already
+had <code>w</code> in scope)</label></li>
+</ul>
+<h3 id="tests-12">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>pollWithProgress</code>: prints the initial message
+once; prints one elapsed-time line per tick; returns
+<code>check</code>’s error immediately with no extra tick; times out
+with a “timed out waiting for…” message naming the label</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>PollSnapshotUntilComplete</code>: existing
+SUCCESS/FAILED/PARTIAL/timeout/ SSM-failure/send-error test cases all
+updated for the widened signature and still pass; a new regression test
+(<code>TestPollSnapshotUntilComplete_PrintsProgressWhileWaiting</code>)
+confirms both the initial message and a
+tick-per-<code>IN_PROGRESS</code>-check elapsed line actually reach
+<code>w</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>opensearch_archive_test.go</code>’s existing
+happy-path/error-path tests needed no changes – they already pass a real
+<code>*bytes.Buffer</code> as <code>w</code> and assert via
+<code>strings.Contains</code>, so the new progress lines land there for
+free without breaking any exact-match assertion (there are
+none)</label></li>
+</ul>
+<h3 id="files-12">Files</h3>
+<p>New
+<code>internal/workflow/{poll_progress.go,poll_progress_test.go}</code>;
+<code>internal/workflow/{opensearch_snapshot.go,opensearch_snapshot_test.go}</code>
+(extended, not new); <code>opensearch_archive.go</code> (one-line
+call-site change, no test changes needed).</p>
+<h3 id="dependency-11">Dependency</h3>
+<p>None – independently buildable. Should land before Phase 20.51, whose
+<code>PollRestoreUntilComplete</code> is designed to reuse
+<code>pollWithProgress</code> directly rather than repeating the
+silent-wait gap a third time.</p>
+<h2
+id="phase-20.54-run-sql-backup-drop-the-archive-sql-auto-chain-rename-to-generate-sql-backup">Phase
+20.54 — Run SQL Backup: Drop the Archive-SQL Auto-Chain, Rename to
+“Generate SQL Backup”</h2>
+<p><strong>Status: designed and implemented 2026-08-18, test-first
+throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean, real-AWS-verified 2026-08-19</strong> (DESIGN.md, “Run SQL
+Backup: Drop the Archive-SQL Auto-Chain, Rename to "Generate SQL
+Backup"”; DECISIONS.md, “Run SQL Backup: drop the Archive-SQL
+auto-chain, rename to "Generate SQL Backup"”). Real-AWS verification:
+used for real 2026-08-19 morning to generate SQL backups on both
+CaltechAUTHORS and CaltechDATA production after they were rebooted –
+confirmed no auto-chain into Archive SQL Backup.</p>
+<h3 id="work-items-99">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>run_sql_backup.go</code>: removed
+<code>runSQLBackup</code>’s trailing <code>Confirm</code> branch and its
+<code>archiveSQL func(ctx context.Context) error</code> parameter –
+<code>input</code>/<code>output</code> are kept (still used by the
+directory prompt’s <code>ui.WithIO</code>); <code>RunSQLBackup</code>’s
+exported signature drops the same parameter</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>:
+<code>RDMBackupRestoreActions.RunSQLBackup</code>’s wiring drops the
+<code>archiveSQLAction</code> closure argument (the closure itself is
+untouched – still assigned to <code>ArchiveSQL</code>
+separately)</label></li>
+<li><label><input type="checkbox" checked="" /><code>rdm_menu.go</code>:
+<code>rdmMenuItems</code>’s <code>"Run SQL Backup"</code> label is now
+<code>"Generate SQL Backup"</code> (Go identifiers unchanged, per Phase
+20.43’s precedent)</label></li>
+</ul>
+<h3 id="tests-13">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>runSQLBackup</code>’s testable core: the two
+“yes”/“no”-to-Archive-SQL test cases were replaced with a single
+<code>TestRunSQLBackup_HappyPathDumpsAndReturnsWithNoFurtherPrompt</code>
+confirming the happy path returns immediately after a successful dump
+with nothing else consumed from input; every other existing test in the
+file updated for the narrowed signature (the now-unused
+<code>archiveSQL</code> closures/stale trailing <code>"n\n"</code> input
+lines removed)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>TestRDMMenuItems_Order</code> (the one test in this
+suite asserting on literal menu-label text, per Phase 20.43’s own
+background-search precedent) updated to expect
+<code>"Generate SQL Backup"</code>; comment-only references to the old
+label in <code>rdm_menu_test.go</code> updated to match</label></li>
+</ul>
+<h3 id="files-13">Files</h3>
+<p><code>internal/workflow/{run_sql_backup.go,run_sql_backup_test.go,rdm_menu.go, rdm_menu_test.go}</code>
+(extended, not new); <code>cmd/clasm/main.go</code>.</p>
+<h3 id="dependency-12">Dependency</h3>
+<p>None – independently buildable.</p>
+<h2
+id="phase-20.55-delete-roles-wrong-remedy-message-missing-instance-profile-membership-capability">Phase
+20.55 — Delete Role’s Wrong-Remedy Message + Missing
+Instance-Profile-Membership Capability</h2>
+<p><strong>Status: designed and implemented 2026-08-18, test-first
+throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean, real-AWS-verified 2026-08-19</strong> (DESIGN.md, “Delete
+Role’s Wrong-Remedy Message + Missing Instance-Profile-Membership
+Capability”; DECISIONS.md, “Delete Role: correct the wrong-remedy
+message, add the missing instance-profile-membership actions”). Real-AWS
+verification: a disposable
+<code>test-verify-2055-role</code>/<code>test-verify-2055-profile</code>
+pair (tagged <code>origin=dld</code> so the DLD-owned-only picker filter
+would surface them, otherwise unattached to any EC2 instance) confirmed
+all four steps – Delete Role’s corrected message, Remove Role from
+Instance Profile, Delete Instance Profile, and a final clean Delete Role
+– each independently cross-checked via
+<code>aws iam get-role</code>/<code>get-instance-profile</code> between
+steps. Both fixture resources fully deleted afterward, no cleanup left
+behind.</p>
+<h3 id="work-items-100">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>iam_lifecycle.go</code>:
+<code>deleteIAMRoleConfirmed</code>’s refusal message (both the
+hard-refuse in <code>deleteIAMRole</code> and the earlier
+<code>iam_menu</code>-level pre-check) reworded from “detach it first
+(Compute domain, …)” to name the real relationship and point at the new
+action below: “role %q is a member of instance profile(s) %s – remove it
+from each first (IAM domain, "Remove role from instance
+profile")”</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>internal/workflow/iam_instance_profile_membership.go</code>:
+<code>removeRoleFromInstanceProfile(ctx, client awsclient.IAMAPI,     profileName, roleName string) error</code>
+(wraps <code>iam:RemoveRoleFromInstanceProfile</code>);
+<code>deleteInstanceProfile(ctx,     client awsclient.IAMAPI, profileName string) error</code>
+(wraps <code>iam:DeleteInstanceProfile</code>, letting AWS’s own “still
+has a role attached” precondition surface as-is rather than pre-checking
+it client-side); new <code>filterDLDOwnedInstanceProfiles</code> (same
+“filter, don’t annotate-and-reject” shape as
+<code>filterDLDOwnedRoles</code>)</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>RemoveRoleFromInstanceProfile(ctx, w, client, originTag) error</code>
+/ <code>DeleteInstanceProfile(ctx, w, client, originTag) error</code>:
+pick-then-confirm-then-act wrappers (plain <code>Confirm</code>, not
+<code>ConfirmDestructive</code>, matching Attach/Detach Policy’s
+tiering), same shape as
+<code>AttachPolicyToRole</code>/<code>DetachPolicyFromRole</code> –
+Remove Role from Instance Profile picks a DLD-owned role
+(<code>pickIAMRole</code>) then which profile it’s a member of, if more
+than one (<code>pickComparable</code> over
+<code>IAMRoleDetail.ReferencedByProfiles</code>, reusing the list
+<code>fetchIAMRoleDetail</code> already assembles rather than a fresh
+fetch); Delete Instance Profile picks a DLD-owned instance profile
+directly (<code>pickIAMInstanceProfile</code>)</label></li>
+<li><label><input type="checkbox" checked="" /><code>iam_menu.go</code>:
+<code>IAMActions</code> gains
+<code>RemoveRoleFromInstanceProfile</code>/<code>DeleteInstanceProfile</code>;
+two new menu entries inserted after Detach Policy from Role and before
+Delete Role, in the natural remedy order (remove role from profile,
+delete the now-empty profile, delete the role) –
+reversible-before-irreversible, matching Phase 20.43’s own ordering
+convention</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>internal/awsclient/iam.go</code>: <code>IAMAPI</code>
+gains
+<code>RemoveRoleFromInstanceProfile</code>/<code>DeleteInstanceProfile</code>;
+<code>logging_iam.go</code>’s <code>loggingIAMClient</code> wrapper gets
+matching methods (not called out in the original work-item sketch, but
+required for <code>loggingIAMClient</code> to keep satisfying
+<code>IAMAPI</code>)</label></li>
+</ul>
+<h3 id="tests-14">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Reworded-message
+assertions
+(<code>TestDeleteIAMRole_RefusalMessageNamesTheRealRemedy</code>,
+<code>TestDeleteIAMRoleConfirmed_RefusalMessageNamesTheRealRemedy</code>):
+confirm the new wording (“member of”, “Remove role from instance
+profile”) and confirm the old, no-longer-fixable remedy
+(“Associate/replace IAM instance profile”) no longer
+appears</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>removeRoleFromInstanceProfileConfirmed</code>/<code>deleteInstanceProfileConfirmed</code>’s
+testable cores: non-DLD-owned role/profile refused; not-a-member case
+refuses cleanly before any picker/confirm; confirm declined does
+nothing; confirm accepted calls the wrapped API function exactly once
+with the right names; the wrapped API’s own error (including AWS’s
+<code>DeleteConflict</code> for an in-use profile) propagates
+verbatim</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>removeRoleFromInstanceProfileWorkflow</code>/<code>deleteInstanceProfileWorkflow</code>:
+no-DLD-owned-roles/profiles-found message</label></li>
+</ul>
+<h3 id="files-14">Files</h3>
+<p>New
+<code>internal/workflow/{iam_instance_profile_membership.go, iam_instance_profile_membership_test.go}</code>;
+<code>internal/workflow/ {iam_lifecycle.go,iam_lifecycle_test.go,iam_menu.go,iam_menu_test.go}</code>
+(extended, not new);
+<code>internal/awsclient/{iam.go,logging_iam.go}</code> (extended, not
+new); <code>internal/workflow/create_instance_profile_test.go</code>
+(extended – shared <code>fakeIAMClient</code> fixture gained the two new
+methods); <code>cmd/clasm/main.go</code>.</p>
+<h3 id="dependency-13">Dependency</h3>
+<p>None – independently buildable; reuses IAM domain scaffolding from
+Phases 20.36-20.40 (RequireDLDOwned, IAMActions, menu shape)
+unchanged.</p>
+<h2
+id="phase-20.56-associatereplace-iam-instance-profile-recoverable-entityalreadyexists">Phase
+20.56 — Associate/Replace IAM Instance Profile: Recoverable
+<code>EntityAlreadyExists</code></h2>
+<p><strong>Status: designed and implemented 2026-08-18, test-first
+throughout,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean, real-AWS-verified 2026-08-19</strong> (DESIGN.md,
+“Associate/Replace IAM Instance Profile: Recoverable
+<code>EntityAlreadyExists</code>”; DECISIONS.md, “Associate/Replace IAM
+instance profile: recoverable <code>EntityAlreadyExists</code>” and its
+same-day correction entry). Real-AWS verification: a zero-net-change
+test against <code>caltechdata-restore-test</code> (its already-attached
+<code>rdm-backups</code> role has a same-named instance profile)
+confirmed both sub-behaviors – the “use the existing one instead” offer,
+and cancelling the name prompt returning to the picker rather than
+aborting the whole workflow – with the instance’s own
+<code>IamInstanceProfile</code> independently confirmed unchanged
+(<code>rdm-backups</code>) via <code>aws ec2 describe-instances</code>
+after each path.</p>
+<h3 id="work-items-101">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>create_instance_profile.go</code>:
+<code>createInstanceProfileForRole</code>’s
+<code>EntityAlreadyExists</code> branch, instead of unconditionally
+printing a message and looping back to the name prompt, asks a plain
+<code>Confirm</code> (“Instance profile %q already exists – use it
+instead of creating a new one?”); “use existing” returns
+<code>(profileName,     true, nil)</code> immediately –
+<strong>corrected from this work item’s original
+<code>created=false</code> sketch during implementation</strong> (traced
+<code>promptIAMInstanceProfileOrCreate</code>’s own caller, which only
+ever returns a resolved name when <code>created</code> is
+<code>true</code>; <code>false</code> would have silently discarded the
+confirmed existing name and looped back to the picker instead of using
+it – see DECISIONS.md’s dedicated correction entry)</label></li>
+<li><label><input type="checkbox" checked="" />Cancellation from the
+name prompt is treated as <code>("", false, nil)</code> (no profile
+resolved, not an error) rather than propagating the raw cancellation
+error – matches the function’s own existing “no SSM-capable roles”
+return shape. New package-level
+<code>promptInstanceProfileNameFunc</code> var (same seam shape as
+<code>backup_archive.go</code>’s <code>promptBackupBucketFunc</code>)
+makes this testable via a substitutable fake returning
+<code>huh.ErrUserAborted</code>. The paired “use existing?”
+<code>Confirm</code>’s own cancellation is left as an ordinary
+propagated error, matching every other <code>Confirm</code> call site in
+the IAM domain – not converted to nil, since nothing in this fix’s scope
+calls for a broader convention change</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>createInstanceProfileInteractive</code>/<code>promptIAMInstanceProfileOrCreate</code>:
+confirmed (by tracing the code, not just assuming) the existing
+“redisplay the picker on <code>created=false</code>” behavior needs no
+changes for the cancellation path; the “use existing” path needed the
+<code>created=true</code> correction above instead of relying on that
+same behavior</label></li>
+</ul>
+<h3 id="tests-15">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>createInstanceProfileForRole</code>:
+<code>EntityAlreadyExists</code> + “use existing”
+(<code>TestCreateInstanceProfileForRole_CollisionOffersUseExisting</code>)
+returns the existing name with <code>created=true</code>, no
+<code>AddRoleToInstanceProfile</code> call;
+<code>EntityAlreadyExists</code> + “type a different name”
+(<code>TestCreateInstanceProfileForRole_NameCollisionRetries</code>,
+updated for the new confirm step) re-prompts and the retry succeeds; a
+cancellation at the name prompt
+(<code>TestCreateInstanceProfileForRole_CancelAtNamePromptReturnsWithoutError</code>,
+via the new seam) returns <code>created=false, err=nil</code>, not the
+raw cancel error, with no <code>CreateInstanceProfile</code> call at
+all</label></li>
+<li><label><input type="checkbox" checked="" />No further-up regression
+test at <code>promptIAMInstanceProfileOrCreate</code>’s own level –
+confirmed (not assumed) that its only pipe-testable path is the
+list-fetch-error free-text fallback, which bypasses
+<code>createInstanceProfileInteractive</code>/<code>createInstanceProfileForRole</code>
+entirely; the real picker call is Picker-tier and not pipe-testable, the
+same already-accepted limitation documented at this test file’s own
+<code>TestPromptIAMInstanceProfileOrCreate_FallsBackToFreeTextWhenListFails</code></label></li>
+</ul>
+<h3 id="files-15">Files</h3>
+<p><code>internal/workflow/{create_instance_profile.go,create_instance_profile_test.go}</code>
+(extended, not new).</p>
+<h3 id="dependency-14">Dependency</h3>
+<p>None – independently buildable.</p>
+<hr />
+<h2
+id="phase-20.57-real-bug-project-tag-key-written-capitalized-should-be-lowercase">Phase
+20.57 — Real Bug: Project Tag Key Written Capitalized, Should Be
+Lowercase</h2>
+<p><strong>Status: found, fixed, and unit-tested 2026-08-18,
+test-first</strong> (DECISIONS.md, “Real bug: instance/AMI creation
+wrote the Project tag key capitalized, the fleet convention is
+lowercase”). Found while preparing to launch a fresh dev/restore-test
+instance, ahead of Phases 20.50/20.51.</p>
+<h3 id="work-items-102">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>launch_instance.go</code>,
+<code>launch_from_cloud_init.go</code>,
+<code>create_ami_from_instance.go</code>: each
+<code>Tags: map[string]string{...}</code> literal’s
+<code>"Project"</code> key changed to <code>"project"</code>, matching
+<code>inventory.tagValues</code>’ exact-match lowercase read side. No
+change to the “Project tag” prompt label itself.</label></li>
+</ul>
+<h3 id="tests-16">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>TestCollectLaunchInstanceParams</code>,
+<code>TestCollectLaunchInstanceParamsFromCloudInit_HappyPath</code>:
+existing <code>Tags["Project"]</code> assertions updated to
+<code>Tags["project"]</code></label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>TestCollectCreateAMIParams_ProjectTagKeyIsLowercase</code>: this
+call site had no pre-existing assertion on the tag key at all; asserts
+the lowercase key is set and the capitalized key is absent</label></li>
+<li><label><input type="checkbox" checked="" />Confirmed (by reading
+each file, not assuming) that every other test-file reference to
+<code>"Project"</code> (<code>bucket_tags_test.go</code>,
+<code>manage_tags_test.go</code>, <code>tag_management_test.go</code>,
+<code>create_ami_execute_test.go</code>,
+<code>launch_execute_test.go</code>,
+<code>launch_template_create_test.go</code>) is either a
+generic/arbitrary example tag key unrelated to this convention, or an
+execute/build- layer test that just forwards an already-built
+<code>Tags</code> map verbatim – none needed changes</label></li>
+</ul>
+<h3 id="files-16">Files</h3>
+<p><code>internal/workflow/{launch_instance.go,launch_instance_test.go, launch_from_cloud_init.go,launch_from_cloud_init_test.go, create_ami_from_instance.go,create_ami_from_instance_test.go}</code>
+(extended, not new).</p>
+<h3 id="dependency-15">Dependency</h3>
+<p>None – independently buildable.</p>
+<hr />
+<h2
+id="phase-20.58-real-bug-configure-clasm-edits-didnt-take-effect-until-restart">Phase
+20.58 — Real Bug: Configure Clasm Edits Didn’t Take Effect Until
+Restart</h2>
+<p><strong>Status: found, fixed 2026-08-18, no dedicated test (pure
+<code>main()</code> wiring, no existing test harness for
+<code>cmd/clasm</code>) – verified via the live use that surfaced
+it</strong> (DECISIONS.md, “Real bug: Configure clasm edits didn’t take
+effect until restart – reload cfg after returning from the Configure
+clasm domain”). Found live testing Restore SQL Backup against
+<code>caltechdata-restore-test</code>.</p>
+<h3 id="work-items-103">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>cmd/clasm/main.go</code>: the
+<code>Configuration</code> domain closure now reloads
+<code>configPath</code> via <code>config.Load</code> immediately after
+<code>RunConfigureMenu</code> returns, reassigning the same outer
+<code>cfg</code> variable (not a new <code>:=</code> shadow) so every
+other domain’s closures – confirmed by reading each one, all read
+<code>cfg.XXX</code> live at call time – pick up the change without a
+restart. Regions stay the one deliberate exception (unchanged):
+region-dependent clients
+(<code>ssmClients</code>/<code>ec2Clients</code>/etc.) are still only
+built once at startup.</label></li>
+</ul>
+<h3 id="tests-17">Tests</h3>
+<ul>
+<li>None – <code>cmd/clasm</code> has no existing test harness (unlike
+the <code>workflow</code> package); this is pure procedural wiring, not
+business logic with edge cases to unit-test. Verified live: the exact
+repro (edit <code>rdm_postgres_config</code> via Configure clasm, Save,
+re-run Restore SQL Backup in the same process without restarting) is the
+regression check.</li>
+</ul>
+<h3 id="files-17">Files</h3>
+<p><code>cmd/clasm/main.go</code> (extended, not new).</p>
+<h3 id="dependency-16">Dependency</h3>
+<p>None.</p>
+<hr />
+<h2
+id="phase-20.59-real-bug-restore-sql-backups-downloaddecompress-assumed-a-.gz-key-suffix-swallowed-stderr">Phase
+20.59 — Real Bug: Restore SQL Backup’s Download/Decompress Assumed a
+“.gz” Key Suffix, Swallowed Stderr</h2>
+<p><strong>Status: found, fixed, and unit-tested 2026-08-18, test-first,
+<code>go build</code>/<code>go vet</code>/<code>go test ./... -race</code>/<code>gofmt -l</code>
+all clean</strong> (DECISIONS.md, “Real bug: Restore SQL Backup’s
+download/decompress assumed every backup’s S3 key ends in ".gz", and
+swallowed stderr on failure”). Found live-testing Phase 20.50 against
+<code>caltechdata-restore-test</code>, restoring CaltechDATA
+production’s own real archived backup.</p>
+<h3 id="work-items-104">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>restore_sql.go</code>: new fixed scratch-path
+constants
+<code>remoteRestoreDownloadPath</code>/<code>remoteRestoreSQLPath</code>
+(<code>/tmp/clasm-     sql-restore.download</code>/<code>.sql</code>),
+replacing the previous key-basename- derived path.
+<code>buildDownloadAndDecompressCommand(bucket, key     string) string</code>
+(dropped its <code>destPath</code> parameter – now fixed) decompresses
+via <code>gunzip -c &lt;download-path&gt; &gt; &lt;sql-path&gt;</code>,
+not <code>gunzip -f &lt;path&gt;</code> in place. Both this command and
+<code>buildRestoreSQLCommands</code>’ drop/create/load are now wrapped
+in a <code>{ ...; } 2&gt;&amp;1</code> group.
+<code>detectExistingSQLData</code>/<code>countRestoredTables</code>
+deliberately left unchanged (see DECISIONS.md).</label></li>
+</ul>
+<h3 id="tests-18">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox"
+checked="" /><code>TestBuildDownloadAndDecompressCommand_SameShapeRegardlessOfKeySuffix</code>:
+the built command is identical (source key aside) whether the key ends
+in <code>.sql.gz</code> or <code>.sql</code></label></li>
+<li><label><input type="checkbox"
+checked="" /><code>TestDownloadAndDecompressSQLBackup_SuccessWithKeyLackingGzSuffix</code>:
+reproduces the real CaltechDATA key directly, confirms it resolves to
+the fixed scratch path</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>TestDownloadAndDecompressSQLBackup_SurfacesStderr</code>:
+a <code>gunzip</code>- shaped stderr message now reaches the reported
+error</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>TestBuildRestoreSQLCommands_ExactShape</code>
+extended to assert <code>2&gt;&amp;1</code> is present on all three
+commands</label></li>
+</ul>
+<p><strong>Same-day follow-up, same phase:</strong> with the stderr fix
+in place, the very next retry surfaced a second, distinct real gap –
+<code>remoteRestoreDownloadPath</code>/<code>remoteRestoreSQLPath</code>
+moved from <code>/tmp</code> to <code>/var/tmp</code>. Confirmed live
+(<code>df</code>/<code>mount</code>) that this project’s RDM cloud-init
+images mount <code>/tmp</code> as a fixed ~3.9GB tmpfs, separate from
+the root disk’s own free space; <code>/var/tmp</code> confirmed to be
+plain root-disk space on the same instance. See DECISIONS.md’s same-day
+follow-up entry under this phase’s own heading.</p>
+<p><strong>Third same-day follow-up, same phase:</strong> with both
+prior fixes in place, the next retry surfaced a third real issue – the
+real CaltechDATA legacy backup (bare <code>.sql</code> key) is genuinely
+uncompressed, not gzip content under a misleading name as this phase’s
+original fix assumed. New
+<code>needsDecompression(key string) bool</code> (suffix check) makes
+decompression conditional again – <code>.gz</code> decompresses,
+<code>downloadAndDecompressSQLBackup</code> returns
+<code>remoteRestoreSQLPath</code>; anything else skips
+<code>gunzip</code> entirely and returns
+<code>remoteRestoreDownloadPath</code> (the raw file) directly.
+Suggested directly by the user mid-live-test. See DECISIONS.md’s third
+same-day follow-up entry under this phase’s own heading.</p>
+<p><strong>Fourth same-day follow-up, same phase:</strong> with all
+three prior fixes in place, the restore reached the actual
+drop/create/load sequence for the first time and hit Postgres’s own
+<code>DROP DATABASE</code> precondition – refuses while any other
+session is connected, and stopping the target’s own app wasn’t
+sufficient to guarantee that (stale idle connections lingered past app
+shutdown, governed by TCP keepalive timing).
+<code>buildRestoreSQLCommands</code>’ <code>dropCmd</code> now runs
+<code>pg_terminate_backend</code> against every other session on the
+target database before <code>DROP DATABASE IF EXISTS</code>. New
+regression test
+<code>TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst</code>.
+See DECISIONS.md’s fourth same-day follow-up entry under this phase’s
+own heading.</p>
+<p><strong>Fifth same-day follow-up, same phase:</strong>
+<code>DefaultSQLRestoreTimeout</code> (30 minutes) was itself too short
+for real production-scale data – confirmed against the user’s own
+~45-minute experience manually restoring CaltechAUTHORS-scale data
+(<code>--column-inserts</code> loads as individual <code>INSERT</code>s,
+not bulk <code>COPY</code>). Widened to 2 hours, matching
+<code>DefaultSnapshotCreateTimeout</code>’s own precedent. See
+DECISIONS.md’s fifth same-day follow-up entry under this phase’s own
+heading.</p>
+<h3 id="files-18">Files</h3>
+<p><code>internal/workflow/{restore_sql.go,restore_sql_test.go}</code>
+(extended, not new).</p>
+<h3 id="dependency-17">Dependency</h3>
+<p>None – part of Phase 20.50, found while live-testing it.</p>
+<hr />
+<h2
+id="phase-20.60-restore-progress-reporting-extend-pollwithprogress-to-the-sqlopensearch-restore-load-steps-no-parallel-restores">Phase
+20.60 — Restore Progress Reporting: Extend <code>pollWithProgress</code>
+to the SQL/OpenSearch Restore Load Steps; No Parallel Restores</h2>
+<p><strong>Status: designed 2026-08-18, partially implemented
+2026-08-19</strong> (DESIGN.md, “Restore Progress Reporting: Extend
+<code>pollWithProgress</code> to the SQL/OpenSearch Restore Load Steps;
+No Parallel Restores”; DECISIONS.md, “Restore load steps should report
+real progress, not just wait on a timeout; no parallel restores during
+validation”). Work Item 3 (Phase 20.51 designed with progress reporting
+from the start) is done – <code>PollRestoreUntilComplete</code>
+(<code>restore_opensearch.go</code>) is built on
+<code>pollWithProgress</code> from day one, per this item’s own
+recommendation. Work Item 1 (SQL restore’s own load step) remains open –
+Restore SQL Backup’s load step still blocks silently behind a fixed
+timeout.</p>
+<h3 id="work-items-105">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" /><code>restore_sql.go</code>: replace
+the load step’s single blocking <code>RunShellCommand</code> +
+fixed-timeout shape with a progress-reporting loop built on Phase
+20.53’s <code>pollWithProgress</code> pattern – ticks on an interval,
+checks <code>pg_database_size(current_dbname)</code> (already used ad
+hoc for manual polling this session) as the primary progress signal,
+reports elapsed time plus size and its delta since the last tick via
+<code>w</code>. Print a one-time “this can take 45 minutes to over an
+hour for production-scale data” message before the load starts. Timeout
+remains a backstop, not the primary completion signal.</label></li>
+<li><label><input type="checkbox" />Decide (design question, not yet
+resolved) whether <code>pollWithProgress</code> itself is widened with
+an optional secondary-metric callback, or the restore load step gets its
+own small sibling helper – OpenSearch’s snapshot/restore state-check
+loops have no equivalent secondary metric to show, so a verbatim shared
+signature may not fit both.</label></li>
+<li><label><input type="checkbox" checked="" />Phase 20.51: designed and
+implemented with its own progress signal from the start
+(<code>PollRestoreUntilComplete</code>, built directly on
+<code>pollWithProgress</code>), rather than shipping a bare timeout and
+retrofitting this lesson a second time – uses OpenSearch’s own
+<code>_cat/recovery</code> restore-status API, a real per-shard signal,
+strictly better than SQL restore’s size-growth proxy.</label></li>
+<li><label><input type="checkbox" />Explicit non-goal for this phase:
+does not resolve whether a client-side timeout should also
+<code>ssm:CancelCommand</code> the remote process – that’s the same open
+question already on file in TODO.md for <code>RunShellCommand</code>
+generally, not re-decided here.</label></li>
+</ul>
+<h3 id="tests-19">Tests</h3>
+<p>Not yet written – no implementation exists yet. Expect: a fake
+<code>RunShellCommand</code> sequence returning growing
+<code>pg_database_size</code> values across successive polls, asserting
+the progress lines reach <code>w</code>; a timeout-still-fires
+regression case if size stops growing; no change to existing
+<code>restore_sql_test.go</code> happy/error-path assertions beyond
+whatever the new loop shape requires.</p>
+<h3 id="files-19">Files</h3>
+<p><code>internal/workflow/{restore_sql.go,restore_sql_test.go,poll_progress.go}</code>
+(extended, not new, once implemented).</p>
+<h3 id="dependency-18">Dependency</h3>
+<p>Phase 20.53 (<code>pollWithProgress</code>, done) for the reusable
+pattern. Should land before or alongside Phase 20.51, so that phase’s
+own restore-status polling is designed with progress reporting from the
+start rather than retrofitted.</p>
+<hr />
+<h2
+id="phase-20.61-real-bug-runshellcommand-never-set-awss-own-ssm-timeoutseconds-silently-capped-at-1-hour-regardless-of-the-callers-timeout">Phase
+20.61 — Real Bug: <code>RunShellCommand</code> Never Set AWS’s Own SSM
+<code>TimeoutSeconds</code>, Silently Capped at 1 Hour Regardless of the
+Caller’s Timeout</h2>
+<p><strong>Status: found, fixed, and unit-tested 2026-08-19,
+test-first</strong> — investigating the prior night’s overnight restore
+via <code>aws ssm get-command-invocation</code> directly, not just the
+local <code>--debug</code> log or the client’s own report (DECISIONS.md,
+“Real bug: <code>RunShellCommand</code>’s SSM <code>SendCommand</code>
+never sets <code>TimeoutSeconds</code>…”). Confirmed the load command
+that had run overnight against <code>caltechdata-restore-test</code> was
+killed by AWS itself (<code>Status: TimedOut</code>,
+<code>StatusDetails: ExecutionTimedOut</code>) exactly 1 hour after
+starting – independent of, and shorter than, Phase 20.59’s
+already-widened 2-hour client-side timeout.</p>
+<h3 id="work-items-106">Work Items</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>ssm.go</code>:
+<code>RunShellCommand</code>’s <code>SendCommandInput</code> gains
+<code>TimeoutSeconds</code>, computed from the existing
+<code>timeout</code> parameter
+(<code>max(int32(timeout/time.Second), minSSMCommandTimeoutSeconds)</code>)
+– the client-side wait and the AWS-side execution window become the same
+duration instead of two independent timeouts.</label></li>
+</ul>
+<h3 id="tests-20">Tests</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />New
+<code>TestRunShellCommand_SetsSendCommandTimeoutSecondsFromCallerTimeout</code>
+extends <code>fakeSSMClient.SendCommand</code> to capture the
+<code>TimeoutSeconds</code> it was called with, asserting it matches the
+<code>timeout</code> argument passed to <code>RunShellCommand</code> (in
+seconds); confirmed failing (compile error, constant didn’t exist yet)
+against the current code before the fix.</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>TestRunShellCommand_FloorsSendCommandTimeoutSecondsAtAWSMinimum</code>:
+a 5-second <code>timeout</code> still yields
+<code>TimeoutSeconds == 30</code> (AWS’s own minimum), not a value AWS
+would reject.</label></li>
+</ul>
+<h3 id="files-20">Files</h3>
+<p><code>internal/workflow/{ssm.go,ssm_test.go}</code> (extended, not
+new).</p>
+<h3 id="dependency-19">Dependency</h3>
+<p>None – affects every <code>RunShellCommand</code> caller (Restore SQL
+Backup, Run SQL Backup, Archive OpenSearch Snapshot, cloud-init
+completion checks, etc.), all of which already pass timeouts comfortably
+above 30 seconds.</p>
+<p><strong>Same-day follow-up: the fix above was real but incomplete – a
+rebuild-and-retry still died at exactly 1 hour</strong> (DECISIONS.md,
+same heading, “Same-day follow-up, same phase…”).
+<code>aws ssm list-commands</code> confirmed
+<code>TimeoutSeconds: 7200</code> was genuinely set on the failing
+command, so the fix’s own effect was real – but
+<code>aws ssm describe-document --name AWS-RunShellScript</code>
+revealed a second, separate document parameter,
+<code>executionTimeout</code> (default 3600, independent of
+<code>TimeoutSeconds</code>, which per AWS’s actual behavior only bounds
+how long a command may wait to <em>start</em> running, not how long it
+may keep running once started). <code>executionTimeout</code> was never
+set at all, so it silently applied its own 1-hour default regardless of
+the first fix.</p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" /><code>ssm.go</code>:
+<code>RunShellCommand</code>’s <code>SendCommandInput.Parameters</code>
+gains
+<code>"executionTimeout": [strconv.Itoa(int(timeoutSeconds))]</code>
+alongside the existing <code>"commands"</code> entry – same computed
+<code>timeoutSeconds</code> value the <code>TimeoutSeconds</code> field
+already uses.</label></li>
+<li><label><input type="checkbox" checked="" />New
+<code>TestRunShellCommand_SetsExecutionTimeoutParameterFromCallerTimeout</code>:
+asserts <code>Parameters["executionTimeout"]</code> matches the
+<code>timeout</code> argument (in seconds, as a string); confirmed
+failing against the pre-fix code first.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>go build</code>/<code>vet</code>/<code>test -race</code>/<code>gofmt</code>
+all clean.</label></li>
+</ul>
+<h3 id="files-follow-up">Files (follow-up)</h3>
+<p><code>internal/workflow/{ssm.go,ssm_test.go}</code> (extended, not
+new) – same files as the original fix.</p>
+<hr />
 <h2 id="deferred-to-a-later-version-phase-23-not-scheduled">Deferred to
 a Later Version (Phase 23+, not scheduled)</h2>
 <p>Not part of v1/v2 — see <code>DECISIONS.md</code>, “V1 scope: ship

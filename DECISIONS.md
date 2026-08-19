@@ -68,10 +68,21 @@ inst.Name)`, same as before), with a new regression test
 confirming an override reaches every downstream command, not the
 target's own tag-derived default; every existing integration test's
 input sequence updated for the new prompt line. `go build`/`vet`/
-`test -race`/`gofmt` all clean. The live test against
-`caltechdata-restore-test` can now proceed using this session's
-already-archived CaltechDATA snapshot (`rdm-20260819-160031`),
-overriding the new prompt to `caltechdata`.
+`test -race`/`gofmt` all clean.
+
+**Resolved, 2026-08-19: the live test succeeded on the first attempt
+with the fix in place.** Restored CaltechDATA production's real
+snapshot (`rdm-20260819-160031`) onto `caltechdata-restore-test`,
+overriding the new prompt to `caltechdata` as planned. Every step
+(conflict check, sync-down, register-repo, trigger-restore, recovery
+poll, verification) reported `Success`; recovery reached `done` on all
+43 snapshot-type shard rows. Independently re-confirmed against the
+instance directly (not just clasm's own report): 42 indices restored,
+all `yellow`/`open`, real doc counts throughout (e.g. 77,258 records,
+222,909 request events). Phase 20.51 (Restore OpenSearch Snapshot from
+S3) is now fully real-AWS-verified end to end -- see PLAN.md Phase
+20.51 (updated).
+
 Confirmed separately, same reconnaissance pass, that no other blocker
 remains: `path.repo` is already correctly configured on this instance
 (repo registration confirmed live, `{"acknowledged":true}`) and its
@@ -169,13 +180,14 @@ test-first throughout, 2026-08-19 (`internal/workflow/
 restore_opensearch.go`/`restore_opensearch_test.go`, new files); wired
 into `cmd/clasm/main.go`'s `RestoreOpenSearch` action, replacing its
 `NotYetImplemented` stub. `go build`/`vet`/`test -race`/`gofmt` all
-clean. **Not yet real-AWS-verified** -- unlike Phase 20.50, this phase
-has not yet been run against a real target instance; the `_cat/
-recovery`-based `PollRestoreUntilComplete` poller in particular is
-built on a well-documented but not yet live-confirmed OpenSearch API
-shape (no restore was actually triggered against a live cluster to
-check it, unlike points 2/3 above, which were checked against
-already-existing real data).
+clean. **Real-AWS-verified end to end, same day**, after correction 5
+below landed -- restoring CaltechDATA production's real snapshot onto
+`caltechdata-restore-test` succeeded on the first attempt, including
+the `_cat/recovery`-based `PollRestoreUntilComplete` poller (all 43
+snapshot-type shard rows reached `done`), confirming its API shape was
+correctly understood without having been live-tested beforehand. See
+this file's own "...a fifth correction..." entry and PLAN.md Phase
+20.51 (updated) for the full verification detail.
 
 ---
 
@@ -722,6 +734,19 @@ filtering/display -- this is about not trapping someone who picks
 smarter. See PLAN.md Phase 20.56, DESIGN.md "Associate/Replace IAM
 Instance Profile: Recoverable `EntityAlreadyExists`."
 
+**Real-AWS-verified, 2026-08-19.** A zero-net-change test against
+`caltechdata-restore-test` (its already-attached `rdm-backups` role has
+a same-named instance profile, so any path through this workflow ends
+up back at the same association) confirmed both halves of the fix:
+picking "Create new instance profile" for role `rdm-backups` correctly
+hit `EntityAlreadyExists` on the default name, the "use the existing
+one instead" prompt appeared and worked (`aws ec2 describe-instances`
+confirmed `IamInstanceProfile` unchanged, still `rdm-backups`,
+afterward); a second run cancelling the name prompt (Esc/Ctrl+C)
+correctly returned to the instance-profile picker rather than aborting
+the whole workflow, and completing from there left the same unchanged
+state.
+
 ---
 
 ## 2026-08-18 — Correction while implementing the above: "use existing" must return `created=true`, not `created=false`
@@ -814,6 +839,17 @@ from any instance profile. Instead:
 
 **Consequences.** See PLAN.md Phase 20.55, DESIGN.md "Delete Role's
 Wrong-Remedy Message + Missing Instance-Profile-Membership Capability."
+
+**Real-AWS-verified, 2026-08-19.** A disposable `test-verify-2055-role`/
+`test-verify-2055-profile` pair (tagged `origin=dld` so the DLD-owned-only
+picker filter would surface them, deliberately never attached to any EC2
+instance) confirmed all four steps end to end: Delete Role's corrected
+message named the real blocker and pointed at the right action; Remove
+Role from Instance Profile detached it (confirmed via `iam:GetInstanceProfile`
+showing zero roles); Delete Instance Profile removed the now-empty
+profile (confirmed `NoSuchEntity` afterward); Delete Role then succeeded
+cleanly once unblocked. Both fixture resources ended up fully deleted,
+no cleanup left behind.
 
 ---
 
