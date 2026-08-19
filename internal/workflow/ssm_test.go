@@ -29,6 +29,7 @@ type fakeSSMClient struct {
 	commandID            string
 	sendCommandErr       error
 	sendCommandCallCount int
+	lastTimeoutSeconds   *int32
 
 	// GetCommandInvocation
 	pendingCalls    int // number of leading calls that report InProgress
@@ -87,6 +88,7 @@ func (f *fakeSSMClient) DescribeInstanceInformation(ctx context.Context, params 
 
 func (f *fakeSSMClient) SendCommand(ctx context.Context, params *ssm.SendCommandInput, optFns ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
 	f.sendCommandCallCount++
+	f.lastTimeoutSeconds = params.TimeoutSeconds
 	if len(params.Parameters["commands"]) > 0 {
 		f.lastCommandText = params.Parameters["commands"][0]
 		f.sentCommands = append(f.sentCommands, f.lastCommandText)
@@ -238,5 +240,44 @@ func TestRunShellCommand_TimesOutIfInvocationNeverVisible(t *testing.T) {
 	_, _, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", 20*time.Millisecond, testPollInterval)
 	if err == nil {
 		t.Fatal("expected a timeout error")
+	}
+}
+
+// Regression: AWS's own ssm:SendCommand silently defaults a document
+// execution's TimeoutSeconds to 3600 (1 hour) whenever the caller
+// doesn't set it -- independent of, and possibly much shorter than,
+// however long RunShellCommand's own client-side polling is willing to
+// wait. Confirmed real 2026-08-19: a Restore SQL Backup load step with
+// a 2-hour client-side timeout (DefaultSQLRestoreTimeout) was still
+// killed by AWS itself at exactly 1 hour (Status: TimedOut,
+// StatusDetails: ExecutionTimedOut), truncating the load. See
+// DECISIONS.md, "Real bug: RunShellCommand's SSM SendCommand never sets
+// TimeoutSeconds...", PLAN.md Phase 20.61.
+func TestRunShellCommand_SetsSendCommandTimeoutSecondsFromCallerTimeout(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
+	_, _, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", 2*time.Hour, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastTimeoutSeconds == nil {
+		t.Fatal("SendCommandInput.TimeoutSeconds is nil, want it set from the caller's timeout")
+	}
+	want := int32(2 * time.Hour / time.Second)
+	if *fake.lastTimeoutSeconds != want {
+		t.Errorf("TimeoutSeconds = %d, want %d", *fake.lastTimeoutSeconds, want)
+	}
+}
+
+// AWS rejects ssm:SendCommand's TimeoutSeconds below 30 -- a caller
+// passing a shorter timeout (as several of this codebase's own tests
+// do, for a fast-failing unit test) must not produce an invalid value.
+func TestRunShellCommand_FloorsSendCommandTimeoutSecondsAtAWSMinimum(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "status: done\n"}
+	_, _, err := RunShellCommand(context.Background(), fake, "i-1", "cloud-init status --wait", 5*time.Second, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastTimeoutSeconds == nil || *fake.lastTimeoutSeconds != minSSMCommandTimeoutSeconds {
+		t.Errorf("TimeoutSeconds = %v, want %d (AWS's own minimum)", fake.lastTimeoutSeconds, minSSMCommandTimeoutSeconds)
 	}
 }

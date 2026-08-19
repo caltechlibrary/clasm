@@ -4,6 +4,65 @@ This file records significant architectural and UX decisions for the interactive
 
 ---
 
+## 2026-08-19 — Real bug: `RunShellCommand`'s SSM `SendCommand` never sets `TimeoutSeconds`, so AWS silently applies its own 1-hour default independent of the caller's timeout
+
+**Context.** Checking on the overnight Restore SQL Backup left running
+against `caltechdata-restore-test` (Phase 20.59), `ps aux` on the
+instance showed the load process gone, and `pg_database_size` had grown
+only marginally (1424MB -> 1454MB) since the prior session's last check
+-- much smaller than the 900MB+ jumps seen earlier in the same load,
+suggesting it stopped rather than finished. Rather than guess from that
+alone, queried AWS directly for the ground truth: `aws ssm
+get-command-invocation` against the load step's own `CommandId` (read
+out of the session's `--debug` JSONL log) returned `Status: TimedOut`,
+`StatusDetails: ExecutionTimedOut`, start/end exactly 1h0.5s apart. This
+is separate from the client's own wait, which (old, not-yet-rebuilt
+30-minute-timeout binary) had already given up polling *30 minutes
+earlier still*, at 23:14Z, and reported a "timed out" client-side error
+at that point -- meaning two independent timeouts were in play, neither
+in sync with the other, and neither in sync with Phase 20.59's already-
+widened `DefaultSQLRestoreTimeout` (2 hours). Reading `ssm.go` confirmed
+why: `RunShellCommand`'s `SendCommandInput` never sets `TimeoutSeconds`
+-- AWS's own SSM document execution silently defaults to 3600 seconds
+regardless of the `timeout`/`pollInterval` values a caller passes in,
+which only ever governed the *client's* `GetCommandInvocation` polling
+loop, never the actual remote execution window. Phase 20.59's timeout
+widening therefore had no real effect on how long AWS itself would let
+the load run. The real, in-flight SQL load is confirmed truncated as a
+result, leaving `rdm14-granian` on `caltechdata-restore-test` in a
+partial, unusable state -- not a completed restore to spot-check, a
+confirmed-incomplete one to redo.
+
+**Decision.** Set `TimeoutSeconds` on every `RunShellCommand`'s
+`SendCommandInput`, derived from the same `timeout` parameter already
+threaded through by every caller (floored at AWS's own 30-second
+minimum), so the AWS-side execution window and the client-side wait
+window are the same duration instead of two independent, uncoordinated
+ones.
+
+**Rationale.** A helper that already accepts a `timeout` parameter
+should make that parameter govern the actual remote execution, not just
+its own local polling -- otherwise a caller that deliberately widens its
+timeout (as Phase 20.59 did, 30min -> 2h) gets no real benefit once
+AWS's own unset default is shorter than that. This is a distinct fix
+from the still-open, separately-filed question in TODO.md ("Nice to
+have") of whether a client-side timeout should also
+`ssm:CancelCommand` the remote process -- that question is about what
+happens once the *client* gives up early; this fix is about making sure
+AWS's own execution window isn't silently shorter than the client is
+willing to wait in the first place. Both remain worth doing; this one
+directly explains and closes last night's incident.
+
+**Consequences.** `rdm14-granian`'s restored database on
+`caltechdata-restore-test` must be redone from scratch (drop/recreate/
+reload) once this fix lands and clasm is rebuilt -- the old load
+process is confirmed genuinely dead (`ps aux` empty), so a fresh
+Restore SQL Backup attempt's `pg_terminate_backend` step is no longer a
+collision risk. Logged as PLAN.md Phase 20.61, new TODO.md "Bugs and
+issues" entry.
+
+---
+
 ## 2026-08-18 — Restore load steps should report real progress, not just wait on a timeout; no parallel restores during validation
 
 **Context.** Live-testing Phase 20.50's Restore SQL Backup against

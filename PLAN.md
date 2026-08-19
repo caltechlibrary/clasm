@@ -6868,6 +6868,51 @@ retrofitted.
 
 ---
 
+## Phase 20.61 — Real Bug: `RunShellCommand` Never Set AWS's Own SSM `TimeoutSeconds`, Silently Capped at 1 Hour Regardless of the Caller's Timeout
+
+**Status: found, fixed, and unit-tested 2026-08-19, test-first** —
+investigating the prior night's overnight restore via `aws ssm
+get-command-invocation` directly, not just the local `--debug` log or
+the client's own report (DECISIONS.md, "Real bug: `RunShellCommand`'s
+SSM `SendCommand` never sets `TimeoutSeconds`..."). Confirmed the load
+command that had run overnight against `caltechdata-restore-test` was
+killed by AWS itself (`Status: TimedOut`, `StatusDetails:
+ExecutionTimedOut`) exactly 1 hour after starting -- independent of,
+and shorter than, Phase 20.59's already-widened 2-hour client-side
+timeout.
+
+### Work Items
+
+- [x] `ssm.go`: `RunShellCommand`'s `SendCommandInput` gains
+      `TimeoutSeconds`, computed from the existing `timeout` parameter
+      (`max(int32(timeout/time.Second), minSSMCommandTimeoutSeconds)`)
+      -- the client-side wait and the AWS-side execution window become
+      the same duration instead of two independent timeouts.
+
+### Tests
+
+- [x] New `TestRunShellCommand_SetsSendCommandTimeoutSecondsFromCallerTimeout`
+      extends `fakeSSMClient.SendCommand` to capture the
+      `TimeoutSeconds` it was called with, asserting it matches the
+      `timeout` argument passed to `RunShellCommand` (in seconds);
+      confirmed failing (compile error, constant didn't exist yet)
+      against the current code before the fix.
+- [x] New `TestRunShellCommand_FloorsSendCommandTimeoutSecondsAtAWSMinimum`:
+      a 5-second `timeout` still yields `TimeoutSeconds == 30` (AWS's
+      own minimum), not a value AWS would reject.
+
+### Files
+
+`internal/workflow/{ssm.go,ssm_test.go}` (extended, not new).
+
+### Dependency
+
+None -- affects every `RunShellCommand` caller (Restore SQL Backup, Run
+SQL Backup, Archive OpenSearch Snapshot, cloud-init completion checks,
+etc.), all of which already pass timeouts comfortably above 30 seconds.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

@@ -52,6 +52,10 @@ func WaitForSSMOnline(ctx context.Context, client awsclient.SSMAPI, instanceID s
 	}
 }
 
+// minSSMCommandTimeoutSeconds is AWS's own floor for ssm:SendCommand's
+// TimeoutSeconds -- values below this are rejected outright.
+const minSSMCommandTimeoutSeconds = 30
+
 // RunShellCommand runs command on instanceID via ssm:SendCommand
 // (AWS-RunShellScript) and polls ssm:GetCommandInvocation until it
 // reaches a terminal status or the timeout elapses, returning the
@@ -60,11 +64,21 @@ func WaitForSSMOnline(ctx context.Context, client awsclient.SSMAPI, instanceID s
 // should finish in a bounded, predictable window (see DECISIONS.md,
 // "Enhance Create Instance from AMI: cloud-init file input + completion
 // check", on why an unbounded wait would mask a real hang).
+//
+// timeout also sets ssm:SendCommand's own TimeoutSeconds (floored at
+// AWS's 30-second minimum) -- without it, AWS silently defaults the
+// remote execution window to 3600 seconds regardless of how long this
+// function's own polling loop is willing to wait, which can silently
+// truncate a long-running remote command even after a caller widens
+// its timeout (see DECISIONS.md, "Real bug: RunShellCommand's SSM
+// SendCommand never sets TimeoutSeconds...", PLAN.md Phase 20.61).
 func RunShellCommand(ctx context.Context, client awsclient.SSMAPI, instanceID, command string, timeout, pollInterval time.Duration) (stdout string, status types.CommandInvocationStatus, err error) {
+	timeoutSeconds := max(int32(timeout/time.Second), minSSMCommandTimeoutSeconds)
 	sendOut, err := client.SendCommand(ctx, &ssm.SendCommandInput{
-		InstanceIds:  []string{instanceID},
-		DocumentName: aws.String("AWS-RunShellScript"),
-		Parameters:   map[string][]string{"commands": {command}},
+		InstanceIds:    []string{instanceID},
+		DocumentName:   aws.String("AWS-RunShellScript"),
+		Parameters:     map[string][]string{"commands": {command}},
+		TimeoutSeconds: aws.Int32(timeoutSeconds),
 	})
 	if err != nil {
 		return "", "", err
