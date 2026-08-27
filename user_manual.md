@@ -3,9 +3,9 @@
 
 `clasm` is an interactive command-line tool for administering AWS EC2
 instances, AMIs, launch templates, key pairs, S3 buckets/static websites,
-and IAM roles/profiles/policies for Caltech Library DLD's infrastructure,
-across the regions configured in `~/.clasm` (default: us-west-1,
-us-west-2).
+IAM roles/profiles/policies, and Invenio RDM backup/restore for Caltech
+Library DLD's infrastructure, across the regions configured in `~/.clasm`
+(default: us-west-1, us-west-2).
 
 ## Starting clasm
 
@@ -34,6 +34,8 @@ On startup you choose a domain to work in:
   below
 - **IAM** -- browse and manage IAM roles, instance profiles, and
   policies; see below
+- **RDM Backup & Restore** -- generate and archive Invenio RDM Postgres
+  dumps and OpenSearch snapshots, and restore either from S3; see below
 - **Configuration** -- view or edit clasm's own `~/.clasm` settings; see
   below
 - **CloudFront** -- designed (see [DESIGN.md](DESIGN.md), [PLAN.md](PLAN.md)
@@ -45,7 +47,7 @@ On startup you choose a domain to work in:
 Choosing Compute lists the account's current EC2 instances and owned
 AMIs (aggregated across both configured regions, with Public/Private IP
 columns and color-coded state), then presents, grouped View/Inspect ->
-Instance -> AMI -> Launch Template -> Maintenance:
+Instance -> AMI -> Launch Template:
 
  1. Show instances
  2. Show instance detail
@@ -67,10 +69,10 @@ Instance -> AMI -> Launch Template -> Maintenance:
 18. Remove AMI
 19. Create launch template from cloud-init YAML
 20. Sync cloud-init YAML to a launch template
-21. Promote a launch template version to default
-22. Delete launch template version(s)
-23. Delete a launch template
-24. Archive stale backups to S3 and trim disk space
+21. Modify launch template's instance type / EBS root volume size
+22. Promote a launch template version to default
+23. Delete launch template version(s)
+24. Delete a launch template
 
 Every item is interactive: clasm prompts for each required value in
 turn, validates input, and asks for explicit confirmation before any
@@ -90,11 +92,22 @@ to printed manual instructions if that automation can't proceed safely
 (e.g. an unrecognized disk layout). **Associate/replace IAM instance
 profile** attaches or swaps an instance profile on an already-running
 instance -- the launch-time equivalent lives in the Create EC2 instance
-flows. **Launch templates** (items 5, 6, 19-23) are built directly from
+flows. **Launch templates** (items 5, 6, 19-24) are built directly from
 cloud-init YAML rather than from an existing instance, support version
 history/diffing, and enforce the same IMDSv2/SSM requirements as regular
-launches. See [DESIGN.md](DESIGN.md), "Core Features" for the full
-prompt sequence and behavior of each item.
+launches. **Modify launch template's instance type / EBS root volume
+size** creates a new version of a template with a different instance
+type and/or a larger root volume, inheriting everything else (including
+cloud-init user data) from the source version you pick -- and if the new
+instance type's architecture doesn't match the template's current AMI
+(x86_64 vs arm64), it prompts you to pick a replacement AMI, filtered to
+that architecture in the template's own region. That is the action to
+reach for when an instance launched from a template fails on an
+AMI-architecture/instance-type mismatch. Like **Sync cloud-init YAML to
+a launch template**, it only creates the new version; use **Promote a
+launch template version to default** to make it the one new launches
+use. See [DESIGN.md](DESIGN.md), "Core Features" for the full prompt
+sequence and behavior of each item.
 
 ## Key Management Menu
 
@@ -193,7 +206,9 @@ Attach/Detach -> Delete:
 6. Create Role from Template
 7. Attach Policy to Role
 8. Detach Policy from Role
-9. Delete Role
+9. Remove Role from Instance Profile
+10. Delete Instance Profile
+11. Delete Role
 
 Every role/instance profile/policy row shows its `Origin` tag's literal
 value, or "(unset)" if never set -- a config-driven convention (see
@@ -210,14 +225,58 @@ Repository Instance, Bridge Service, Patron-Facing Service, Data
 Processing) -- you supply plain resource names/IDs and clasm constructs
 the ARNs; this is the only IAM action that creates new permissions from
 scratch, and it's deliberately template-only, not free-form policy
-authoring. **Attach/Detach Policy to/from Role** and **Delete Role** are
-all scoped to DLD-owned roles only; Delete Role is gated behind
-type-to-confirm and cascades to the role's own dedicated policy (if
-created by a template and unused elsewhere) -- the one irreversible
+authoring. **Attach/Detach Policy to/from Role**, **Remove Role from
+Instance Profile**, **Delete Instance Profile**, and **Delete Role** are
+all scoped to DLD-owned roles and instance profiles only. **Remove Role
+from Instance Profile** picks a role, then which of the instance
+profiles it currently belongs to should drop it -- the membership
+counterpart to Compute's "Associate/replace IAM instance profile," which
+works from the instance side. **Delete Instance Profile** deletes a
+DLD-owned profile after a simple yes/no confirmation -- AWS itself
+refuses the delete while a role is still attached, so remove the role
+first. **Delete Role** is gated behind type-to-confirm and cascades to
+the role's own dedicated policy (if created by a template and unused
+elsewhere) -- the most destructive
 action in this menu, which is why it's last. clasm never creates,
 modifies, or deletes IAM *users* -- this domain is scoped entirely to
 roles, instance profiles, and policies. See [DESIGN.md](DESIGN.md), "IAM
 Profile & Role Management Domain."
+
+## RDM Backup & Restore Menu
+
+Choosing RDM Backup & Restore presents the Invenio RDM backup/restore
+operations, grouped generate -> archive -> restore, SQL before
+OpenSearch within each pair:
+
+1. Generate SQL Backup
+2. Archive SQL Backups to S3 (and trim local copies)
+3. Archive OpenSearch Snapshot to S3
+4. Restore SQL Backup from S3
+5. Restore OpenSearch Snapshot from S3
+
+Every item starts by picking a target instance and runs its work on that
+instance over SSM, so the instance must be SSM-reachable and have the
+AWS CLI installed -- clasm checks for the CLI up front and reports one
+clear error rather than letting each subsequent step fail. **Generate
+SQL Backup** discovers the instance's live Postgres container and
+database identity (reconciling it against `rdm_postgres_config`, see
+Configuration below) and runs `pg_dump` into the instance's backup
+directory; it generates the local dump and stops there. **Archive SQL
+Backups to S3 (and trim local copies)** copies the dumps in that
+directory to a bucket you pick, independently verifies each upload, then
+optionally deletes the verified local copies and `fstrim`s the volume,
+reporting bytes freed -- it is the same workflow that manages the
+nightly cron job's output, which is why it is separate from Generate SQL
+Backup rather than chained to it. **Archive OpenSearch Snapshot to S3**
+does the equivalent for OpenSearch's snapshot repository directory
+(configured separately from the SQL backup directory). The two
+**Restore** items are the reverse: pick a target instance, pick an
+archive from S3, and load it back. Both are gated behind
+type-to-confirm on the exact instance ID or Name tag, and neither keeps
+any recall history of the last instance used -- restoring is a rare,
+deliberate action, and clasm deliberately does not pre-position the
+cursor on a previous target. See [DESIGN.md](DESIGN.md), "RDM Backup &
+Restore Domain" for the full prompt sequence and the snapshot scope.
 
 ## Configuration Menu
 
@@ -226,16 +285,21 @@ Choosing Configuration presents:
 1. Show current config
 2. Edit regions
 3. Edit backup directory rules
-4. Edit Origin tag config
-5. Save
+4. Edit RDM Postgres config
+5. Edit Origin tag config
+6. Save
 
 Edits happen against an in-memory working copy -- nothing is written to
 `~/.clasm` until you explicitly choose **Save**; quitting with unsaved
 changes pending warns first. **Edit regions** adds/removes which AWS
 regions clasm operates against (takes effect the next time clasm is
 launched, not live). **Edit backup directory rules** adds/removes the
-glob-pattern-to-directory rules Backup Archive & Trim uses to pre-fill
-its "Backup directory" prompt. **Edit Origin tag config** sets the tag
+glob-pattern-to-directory rules the RDM Backup & Restore domain uses to
+pre-fill its "Backup directory" prompt. **Edit RDM Postgres config**
+adds/removes the per-instance Postgres container/database/user rules the
+same domain's SQL workflows use; those workflows also discover this
+information live and offer to record what they find here, so it is
+rarely edited by hand. **Edit Origin tag config** sets the tag
 key and which value means "DLD-owned" for the IAM domain's read-only
 guard (see IAM, above). See [DESIGN.md](DESIGN.md), "Configure clasm
 Domain."
@@ -270,6 +334,14 @@ regions:
 backup_directories:
   - pattern: "etd-*"
     directory: /opt/rdm_sql_backups
+opensearch_backup_directories:
+  - pattern: "etd-*"
+    directory: /opt/opensearch_snapshots
+rdm_postgres_config:
+  - pattern: "etd-*"
+    container_name: etd-db-1
+    db_name: etd
+    db_user: etd
 origin_tag:
   key: "Origin"
   dld_value: ""
@@ -279,12 +351,19 @@ origin_tag:
 operates against (default: us-west-1, us-west-2, if the file or key is
 absent). `backup_directories` is an ordered list of `{pattern,
 directory}` rules, glob-matched against an instance's Name tag, that
-pre-fill Backup Archive & Trim's "Backup directory" prompt (still
-editable, never a silent default). `origin_tag` names the tag the IAM
-domain treats as its DLD-ownership convention -- `key` defaults to
-`"Origin"`, `dld_value` defaults to empty (meaning no value is
-recognized as DLD-owned yet, until your group settles on one). See
-[DESIGN.md](DESIGN.md), "Configuration" for the full schema and
+pre-fill the SQL backup workflows' "Backup directory" prompt (still
+editable, never a silent default); `opensearch_backup_directories` is
+the same shape and does the same job for the OpenSearch snapshot
+workflows, kept separate because an instance's SQL and OpenSearch
+directories are unrelated paths. `rdm_postgres_config` is an ordered
+list of `{pattern, container_name, db_name, db_user}` rules for the RDM
+SQL workflows; `db_name`/`db_user` fall back to the instance's own Name
+tag when unset, while `container_name` is never guessed -- it is either
+discovered live and saved back here, or edited by hand. `origin_tag`
+names the tag the IAM domain treats as its DLD-ownership convention --
+`key` defaults to `"Origin"`, `dld_value` defaults to empty (meaning no
+value is recognized as DLD-owned yet, until your group settles on one).
+See [DESIGN.md](DESIGN.md), "Configuration" for the full schema and
 validation behavior.
 
 ## Getting Help

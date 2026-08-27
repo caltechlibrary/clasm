@@ -27,9 +27,10 @@
 <h1 id="user-manual">User Manual</h1>
 <p><code>clasm</code> is an interactive command-line tool for
 administering AWS EC2 instances, AMIs, launch templates, key pairs, S3
-buckets/static websites, and IAM roles/profiles/policies for Caltech
-Library DLD’s infrastructure, across the regions configured in
-<code>~/.clasm</code> (default: us-west-1, us-west-2).</p>
+buckets/static websites, IAM roles/profiles/policies, and Invenio RDM
+backup/restore for Caltech Library DLD’s infrastructure, across the
+regions configured in <code>~/.clasm</code> (default: us-west-1,
+us-west-2).</p>
 <h2 id="starting-clasm">Starting clasm</h2>
 <p>Run with no arguments:</p>
 <pre class="shell"><code>clasm</code></pre>
@@ -51,6 +52,9 @@ pairs, S3 buckets, IAM roles/instance profiles/policies) from one place;
 see below</li>
 <li><strong>IAM</strong> – browse and manage IAM roles, instance
 profiles, and policies; see below</li>
+<li><strong>RDM Backup &amp; Restore</strong> – generate and archive
+Invenio RDM Postgres dumps and OpenSearch snapshots, and restore either
+from S3; see below</li>
 <li><strong>Configuration</strong> – view or edit clasm’s own
 <code>~/.clasm</code> settings; see below</li>
 <li><strong>CloudFront</strong> – designed (see <a
@@ -62,7 +66,7 @@ picker</li>
 <p>Choosing Compute lists the account’s current EC2 instances and owned
 AMIs (aggregated across both configured regions, with Public/Private IP
 columns and color-coded state), then presents, grouped View/Inspect
--&gt; Instance -&gt; AMI -&gt; Launch Template -&gt; Maintenance:</p>
+-&gt; Instance -&gt; AMI -&gt; Launch Template:</p>
 <ol type="1">
 <li>Show instances</li>
 <li>Show instance detail</li>
@@ -84,10 +88,10 @@ columns and color-coded state), then presents, grouped View/Inspect
 <li>Remove AMI</li>
 <li>Create launch template from cloud-init YAML</li>
 <li>Sync cloud-init YAML to a launch template</li>
+<li>Modify launch template’s instance type / EBS root volume size</li>
 <li>Promote a launch template version to default</li>
 <li>Delete launch template version(s)</li>
 <li>Delete a launch template</li>
-<li>Archive stale backups to S3 and trim disk space</li>
 </ol>
 <p>Every item is interactive: clasm prompts for each required value in
 turn, validates input, and asks for explicit confirmation before any
@@ -108,11 +112,22 @@ unrecognized disk layout). <strong>Associate/replace IAM instance
 profile</strong> attaches or swaps an instance profile on an
 already-running instance – the launch-time equivalent lives in the
 Create EC2 instance flows. <strong>Launch templates</strong> (items 5,
-6, 19-23) are built directly from cloud-init YAML rather than from an
+6, 19-24) are built directly from cloud-init YAML rather than from an
 existing instance, support version history/diffing, and enforce the same
-IMDSv2/SSM requirements as regular launches. See <a
-href="DESIGN.html">DESIGN.md</a>, “Core Features” for the full prompt
-sequence and behavior of each item.</p>
+IMDSv2/SSM requirements as regular launches. <strong>Modify launch
+template’s instance type / EBS root volume size</strong> creates a new
+version of a template with a different instance type and/or a larger
+root volume, inheriting everything else (including cloud-init user data)
+from the source version you pick – and if the new instance type’s
+architecture doesn’t match the template’s current AMI (x86_64 vs arm64),
+it prompts you to pick a replacement AMI, filtered to that architecture
+in the template’s own region. That is the action to reach for when an
+instance launched from a template fails on an
+AMI-architecture/instance-type mismatch. Like <strong>Sync cloud-init
+YAML to a launch template</strong>, it only creates the new version; use
+<strong>Promote a launch template version to default</strong> to make it
+the one new launches use. See <a href="DESIGN.html">DESIGN.md</a>, “Core
+Features” for the full prompt sequence and behavior of each item.</p>
 <h2 id="key-management-menu">Key Management Menu</h2>
 <p>Choosing Key Management lists the account’s current EC2 key pairs
 (aggregated across both configured regions), then presents:</p>
@@ -209,6 +224,8 @@ Attach/Detach -&gt; Delete:</p>
 <li>Create Role from Template</li>
 <li>Attach Policy to Role</li>
 <li>Detach Policy from Role</li>
+<li>Remove Role from Instance Profile</li>
+<li>Delete Instance Profile</li>
 <li>Delete Role</li>
 </ol>
 <p>Every role/instance profile/policy row shows its <code>Origin</code>
@@ -228,20 +245,66 @@ Data Processing) – you supply plain resource names/IDs and clasm
 constructs the ARNs; this is the only IAM action that creates new
 permissions from scratch, and it’s deliberately template-only, not
 free-form policy authoring. <strong>Attach/Detach Policy to/from
-Role</strong> and <strong>Delete Role</strong> are all scoped to
-DLD-owned roles only; Delete Role is gated behind type-to-confirm and
-cascades to the role’s own dedicated policy (if created by a template
-and unused elsewhere) – the one irreversible action in this menu, which
-is why it’s last. clasm never creates, modifies, or deletes IAM
-<em>users</em> – this domain is scoped entirely to roles, instance
-profiles, and policies. See <a href="DESIGN.html">DESIGN.md</a>, “IAM
-Profile &amp; Role Management Domain.”</p>
+Role</strong>, <strong>Remove Role from Instance Profile</strong>,
+<strong>Delete Instance Profile</strong>, and <strong>Delete
+Role</strong> are all scoped to DLD-owned roles and instance profiles
+only. <strong>Remove Role from Instance Profile</strong> picks a role,
+then which of the instance profiles it currently belongs to should drop
+it – the membership counterpart to Compute’s “Associate/replace IAM
+instance profile,” which works from the instance side. <strong>Delete
+Instance Profile</strong> deletes a DLD-owned profile after a simple
+yes/no confirmation – AWS itself refuses the delete while a role is
+still attached, so remove the role first. <strong>Delete Role</strong>
+is gated behind type-to-confirm and cascades to the role’s own dedicated
+policy (if created by a template and unused elsewhere) – the most
+destructive action in this menu, which is why it’s last. clasm never
+creates, modifies, or deletes IAM <em>users</em> – this domain is scoped
+entirely to roles, instance profiles, and policies. See <a
+href="DESIGN.html">DESIGN.md</a>, “IAM Profile &amp; Role Management
+Domain.”</p>
+<h2 id="rdm-backup-restore-menu">RDM Backup &amp; Restore Menu</h2>
+<p>Choosing RDM Backup &amp; Restore presents the Invenio RDM
+backup/restore operations, grouped generate -&gt; archive -&gt; restore,
+SQL before OpenSearch within each pair:</p>
+<ol type="1">
+<li>Generate SQL Backup</li>
+<li>Archive SQL Backups to S3 (and trim local copies)</li>
+<li>Archive OpenSearch Snapshot to S3</li>
+<li>Restore SQL Backup from S3</li>
+<li>Restore OpenSearch Snapshot from S3</li>
+</ol>
+<p>Every item starts by picking a target instance and runs its work on
+that instance over SSM, so the instance must be SSM-reachable and have
+the AWS CLI installed – clasm checks for the CLI up front and reports
+one clear error rather than letting each subsequent step fail.
+<strong>Generate SQL Backup</strong> discovers the instance’s live
+Postgres container and database identity (reconciling it against
+<code>rdm_postgres_config</code>, see Configuration below) and runs
+<code>pg_dump</code> into the instance’s backup directory; it generates
+the local dump and stops there. <strong>Archive SQL Backups to S3 (and
+trim local copies)</strong> copies the dumps in that directory to a
+bucket you pick, independently verifies each upload, then optionally
+deletes the verified local copies and <code>fstrim</code>s the volume,
+reporting bytes freed – it is the same workflow that manages the nightly
+cron job’s output, which is why it is separate from Generate SQL Backup
+rather than chained to it. <strong>Archive OpenSearch Snapshot to
+S3</strong> does the equivalent for OpenSearch’s snapshot repository
+directory (configured separately from the SQL backup directory). The two
+<strong>Restore</strong> items are the reverse: pick a target instance,
+pick an archive from S3, and load it back. Both are gated behind
+type-to-confirm on the exact instance ID or Name tag, and neither keeps
+any recall history of the last instance used – restoring is a rare,
+deliberate action, and clasm deliberately does not pre-position the
+cursor on a previous target. See <a href="DESIGN.html">DESIGN.md</a>,
+“RDM Backup &amp; Restore Domain” for the full prompt sequence and the
+snapshot scope.</p>
 <h2 id="configuration-menu">Configuration Menu</h2>
 <p>Choosing Configuration presents:</p>
 <ol type="1">
 <li>Show current config</li>
 <li>Edit regions</li>
 <li>Edit backup directory rules</li>
+<li>Edit RDM Postgres config</li>
 <li>Edit Origin tag config</li>
 <li>Save</li>
 </ol>
@@ -251,8 +314,12 @@ to <code>~/.clasm</code> until you explicitly choose
 first. <strong>Edit regions</strong> adds/removes which AWS regions
 clasm operates against (takes effect the next time clasm is launched,
 not live). <strong>Edit backup directory rules</strong> adds/removes the
-glob-pattern-to-directory rules Backup Archive &amp; Trim uses to
-pre-fill its “Backup directory” prompt. <strong>Edit Origin tag
+glob-pattern-to-directory rules the RDM Backup &amp; Restore domain uses
+to pre-fill its “Backup directory” prompt. <strong>Edit RDM Postgres
+config</strong> adds/removes the per-instance Postgres
+container/database/user rules the same domain’s SQL workflows use; those
+workflows also discover this information live and offer to record what
+they find here, so it is rarely edited by hand. <strong>Edit Origin tag
 config</strong> sets the tag key and which value means “DLD-owned” for
 the IAM domain’s read-only guard (see IAM, above). See <a
 href="DESIGN.html">DESIGN.md</a>, “Configure clasm Domain.”</p>
@@ -291,21 +358,38 @@ class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb2-1"><a href="
 <span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="fu">backup_directories</span><span class="kw">:</span></span>
 <span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
 <span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/rdm_sql_backups</span></span>
-<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu">origin_tag</span><span class="kw">:</span></span>
-<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">key</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;Origin&quot;</span></span>
-<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">dld_value</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;&quot;</span></span></code></pre></div>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu">opensearch_backup_directories</span><span class="kw">:</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/opensearch_snapshots</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="fu">rdm_postgres_config</span><span class="kw">:</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">container_name</span><span class="kw">:</span><span class="at"> etd-db-1</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_name</span><span class="kw">:</span><span class="at"> etd</span></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_user</span><span class="kw">:</span><span class="at"> etd</span></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="fu">origin_tag</span><span class="kw">:</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">key</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;Origin&quot;</span></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">dld_value</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;&quot;</span></span></code></pre></div>
 <p><code>regions</code> narrows or changes which regions every listing
 and picker operates against (default: us-west-1, us-west-2, if the file
 or key is absent). <code>backup_directories</code> is an ordered list of
 <code>{pattern, directory}</code> rules, glob-matched against an
-instance’s Name tag, that pre-fill Backup Archive &amp; Trim’s “Backup
-directory” prompt (still editable, never a silent default).
-<code>origin_tag</code> names the tag the IAM domain treats as its
-DLD-ownership convention – <code>key</code> defaults to
-<code>"Origin"</code>, <code>dld_value</code> defaults to empty (meaning
-no value is recognized as DLD-owned yet, until your group settles on
-one). See <a href="DESIGN.html">DESIGN.md</a>, “Configuration” for the
-full schema and validation behavior.</p>
+instance’s Name tag, that pre-fill the SQL backup workflows’ “Backup
+directory” prompt (still editable, never a silent default);
+<code>opensearch_backup_directories</code> is the same shape and does
+the same job for the OpenSearch snapshot workflows, kept separate
+because an instance’s SQL and OpenSearch directories are unrelated
+paths. <code>rdm_postgres_config</code> is an ordered list of
+<code>{pattern, container_name, db_name, db_user}</code> rules for the
+RDM SQL workflows; <code>db_name</code>/<code>db_user</code> fall back
+to the instance’s own Name tag when unset, while
+<code>container_name</code> is never guessed – it is either discovered
+live and saved back here, or edited by hand. <code>origin_tag</code>
+names the tag the IAM domain treats as its DLD-ownership convention –
+<code>key</code> defaults to <code>"Origin"</code>,
+<code>dld_value</code> defaults to empty (meaning no value is recognized
+as DLD-owned yet, until your group settles on one). See <a
+href="DESIGN.html">DESIGN.md</a>, “Configuration” for the full schema
+and validation behavior.</p>
 <h2 id="getting-help">Getting Help</h2>
 <p>File an issue at <a
 href="https://github.com/caltechlibrary/clasm/issues"
