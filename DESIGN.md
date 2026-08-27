@@ -2960,6 +2960,189 @@ phase is actually designed in full). None of this blocks Phase 20.50
 from being real-AWS-verified as-is -- the current fixed-timeout behavior
 is correct, just not yet the best UX.
 
+## Archive SQL Backup to S3: Copy Every Backup, Trim Only What's Old (Design Addendum, 2026-08-27, PLAN.md Phase 20.62)
+
+**Status: designed 2026-08-27, not yet implemented.** Motivated by
+`archive-all-sql-backups-feature-request.md` (filed the same day, from an
+intake conversation the day after the behaviour was noticed in live use
+ahead of standing up a new CaltechAUTHORS instance on uv/granian).
+Feature 11's "Backup Archive & Trim" was designed as one indivisible
+act: `backupArchiveAndTrim` derives a single age-filtered set and uses it
+for the upload, the verification, and the delete alike.
+
+```go
+allFiles   := ListBackupFiles(...)                              // every file in the directory
+candidates := FilterByAge(allFiles, params.AgeDays, time.Now()) // only the old ones
+if len(candidates) == 0 { /* "No files match the age threshold. Nothing to do." */ }
+→ UploadBackupFiles(candidates) → VerifyUploads(...) → DeleteVerifiedFiles(...)
+```
+
+So the newest dump -- usually the one taken *because* a rebuild is
+coming, and the most valuable thing on the volume -- is the one file
+guaranteed not to reach S3. The failure is silent: every number in
+"Archived and deleted N file(s), freed N bytes" is true, and the report
+simply never mentions the files it declined to consider. With nothing
+old enough, the run exits on "Nothing to do," which reads as "there was
+nothing to archive."
+
+**Fix: two sets, gated by one piece of evidence.** The upload set is
+every file `ListBackupFiles` returns, unfiltered. The delete set is
+`(upload set filtered by age) ∩ (confirmed present in S3 at the right
+size)`. Archival becomes unconditional; trimming becomes an optional
+second phase over the same listing. A run with nothing old enough to
+trim is now an ordinary run that copies everything and deletes nothing,
+not an early exit.
+
+**The already-archived pre-pass reuses `VerifiedFile` rather than
+inventing a parallel type.** Once every run uploads everything, the
+recent files would be re-uploaded over SSM on every run -- expensive
+against a directory holding a month of dumps. A new
+`CheckAlreadyArchived` in `backup_verify.go`, sitting directly alongside
+`VerifyUploads` and doing the same `s3:HeadObject` size comparison with
+the operator's own credentials, classifies the listing first:
+
+```go
+func CheckAlreadyArchived(ctx context.Context, client awsclient.S3API, bucket, prefix string, files []BackupFile) []VerifiedFile
+```
+
+`Verified` is true only when `HeadObject` succeeds *and* `ContentLength`
+matches the local size. Everything else -- object absent, size differs,
+or the call itself errored -- comes back false and the file joins the
+upload set. That single rule delivers three of the intake decisions at
+once: already-archived files are skipped; a same-key-different-size
+object is overwritten (`aws s3 cp` overwrites, so no special case is
+needed); and a `HeadObject` that fails for an unrelated reason
+fails *toward copying*, never toward deleting.
+
+Reusing `VerifiedFile` matters beyond saving a struct. The delete gate
+becomes one question -- "is this file's key verified present?" --
+answered from one merged `[]VerifiedFile`, with no branch on whether the
+evidence came from the pre-pass or from this run's own upload. There is
+exactly one code path to deleting a file, and it is still the tool's own
+independent `s3:HeadObject` check, preserving the property Security
+Considerations already states about Feature 11: the operator-credentialed
+HeadObject *is* the authorization for the delete, not a redundant
+nice-to-have.
+
+One consequence worth stating plainly, since it is genuinely new: a run
+that uploads nothing at all can still delete local files, on the strength
+of an object some earlier run put there. That is the same evidence
+standard as before -- only the run that produced the evidence differs.
+
+**The retention prompt replaces `promptAgeDays` rather than extending
+it.** The question stops being "which files do we archive" and becomes
+"which local copies do we remove afterward," with three meanings:
+
+| Answer | Meaning |
+|---|---|
+| blank | Copy everything, delete nothing locally |
+| `0` | Copy everything, delete every local file that verified |
+| `N` | Copy everything, delete verified local files older than N days |
+
+`promptAgeDays` rejects both blank and `0` and has exactly one call
+site, so it is deleted along with its tests rather than widened. Its
+replacement, `promptLocalTrimDays`, returns
+`(days int, requested bool, err error)` -- the same shape
+`promptOpenSearchCleanupDays` already uses for exactly this
+blank-is-meaningful reason, and the reason a plain `int` will not do:
+blank and `0` are both falsy and mean opposite things.
+`BackupArchiveParams` gains a `TrimRequested bool` alongside `AgeDays`.
+
+`FilterByAge` needs no change for the `0` case: the cutoff becomes `now`
+and every file's second-truncated mtime precedes it, so `0` already
+means "everything."
+
+**Prompt wording has to name EBS, even at the cost of symmetry.**
+Aligning on "blank means don't delete" is right, but the two prompts
+delete different things -- OpenSearch's cleanup removes
+previously-archived *snapshots in S3*, this one removes *local files on
+the instance's EBS volume*. A real user report (2026-07-29) about
+precisely this ambiguity is why `promptOpenSearchCleanupDays`' question
+text is as long as it is; repeating the lesson rather than the wording:
+
+> Delete local backup files on the instance's EBS volume older than how
+> many days? (blank to keep all local copies; 0 to delete every file
+> successfully archived)
+
+**Confirmation friction tracks the actual risk, not the menu entry.**
+One confirmation still covers the whole run, but which one depends on
+whether anything will actually be removed: `ConfirmDestructive`
+(type-the-instance-name) when the delete set is non-empty, plain
+`Confirm` when it is empty. Both already exist and both already accept
+`WithConfirmIO`, so this costs nothing in testability. A copy-only run
+is not destructive and should not demand the ceremony of one that is.
+
+This fixes the phase ordering in place: the retention answer must be
+known before the dry run so the delete set can be displayed, and the
+pre-pass must run before the confirmation so the dry run is accurate
+about what will actually be copied. The existing prompt order (directory
+→ bucket → retention) already satisfies the first; the pre-pass slots in
+between the listing and the dry run.
+
+**A per-file upload failure stops being fatal to the whole run.**
+`UploadBackupFiles` currently treats both a transport error and a
+non-`Success` command status for any single file as a hard error that
+aborts everything. That was right when every file in flight was a delete
+candidate. It is wrong now: an SSM hiccup while copying one recent file
+would abort the archival *and* the trim of the aged ones. The loop
+instead records `UploadResult{OK: false}`, reports it through
+`onProgress`, and continues -- **except** when `ctx.Err() != nil`, which
+means the operator cancelled or an outer deadline fired, and the run
+must stop. `RunShellCommand` wraps the caller's context in its own
+per-file `context.WithTimeout` and returns a plain formatted error on
+expiry rather than wrapping `context.DeadlineExceeded`, so testing the
+*outer* context cleanly separates "this one file timed out" from "the
+operator hit Ctrl+C." Continuing is safe for the same structural reason
+as everything else here: the delete phase is gated on `HeadObject`, so a
+file that failed to upload cannot be deleted. `UploadBackupFiles` has a
+single call site, so the contract change is contained.
+
+Its per-file timeout is also, usefully, not a problem this change
+creates: `DefaultBackupUploadTimeout`'s 30 minutes bounds one file, not
+the batch, so a larger upload set moves no closer to a ceiling.
+
+**`fstrim` runs only when something was deleted.** Nothing was freed on
+a copy-only run, and it is a five-minute-bounded SSM round trip.
+
+**The summary reports four numbers, not two:** copied, already present
+(skipped), deleted, bytes freed -- plus the non-fatal warnings for any
+file that failed to copy. A file that failed to copy *and* was old
+enough to trim is the case that matters most, and it should be
+unmistakable that it was left on disk.
+
+**Menu label.** `rdmMenuItems`' "Archive SQL Backup to S3" becomes
+**"Archive SQL Backups to S3 (and trim local copies)"** -- the copy is
+now unconditional and the trim is optional, and the old label describes
+neither. Go identifiers (`BackupArchiveAndTrim`, `backup_archive.go`,
+Feature 11's "Backup Archive & Trim") stay as they are, per the Phase
+20.43/20.54 precedent that user-facing labels and internal names need
+not match 1:1. The internal name is, for the first time, accurate.
+
+**Unchanged:** `ListBackupFiles` (including its no-filename-filter
+definition of "all backups" -- deliberately the same criteria as
+today), `FilterByAge`, `VerifyUploads`, `DeleteVerifiedFiles`,
+`uploadKey`'s instance-name-prefixed namespacing, the bucket picker, and
+every preflight check. This is a rewiring of `backupArchiveAndTrim`'s
+orchestration around the existing primitives, plus one new sibling to
+`VerifyUploads`.
+
+**"Archive OpenSearch Snapshot to S3" is not touched.** Its cleanup
+prompt governs S3-side objects and has always been optional, so it does
+not have this coupling.
+
+### Not decided yet
+
+Whether the dry run shows two separate lists (to copy / to delete) or
+one list with a per-file disposition column; whether already-present
+files appear in the dry run at all, given the operator has no decision
+to make about them; whether the pre-pass gets a `startProgressTicker`
+heartbeat (lean: yes -- it is one `HeadObject` per file and a month of
+dumps is a visible pause with no output today); whether the pre-pass
+should distinguish "absent" from "present at a different size" in its
+reporting, which `VerifiedFile` as shared cannot express (lean: no, the
+operator's actionable distinction is copy vs. skip); and the exact
+wording of the summary line.
+
 ## Core Features
 
 ### Compute Domain (EC2 & AMI)
@@ -3261,18 +3444,23 @@ and the team's canonical templates in `caltechlibrary/cloud-init-examples`
 
 ### 11. Backup Archive & Trim
 
-Interactive workflow for turning today's manual "log in and delete old
-backups" chore into a supervised, verified operation (see `DECISIONS.md`,
-"Add Backup Archive & Trim as a v1 primitive"). This is a genuinely
-destructive workflow (it deletes real backup files), so it gets the same
-safety tier as Feature 9 (Remove AMI):
+Interactive workflow for getting every backup in a directory safely into
+S3, and optionally reclaiming the local disk they occupy once they are
+confirmed there (see `DECISIONS.md`, "Add Backup Archive & Trim as a v1
+primitive", and DR-0170). The two halves are separate: **the copy is
+unconditional and covers every file in the directory**, while the trim
+is an optional second phase governed by a retention threshold. When the
+trim is in play this is a genuinely destructive workflow (it deletes
+real backup files) and gets the same safety tier as Feature 9 (Remove
+AMI); when it is not, the run is purely additive and asks only a plain
+yes/no:
 1. Pick an instance, immediately followed by a `command -v aws`
    preflight check on that instance (see `DECISIONS.md`, "Preflight
    check: AWS CLI availability before Backup Archive & Trim") — aborts
    fast with a clear, actionable error if the AWS CLI isn't installed,
    before any further prompt or the dry-run list
-2. Prompt for the backup directory, then the S3 bucket, then the age
-   threshold in days — in that order (see `DECISIONS.md`, "Reorder
+2. Prompt for the backup directory, then the S3 bucket, then the local
+   retention threshold in days — in that order (see `DECISIONS.md`, "Reorder
    Backup Archive & Trim's prompts": the threshold reads more naturally
    once both the source directory and destination bucket are already
    fixed). The instance picker's cursor and the directory prompt's
@@ -3285,8 +3473,14 @@ safety tier as Feature 9 (Remove AMI):
    `/opt/rdm_sql_backups`, other services to their own directory) when
    both exist. Either way the directory stays editable and is never
    silently accepted; no recalled value and no rule match leaves it
-   unset, same as before either mechanism existed. The age threshold
-   itself has no default — always an explicit, deliberate choice. The S3
+   unset, same as before either mechanism existed. The retention
+   threshold has no default and takes three meaningful answers
+   (DR-0170): **blank** keeps every local copy, **`0`** deletes every
+   file confirmed archived, and **`N`** deletes the confirmed ones older
+   than N days. It governs deletion only — never what gets copied. Its
+   question names the instance's EBS volume explicitly, since the
+   OpenSearch archive's own cleanup prompt (Feature 22) deletes
+   previously-archived snapshots *in S3* rather than local files. The S3
    bucket prompt itself is a filterable pick list of this account's
    buckets (`'/'` to filter by name), plus an "Other" entry to type any
    bucket name directly — e.g. one outside this account's own listing
@@ -3301,10 +3495,24 @@ safety tier as Feature 9 (Remove AMI):
    credentials can't reach it) before any of the steps below run — see
    `DECISIONS.md`, "Preflight check: S3 bucket access before Backup
    Archive & Trim's dry-run list"
-3. **Dry-run list** (SSM, read-only): show candidate files matching the
-   age threshold, with size and age, before anything happens
-4. **Type to confirm** before proceeding
-5. **Upload phase** (SSM): the instance uploads each candidate file to
+3. **Already-archived pre-pass**: `s3:HeadObject` on every listed file's
+   destination key, with the operator's own credentials, so a backup
+   already safely in the bucket is not re-sent over SSM on every run. A
+   file counts as archived only if the object exists *and* its size
+   matches; absent, a different size, or a failed call all put it back
+   in the copy set — an unclear answer always falls toward copying
+   (DR-0170). A same-key object of a different size is overwritten
+4. **Dry-run list** (SSM, read-only): two labelled sections (DR-0172) —
+   what will be copied (with a count of the files skipped as already
+   archived) and what will be deleted locally once verified, each with
+   its own file count and byte total. A file that is already in S3 *and*
+   old enough to trim stays listed in the delete section, marked
+   `(already in S3)`: it will be removed on the strength of an object an
+   earlier run uploaded, without being copied now
+5. **Confirm**, at a tier that matches the risk (DR-0170): the full
+   type-the-instance-name gate when files will actually be deleted, a
+   plain yes/no when the delete set is empty
+6. **Upload phase** (SSM): the instance uploads each not-already-archived file to
    `s3://<bucket>/<instance-name>/<filename>` via its own AWS
    CLI/credentials — every key namespaced by the source instance's Name
    tag (falling back to its instance ID if untagged) so backups from
@@ -3320,16 +3528,27 @@ safety tier as Feature 9 (Remove AMI):
    output cap and truncate away this script's own OK/FAIL signal on a
    large file (see `DECISIONS.md`, "Suppress aws s3 cp's progress output
    to avoid truncating the OK/FAIL signal"). Nothing is deleted at this
-   point
-6. **Independent verification**: the tool itself — using its own AWS
+   point. A single file failing — a transport error or a non-`Success`
+   command status — is that file's own outcome, recorded and warned
+   about, not the run's: the remaining files still get their turn
+   (DR-0171). Only a cancelled context stops the loop
+7. **Independent verification**: the tool itself — using its own AWS
    credentials, not the instance's self-report — calls `s3:HeadObject` on
-   every uploaded key and confirms it exists with the expected size
-7. **Delete phase**: a *second*, separate SSM command tells the instance
-   to delete exactly the tool-verified file list (the instance does not
-   re-derive its own "what's stale" list, avoiding a
+   every uploaded key and confirms it exists with the expected size.
+   This and the pre-pass produce one merged evidence set, so the delete
+   phase asks one question and takes one path regardless of which run
+   put the object there (DR-0170)
+8. **Delete phase**, only when a retention threshold was given: a
+   *second*, separate SSM command tells the instance to delete exactly
+   the aged files the tool itself confirmed present in S3 (the instance
+   does not re-derive its own "what's stale" list, avoiding a
    time-of-check/time-of-use gap)
-8. **fstrim** to reclaim the freed blocks, then a report of bytes freed
-   and any files that failed verification (left untouched, not deleted)
+9. **fstrim** to reclaim the freed blocks — skipped entirely when
+   nothing was deleted — then a report of files copied, files already in
+   S3, files deleted and bytes freed, plus any file that failed to copy
+   (left in place, never deleted). A failed copy that was also old
+   enough to trim is called out separately: it is correctly kept, and
+   must not be kept silently
 
 This primitive requires the target instance's IAM instance profile to
 grant `s3:PutObject` (and likely `s3:ListBucket` scoped to its prefix) on

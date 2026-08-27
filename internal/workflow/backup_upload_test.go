@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -94,13 +95,79 @@ func TestUploadBackupFiles_Success(t *testing.T) {
 	}
 }
 
-func TestUploadBackupFiles_CommandFailure(t *testing.T) {
+// TestUploadBackupFiles_CommandFailureIsRecordedNotFatal covers DR-0171:
+// a non-Success command status for one file is that file's own outcome,
+// not the run's. Before Phase 20.62 this returned an error and aborted,
+// which is wrong once the upload set is the whole directory rather than
+// only the delete candidates.
+func TestUploadBackupFiles_CommandFailureIsRecordedNotFatal(t *testing.T) {
 	files := []BackupFile{{Path: "/opt/rdm_sql_backups/foo.sql.gz", SizeBytes: 1024}}
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
 
-	_, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
-	if err == nil {
-		t.Fatal("expected an error when the upload command itself fails to run")
+	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].OK || got[0].Key != "newauthors/foo.sql.gz" {
+		t.Errorf("got %+v, want one not-OK result keyed newauthors/foo.sql.gz", got)
+	}
+}
+
+// TestUploadBackupFiles_TransportErrorMidListDoesNotAbortRemaining covers
+// DR-0171's other hard-error path: SendCommand itself failing for one
+// file must not prevent the files behind it from being uploaded.
+func TestUploadBackupFiles_TransportErrorMidListDoesNotAbortRemaining(t *testing.T) {
+	files := []BackupFile{
+		{Path: "/opt/rdm_sql_backups/a.sql.gz", SizeBytes: 10},
+		{Path: "/opt/rdm_sql_backups/b.sql.gz", SizeBytes: 20},
+		{Path: "/opt/rdm_sql_backups/c.sql.gz", SizeBytes: 30},
+	}
+	fake := &fakeSSMClient{
+		commandID:            "cmd-1",
+		sendCommandErr:       errors.New("connection reset"),
+		sendCommandErrOnCall: 2,
+		responses: []ssmCommandResponse{
+			{substring: "a.sql.gz", status: types.CommandInvocationStatusSuccess, stdout: "OK\tp/a.sql.gz\t10\n"},
+			{substring: "c.sql.gz", status: types.CommandInvocationStatusSuccess, stdout: "OK\tp/c.sql.gz\t30\n"},
+		},
+	}
+
+	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "p", testPollInterval, testPollInterval, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3 (one result per file, including the failed one)", len(got))
+	}
+	if !got[0].OK || got[1].OK || !got[2].OK {
+		t.Errorf("got %+v, want OK, not-OK, OK", got)
+	}
+	if got[1].Key != "p/b.sql.gz" {
+		t.Errorf("got[1].Key = %q, want p/b.sql.gz -- a failed file still needs its key reported", got[1].Key)
+	}
+	if fake.sendCommandCalls() != 3 {
+		t.Errorf("sendCommandCalls = %d, want 3 -- the file after the failure must still be attempted", fake.sendCommandCalls())
+	}
+}
+
+// TestUploadBackupFiles_CancelledContextStops is DR-0171's exception: a
+// cancelled context means the operator stopped the run, so the error is
+// returned rather than recorded, and no further file is attempted.
+func TestUploadBackupFiles_CancelledContextStops(t *testing.T) {
+	files := []BackupFile{
+		{Path: "/opt/rdm_sql_backups/a.sql.gz", SizeBytes: 10},
+		{Path: "/opt/rdm_sql_backups/b.sql.gz", SizeBytes: 20},
+	}
+	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("context canceled")}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := UploadBackupFiles(ctx, fake, "i-1", files, "my-bucket", "p", testPollInterval, testPollInterval, nil); err == nil {
+		t.Fatal("expected an error when the run's own context is cancelled")
+	}
+	if fake.sendCommandCalls() != 1 {
+		t.Errorf("sendCommandCalls = %d, want 1 -- a cancelled run must stop, not work through the list", fake.sendCommandCalls())
 	}
 }
 

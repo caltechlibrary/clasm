@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +28,14 @@ type fakeSSMClient struct {
 	describeErr      error
 
 	// SendCommand
-	commandID              string
-	sendCommandErr         error
+	commandID      string
+	sendCommandErr error
+	// sendCommandErrOnCall, if > 0, limits sendCommandErr to that one
+	// 1-indexed SendCommand call and lets every other call succeed --
+	// simulates a transport failure part-way through a multi-file
+	// sequence (UploadBackupFiles' per-file loop), which a fake that
+	// fails every call cannot express.
+	sendCommandErrOnCall   int
 	sendCommandCallCount   int
 	lastTimeoutSeconds     *int32
 	lastExecutionTimeout   string
@@ -67,6 +75,21 @@ type fakeSSMClient struct {
 	// command itself succeeds immediately but carries a different body.
 	// Takes priority over pendingCalls/responses/stdout when set.
 	stdoutSequence []string
+
+	// s3Sink, if set, makes a successful `aws s3 cp` command actually
+	// create the object in a fake S3 client, the way a real upload
+	// does. Without it, a test that wants VerifyUploads to succeed has
+	// to pre-seed the destination key before the run -- which, since
+	// Phase 20.62 added CheckAlreadyArchived's pre-pass, would make the
+	// workflow classify the file as already archived and skip the very
+	// upload the test meant to exercise, silently and while still
+	// passing. With the sink, seeding up front means what it says:
+	// "this was archived by an earlier run".
+	s3Sink *fakeS3Client
+	// s3SinkSkip lists destination keys that s3Sink must NOT create even
+	// though the command reports OK -- the silent upload failure the
+	// tool's own independent HeadObject verification exists to catch.
+	s3SinkSkip []string
 }
 
 type ssmCommandResponse struct {
@@ -102,7 +125,7 @@ func (f *fakeSSMClient) SendCommand(ctx context.Context, params *ssm.SendCommand
 		f.lastCommandText = params.Parameters["commands"][0]
 		f.sentCommands = append(f.sentCommands, f.lastCommandText)
 	}
-	if f.sendCommandErr != nil {
+	if f.sendCommandErr != nil && (f.sendCommandErrOnCall == 0 || f.sendCommandErrOnCall == f.sendCommandCallCount) {
 		return nil, f.sendCommandErr
 	}
 	return &ssm.SendCommandOutput{Command: &types.Command{CommandId: aws.String(f.commandID)}}, nil
@@ -130,10 +153,39 @@ func (f *fakeSSMClient) GetCommandInvocation(ctx context.Context, params *ssm.Ge
 	}
 	for _, r := range f.responses {
 		if strings.Contains(f.lastCommandText, r.substring) {
+			f.recordUploadedObjects(r.status, r.stdout)
 			return &ssm.GetCommandInvocationOutput{Status: r.status, StandardOutputContent: aws.String(r.stdout)}, nil
 		}
 	}
+	f.recordUploadedObjects(f.finalStatus, f.stdout)
 	return &ssm.GetCommandInvocationOutput{Status: f.finalStatus, StandardOutputContent: aws.String(f.stdout)}, nil
+}
+
+// recordUploadedObjects makes a successful upload command's reported OK
+// lines appear as objects in s3Sink, so the fakes model the real
+// sequence: nothing is in the bucket until this run puts it there. Parses
+// buildUploadCommand's own `OK\t<key>\t<size>` output format.
+func (f *fakeSSMClient) recordUploadedObjects(status types.CommandInvocationStatus, stdout string) {
+	if f.s3Sink == nil || status != types.CommandInvocationStatusSuccess || !strings.Contains(f.lastCommandText, "aws s3 cp") {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(stdout, "\n"), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 || parts[0] != "OK" {
+			continue
+		}
+		size, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			continue
+		}
+		if slices.Contains(f.s3SinkSkip, parts[1]) {
+			continue
+		}
+		if f.s3Sink.objects == nil {
+			f.s3Sink.objects = map[string]int64{}
+		}
+		f.s3Sink.objects[parts[1]] = size
+	}
 }
 
 const testPollInterval = 5 * time.Millisecond

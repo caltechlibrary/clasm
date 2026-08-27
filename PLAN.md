@@ -7067,6 +7067,198 @@ files as the original fix.
 
 ---
 
+## Phase 20.62 — Archive SQL Backup to S3: Copy Every Backup, Trim Only What's Old (DR-0170, DR-0171)
+
+**Status: planned, implemented and unit-tested 2026-08-27, test-first.
+Not yet real-AWS-verified** -- see "Real-AWS verification" below for the
+intended first live run. `go build`/`vet`/`test ./... -race`/`gofmt`
+all clean. Implements DR-0170
+(accepted, `trigger: request`) and DR-0171 (accepted, `trigger:
+design`); see DESIGN.md, "Archive SQL Backup to S3: Copy Every Backup,
+Trim Only What's Old (Design Addendum, 2026-08-27)" and
+`archive-all-sql-backups-feature-request.md`. Feature 11 derives one
+age-filtered set and uses it for the upload, the verification and the
+delete alike, so a dump too recent to trim never reaches S3 at all --
+noticed 2026-08-26 preparing to stand up a new CaltechAUTHORS instance
+on uv/granian, which is exactly the case the workflow exists for.
+
+### Presentation decisions settled while planning (`trigger: plan-review`)
+
+DR-0170 left five presentation-level questions to this plan. Settled:
+
+1. **The dry run shows two labelled sections,** "To copy" and "To delete
+   after verification," each with its own file count and byte total.
+   They answer different questions, and only the second one determines
+   which confirmation is used.
+2. **Already-archived files are a count line in the copy section**
+   ("N file(s) already in S3, skipped") rather than a list -- there is
+   no decision to make about them. **But if such a file is also in the
+   delete set it still appears, listed, in the delete section, marked
+   `(already in S3)`** -- it will be deleted this run without being
+   uploaded this run, which the operator must be able to see before
+   confirming.
+3. **The pre-pass gets a `startProgressTicker` heartbeat** ("checking
+   which backups are already archived") -- it is one `HeadObject` per
+   file and a month of dumps is otherwise a silent pause.
+4. **No absent-vs-size-mismatch distinction** in the reporting; the
+   operator's actionable distinction is copy vs. skip, and the shared
+   `VerifiedFile` cannot express more.
+5. **Summary line:** `Copied N file(s) (X); M already in S3; deleted K
+   local file(s), freed Y.` -- followed by the warning block, when there
+   is one.
+
+### Work Items
+
+Ordered so every unit lands before the orchestration that composes
+them. Items 1-3 are independently testable and touch no shared state.
+
+- [x] **1. Retention prompt.** New `promptLocalTrimDays(input, output)
+      (days int, requested bool, err error)` in `backup_archive.go`,
+      modelled on `promptOpenSearchCleanupDays`: blank is valid and
+      means "delete nothing," `0` is valid and means "delete everything
+      verified," `N > 0` keeps today's meaning. Validator rejects
+      anything else. Question text per DR-0170 decision 5, naming the
+      EBS volume explicitly. Delete `promptAgeDays` and its tests --
+      one call site, and it rejects both new answers.
+      `BackupArchiveParams` gains `TrimRequested bool` beside `AgeDays`.
+- [x] **2. `CheckAlreadyArchived`** in `backup_verify.go`, beside
+      `VerifyUploads`:
+      `func CheckAlreadyArchived(ctx context.Context, client awsclient.S3API, bucket, prefix string, files []BackupFile) []VerifiedFile`.
+      One `HeadObject` per file with the operator's own credentials,
+      through `withCallTimeout` as `VerifyUploads` does. `Verified` is
+      true only when the call succeeds *and* `ContentLength` equals the
+      local size; absent, different size, and errored all return false
+      (DR-0170 decision 2 -- fail toward copying).
+- [x] **3. `UploadBackupFiles`' error contract** (DR-0171). Both
+      hard-error paths -- transport error from `RunShellCommand`, and a
+      non-`Success` command status -- record `UploadResult{Key: …, OK:
+      false}`, report through `onProgress`, and continue to the next
+      file. Return the error only when `ctx.Err() != nil`. Signature
+      unchanged.
+- [x] **4. Rewire `backupArchiveAndTrim`.** The core of the phase:
+      - `allFiles := ListBackupFiles(...)`; no `FilterByAge` gate on the
+        upload path and no "Nothing to do" early exit. An empty
+        *directory* still short-circuits.
+      - `already := CheckAlreadyArchived(...)` over `allFiles`, behind
+        the heartbeat; split into `toUpload` (not verified) and the
+        already-archived remainder.
+      - `aged := FilterByAge(allFiles, params.AgeDays, time.Now())`,
+        only when `params.TrimRequested`; otherwise the delete set is
+        empty by construction.
+      - Dry run over both sets (item 5), then `ConfirmDestructive` when
+        the delete set is non-empty, plain `Confirm` when it is not.
+      - `UploadBackupFiles(toUpload)` → `VerifyUploads`; merge those
+        results with the pre-pass's into one `[]VerifiedFile` and build
+        `verifiedKeys`.
+      - Delete set = aged files whose `uploadKey(prefix, path)` is in
+        `verifiedKeys`. `DeleteVerifiedFiles` as today.
+      - `fstrim` only when something was deleted.
+- [x] **5. Output.** `displayBackupDryRun` takes both sets and renders
+      the two sections above; the summary line gains the copied and
+      already-in-S3 counts. Any file that failed to copy is named in the
+      warning block, and one that failed to copy *and* was old enough to
+      trim is called out as left on disk (DR-0171's consequence).
+- [x] **6. Menu label.** `rdm_menu.go`'s `rdmMenuItems`: "Archive SQL
+      Backup to S3" → "Archive SQL Backups to S3 (and trim local
+      copies)". Go identifiers unchanged, per Phase 20.43/20.54.
+- [x] **7. Documentation.** DESIGN.md's Feature 11 (`### 11. Backup
+      Archive & Trim`, steps 2-8) still describes the old
+      single-set behaviour and must be brought current -- DESIGN.md is
+      "what the system is, now," and the 2026-08-27 addendum is history,
+      not a substitute. Check `user_manual.md` and `TUI_REFERENCE.md`
+      for the old label and the "age threshold" wording.
+- [x] **8. Gate.** `go build`/`vet`/`test ./... -race`/`gofmt -l` clean.
+
+### Tests
+
+Test-first throughout. Each failing test confirmed failing against the
+pre-change code before the fix, per this project's practice.
+
+Units:
+
+- [x] `promptLocalTrimDays`: blank → `(0, false, nil)`; `"0"` →
+      `(0, true, nil)`; `"7"` → `(7, true, nil)`; `"-1"`/`"abc"`
+      re-prompt.
+- [x] `CheckAlreadyArchived`: object present at matching size →
+      `Verified: true`; present at a different size → false; absent →
+      false; `HeadObject` error → false, no panic. One call per file.
+- [x] `UploadBackupFiles` (DR-0171): a mid-list transport error leaves
+      the remaining files uploaded and the failed one `OK: false`; the
+      same for a non-`Success` status; a cancelled context returns the
+      error and stops early.
+
+Orchestration (`backupArchiveAndTrim`, driven through its
+accessible-mode pipes as today):
+
+- [x] Nothing old enough → every file uploaded, nothing deleted, no
+      early exit, no `fstrim`. This is the regression test for the
+      reported bug and should be written first.
+- [x] Blank retention → same, regardless of file ages, and the plain
+      `Confirm` path is used rather than `ConfirmDestructive`.
+- [x] `0` → every file uploaded, every verified file deleted.
+- [x] A file already in S3 at matching size → not uploaded, still
+      deleted when aged, and shown `(already in S3)` in the delete
+      section.
+- [x] A file already in S3 at a different size → uploaded (overwrite).
+- [x] A recent file failing verification → warning only, nothing
+      deleted, run completes.
+- [x] An aged file failing verification → left on disk and reported, as
+      today (existing behaviour, kept under test).
+
+**Test-harness change, found while planning.** The existing archive
+tests pre-seed `fakeS3Client.objects` with the exact key and size the
+upload is expected to produce, so that `VerifyUploads` succeeds
+(`backup_archive_test.go:266`, `:308`, `:380`, `:433`, `:473`, `:514`,
+`:554`). Once the pre-pass exists, that same seed makes it classify the
+file as already archived, so those tests would stop exercising the
+upload path at all -- and would still pass, which is the dangerous part.
+Fix the harness rather than the seeds: have the fake SSM client's
+upload handler insert `key → size` into the fake S3 client's `objects`
+map, the way a real upload makes a real object appear. Tests that want
+"already archived" then seed it deliberately up front, and that seeding
+means what it says. Prompt-sequence length is unchanged (directory,
+bucket, retention), so existing pipe inputs need no new lines -- only
+the retention answer's accepted values widen.
+
+### Files
+
+- `internal/workflow/backup_archive.go` (rewired; `promptAgeDays`
+  removed, `promptLocalTrimDays` added; `displayBackupDryRun` widened)
+- `internal/workflow/backup_verify.go` (`CheckAlreadyArchived` added)
+- `internal/workflow/backup_upload.go` (error contract, DR-0171)
+- `internal/workflow/rdm_menu.go` (label)
+- `internal/workflow/{backup_archive_test.go,backup_verify_test.go,backup_upload_test.go,rdm_menu_test.go}`
+  (extended; the SSM/S3 fake linkage above)
+- `DESIGN.md` (Feature 11 brought current), `user_manual.md`,
+  `TUI_REFERENCE.md` (checked)
+
+Unchanged: `backup_list.go` (`ListBackupFiles`, `FilterByAge`),
+`backup_delete.go`, `uploadKey`'s namespacing (DR-0053), the bucket
+picker and every preflight check.
+
+### Dependency
+
+Phase 11/13 (Backup Archive & Trim) and Phase 20.48 (its relocation into
+the RDM Backup & Restore domain). No dependency on Phases 20.49-20.61;
+"Archive OpenSearch Snapshot to S3" is deliberately untouched (DR-0135's
+cleanup threshold governs S3-side objects and has always been optional,
+so it does not have this coupling).
+
+### Real-AWS verification
+
+The first live run should be against CaltechAUTHORS production's own
+`/opt/rdm_sql_backups` **with a blank retention answer** -- a pure copy,
+deleting nothing, which exercises the whole new path (listing, pre-pass,
+upload of every file including the newest, verification, the non-
+destructive confirm, no `fstrim`) with no destructive step at all. A
+second run with an explicit threshold then exercises the trim, and its
+pre-pass should report every file from the first run as already
+archived, uploading nothing. That ordering is also the operationally
+useful one for the uv/granian rebuild: it gets every dump safely into S3
+first and decides about reclaiming EBS second.
+
+---
+
 ## Deferred to a Later Version (Phase 23+, not scheduled)
 
 Not part of v1/v2 — see `DECISIONS.md`, "V1 scope: ship the four primitives

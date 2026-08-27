@@ -100,10 +100,25 @@ type UploadProgress struct {
 // generic heartbeat isn't enough to tell it's actually making progress.
 // prefix namespaces every destination key (see uploadKey) so backups
 // from different instances sharing one bucket don't collide.
-// A non-Success command status for any one file is a hard error, same
-// as before this per-file split -- distinct from an individual file
-// reporting FAIL inside its own command, which is a normal, expected
-// outcome still returned to the caller to report.
+// A per-file failure -- a transport error from RunShellCommand, or a
+// non-Success command status -- is recorded as that file's own
+// not-OK result, reported through onProgress, and the loop continues
+// (DR-0171). It stops being fatal to the whole run once the upload set
+// is the entire backup directory rather than only the delete
+// candidates: an SSM hiccup on one recent file nobody intended to
+// delete must not prevent every aged backup behind it from reaching S3.
+// Continuing is safe structurally, not optimistically -- the delete
+// phase is gated on the caller's own s3:HeadObject verification, so a
+// file that failed to upload cannot be deleted however this loop treats
+// it. The exception is a cancelled context, which means the operator
+// stopped the run: the error is returned and no further file is
+// attempted. RunShellCommand's own per-file timeout returns a plain
+// formatted error rather than wrapping context.DeadlineExceeded, so
+// testing the caller's context here cleanly separates "this one file
+// timed out" from "this run was cancelled".
+// An individual file reporting FAIL inside its own command was always a
+// normal, expected outcome returned to the caller to report, and is
+// unchanged.
 func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, files []BackupFile, bucket, prefix string, timeout, pollInterval time.Duration, onProgress func(UploadProgress)) ([]UploadResult, error) {
 	var bytesTotal int64
 	for _, f := range files {
@@ -113,17 +128,23 @@ func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID 
 	results := make([]UploadResult, 0, len(files))
 	var bytesDone int64
 	for i, f := range files {
-		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildUploadCommand([]BackupFile{f}, bucket, prefix), timeout, pollInterval)
-		if err != nil {
-			return nil, err
-		}
-		if status != ssmtypes.CommandInvocationStatusSuccess {
-			return nil, fmt.Errorf("upload command on %s failed (status: %s)", instanceID, status)
-		}
-
 		result := UploadResult{Key: uploadKey(prefix, f.Path)}
-		if parsed := parseUploadResults(stdout); len(parsed) == 1 {
-			result = parsed[0]
+		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildUploadCommand([]BackupFile{f}, bucket, prefix), timeout, pollInterval)
+		switch {
+		case ctx.Err() != nil:
+			// The operator cancelled (or an outer deadline fired) --
+			// stop, rather than working through the rest of the list
+			// recording failures.
+			if err == nil {
+				err = ctx.Err()
+			}
+			return nil, err
+		case err != nil || status != ssmtypes.CommandInvocationStatusSuccess:
+			// This one file failed; every other file still gets its turn.
+		default:
+			if parsed := parseUploadResults(stdout); len(parsed) == 1 {
+				result = parsed[0]
+			}
 		}
 		results = append(results, result)
 

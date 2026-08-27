@@ -51,9 +51,15 @@ type rdmItem struct {
 // DECISIONS.md, "Run SQL Backup: drop the Archive-SQL auto-chain, rename
 // to 'Generate SQL Backup'") names what the action actually does: it
 // only ever generates the local dump file, never archives it.
+// "Archive SQL Backups to S3 (and trim local copies)" (was "Archive SQL
+// Backup to S3" until 2026-08-27, PLAN.md Phase 20.62 -- DR-0170,
+// decision 8) is the same rename lesson a second time: the copy is now
+// unconditional and covers every backup in the directory, while the
+// trim is a separate, optional phase, and the old label described
+// neither.
 var rdmMenuItems = []rdmItem{
 	{"Generate SQL Backup", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
-	{"Archive SQL Backup to S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
+	{"Archive SQL Backups to S3 (and trim local copies)", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
 	{"Archive OpenSearch Snapshot to S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
 	{"Restore SQL Backup from S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
 	{"Restore OpenSearch Snapshot from S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},

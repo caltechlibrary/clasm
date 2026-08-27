@@ -32,8 +32,14 @@ const (
 type BackupArchiveParams struct {
 	InstanceID string
 	Directory  string
-	AgeDays    int
-	Bucket     string
+	// AgeDays governs only which local copies may be deleted once
+	// they're confirmed archived -- never what gets copied (DR-0170).
+	// Meaningful only when TrimRequested is true; 0 with TrimRequested
+	// means "delete every file confirmed archived", while a blank
+	// answer leaves TrimRequested false and deletes nothing.
+	AgeDays       int
+	TrimRequested bool
+	Bucket        string
 }
 
 // BackupHistory is Backup Archive & Trim's previously-recorded
@@ -168,31 +174,19 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 		return err
 	}
 
-	ageDays, err := promptAgeDays(w, input, output)
+	trimDays, trimRequested, err := promptLocalTrimDays(input, output)
 	if err != nil {
 		return err
 	}
 
-	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: directory, AgeDays: ageDays, Bucket: bucket}
+	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: directory, AgeDays: trimDays, TrimRequested: trimRequested, Bucket: bucket}
 
 	allFiles, err := ListBackupFiles(ctx, ssmClient, params.InstanceID, params.Directory, DefaultBackupListTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
-	candidates := FilterByAge(allFiles, params.AgeDays, time.Now())
-	if len(candidates) == 0 {
-		fmt.Fprintln(w, "No files match the age threshold. Nothing to do.")
-		return nil
-	}
-
-	displayBackupDryRun(w, candidates)
-
-	ok, err := ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
-	if err != nil {
-		return err
-	}
-	if !ok {
-		fmt.Fprintln(w, "Cancelled.")
+	if len(allFiles) == 0 {
+		fmt.Fprintf(w, "No files in %s on %s. Nothing to do.\n", params.Directory, params.InstanceID)
 		return nil
 	}
 
@@ -201,13 +195,63 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 	// identically- or similarly-named files (see DECISIONS.md,
 	// "Namespace backup uploads by instance"). Falls back to the
 	// instance ID when Name is blank -- an untagged instance still
-	// needs a non-empty, unique prefix.
+	// needs a non-empty, unique prefix. Resolved before the dry run
+	// because the already-archived pre-pass needs the destination keys.
 	prefix := inst.Name
 	if prefix == "" {
 		prefix = inst.InstanceID
 	}
 
-	uploads, err := UploadBackupFiles(ctx, ssmClient, params.InstanceID, candidates, params.Bucket, prefix, DefaultBackupUploadTimeout, DefaultSSMPollInterval, func(p UploadProgress) {
+	// Every file in the directory is a copy candidate (DR-0170,
+	// decision 1); the pre-pass then drops the ones already safely in
+	// the bucket, so a steady-state run re-sends nothing over SSM.
+	stopPrePassTicker := startProgressTicker(w, "checking which backups are already archived")
+	already := CheckAlreadyArchived(ctx, bucketClient, params.Bucket, prefix, allFiles)
+	stopPrePassTicker()
+
+	archivedKeys := make(map[string]bool, len(already))
+	for _, a := range already {
+		if a.Verified {
+			archivedKeys[a.Key] = true
+		}
+	}
+
+	toUpload := make([]BackupFile, 0, len(allFiles))
+	for _, f := range allFiles {
+		if !archivedKeys[uploadKey(prefix, f.Path)] {
+			toUpload = append(toUpload, f)
+		}
+	}
+
+	// The age threshold now governs only which *local* copies may be
+	// removed once they're confirmed safe in S3 -- never what gets
+	// copied. A blank answer means nothing is deleted at all.
+	var aged []BackupFile
+	if params.TrimRequested {
+		aged = FilterByAge(allFiles, params.AgeDays, time.Now())
+	}
+
+	displayBackupDryRun(w, toUpload, len(allFiles)-len(toUpload), aged, prefix, archivedKeys)
+
+	// Friction tracks the actual risk, not the menu entry: a run that
+	// deletes nothing is a pure copy and gets a plain yes/no, while one
+	// that removes files still demands the instance name typed out
+	// (DR-0170, decision 6).
+	var ok bool
+	if len(aged) > 0 {
+		ok, err = ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
+	} else {
+		ok, err = Confirm(fmt.Sprintf("Copy %d file(s) to s3://%s/%s/ ? Nothing will be deleted.", len(toUpload), params.Bucket, prefix), WithConfirmIO(input, output))
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintln(w, "Cancelled.")
+		return nil
+	}
+
+	uploads, err := UploadBackupFiles(ctx, ssmClient, params.InstanceID, toUpload, params.Bucket, prefix, DefaultBackupUploadTimeout, DefaultSSMPollInterval, func(p UploadProgress) {
 		status := "OK"
 		if !p.Result.OK {
 			status = "FAIL"
@@ -222,40 +266,78 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 	verified := VerifyUploads(ctx, bucketClient, params.Bucket, uploads)
 	stopVerifyTicker()
 
-	pathByKey := make(map[string]string, len(candidates))
-	for _, f := range candidates {
-		pathByKey[uploadKey(prefix, f.Path)] = f.Path
+	// One merged evidence set: an object this run uploaded and verified
+	// and an object an earlier run left behind are the same proof, so
+	// the delete gate below asks one question and takes one path
+	// (DR-0170, decision 3).
+	verifiedKeys := make(map[string]bool, len(already)+len(verified))
+	for key := range archivedKeys {
+		verifiedKeys[key] = true
 	}
-
-	var toDelete []string
+	var copied int
+	var bytesCopied int64
 	var failedKeys []string
-	var bytesFreed int64
 	for _, v := range verified {
 		if v.Verified {
-			if p, ok := pathByKey[v.Key]; ok {
-				toDelete = append(toDelete, p)
-				bytesFreed += v.SizeBytes
-			}
+			verifiedKeys[v.Key] = true
+			copied++
+			bytesCopied += v.SizeBytes
 		} else {
 			failedKeys = append(failedKeys, v.Key)
 		}
 	}
 
-	if err := DeleteVerifiedFiles(ctx, ssmClient, params.InstanceID, toDelete, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
-		return err
+	var toDelete []string
+	var bytesFreed int64
+	for _, f := range aged {
+		if verifiedKeys[uploadKey(prefix, f.Path)] {
+			toDelete = append(toDelete, f.Path)
+			bytesFreed += f.SizeBytes
+		}
 	}
 
-	if _, status, err := RunShellCommand(ctx, ssmClient, params.InstanceID, "sudo fstrim -av", DefaultBackupFstrimTimeout, DefaultSSMPollInterval); err != nil {
-		fmt.Fprintf(w, "fstrim did not complete: %v\n", err)
-	} else if status != ssmtypes.CommandInvocationStatusSuccess {
-		fmt.Fprintf(w, "fstrim did not complete (status: %s)\n", status)
+	if len(toDelete) > 0 {
+		if err := DeleteVerifiedFiles(ctx, ssmClient, params.InstanceID, toDelete, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
+			return err
+		}
+		// Only worth the SSM round trip when something was actually
+		// removed -- a copy-only run frees nothing to trim.
+		if _, status, err := RunShellCommand(ctx, ssmClient, params.InstanceID, "sudo fstrim -av", DefaultBackupFstrimTimeout, DefaultSSMPollInterval); err != nil {
+			fmt.Fprintf(w, "fstrim did not complete: %v\n", err)
+		} else if status != ssmtypes.CommandInvocationStatusSuccess {
+			fmt.Fprintf(w, "fstrim did not complete (status: %s)\n", status)
+		}
 	}
 
-	fmt.Fprintf(w, "\nArchived and deleted %d file(s), freed %d bytes.\n", len(toDelete), bytesFreed)
+	fmt.Fprintf(w, "\nCopied %d file(s) (%d bytes); %d already in S3; deleted %d local file(s), freed %d bytes.\n",
+		copied, bytesCopied, len(archivedKeys), len(toDelete), bytesFreed)
 	if len(failedKeys) > 0 {
-		fmt.Fprintf(w, "%d file(s) failed verification and were left untouched: %s\n", len(failedKeys), strings.Join(failedKeys, ", "))
+		fmt.Fprintf(w, "%d file(s) failed to copy and are still only on %s: %s\n", len(failedKeys), params.InstanceID, strings.Join(failedKeys, ", "))
+		// The dangerous case: old enough to have been trimmed, but the
+		// copy didn't land, so it was correctly kept -- and must not be
+		// kept silently.
+		if agedFailures := intersectKeys(aged, prefix, failedKeys); len(agedFailures) > 0 {
+			fmt.Fprintf(w, "  %d of those were old enough to trim and were deliberately left in place: %s\n", len(agedFailures), strings.Join(agedFailures, ", "))
+		}
 	}
 	return nil
+}
+
+// intersectKeys returns the subset of failedKeys whose files are also in
+// aged -- the copy failures that would otherwise have been deleted this
+// run.
+func intersectKeys(aged []BackupFile, prefix string, failedKeys []string) []string {
+	failed := make(map[string]bool, len(failedKeys))
+	for _, k := range failedKeys {
+		failed[k] = true
+	}
+	var out []string
+	for _, f := range aged {
+		if key := uploadKey(prefix, f.Path); failed[key] {
+			out = append(out, key)
+		}
+	}
+	return out
 }
 
 // bucketChoice is one entry in promptBackupBucket's pick list: either an
@@ -316,34 +398,83 @@ func promptBackupBucket(ctx context.Context, w io.Writer, s3Client awsclient.S3A
 	return picked.name, nil
 }
 
-// promptAgeDays prompts for a positive integer age threshold, re-prompting
-// on invalid input. No default -- an explicit, deliberate choice every
-// time (see DESIGN.md, Feature 11).
-func promptAgeDays(w io.Writer, input io.Reader, output io.Writer) (int, error) {
-	var days int
-	_, err := ui.Prompt("Age threshold in days", ui.WithValidator(func(s string) error {
-		n, convErr := strconv.Atoi(strings.TrimSpace(s))
-		if convErr != nil || n <= 0 {
-			return errors.New("must be a positive integer")
+// promptLocalTrimDays prompts for the optional local-retention
+// threshold. Three answers, all meaningful (DR-0170, decision 4): blank
+// keeps every local copy, "0" deletes every file confirmed archived,
+// and a positive N deletes the confirmed ones older than N days. Blank
+// and 0 are both falsy as a bare int and mean opposite things, hence
+// the separate requested flag -- the same shape, and the same reason,
+// as promptOpenSearchCleanupDays. Replaces promptAgeDays, which
+// rejected both of the new answers.
+//
+// The question names the instance's EBS volume explicitly rather than
+// mirroring the OpenSearch cleanup prompt's wording: that one deletes
+// previously-archived snapshots *in S3*, this one deletes local files
+// *on the instance*, and a real user report (2026-07-29, DR-0151) found
+// terser wording genuinely ambiguous about which.
+func promptLocalTrimDays(input io.Reader, output io.Writer) (days int, requested bool, err error) {
+	raw, err := ui.Prompt("Delete local backup files on the instance's EBS volume older than how many days? (blank to keep all local copies; 0 to delete every file successfully archived)", ui.WithValidator(func(s string) error {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
 		}
-		days = n
+		n, convErr := strconv.Atoi(s)
+		if convErr != nil || n < 0 {
+			return errors.New("must be blank (keep all local copies), 0, or a positive integer")
+		}
 		return nil
 	}), ui.WithIO(input, output))
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return days, nil
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false, nil
+	}
+	n, _ := strconv.Atoi(raw) // already validated above
+	return n, true, nil
 }
 
-func displayBackupDryRun(w io.Writer, files []BackupFile) {
-	fmt.Fprintln(w, "\n=== DRY RUN: candidate files ===")
-	var total int64
-	for _, f := range files {
+// displayBackupDryRun shows the two sets this workflow now derives, in
+// their own labelled sections (DR-0172): what will be copied, and what
+// will be deleted locally once confirmed archived. They answer different
+// questions, and only the second determines which confirmation tier the
+// caller uses.
+//
+// Already-archived files are a count in the copy section -- there is no
+// decision to make about them -- but one that is *also* in the delete
+// set stays listed and marked, because it will be removed on the
+// strength of an object an earlier run uploaded, without being copied
+// now. That is the case worth seeing before confirming.
+func displayBackupDryRun(w io.Writer, toCopy []BackupFile, alreadyArchived int, toDelete []BackupFile, prefix string, archivedKeys map[string]bool) {
+	fmt.Fprintln(w, "\n=== DRY RUN: to copy to S3 ===")
+	var copyTotal int64
+	for _, f := range toCopy {
 		ageDays := time.Since(f.ModTime).Hours() / 24
 		fmt.Fprintf(w, "  %s  %d bytes  %.0f days old\n", f.Path, f.SizeBytes, ageDays)
-		total += f.SizeBytes
+		copyTotal += f.SizeBytes
 	}
-	fmt.Fprintf(w, "Total: %d file(s), %d bytes\n", len(files), total)
+	fmt.Fprintf(w, "Total: %d file(s), %d bytes\n", len(toCopy), copyTotal)
+	if alreadyArchived > 0 {
+		fmt.Fprintf(w, "%d file(s) already in S3, skipped\n", alreadyArchived)
+	}
+
+	fmt.Fprintln(w, "\n=== DRY RUN: to delete locally after verification ===")
+	if len(toDelete) == 0 {
+		fmt.Fprintln(w, "  (none -- every local copy is kept)")
+		return
+	}
+	var deleteTotal int64
+	for _, f := range toDelete {
+		ageDays := time.Since(f.ModTime).Hours() / 24
+		note := ""
+		if archivedKeys[uploadKey(prefix, f.Path)] {
+			note = "  (already in S3)"
+		}
+		fmt.Fprintf(w, "  %s  %d bytes  %.0f days old%s\n", f.Path, f.SizeBytes, ageDays, note)
+		deleteTotal += f.SizeBytes
+	}
+	fmt.Fprintf(w, "Total: %d file(s), %d bytes\n", len(toDelete), deleteTotal)
 }
 
 // formatBytes renders n as a human-scaled size (e.g. "1.2 GiB") for the

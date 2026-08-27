@@ -272,7 +272,7 @@ func TestRDMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
 func TestRDMMenuItems_Order(t *testing.T) {
 	want := []string{
 		"Generate SQL Backup",
-		"Archive SQL Backup to S3",
+		"Archive SQL Backups to S3 (and trim local copies)",
 		"Archive OpenSearch Snapshot to S3",
 		"Restore SQL Backup from S3",
 		"Restore OpenSearch Snapshot from S3",

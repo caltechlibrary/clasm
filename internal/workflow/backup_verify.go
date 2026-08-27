@@ -43,6 +43,35 @@ func VerifyUploads(ctx context.Context, client awsclient.S3API, bucket string, u
 	return verified
 }
 
+// CheckAlreadyArchived classifies a directory listing against the
+// destination bucket *before* anything is uploaded, so a backup already
+// safely in S3 isn't re-sent over SSM on every run (DR-0170, decision
+// 2). Same check as VerifyUploads -- s3:HeadObject with the operator's
+// own credentials, confirming the object exists at exactly the local
+// file's size -- and deliberately the same VerifiedFile result type, so
+// the delete phase has one gate and one evidence standard regardless of
+// whether the evidence came from this run's own upload or from an
+// object some earlier run put there (DR-0170, decision 3).
+//
+// Verified is true only when the object exists *and* its size matches.
+// Absent, a different size, and a failed HeadObject all return false,
+// which puts the file back in the upload set: an unnecessary copy costs
+// bandwidth, an unjustified delete costs a backup, so an unclear answer
+// always falls toward copying. A size mismatch overwrites on upload --
+// `aws s3 cp` overwrites, so no special case is needed here.
+func CheckAlreadyArchived(ctx context.Context, client awsclient.S3API, bucket, prefix string, files []BackupFile) []VerifiedFile {
+	archived := make([]VerifiedFile, 0, len(files))
+	for _, f := range files {
+		key := uploadKey(prefix, f.Path)
+		headCtx, cancel := withCallTimeout(ctx)
+		out, err := client.HeadObject(headCtx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+		cancel()
+		ok := err == nil && out.ContentLength != nil && *out.ContentLength == f.SizeBytes
+		archived = append(archived, VerifiedFile{Key: key, SizeBytes: f.SizeBytes, Verified: ok})
+	}
+	return archived
+}
+
 // BucketRegion discovers which AWS region a bucket actually lives in,
 // via s3:GetBucketLocation -- callable from a client scoped to any
 // region, unlike HeadBucket/HeadObject, which 301 (MovedPermanently)

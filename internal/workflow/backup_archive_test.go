@@ -49,22 +49,316 @@ var errUnavailable = errors.New("SSM unavailable")
 // limitation power_state.go's/terminate_instance.go's own conversions
 // already have.
 
-func TestBackupArchiveAndTrim_DryRunEmptyResult(t *testing.T) {
+// TestBackupArchiveAndTrim_NothingOldEnoughStillCopiesEverything is the
+// regression test for the bug this phase exists to fix (DR-0170): with
+// no file old enough to trim, the workflow used to print "No files match
+// the age threshold. Nothing to do." and exit having copied nothing --
+// silently leaving the newest, most valuable dump only on EBS. Every
+// file must now be copied regardless of age; the threshold governs only
+// what may be deleted afterwards.
+func TestBackupArchiveAndTrim_NothingOldEnoughStillCopiesEverything(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	now := nowUnix()
 	input := "/opt/rdm_sql_backups\n" + // directory
 		"my-backup-bucket\n" + // bucket
-		"90\n" // age threshold (nothing is 90 days old in the fixture)
+		"90\n" + // trim threshold (nothing is 90 days old in the fixture)
+		"y\n" // nothing will be deleted, so this is a plain confirm
 
 	term, le, buf := newPipeEditor(input)
-	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(nowUnix())}
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(now)},
+			{substring: "recent-1.sql.gz", status: types.CommandInvocationStatusSuccess, stdout: "OK\tnewauthors/recent-1.sql.gz\t1024\n"},
+			{substring: "recent-2.sql.gz", status: types.CommandInvocationStatusSuccess, stdout: "OK\tnewauthors/recent-2.sql.gz\t2048\n"},
+		},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "No files match") {
+		t.Errorf("the age threshold must not gate the copy at all, got:\n%s", out)
+	}
+	// CLI check, list, two uploads. No delete, no fstrim.
+	if ssmClient.sendCommandCalls() != 4 {
+		t.Errorf("sendCommandCalls = %d, want 4 (CLI check, list, one upload per file)", ssmClient.sendCommandCalls())
+	}
+	for _, key := range []string{"newauthors/recent-1.sql.gz", "newauthors/recent-2.sql.gz"} {
+		if _, ok := s3Client.objects[key]; !ok {
+			t.Errorf("%s never reached the bucket; objects = %v", key, s3Client.objects)
+		}
+	}
+	if !strings.Contains(out, "Copied 2 file(s)") {
+		t.Errorf("expected both files reported as copied, got:\n%s", out)
+	}
+	if !strings.Contains(out, "deleted 0 local file(s)") {
+		t.Errorf("expected nothing deleted, got:\n%s", out)
+	}
+}
+
+// TestBackupArchiveAndTrim_BlankThresholdCopiesAndDeletesNothing covers
+// DR-0170 decision 4's blank answer, and decision 6's lighter
+// confirmation: a copy-only run is not destructive, so it asks a plain
+// yes/no rather than requiring the instance name typed out. The input
+// below deliberately supplies "y", not "i-1".
+func TestBackupArchiveAndTrim_BlankThresholdCopiesAndDeletesNothing(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	input := "/opt/rdm_sql_backups\n" +
+		"my-backup-bucket\n" +
+		"\n" + // blank: keep every local copy
+		"y\n" // plain confirm, not type-to-confirm
+
+	term, le, buf := newPipeEditor(input)
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+		},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if ssmClient.sendCommandCalls() != 3 {
+		t.Errorf("sendCommandCalls = %d, want 3 (CLI check, list, upload) -- no delete, no fstrim", ssmClient.sendCommandCalls())
+	}
+	if !strings.Contains(out, "deleted 0 local file(s)") {
+		t.Errorf("expected nothing deleted, got:\n%s", out)
+	}
+	if _, ok := s3Client.objects["newauthors/old-1.sql.gz"]; !ok {
+		t.Error("a 30-day-old file must still be copied when the trim threshold is blank")
+	}
+}
+
+// TestBackupArchiveAndTrim_ZeroThresholdTrimsEverythingVerified covers
+// the other end of DR-0170 decision 4: "0" is an answer, not a blank.
+func TestBackupArchiveAndTrim_ZeroThresholdTrimsEverythingVerified(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	now := nowUnix()
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n0\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess, stdout: recentFindOutput(now)},
+			{substring: "recent-1.sql.gz", status: types.CommandInvocationStatusSuccess, stdout: "OK\tnewauthors/recent-1.sql.gz\t1024\n"},
+			{substring: "recent-2.sql.gz", status: types.CommandInvocationStatusSuccess, stdout: "OK\tnewauthors/recent-2.sql.gz\t2048\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "deleted 2 local file(s)") {
+		t.Errorf("expected both hours-old files deleted at threshold 0, got:\n%s", out)
+	}
+	// CLI check, list, two uploads, delete, fstrim.
+	if ssmClient.sendCommandCalls() != 6 {
+		t.Errorf("sendCommandCalls = %d, want 6", ssmClient.sendCommandCalls())
+	}
+}
+
+// TestBackupArchiveAndTrim_AlreadyArchivedFileIsNotReUploadedButStillTrimmed
+// covers DR-0170 decisions 2 and 3 together, including the consequence
+// worth stating plainly: a file can be deleted on the strength of an
+// object an earlier run uploaded, without this run uploading anything.
+// DR-0172 requires it to be visible as such in the dry run.
+func TestBackupArchiveAndTrim_AlreadyArchivedFileIsNotReUploadedButStillTrimmed(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	// Seeded up front: an earlier run already archived this file.
+	s3Client := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576}}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	for _, cmd := range ssmClient.sentCommands {
+		if strings.Contains(cmd, "aws s3 cp") {
+			t.Errorf("an already-archived file must not be re-uploaded, got command:\n%s", cmd)
+		}
+	}
+	if !strings.Contains(out, "already in S3") {
+		t.Errorf("expected the already-archived file to be marked in the dry run, got:\n%s", out)
+	}
+	if !strings.Contains(out, "deleted 1 local file(s)") {
+		t.Errorf("an already-archived file that is old enough must still be trimmed, got:\n%s", out)
+	}
+}
+
+// TestBackupArchiveAndTrim_SizeMismatchIsReUploaded covers DR-0170
+// decision 2's overwrite case: same key, different size means the local
+// file is the newer truth.
+func TestBackupArchiveAndTrim_SizeMismatchIsReUploaded(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	// Present, but a different size than the local file: stale.
+	s3Client := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 999}}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+
+	if err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var uploaded bool
+	for _, cmd := range ssmClient.sentCommands {
+		if strings.Contains(cmd, "aws s3 cp") {
+			uploaded = true
+		}
+	}
+	if !uploaded {
+		t.Error("a same-key object of a different size must be overwritten, not skipped")
+	}
+	if s3Client.objects["newauthors/old-1.sql.gz"] != 1048576 {
+		t.Errorf("object size = %d, want the local file's 1048576 after the overwrite", s3Client.objects["newauthors/old-1.sql.gz"])
+	}
+}
+
+// TestBackupArchiveAndTrim_RecentCopyFailureIsAWarningNotFatal covers
+// DR-0171 at the workflow level: a file too new to trim failing to copy
+// must not stop the aged files from being archived and trimmed.
+func TestBackupArchiveAndTrim_RecentCopyFailureIsAWarningNotFatal(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	now := nowUnix()
+	oldEpoch := now - int64(30*24*3600)
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n" +
+					"2048\t" + itoa(now-3600) + "\t/opt/rdm_sql_backups/recent-1.sql.gz\n"},
+			{substring: "recent-1.sql.gz", status: types.CommandInvocationStatusFailed, stdout: ""},
+			{substring: "old-1.sql.gz", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
+		},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("a failed copy of a file that wasn't going to be deleted must not fail the run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "failed to copy") {
+		t.Errorf("expected a warning naming the failed file, got:\n%s", out)
+	}
+	if !strings.Contains(out, "deleted 1 local file(s)") {
+		t.Errorf("the aged file must still be archived and trimmed, got:\n%s", out)
+	}
+}
+
+// TestBackupArchiveAndTrim_AgedCopyFailureIsCalledOut covers DR-0171's
+// consequence: a file old enough to trim whose copy failed is correctly
+// kept, and must not be kept silently.
+func TestBackupArchiveAndTrim_AgedCopyFailureIsCalledOut(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n7\ni-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusFailed, stdout: ""},
+		},
+	}
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "old enough to trim and were deliberately left in place") {
+		t.Errorf("expected the aged-but-unarchived file to be called out, got:\n%s", out)
+	}
+	if !strings.Contains(out, "deleted 0 local file(s)") {
+		t.Errorf("nothing may be deleted when the copy failed, got:\n%s", out)
+	}
+	for _, cmd := range ssmClient.sentCommands {
+		if strings.Contains(cmd, "rm -f") {
+			t.Error("an unverified file must never reach the delete command")
+		}
+	}
+}
+
+func TestBackupArchiveAndTrim_EmptyDirectoryStops(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	input := "/opt/rdm_sql_backups\nmy-backup-bucket\n90\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: ""}
 	s3Client := &fakeS3Client{}
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "No files match") {
-		t.Errorf("expected a no-matches message, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "Nothing to do") {
+		t.Errorf("expected a nothing-to-do message for an empty directory, got:\n%s", buf.String())
 	}
 	if ssmClient.sendCommandCalls() != 2 {
 		t.Errorf("sendCommandCalls = %d, want 2 (CLI check, list command)", ssmClient.sendCommandCalls())
@@ -251,8 +545,13 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 		"i-1\n" // type-to-confirm with the instance ID
 
 	term, le, buf := newPipeEditor(input)
+	// The bucket starts empty and the upload itself puts the object
+	// there (s3Sink), rather than the test pre-seeding it -- a pre-seed
+	// would make the already-archived pre-pass skip this very upload.
+	s3Client := &fakeS3Client{}
 	ssmClient := &fakeSSMClient{
 		commandID: "cmd-1",
+		s3Sink:    s3Client,
 		responses: []ssmCommandResponse{
 			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
 			{substring: "find ", status: types.CommandInvocationStatusSuccess,
@@ -263,7 +562,6 @@ func TestBackupArchiveAndTrim_HappyPath(t *testing.T) {
 			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: "/opt/rdm_sql_backups: 1 GiB trimmed\n"},
 		},
 	}
-	s3Client := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576}}
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
@@ -305,7 +603,8 @@ func TestBackupArchiveAndTrim_UsesBucketRegionScopedS3Client(t *testing.T) {
 	// probe client happens to be scoped to, exactly the mismatch that
 	// caused MovedPermanently in real testing.
 	probeClient := &fakeS3Client{bucketLocation: "us-west-2"}
-	realClient := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576}}
+	realClient := &fakeS3Client{}
+	ssmClient.s3Sink = realClient
 	var factoryRegion string
 	newS3Client := func(ctx context.Context, region string) (awsclient.S3API, error) {
 		factoryRegion = region
@@ -376,8 +675,12 @@ func TestBackupArchiveAndTrim_PartialVerificationFailure(t *testing.T) {
 			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
 		},
 	}
-	// bad.sql.gz is missing from the bucket -- verification fails for it
-	s3Client := &fakeS3Client{objects: map[string]int64{"newauthors/good.sql.gz": 1000}}
+	s3Client := &fakeS3Client{}
+	ssmClient.s3Sink = s3Client
+	// The instance reports OK for both files, but bad.sql.gz never
+	// actually appears in the bucket -- the silent-failure case the
+	// tool's own independent HeadObject verification exists to catch.
+	ssmClient.s3SinkSkip = []string{"newauthors/bad.sql.gz"}
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
@@ -430,7 +733,8 @@ func TestBackupArchiveAndTrim_UntaggedInstanceUsesIDAsKeyPrefix(t *testing.T) {
 			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: ""},
 		},
 	}
-	s3Client := &fakeS3Client{objects: map[string]int64{"i-untagged/old-1.sql.gz": 1048576}}
+	s3Client := &fakeS3Client{}
+	ssmClient.s3Sink = s3Client
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
@@ -470,8 +774,8 @@ func TestBackupArchiveAndTrim_BucketPickerOffersKnownBuckets(t *testing.T) {
 	}
 	s3Client := &fakeS3Client{
 		buckets: []s3types.Bucket{{Name: aws.String("alpha-bucket")}, {Name: aws.String("zeta-bucket")}},
-		objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576},
 	}
+	ssmClient.s3Sink = s3Client
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
@@ -511,8 +815,8 @@ func TestBackupArchiveAndTrim_BucketPickerOtherFallsBackToFreeText(t *testing.T)
 	}
 	s3Client := &fakeS3Client{
 		buckets: []s3types.Bucket{{Name: aws.String("alpha-bucket")}},
-		objects: map[string]int64{"newauthors/old-1.sql.gz": 1048576},
 	}
+	ssmClient.s3Sink = s3Client
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
 	if err != nil {
@@ -551,7 +855,6 @@ func TestBackupArchiveAndTrim_BucketPickerFallsBackToFreeTextOnListError(t *test
 	}
 	s3Client := &fakeS3Client{
 		listBucketsErr: errors.New("access denied"),
-		objects:        map[string]int64{"newauthors/old-1.sql.gz": 1048576},
 	}
 
 	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf)
@@ -641,5 +944,77 @@ func TestBackupArchiveAndTrim_NoInstances(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "No instances") {
 		t.Errorf("expected a no-instances message, got:\n%s", buf.String())
+	}
+}
+
+// promptLocalTrimDays is tri-state (DR-0170, decision 4): blank and "0"
+// are both valid and mean opposite things, which is why it returns a
+// separate "requested" flag rather than a bare int.
+
+func TestPromptLocalTrimDays_BlankMeansNoTrim(t *testing.T) {
+	_, le, buf := newPipeEditor("\n")
+
+	days, requested, err := promptLocalTrimDays(le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requested {
+		t.Error("requested = true, want false -- blank means keep every local copy")
+	}
+	if days != 0 {
+		t.Errorf("days = %d, want 0", days)
+	}
+}
+
+func TestPromptLocalTrimDays_ZeroMeansTrimEverythingVerified(t *testing.T) {
+	_, le, buf := newPipeEditor("0\n")
+
+	days, requested, err := promptLocalTrimDays(le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !requested {
+		t.Error("requested = false, want true -- 0 is an answer, not a blank")
+	}
+	if days != 0 {
+		t.Errorf("days = %d, want 0", days)
+	}
+}
+
+func TestPromptLocalTrimDays_PositiveThreshold(t *testing.T) {
+	_, le, buf := newPipeEditor("7\n")
+
+	days, requested, err := promptLocalTrimDays(le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !requested || days != 7 {
+		t.Errorf("got (%d, %t), want (7, true)", days, requested)
+	}
+}
+
+func TestPromptLocalTrimDays_RejectsNegativeAndNonNumeric(t *testing.T) {
+	_, le, buf := newPipeEditor("-1\nabc\n3\n")
+
+	days, requested, err := promptLocalTrimDays(le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !requested || days != 3 {
+		t.Errorf("got (%d, %t), want (3, true) after two rejected answers", days, requested)
+	}
+}
+
+func TestPromptLocalTrimDays_QuestionNamesTheEBSVolume(t *testing.T) {
+	_, le, buf := newPipeEditor("\n")
+
+	if _, _, err := promptLocalTrimDays(le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// DR-0170, decision 5 / DR-0151's lesson: this prompt deletes local
+	// files on the instance, unlike the OpenSearch cleanup prompt it
+	// otherwise mirrors, which deletes archived objects in S3.
+	if !strings.Contains(buf.String(), "EBS") {
+		t.Errorf("expected the question to name the EBS volume explicitly, got:\n%s", buf.String())
 	}
 }

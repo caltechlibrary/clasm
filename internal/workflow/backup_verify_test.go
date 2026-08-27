@@ -225,3 +225,71 @@ func TestVerifyUploads_SkipsHeadObjectForFailedUpload(t *testing.T) {
 		t.Errorf("headObjectCalls = %d, want 0 (a failed upload shouldn't be checked)", fake.headObjectCalls)
 	}
 }
+
+// CheckAlreadyArchived (DR-0170, decision 2) classifies the directory
+// listing before anything is uploaded. Its single rule -- verified only
+// when the object exists at exactly the local size -- is what makes
+// absent, size-mismatched and errored objects all fall toward copying.
+
+func TestCheckAlreadyArchived_PresentAtMatchingSizeIsVerified(t *testing.T) {
+	fake := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 1024}}
+	files := []BackupFile{{Path: "/opt/rdm_sql_backups/old-1.sql.gz", SizeBytes: 1024}}
+
+	got := CheckAlreadyArchived(context.Background(), fake, "my-bucket", "newauthors", files)
+	if len(got) != 1 || !got[0].Verified {
+		t.Errorf("got %+v, want Verified=true", got)
+	}
+	if got[0].Key != "newauthors/old-1.sql.gz" {
+		t.Errorf("got[0].Key = %q, want the namespaced upload key", got[0].Key)
+	}
+}
+
+func TestCheckAlreadyArchived_PresentAtDifferentSizeIsNotVerified(t *testing.T) {
+	fake := &fakeS3Client{objects: map[string]int64{"newauthors/old-1.sql.gz": 999}}
+	files := []BackupFile{{Path: "/opt/rdm_sql_backups/old-1.sql.gz", SizeBytes: 1024}}
+
+	got := CheckAlreadyArchived(context.Background(), fake, "my-bucket", "newauthors", files)
+	if len(got) != 1 || got[0].Verified {
+		t.Errorf("got %+v, want Verified=false -- a same-key object of a different size is re-uploaded, not skipped", got)
+	}
+}
+
+func TestCheckAlreadyArchived_AbsentIsNotVerified(t *testing.T) {
+	fake := &fakeS3Client{objects: map[string]int64{}}
+	files := []BackupFile{{Path: "/opt/rdm_sql_backups/old-1.sql.gz", SizeBytes: 1024}}
+
+	got := CheckAlreadyArchived(context.Background(), fake, "my-bucket", "newauthors", files)
+	if len(got) != 1 || got[0].Verified {
+		t.Errorf("got %+v, want Verified=false", got)
+	}
+}
+
+func TestCheckAlreadyArchived_HeadObjectErrorFallsTowardCopying(t *testing.T) {
+	fake := &fakeS3Client{headErr: errors.New("AccessDenied")}
+	files := []BackupFile{{Path: "/opt/rdm_sql_backups/old-1.sql.gz", SizeBytes: 1024}}
+
+	got := CheckAlreadyArchived(context.Background(), fake, "my-bucket", "newauthors", files)
+	if len(got) != 1 || got[0].Verified {
+		t.Errorf("got %+v, want Verified=false -- an unclear answer must never authorize a delete", got)
+	}
+}
+
+func TestCheckAlreadyArchived_ChecksEveryFileOnce(t *testing.T) {
+	fake := &fakeS3Client{objects: map[string]int64{"newauthors/a.sql.gz": 10}}
+	files := []BackupFile{
+		{Path: "/opt/rdm_sql_backups/a.sql.gz", SizeBytes: 10},
+		{Path: "/opt/rdm_sql_backups/b.sql.gz", SizeBytes: 20},
+		{Path: "/opt/rdm_sql_backups/c.sql.gz", SizeBytes: 30},
+	}
+
+	got := CheckAlreadyArchived(context.Background(), fake, "my-bucket", "newauthors", files)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	if !got[0].Verified || got[1].Verified || got[2].Verified {
+		t.Errorf("got %+v, want only the first verified", got)
+	}
+	if fake.headObjectCalls != 3 {
+		t.Errorf("headObjectCalls = %d, want 3 (one per file)", fake.headObjectCalls)
+	}
+}
