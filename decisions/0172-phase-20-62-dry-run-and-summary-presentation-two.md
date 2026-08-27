@@ -2,7 +2,7 @@
 id: "0172"
 title: "Phase 20.62 dry-run and summary presentation: two sections, already-archived as a count except when it is also being deleted"
 date: "2026-08-27"
-status: proposed
+status: accepted
 kind: refinement
 trigger: plan-review
 project: clasm

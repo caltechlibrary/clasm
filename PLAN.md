@@ -7069,10 +7069,19 @@ files as the original fix.
 
 ## Phase 20.62 — Archive SQL Backup to S3: Copy Every Backup, Trim Only What's Old (DR-0170, DR-0171)
 
-**Status: planned, implemented and unit-tested 2026-08-27, test-first.
-Not yet real-AWS-verified** -- see "Real-AWS verification" below for the
-intended first live run. `go build`/`vet`/`test ./... -race`/`gofmt`
-all clean. Implements DR-0170
+**Status: planned, implemented, unit-tested and real-AWS-verified
+2026-08-27, test-first.** `go build`/`vet`/`test ./... -race`/`gofmt`
+all clean. **Live-verified the same morning against CaltechAUTHORS
+production** (`/opt/rdm_sql_backups`, retention answer `1`): 2 files
+copied, 0 already in S3, 0 deleted -- both dumps were younger than a
+day, so the delete set was empty and the run was a pure copy. That is
+precisely the case this phase exists to fix: the pre-change code would
+have printed "No files match the age threshold. Nothing to do." and
+archived neither file, leaving the newest CaltechAUTHORS dump only on
+EBS on the morning of a rebuild. It also exercised DR-0170 decision 6
+in the direction that matters -- a threshold *was* given, but nothing
+was old enough to trim, so the confirmation correctly fell to the plain
+yes/no rather than the type-the-instance-name gate. Implements DR-0170
 (accepted, `trigger: request`) and DR-0171 (accepted, `trigger:
 design`); see DESIGN.md, "Archive SQL Backup to S3: Copy Every Backup,
 Trim Only What's Old (Design Addendum, 2026-08-27)" and

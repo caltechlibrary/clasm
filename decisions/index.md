@@ -3,7 +3,7 @@
 Generated file. Do not hand-edit.
 
 ```
-DR-0172  2026-08-27  proposed     refinement   plan-review      -     Phase 20.62 dry-run and summary presentation: two sections, already-archived as a count except when it is also being deleted
+DR-0172  2026-08-27  accepted     refinement   plan-review      -     Phase 20.62 dry-run and summary presentation: two sections, already-archived as a count except when it is also being deleted
 DR-0171  2026-08-27  accepted     decision     design           -     UploadBackupFiles: a per-file upload failure warns and continues; only a cancelled context aborts the run
 DR-0170  2026-08-27  accepted     decision     request          -     Archive SQL Backup to S3: copy every backup, trim only what is old
 DR-0169  2026-08-19  accepted     correction   live-test        -     Restore OpenSearch Snapshot from S3: a fifth correction -- the restore index prefix must be editable, not silently derived from the target's own tags
