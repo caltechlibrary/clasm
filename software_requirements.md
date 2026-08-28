@@ -64,7 +64,9 @@ Resolved via the AWS SDK's default credential chain -- one of:
   `AddRoleToInstanceProfile`, `ListRoles` (for the instance-profile
   pick-or-create step)
 
-See [DESIGN.md](DESIGN.md), "Assumptions" for the complete list.
+See `DESIGN.md`, "Assumptions" for the complete list. `DESIGN.md` is no
+longer kept in this repository; it lives in the DLD workspace under
+`agents/projects/clasm/design/`.
 
 ### On the Target EC2 Instance (optional features)
 

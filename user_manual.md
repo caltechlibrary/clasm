@@ -7,6 +7,10 @@ IAM roles/profiles/policies, and Invenio RDM backup/restore for Caltech
 Library DLD's infrastructure, across the regions configured in `~/.clasm`
 (default: us-west-1, us-west-2).
 
+> `DESIGN.md`, `PLAN.md` and the decision records referenced below are no
+> longer kept in this repository. They live in the DLD workspace under
+> `agents/projects/clasm/`.
+
 ## Starting clasm
 
 Run with no arguments:
@@ -38,7 +42,7 @@ On startup you choose a domain to work in:
   dumps and OpenSearch snapshots, and restore either from S3; see below
 - **Configuration** -- view or edit clasm's own `~/.clasm` settings; see
   below
-- **CloudFront** -- designed (see [DESIGN.md](DESIGN.md), [PLAN.md](PLAN.md)
+- **CloudFront** -- designed (see `DESIGN.md`, `PLAN.md`
   Phase 21) but not on the active roadmap and not exposed in the domain
   picker
 
@@ -106,7 +110,7 @@ reach for when an instance launched from a template fails on an
 AMI-architecture/instance-type mismatch. Like **Sync cloud-init YAML to
 a launch template**, it only creates the new version; use **Promote a
 launch template version to default** to make it the one new launches
-use. See [DESIGN.md](DESIGN.md), "Core Features" for the full prompt
+use. See `DESIGN.md`, "Core Features" for the full prompt
 sequence and behavior of each item.
 
 ## Key Management Menu
@@ -131,7 +135,7 @@ SSH public key before calling AWS. **Delete Key Pair** warns
 about any instances that were launched with the key pair being deleted
 (they keep running; the key pair just can't be used for new launches
 afterward) and requires typing the exact key pair name to confirm. See
-[DESIGN.md](DESIGN.md), "Key Management Domain" for the full prompt
+`DESIGN.md`, "Key Management Domain" for the full prompt
 sequence.
 
 ## S3 Menu
@@ -169,7 +173,7 @@ transitions from the full storage-class list, optional expiration).
 Every add/edit/remove is confirmed with a reminder that AWS evaluates
 lifecycle rules on its own schedule (typically 24-48 hours), not
 immediately. **Delete Bucket** requires the bucket to be empty first and
-typing the exact bucket name to confirm. See [DESIGN.md](DESIGN.md), "S3
+typing the exact bucket name to confirm. See `DESIGN.md`, "S3
 Domain (Buckets & Static Websites)" for the full prompt sequence.
 
 ## Tag Management Menu
@@ -191,7 +195,7 @@ instance or AMI," which is scoped to just those two kinds and reachable
 without leaving the Compute domain. Editing the `Origin` tag (see IAM,
 below) through this same flow is how a resource gets marked DLD-owned --
 there's no separate, dedicated action for it. See
-[DESIGN.md](DESIGN.md), "Tag Management Domain."
+`DESIGN.md`, "Tag Management Domain."
 
 ## IAM Menu
 
@@ -239,7 +243,7 @@ the role's own dedicated policy (if created by a template and unused
 elsewhere) -- the most destructive
 action in this menu, which is why it's last. clasm never creates,
 modifies, or deletes IAM *users* -- this domain is scoped entirely to
-roles, instance profiles, and policies. See [DESIGN.md](DESIGN.md), "IAM
+roles, instance profiles, and policies. See `DESIGN.md`, "IAM
 Profile & Role Management Domain."
 
 ## RDM Backup & Restore Menu
@@ -275,7 +279,7 @@ archive from S3, and load it back. Both are gated behind
 type-to-confirm on the exact instance ID or Name tag, and neither keeps
 any recall history of the last instance used -- restoring is a rare,
 deliberate action, and clasm deliberately does not pre-position the
-cursor on a previous target. See [DESIGN.md](DESIGN.md), "RDM Backup &
+cursor on a previous target. See `DESIGN.md`, "RDM Backup &
 Restore Domain" for the full prompt sequence and the snapshot scope.
 
 ## Configuration Menu
@@ -301,7 +305,7 @@ same domain's SQL workflows use; those workflows also discover this
 information live and offer to record what they find here, so it is
 rarely edited by hand. **Edit Origin tag config** sets the tag
 key and which value means "DLD-owned" for the IAM domain's read-only
-guard (see IAM, above). See [DESIGN.md](DESIGN.md), "Configure clasm
+guard (see IAM, above). See `DESIGN.md`, "Configure clasm
 Domain."
 
 ## Command-line Options
@@ -363,7 +367,7 @@ discovered live and saved back here, or edited by hand. `origin_tag`
 names the tag the IAM domain treats as its DLD-ownership convention --
 `key` defaults to `"Origin"`, `dld_value` defaults to empty (meaning no
 value is recognized as DLD-owned yet, until your group settles on one).
-See [DESIGN.md](DESIGN.md), "Configuration" for the full schema and
+See `DESIGN.md`, "Configuration" for the full schema and
 validation behavior.
 
 ## Getting Help
