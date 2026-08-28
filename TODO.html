@@ -19,7 +19,7 @@
     <li><a href="LICENSE">LICENSE</a></li>
     <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
     <li><a href="user_manual.html">User Manual</a></li>
-    <li><a href="about.html">About</a></li>
+    <!-- <li><a href="about.html">About</a></li> -->
     <li><a href="https://github.com/caltechlibrary/clasm">Code Repository</a></li>
 </ul>
 </nav>
@@ -255,9 +255,165 @@ invoke <code>make</code> itself, not to build the plain Go binary via
 </ul>
 <h2 id="requested-features">Requested features</h2>
 <ul class="task-list">
+<li><label><input type="checkbox" />Archive OpenSearch Snapshot to S3
+needs an opt-in “include raw event indices” mode, for migration/cutover
+rather than routine backup.
+<code>rdmOpenSearchSnapshotIndexPatterns</code>
+(<code>internal/workflow/opensearch_index_patterns.go:11</code>)
+deliberately excludes <code>&lt;prefix&gt;-events-stats-*</code> as
+“large, growing, confirmed unused by any report”, grounded in a real
+<code>_cat/indices</code> pull 2026-07-28 – that decision is still right
+for daily backups and this item does not propose changing it. What it
+did not anticipate is <strong>restoring a snapshot onto an instance that
+then becomes production</strong>, which is exactly the CaltechAUTHORS
+uv/granian path: <code>caltechauthors-v13</code> was restored from
+<code>rdm-20260827-212721</code> on 2026-08-27 and came up 26 indices
+short of production. Measured on CaltechAUTHORS production the same day:
+raw events are <strong>25,266,332 docs / 12.42GB across 24
+indices</strong> (excluded), against <strong>16,118,449 docs / 4.59GB
+across 25 indices</strong> of aggregates (included and restored
+correctly). So displayed statistics survive a restore; what is
+permanently lost at cutover is the ability to ever <em>re-derive</em>
+those aggregates – if a later Invenio upgrade changes aggregation logic,
+or an aggregate is found wrong, there is no source to recompute from.
+12.4GB is trivial as a one-time carry-over and prohibitive as a daily
+one, which is why this wants to be a prompt (default off) rather than a
+change to the allowlist. Two smaller findings from the same comparison:
+<code>.ds-&lt;prefix&gt;-job-logs-*</code> (524 docs, 63KB on
+production) is absent from the allowlist <strong>and</strong>
+unmentioned in the exclusion rationale, so it looks like a genuine
+omission rather than a decision; and
+<code>&lt;prefix&gt;-stats-bookmarks</code> <em>is</em> restored (23,946
+docs) while recording how far aggregation has progressed through events
+indices that will not exist on the target – an untested interaction
+worth checking before relying on it.</label></li>
+<li><label><input type="checkbox" />Restore SQL Backup should set
+<code>synchronous_commit=off</code> on the load connection only, via
+<code>PGOPTIONS</code>. Measured 2026-08-27 restoring a real
+CaltechAUTHORS dump (5,452,680,049 bytes uncompressed) onto
+<code>caltechauthors-v13</code>: the load ran at <strong>0.36 MB/s / 798
+commits per second</strong>, projecting <strong>~244 minutes</strong>.
+Diagnosed by sampling <code>/proc/&lt;pid&gt;/fdinfo/0</code> on the
+psql feeder and <code>xact_commit</code> from
+<code>pg_stat_database</code> – CPU was 88% idle with 9.6% iowait, so it
+was fsync-bound, not CPU- or bandwidth-bound. Applying
+<code>ALTER SYSTEM SET synchronous_commit = off; SELECT pg_reload_conf();</code>
+mid-flight took it to <strong>3.73 MB/s / 11,024 commits per second, ~21
+minutes remaining</strong> – roughly 10x throughput, 14x commit rate –
+and took effect on the already-running backend without aborting the
+restore. The right implementation is <strong>not</strong>
+<code>ALTER SYSTEM</code>: that is cluster-wide, persists in
+<code>postgresql.auto.conf</code>, survives restart, and needs an
+explicit reset that an operator in an emergency will forget (the user
+raised exactly this concern). Scope it to the connection instead –
+<code>loadCmd</code> (<code>internal/workflow/restore_sql.go:212</code>)
+currently builds
+<code>{ docker exec -i %s psql --username=%s %s &lt; %s; } 2&gt;&amp;1</code>;
+adding <code>-e PGOPTIONS="-c synchronous_commit=off"</code> to the
+<code>docker exec</code> makes it per-connection, so nothing persists,
+there is no reset step, and a crash at 90% leaves nothing switched off.
+Note this is complementary to the dump-format item below, not an
+alternative to it: every dump already in S3 is
+<code>--column-inserts</code> and will stay that way, so this is what
+makes <em>those</em> restorable quickly. Related open item: the
+load-step progress reporting bullet under “Bugs and issues” – an
+operator currently cannot tell a slow-but-working load from a stuck one,
+which is how this was found.</label></li>
+<li><label><input type="checkbox" />Generate SQL Backup should stop
+using <code>pg_dump --column-inserts</code>.
+<code>buildSQLDumpCommand</code>
+(<code>internal/workflow/run_sql_backup.go:42</code>) uses it to match
+<code>invenio-sql-backup.bash</code>’s own convention exactly, so the
+two must move together (and CaltechDATA’s equivalent script with them).
+<code>--column-inserts</code> emits one <code>INSERT</code> per row
+<strong>with the full column list repeated on every row</strong> – the
+slowest possible restore format, which Postgres’s own docs flag as
+considerably slower. Confirmed on the 2026-08-27 CaltechAUTHORS dump:
+<strong>zero <code>COPY</code> statements</strong>, and 197,918
+<code>INSERT</code>s in the first 200,000 lines. That is the root cause
+of the ~4-hour restore measured above; a default (COPY) dump batches
+rows into a handful of transactions and restores in minutes <strong>with
+<code>synchronous_commit=on</code></strong>, buying the speed without
+spending any durability. This matters beyond convenience:
+<code>caltechauthors-v13</code> becomes production in September 2026, so
+restore time is a disaster-recovery RTO figure. Two things that make the
+change cheaper than it looks: <strong>the load path does not
+change</strong> – both <code>--column-inserts</code> and default
+plain-format dumps restore via <code>psql &lt; file</code>, so only
+<code>-Fc</code> (custom format) would force a move to
+<code>pg_restore</code>, and existing <code>--column-inserts</code>
+dumps in S3 keep restoring with the same loader, meaning no
+format-detection and no cutover date to remember. And
+<strong>column-order independence is preserved</strong> – COPY dumps
+still name their columns
+(<code>COPY public.tbl (id, created, ...) FROM stdin;</code>). What is
+actually given up is per-row human readability/greppability and
+portability to non-Postgres; the files also get considerably smaller
+once the column list stops repeating per row. Worth an explicit decision
+rather than continuing to inherit the choice.</label></li>
+<li><label><input type="checkbox" checked="" />“Archive SQL Backup to
+S3” should copy <em>every</em> SQL backup in the directory to the bucket
+and verify each copy, trimming only the ones old enough to delete –
+today one age-filtered set drives upload, verification and deletion
+alike (<code>backupArchiveAndTrim</code>,
+<code>internal/workflow/backup_archive.go</code>), so a dump too recent
+to trim is never copied at all, and a directory with nothing old enough
+exits on “No files match the age threshold. Nothing to do.” having
+archived nothing. Noticed 2026-08-26 in live use ahead of standing up a
+new CaltechAUTHORS instance on uv/granian – exactly the case where the
+newest dump is the one that most needs to be in S3. See
+<code>archive-all-sql-backups-feature-request.md</code> for the proposed
+shape (two sets: upload = everything, delete = aged ∩ verified; an
+<code>s3:HeadObject</code> pre-pass to skip what is already archived; a
+retention prompt where blank means copy-but-don’t-delete and
+<code>0</code> means trim everything verified; an updated menu label),
+the nine intake decisions settled 2026-08-27, and the one open question
+left for the design cycle (whether a per-file SSM-level upload failure
+should still abort the whole run). <strong>Designed, planned,
+implemented and unit-tested 2026-08-27, test-first</strong> – DR-0170
+(the behaviour change), DR-0171 (the upload loop’s error contract, found
+while designing rather than in the field) and DR-0172 (dry-run/summary
+presentation, settled while planning), DESIGN.md Feature 11 brought
+current, PLAN.md Phase 20.62. The open question resolved as: warn and
+continue on a per-file failure, abort only when the run’s own context is
+cancelled. Planning also caught a test-harness trap worth remembering –
+the existing archive tests pre-seeded the fake bucket with the key the
+upload was expected to produce, which the new already-archived pre-pass
+would have read as “nothing to do”, leaving those tests passing while no
+longer exercising the upload path at all; the fake SSM client now
+populates the fake S3 client on a successful <code>aws s3 cp</code>
+instead, so a pre-seeded object means what it says.
+<code>go build</code>/<code>vet</code>/<code>test ./... -race</code>/<code>gofmt</code>
+all clean. <strong>Not yet real-AWS-verified</strong> – the intended
+first live run is against CaltechAUTHORS production’s own backup
+directory with a blank retention answer (a pure copy, nothing deleted),
+which is also the right operational order ahead of the uv/granian
+rebuild. <strong>Real-AWS-verified 2026-08-27</strong>, same morning,
+against CaltechAUTHORS production (<code>/opt/rdm_sql_backups</code>,
+retention answer <code>1</code>): 2 files copied, 0 already in S3, 0
+deleted – both dumps younger than a day, so the delete set was empty and
+the run was a pure copy. Exactly the reported bug’s own case: the
+pre-change code would have reported “No files match the age threshold.
+Nothing to do.” and archived neither file. Also confirmed DR-0170
+decision 6 live – a threshold was given but nothing was old enough to
+trim, and the confirmation correctly fell to the plain yes/no rather
+than the type-to-confirm gate.</label></li>
+<li><label><input type="checkbox" />It would be nice to be able to
+Restore SQL and OpenSeach indexes into a Multipass instance used for
+development and debugging RDM – see
+<code>clmpm-feature-request.md</code> for the proposed shape (a new
+<code>clmpm</code> binary in this module) and open questions, captured
+2026-08-21 ahead of a design/decide/plan cycle.</label></li>
 <li><label><input type="checkbox" />When a new instance has been created
 the success results should show the <code>aws ssm</code> terminal
 command in addition to the example SSH command</label></li>
+<li><label><input type="checkbox" />Newly created AWS instances
+(cloud-init) should install the CrowdStrike Falcon client. Central IT’s
+security group only requires it in production, but we want it on
+development instances too, so Falcon’s presence can’t surprise us later
+as a cause of software-update or data-acquisition-task breakage. Blocked
+on central IT security group for where to download the installer and how
+to install it – not yet requested.</label></li>
 <li><label><input type="checkbox" checked="" />Produce installable
 binaries via <code>make release</code> – already done:
 <code>release.bash</code>/<code>release.ps1</code> (added 2026-06-30)

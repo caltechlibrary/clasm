@@ -19,7 +19,7 @@
     <li><a href="LICENSE">LICENSE</a></li>
     <!-- <li><a href="INSTALL.html">INSTALL</a></li> -->
     <li><a href="user_manual.html">User Manual</a></li>
-    <li><a href="about.html">About</a></li>
+    <!-- <li><a href="about.html">About</a></li> -->
     <li><a href="https://github.com/caltechlibrary/clasm">Code Repository</a></li>
 </ul>
 </nav>
@@ -31,6 +31,11 @@ buckets/static websites, IAM roles/profiles/policies, and Invenio RDM
 backup/restore for Caltech Library DLD’s infrastructure, across the
 regions configured in <code>~/.clasm</code> (default: us-west-1,
 us-west-2).</p>
+<blockquote>
+<p><code>DESIGN.md</code>, <code>PLAN.md</code> and the decision records
+referenced below are no longer kept in this repository. They live in the
+DLD workspace under <code>agents/projects/clasm/</code>.</p>
+</blockquote>
 <h2 id="starting-clasm">Starting clasm</h2>
 <p>Run with no arguments:</p>
 <pre class="shell"><code>clasm</code></pre>
@@ -57,10 +62,9 @@ Invenio RDM Postgres dumps and OpenSearch snapshots, and restore either
 from S3; see below</li>
 <li><strong>Configuration</strong> – view or edit clasm’s own
 <code>~/.clasm</code> settings; see below</li>
-<li><strong>CloudFront</strong> – designed (see <a
-href="DESIGN.html">DESIGN.md</a>, <a href="PLAN.html">PLAN.md</a> Phase
-21) but not on the active roadmap and not exposed in the domain
-picker</li>
+<li><strong>CloudFront</strong> – designed (see <code>DESIGN.md</code>,
+<code>PLAN.md</code> Phase 21) but not on the active roadmap and not
+exposed in the domain picker</li>
 </ul>
 <h2 id="compute-menu">Compute Menu</h2>
 <p>Choosing Compute lists the account’s current EC2 instances and owned
@@ -126,8 +130,8 @@ instance launched from a template fails on an
 AMI-architecture/instance-type mismatch. Like <strong>Sync cloud-init
 YAML to a launch template</strong>, it only creates the new version; use
 <strong>Promote a launch template version to default</strong> to make it
-the one new launches use. See <a href="DESIGN.html">DESIGN.md</a>, “Core
-Features” for the full prompt sequence and behavior of each item.</p>
+the one new launches use. See <code>DESIGN.md</code>, “Core Features”
+for the full prompt sequence and behavior of each item.</p>
 <h2 id="key-management-menu">Key Management Menu</h2>
 <p>Choosing Key Management lists the account’s current EC2 key pairs
 (aggregated across both configured regions), then presents:</p>
@@ -151,8 +155,8 @@ a well-formed SSH public key before calling AWS. <strong>Delete Key
 Pair</strong> warns about any instances that were launched with the key
 pair being deleted (they keep running; the key pair just can’t be used
 for new launches afterward) and requires typing the exact key pair name
-to confirm. See <a href="DESIGN.html">DESIGN.md</a>, “Key Management
-Domain” for the full prompt sequence.</p>
+to confirm. See <code>DESIGN.md</code>, “Key Management Domain” for the
+full prompt sequence.</p>
 <h2 id="s3-menu">S3 Menu</h2>
 <p>Choosing S3 lists the account’s current buckets (Name, Region, Static
 Website, Purpose), then presents:</p>
@@ -190,8 +194,8 @@ optional expiration). Every add/edit/remove is confirmed with a reminder
 that AWS evaluates lifecycle rules on its own schedule (typically 24-48
 hours), not immediately. <strong>Delete Bucket</strong> requires the
 bucket to be empty first and typing the exact bucket name to confirm.
-See <a href="DESIGN.html">DESIGN.md</a>, “S3 Domain (Buckets &amp;
-Static Websites)” for the full prompt sequence.</p>
+See <code>DESIGN.md</code>, “S3 Domain (Buckets &amp; Static Websites)”
+for the full prompt sequence.</p>
 <h2 id="tag-management-menu">Tag Management Menu</h2>
 <p>Choosing Tag Management presents:</p>
 <ol type="1">
@@ -210,8 +214,7 @@ taggable resource kind in clasm – distinct from Compute’s own narrower
 kinds and reachable without leaving the Compute domain. Editing the
 <code>Origin</code> tag (see IAM, below) through this same flow is how a
 resource gets marked DLD-owned – there’s no separate, dedicated action
-for it. See <a href="DESIGN.html">DESIGN.md</a>, “Tag Management
-Domain.”</p>
+for it. See <code>DESIGN.md</code>, “Tag Management Domain.”</p>
 <h2 id="iam-menu">IAM Menu</h2>
 <p>Choosing IAM presents, grouped List -&gt; Detail -&gt; Create -&gt;
 Attach/Detach -&gt; Delete:</p>
@@ -259,9 +262,8 @@ is gated behind type-to-confirm and cascades to the role’s own dedicated
 policy (if created by a template and unused elsewhere) – the most
 destructive action in this menu, which is why it’s last. clasm never
 creates, modifies, or deletes IAM <em>users</em> – this domain is scoped
-entirely to roles, instance profiles, and policies. See <a
-href="DESIGN.html">DESIGN.md</a>, “IAM Profile &amp; Role Management
-Domain.”</p>
+entirely to roles, instance profiles, and policies. See
+<code>DESIGN.md</code>, “IAM Profile &amp; Role Management Domain.”</p>
 <h2 id="rdm-backup-restore-menu">RDM Backup &amp; Restore Menu</h2>
 <p>Choosing RDM Backup &amp; Restore presents the Invenio RDM
 backup/restore operations, grouped generate -&gt; archive -&gt; restore,
@@ -295,9 +297,9 @@ pick an archive from S3, and load it back. Both are gated behind
 type-to-confirm on the exact instance ID or Name tag, and neither keeps
 any recall history of the last instance used – restoring is a rare,
 deliberate action, and clasm deliberately does not pre-position the
-cursor on a previous target. See <a href="DESIGN.html">DESIGN.md</a>,
-“RDM Backup &amp; Restore Domain” for the full prompt sequence and the
-snapshot scope.</p>
+cursor on a previous target. See <code>DESIGN.md</code>, “RDM Backup
+&amp; Restore Domain” for the full prompt sequence and the snapshot
+scope.</p>
 <h2 id="configuration-menu">Configuration Menu</h2>
 <p>Choosing Configuration presents:</p>
 <ol type="1">
@@ -321,8 +323,8 @@ container/database/user rules the same domain’s SQL workflows use; those
 workflows also discover this information live and offer to record what
 they find here, so it is rarely edited by hand. <strong>Edit Origin tag
 config</strong> sets the tag key and which value means “DLD-owned” for
-the IAM domain’s read-only guard (see IAM, above). See <a
-href="DESIGN.html">DESIGN.md</a>, “Configure clasm Domain.”</p>
+the IAM domain’s read-only guard (see IAM, above). See
+<code>DESIGN.md</code>, “Configure clasm Domain.”</p>
 <h2 id="command-line-options">Command-line Options</h2>
 <dl>
 <dt><code>-config &lt;path&gt;</code></dt>
@@ -387,9 +389,9 @@ live and saved back here, or edited by hand. <code>origin_tag</code>
 names the tag the IAM domain treats as its DLD-ownership convention –
 <code>key</code> defaults to <code>"Origin"</code>,
 <code>dld_value</code> defaults to empty (meaning no value is recognized
-as DLD-owned yet, until your group settles on one). See <a
-href="DESIGN.html">DESIGN.md</a>, “Configuration” for the full schema
-and validation behavior.</p>
+as DLD-owned yet, until your group settles on one). See
+<code>DESIGN.md</code>, “Configuration” for the full schema and
+validation behavior.</p>
 <h2 id="getting-help">Getting Help</h2>
 <p>File an issue at <a
 href="https://github.com/caltechlibrary/clasm/issues"
