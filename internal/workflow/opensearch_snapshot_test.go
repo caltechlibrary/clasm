@@ -21,6 +21,61 @@ func TestBuildRegisterRepoCommand(t *testing.T) {
 	}
 }
 
+func TestBuildDeregisterRepoCommand(t *testing.T) {
+	got := buildDeregisterRepoCommand("rdm_backup_repo")
+	want := "curl --fail-with-body -sS -X DELETE 'localhost:9200/_snapshot/rdm_backup_repo'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Deregistering targets the repository itself, so its URL must carry no
+// snapshot-name segment -- a trailing "/<name>" would delete one snapshot
+// (buildDeleteSnapshotCommand's job) and silently leave the repository
+// registered, which is the opposite of what the restore cleanup needs.
+func TestBuildDeregisterRepoCommand_TargetsTheRepoNotASnapshot(t *testing.T) {
+	got := buildDeregisterRepoCommand("rdm_backup_repo")
+	if strings.Count(got, "/_snapshot/") != 1 {
+		t.Fatalf("command = %q, want exactly one /_snapshot/ segment", got)
+	}
+	repoSegment, _, _ := strings.Cut(strings.SplitN(got, "/_snapshot/", 2)[1], "'")
+	if strings.Contains(repoSegment, "/") {
+		t.Errorf("command = %q, want no path segment after the repo name, got %q", got, repoSegment)
+	}
+}
+
+func TestDeregisterSnapshotRepo_PropagatesFailedStatus(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
+	err := DeregisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval)
+	if err == nil {
+		t.Fatal("expected an error for a failed SSM status")
+	}
+}
+
+// Same --fail-with-body contract as its register counterpart: OpenSearch's
+// own JSON error has to reach the operator, not curl's "exit status 22".
+func TestDeregisterSnapshotRepo_ErrorIncludesResponseBody(t *testing.T) {
+	body := `{"error":{"root_cause":[{"type":"repository_missing_exception","reason":"[rdm_backup_repo] missing"}]},"status":404}`
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
+	err := DeregisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval)
+	if err == nil {
+		t.Fatal("expected an error for a failed SSM status")
+	}
+	if !strings.Contains(err.Error(), "repository_missing_exception") {
+		t.Errorf("error = %v, want it to include OpenSearch's own response body", err)
+	}
+}
+
+func TestDeregisterSnapshotRepo_SendsDelete(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
+	if err := DeregisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "curl --fail-with-body -sS -X DELETE 'localhost:9200/_snapshot/rdm_backup_repo'"; fake.lastCommandText != want {
+		t.Errorf("sent %q, want %q", fake.lastCommandText, want)
+	}
+}
+
 func TestBuildCreateSnapshotCommand(t *testing.T) {
 	got := buildCreateSnapshotCommand("rdm_backup_repo", "rdm-20260729-000000", []string{"caltechauthors-rdmrecords-*", "caltechauthors-users-*"})
 	for _, want := range []string{

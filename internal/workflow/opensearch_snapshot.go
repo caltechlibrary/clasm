@@ -67,6 +67,35 @@ func RegisterSnapshotRepo(ctx context.Context, client awsclient.SSMAPI, instance
 	return nil
 }
 
+// buildDeregisterRepoCommand builds the curl command that removes a
+// snapshot repository's *registration* from the cluster. The URL carries
+// no snapshot-name segment: with one, this would delete a single snapshot
+// (buildDeleteSnapshotCommand's job) and leave the repository registered.
+//
+// This is metadata-only. OpenSearch unregisters the repository and leaves
+// every byte in the underlying directory untouched, which is what makes it
+// safe as the last step of a restore's cleanup -- the snapshot data itself
+// has already gone through DeleteSnapshot by then (DR-0175 decision 3, so
+// the routine path never reaches past the API the way DR-0131 forbids).
+func buildDeregisterRepoCommand(repo string) string {
+	url := fmt.Sprintf("localhost:9200/_snapshot/%s", repo)
+	return fmt.Sprintf("curl --fail-with-body -sS -X DELETE %s", shellQuote(url))
+}
+
+// DeregisterSnapshotRepo runs buildDeregisterRepoCommand via SSM and
+// errors on a non-Success SSM invocation status -- the mirror of
+// RegisterSnapshotRepo, including its --fail-with-body contract.
+func DeregisterSnapshotRepo(ctx context.Context, client awsclient.SSMAPI, instanceID, repo string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeregisterRepoCommand(repo), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("deregistering snapshot repo %q on %s failed", repo, instanceID), status, stdout)
+	}
+	return nil
+}
+
 // buildCreateSnapshotCommand builds the curl command that starts a new
 // snapshot named snapshotName in repo, scoped to indices (comma-joined).
 // ignore_unavailable is true so a wrong/renamed pattern degrades to
