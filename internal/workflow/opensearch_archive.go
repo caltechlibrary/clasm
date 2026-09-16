@@ -38,6 +38,33 @@ const DefaultOpenSearchRepoName = "rdm_backup_repo"
 // inside the container) has no visibility into host paths at all.
 const DefaultOpenSearchContainerRepoPath = "/usr/share/opensearch/backups"
 
+// DefaultOpenSearchRepoUID/DefaultOpenSearchRepoGID are the uid and gid
+// the snapshot repository directory and everything under it must be owned
+// by: the `opensearchproject/opensearch` official image runs as 1000:1000,
+// so that is who has to be able to write the repo from inside the search
+// container. `rdm-opensearch-path-repo-retrofit.md` Step 1 establishes the
+// same pair as the fixed convention when it chowns the host directory
+// during the one-time retrofit.
+//
+// Fixed constants rather than configuration (DR-0175 decision 6) --
+// nothing in this fleet deviates, and the same "no unnecessary knobs" bias
+// as DefaultOpenSearchRepoName applies.
+//
+// These exist because the retrofit's one-time chown reaches only the
+// *top-level* directory, while `aws s3 sync` over SSM runs as root on the
+// host and writes everything beneath it as root:root. Nothing restored the
+// ownership, so a restore silently left the repository unwritable by
+// OpenSearch and the instance's next archive failed -- found on
+// caltechauthors-v13 2026-09-16, where 61 of 61 shards failed with
+// AccessDeniedException while repo registration and the snapshot request
+// had both reported success (registration only ever verifies a write into
+// the top-level directory, which is exactly the part the retrofit had
+// already fixed). See DR-0175 and PLAN.md Phase 20.63.
+const (
+	DefaultOpenSearchRepoUID = 1000
+	DefaultOpenSearchRepoGID = 1000
+)
+
 // DefaultOpenSearchSyncTimeout bounds the `aws s3 sync` SSM command --
 // an ~8GB snapshot can legitimately take a while, so this gets a much
 // longer bound than the quick repo/snapshot REST calls.
