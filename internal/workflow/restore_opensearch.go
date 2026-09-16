@@ -41,6 +41,40 @@ func SyncOpenSearchBackupsFromS3(ctx context.Context, client awsclient.SSMAPI, i
 	return nil
 }
 
+// buildChownRepoCommand builds the `chown` that hands the synced snapshot
+// repository back to the uid OpenSearch actually runs as. It pairs with
+// buildSyncFromS3Command above and must run after it, every time.
+//
+// `aws s3 sync` is executed by SSM, which runs as **root on the host**, so
+// every file and directory it writes lands root:root. OpenSearch runs as
+// DefaultOpenSearchRepoUID inside the search container and can only write
+// where the `path.repo` retrofit's one-time chown reached -- the top-level
+// directory alone. Without this step the repository is silently unwritable
+// below its own root, and the damage surfaces not here but on the
+// instance's *next* archive (DR-0175, PLAN.md Phase 20.63).
+func buildChownRepoCommand(dir string) string {
+	return fmt.Sprintf("chown -R %d:%d %s", DefaultOpenSearchRepoUID, DefaultOpenSearchRepoGID, shellQuote(dir))
+}
+
+// NormalizeSnapshotRepoOwnership runs buildChownRepoCommand via SSM.
+//
+// Deliberately a separate SSM round trip rather than `&& chown ...`
+// appended to the sync command (DR-0175 decision 1): this project has
+// twice been bitten by compound remote commands hiding which half failed
+// -- `pg_dump | gzip` masking pg_dump's own exit status, and gunzip's
+// "unknown suffix" message vanishing with stderr -- and one extra round
+// trip is cheap next to a restore.
+func NormalizeSnapshotRepoOwnership(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildChownRepoCommand(dir), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("setting ownership of the OpenSearch snapshot repository %q on %s failed", dir, instanceID), status, stdout)
+	}
+	return nil
+}
+
 // buildListIndicesCommand builds the curl command that lists every index
 // name on the target matching prefix's own two wildcard shapes --
 // "<prefix>-*" (every ordinary curated pattern in

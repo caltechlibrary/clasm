@@ -30,6 +30,57 @@ func TestBuildSyncFromS3Command(t *testing.T) {
 	}
 }
 
+func TestBuildChownRepoCommand(t *testing.T) {
+	got := buildChownRepoCommand("/opt/rdm_opensearch_backups")
+	want := "chown -R 1000:1000 '/opt/rdm_opensearch_backups'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// The directory is operator-typed (the workflow's own backup-directory
+// prompt), so it has to survive a space the same way every other
+// SSM-bound path in this package does.
+func TestBuildChownRepoCommand_QuotesDirectory(t *testing.T) {
+	got := buildChownRepoCommand("/opt/rdm opensearch backups")
+	want := "chown -R 1000:1000 '/opt/rdm opensearch backups'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeSnapshotRepoOwnership_SendsChown(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
+	if err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", time.Second, testPollInterval); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.sendCommandCalls() != 1 {
+		t.Fatalf("expected exactly 1 SendCommand call, got %d", fake.sendCommandCalls())
+	}
+	if want := "chown -R 1000:1000 '/opt/rdm_opensearch_backups'"; fake.lastCommandText != want {
+		t.Errorf("sent %q, want %q", fake.lastCommandText, want)
+	}
+}
+
+// A chown that reports a non-Success status must surface the remote
+// output. This is the step whose silent absence left caltechauthors-v13
+// unable to archive, so it must never fail quietly.
+func TestNormalizeSnapshotRepoOwnership_PropagatesFailedStatus(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "chown: cannot access"}
+	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
+	if err == nil || !strings.Contains(err.Error(), "chown: cannot access") {
+		t.Errorf("expected an error including the remote output, got: %v", err)
+	}
+}
+
+func TestNormalizeSnapshotRepoOwnership_PropagatesTransportError(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
+	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
+	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
+		t.Errorf("expected the transport error to propagate, got: %v", err)
+	}
+}
+
 func TestBuildListIndicesCommand(t *testing.T) {
 	got := buildListIndicesCommand("caltechdata")
 	want := "curl --fail-with-body -sS -X GET 'localhost:9200/_cat/indices/caltechdata-*,.ds-caltechdata-*?h=index'"
