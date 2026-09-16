@@ -283,6 +283,133 @@ func TestPollSnapshotUntilComplete_NeverCompletingSequenceTimesOut(t *testing.T)
 	}
 }
 
+// snapshotMissingBody is OpenSearch's own 404 for a snapshot that no
+// longer exists -- what `curl --fail-with-body` leaves on stdout when the
+// entry was discarded after acceptance.
+const snapshotMissingBody = `{"error":{"root_cause":[{"type":"snapshot_missing_exception","reason":"[rdm_backup_repo:rdm-20260916-153647] is missing"}],"type":"snapshot_missing_exception","reason":"[rdm_backup_repo:rdm-20260916-153647] is missing"},"status":404}`
+
+func TestIsSnapshotMissing(t *testing.T) {
+	tests := []struct {
+		name   string
+		stdout string
+		want   bool
+	}{
+		{"real 404 body", snapshotMissingBody, true},
+		// A missing *repository* is a different failure with a different
+		// remedy, and must not be swallowed by the grace period.
+		{"missing repository is not a missing snapshot", `{"error":{"type":"repository_missing_exception","reason":"[rdm_backup_repo] missing"},"status":404}`, false},
+		{"empty", "", false},
+		{"unrelated failure", "curl: (7) Failed to connect to localhost port 9200", false},
+	}
+	for _, tt := range tests {
+		if got := isSnapshotMissing(tt.stdout); got != tt.want {
+			t.Errorf("%s: isSnapshotMissing(...) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// A 404 on the first checks can be a cluster-state race on a busy master
+// rather than a discarded snapshot, so the poller tolerates the grace
+// window and keeps going (DR-0175 decision 5).
+func TestPollSnapshotUntilComplete_ToleratesTransientSnapshotMissing(t *testing.T) {
+	fake := &fakeSSMClient{
+		commandID: "cmd-1",
+		stdoutSequence: []string{
+			snapshotMissingBody,
+			snapshotMissingBody,
+			`{"snapshots":[{"state":"SUCCESS"}]}`,
+		},
+		statusSequence: []types.CommandInvocationStatus{
+			types.CommandInvocationStatusFailed,
+			types.CommandInvocationStatusFailed,
+			types.CommandInvocationStatusSuccess,
+		},
+	}
+	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error inside the grace window: %v", err)
+	}
+	if state != "SUCCESS" {
+		t.Errorf("state = %q, want SUCCESS", state)
+	}
+}
+
+// The grace window covers *consecutive* misses only. A successful state
+// read in between means the snapshot is visible again, so the count must
+// reset -- otherwise a long snapshot that hits the odd transient 404
+// would eventually accumulate enough of them, spread over an hour, to be
+// declared discarded while it was still running normally.
+func TestPollSnapshotUntilComplete_ResetsGraceCountAfterASuccessfulRead(t *testing.T) {
+	inProgress := `{"snapshots":[{"state":"IN_PROGRESS"}]}`
+	fake := &fakeSSMClient{
+		commandID: "cmd-1",
+		stdoutSequence: []string{
+			snapshotMissingBody, snapshotMissingBody,
+			inProgress,
+			snapshotMissingBody, snapshotMissingBody,
+			`{"snapshots":[{"state":"SUCCESS"}]}`,
+		},
+		statusSequence: []types.CommandInvocationStatus{
+			types.CommandInvocationStatusFailed, types.CommandInvocationStatusFailed,
+			types.CommandInvocationStatusSuccess,
+			types.CommandInvocationStatusFailed, types.CommandInvocationStatusFailed,
+			types.CommandInvocationStatusSuccess,
+		},
+	}
+	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	if err != nil {
+		t.Fatalf("unexpected error -- the miss count should have reset after the IN_PROGRESS read: %v", err)
+	}
+	if state != "SUCCESS" {
+		t.Errorf("state = %q, want SUCCESS", state)
+	}
+}
+
+// Past the grace window the snapshot really is gone: creation failed
+// after acceptance and the entry was discarded. The error has to say so
+// and name where the actual cause is, rather than reporting a bare 404
+// for a snapshot clasm created seconds earlier -- the diagnosability half
+// of the 2026-09-16 caltechauthors-v13 incident.
+func TestPollSnapshotUntilComplete_FailsWithDiagnosisAfterGraceWindow(t *testing.T) {
+	fake := &fakeSSMClient{
+		commandID:      "cmd-1",
+		finalStatus:    types.CommandInvocationStatusFailed,
+		stdoutSequence: []string{snapshotMissingBody},
+		statusSequence: []types.CommandInvocationStatus{types.CommandInvocationStatusFailed},
+	}
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	if err == nil {
+		t.Fatal("expected an error once the grace window is exhausted")
+	}
+	for _, want := range []string{"discarded", "docker logs", "rdm_backup_repo/rdm-1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to mention %q", err, want)
+		}
+	}
+	// It must not merely restate the raw 404, which is what the operator
+	// already saw and could not act on.
+	if !strings.Contains(err.Error(), "accepted") {
+		t.Errorf("error = %v, want it to explain that creation failed after acceptance", err)
+	}
+}
+
+// An unrelated remote failure keeps the pre-existing curlFailureError
+// behaviour and must not be relabelled as a discarded snapshot.
+func TestPollSnapshotUntilComplete_UnrelatedFailureKeepsPlainError(t *testing.T) {
+	body := `{"error":{"type":"repository_missing_exception","reason":"[rdm_backup_repo] missing"},"status":404}`
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "repository_missing_exception") {
+		t.Errorf("error = %v, want the response body preserved", err)
+	}
+	if strings.Contains(err.Error(), "docker logs") {
+		t.Errorf("error = %v, want the plain failure message, not the discarded-snapshot diagnosis", err)
+	}
+}
+
 func TestPollSnapshotUntilComplete_SSMFailureIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"reason":"no such repository"},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}

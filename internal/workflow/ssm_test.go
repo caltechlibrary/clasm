@@ -76,6 +76,18 @@ type fakeSSMClient struct {
 	// Takes priority over pendingCalls/responses/stdout when set.
 	stdoutSequence []string
 
+	// statusSequence pairs with stdoutSequence, supplying a per-call
+	// invocation *status* the same way stdoutSequence supplies a per-call
+	// body (same 1-indexed sendCommandCallCount, same clamp-to-last).
+	// Without it a fake has exactly one finalStatus for the whole run,
+	// which cannot express a poll loop whose remote command fails on some
+	// checks and succeeds on others -- e.g. PollSnapshotUntilComplete
+	// seeing curl exit non-zero on a `snapshot_missing_exception` 404 and
+	// then succeed once the snapshot becomes visible. Falls back to
+	// finalStatus when empty, so every existing stdoutSequence test is
+	// unaffected.
+	statusSequence []types.CommandInvocationStatus
+
 	// s3Sink, if set, makes a successful `aws s3 cp` command actually
 	// create the object in a fake S3 client, the way a real upload
 	// does. Without it, a test that wants VerifyUploads to succeed has
@@ -146,7 +158,12 @@ func (f *fakeSSMClient) GetCommandInvocation(ctx context.Context, params *ssm.Ge
 		if idx >= len(f.stdoutSequence) {
 			idx = len(f.stdoutSequence) - 1
 		}
-		return &ssm.GetCommandInvocationOutput{Status: f.finalStatus, StandardOutputContent: aws.String(f.stdoutSequence[idx])}, nil
+		status := f.finalStatus
+		if len(f.statusSequence) > 0 {
+			sIdx := min(f.sendCommandCallCount-1, len(f.statusSequence)-1)
+			status = f.statusSequence[sIdx]
+		}
+		return &ssm.GetCommandInvocationOutput{Status: status, StandardOutputContent: aws.String(f.stdoutSequence[idx])}, nil
 	}
 	if f.invocationCalls <= f.pendingCalls {
 		return &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}, nil
