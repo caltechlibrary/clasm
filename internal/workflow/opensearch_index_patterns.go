@@ -10,6 +10,26 @@ import "fmt"
 // was grounded in, 2026-07-28). Deliberately excludes the raw
 // `events-stats-*` indices (large, growing, confirmed unused by any
 // report) -- out of scope by design, not an oversight.
+//
+// The audit log needs BOTH of its forms listed, which is not obvious.
+// `.ds-<prefix>-auditlog-audit-log-*` is OpenSearch's data-stream
+// backing-index naming convention; a plain `<prefix>-auditlog-*` index
+// is what RDM creates once no data stream is registered. An instance
+// restored from a snapshot ends up with one of each, because a snapshot
+// taken with `include_global_state: false` carries `"data_streams": []`
+// -- restoring a backing index yields a plain index with its alias but
+// no stream definition, so the app starts a fresh ordinary audit-log
+// index beside the restored orphan. Found live on CaltechAUTHORS
+// production v13 2026-09-16: the restored
+// `.ds-caltechauthors-auditlog-audit-log-v1.0.0-000001` (302,252 docs)
+// was being snapshotted while the actively-written
+// `caltechauthors-auditlog-audit-log-v1.0.0` (532 docs, created the day
+// before cutover) matched nothing, so every audit record since go-live
+// was outside the backup. Job logs were missing outright and have the
+// same two forms for the same reason -- CaltechAUTHORS production had
+// `.ds-<prefix>-job-logs-*` (524 docs) while v13 has the plain
+// `<prefix>-job-logs`. Both kinds of log confirmed in scope by the user
+// 2026-09-16.
 func rdmOpenSearchSnapshotIndexPatterns(prefix string) []string {
 	return []string{
 		fmt.Sprintf("%s-rdmrecords-*", prefix),
@@ -29,6 +49,9 @@ func rdmOpenSearchSnapshotIndexPatterns(prefix string) []string {
 		fmt.Sprintf("%s-stats-record-view-*", prefix),
 		fmt.Sprintf("%s-stats-file-download-*", prefix),
 		fmt.Sprintf("%s-stats-bookmarks", prefix),
+		fmt.Sprintf("%s-auditlog-*", prefix),
 		fmt.Sprintf(".ds-%s-auditlog-audit-log-*", prefix),
+		fmt.Sprintf("%s-job-logs*", prefix),
+		fmt.Sprintf(".ds-%s-job-logs-*", prefix),
 	}
 }

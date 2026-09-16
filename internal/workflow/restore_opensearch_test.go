@@ -47,6 +47,9 @@ func TestMatchesAnyPattern(t *testing.T) {
 		{"caltechdata-rdmrecords-records-record-v7.0.0", true},
 		{"caltechdata-stats-bookmarks", true},
 		{".ds-caltechdata-auditlog-audit-log-000001", true},
+		{"caltechdata-auditlog-audit-log-v1.0.0", true}, // the non-data-stream form a restored instance creates
+		{"caltechdata-job-logs", true},
+		{".ds-caltechdata-job-logs-000001", true},
 		{"caltechdata-events-stats-file-download-2025-09", false}, // deliberately excluded, see rdmOpenSearchSnapshotIndexPatterns
 		{"unrelated-index", false},
 	}

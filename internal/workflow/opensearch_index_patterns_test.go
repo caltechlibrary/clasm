@@ -22,7 +22,10 @@ func TestRDMOpenSearchSnapshotIndexPatterns(t *testing.T) {
 		"caltechauthors-stats-record-view-*",
 		"caltechauthors-stats-file-download-*",
 		"caltechauthors-stats-bookmarks",
+		"caltechauthors-auditlog-*",
 		".ds-caltechauthors-auditlog-audit-log-*",
+		"caltechauthors-job-logs*",
+		".ds-caltechauthors-job-logs-*",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d patterns, want %d:\ngot:  %v\nwant: %v", len(got), len(want), got, want)
@@ -32,7 +35,26 @@ func TestRDMOpenSearchSnapshotIndexPatterns(t *testing.T) {
 			t.Errorf("pattern[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
-	if got[len(got)-1] != ".ds-caltechauthors-auditlog-audit-log-*" {
-		t.Errorf("audit log pattern missing its .ds- data-stream backing-index prefix")
+	// Both audit-log forms must be present: a restored instance carries a
+	// `.ds-`-prefixed data-stream backing index AND an ordinary index the
+	// app creates once no data stream is registered. Listing only the
+	// `.ds-` form silently omitted every post-restore audit record on
+	// CaltechAUTHORS production v13 (found 2026-09-16).
+	for _, required := range []string{
+		"caltechauthors-auditlog-*",
+		".ds-caltechauthors-auditlog-audit-log-*",
+		"caltechauthors-job-logs*",
+		".ds-caltechauthors-job-logs-*",
+	} {
+		found := false
+		for _, p := range got {
+			if p == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("pattern %q missing from the allowlist", required)
+		}
 	}
 }
