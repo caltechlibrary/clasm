@@ -487,6 +487,16 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err := SyncOpenSearchBackupsFromS3(ctx, ssmClient, inst.InstanceID, bucket, sourceName, snap.Name, directory, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
+	// Strictly between the sync and the registration. After the sync
+	// because that is what writes the root-owned files; before the
+	// registration because registration only verifies a write into the
+	// repository's top-level directory -- exactly the part the path.repo
+	// retrofit already chowned -- so registering first would report
+	// success against a tree OpenSearch cannot write and destroy the one
+	// signal available here (DR-0175, PLAN.md Phase 20.63).
+	if err := NormalizeSnapshotRepoOwnership(ctx, ssmClient, inst.InstanceID, directory, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
 	if err := RegisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
@@ -502,6 +512,27 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err != nil {
 		return err
 	}
+
+	// Everything below this point is destructive, and nothing above it is
+	// -- that ordering is the point, not an accident of where the code
+	// happened to land (DR-0175 decision 2: never destroy the current
+	// state before a verified replacement exists). A restore that fails
+	// or cannot be verified returns above with the synced snapshot still
+	// on disk, which is evidence.
+	//
+	// The mirror of Archive's own step 9: the snapshot goes out through
+	// the OpenSearch API rather than a filesystem delete (DR-0131 -- and
+	// because cleanup happens only here, the repository still knows the
+	// snapshot, so the API can reach it and no carve-out is needed), then
+	// the repository is deregistered. What is left is an empty directory
+	// owned by uid 1000, which is what Archive needs to find.
+	if err := DeleteSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snap.Name, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	if err := DeregisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Cleaned up the local snapshot repository on %s (snapshot %q deleted, repository deregistered).\n", inst.InstanceID, snap.Name)
 
 	fmt.Fprintf(w, "\nRestored OpenSearch snapshot %q from s3://%s/%s onto %s:\n", snap.Name, bucket, openSearchSnapshotsPrefix(sourceName), inst.InstanceID)
 	var redCount int

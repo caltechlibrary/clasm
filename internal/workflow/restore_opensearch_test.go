@@ -375,10 +375,8 @@ func TestRestoreOpenSearchSnapshot_HappyPathNoExistingIndices(t *testing.T) {
 	if !strings.Contains(buf.String(), "Restored OpenSearch snapshot") {
 		t.Errorf("expected a success report, got:\n%s", buf.String())
 	}
-	for _, sent := range ssmClient.sentCommands {
-		if strings.Contains(sent, "DELETE 'localhost:9200/") {
-			t.Errorf("did not expect a delete-indices call with no conflicting indices, sent: %v", ssmClient.sentCommands)
-		}
+	if deleteIndicesCommandSent(ssmClient.sentCommands) {
+		t.Errorf("did not expect a delete-indices call with no conflicting indices, sent: %v", ssmClient.sentCommands)
 	}
 }
 
@@ -446,14 +444,159 @@ func TestRestoreOpenSearchSnapshot_ConflictingIndicesConfirmedDeletesThenProceed
 	if !strings.Contains(buf.String(), "Restored OpenSearch snapshot") {
 		t.Errorf("expected a success report, got:\n%s", buf.String())
 	}
-	var sawDelete bool
-	for _, sent := range ssmClient.sentCommands {
-		if strings.Contains(sent, "DELETE 'localhost:9200/") {
-			sawDelete = true
+	if !deleteIndicesCommandSent(ssmClient.sentCommands) {
+		t.Errorf("expected a delete-indices call, sent: %v", ssmClient.sentCommands)
+	}
+}
+
+// commandIndex returns the position of the first sent SSM command
+// containing want, failing the test if none does.
+func commandIndex(t *testing.T, sent []string, want string) int {
+	t.Helper()
+	for i, s := range sent {
+		if strings.Contains(s, want) {
+			return i
 		}
 	}
-	if !sawDelete {
-		t.Errorf("expected a delete-indices call, sent: %v", ssmClient.sentCommands)
+	t.Fatalf("no sent command contains %q; sent: %v", want, sent)
+	return -1
+}
+
+func commandSent(sent []string, want string) bool {
+	for _, s := range sent {
+		if strings.Contains(s, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDeleteIndicesCommand distinguishes a conflicting-index deletion from
+// the two _snapshot/ DELETEs the post-verification cleanup issues (the
+// snapshot itself, then the repository registration). Both are DELETEs
+// against localhost:9200, so a bare "DELETE 'localhost:9200/" substring
+// no longer identifies index deletion: since Phase 20.63 that match is
+// true on every successful restore, which would make a "no index deletion
+// happened" assertion fail spuriously and a "an index deletion happened"
+// assertion pass without one.
+func isDeleteIndicesCommand(s string) bool {
+	return strings.Contains(s, "-X DELETE 'localhost:9200/") && !strings.Contains(s, "_snapshot/")
+}
+
+func deleteIndicesCommandSent(sent []string) bool {
+	for _, s := range sent {
+		if isDeleteIndicesCommand(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// Command fragments that identify each step of a restore in the order the
+// fake SSM client recorded them. The deregister and the snapshot delete
+// are both DELETEs against _snapshot/, distinguished by whether a
+// snapshot name follows the repo: the trailing quote in
+// deregisterRepoCmdFragment is load-bearing.
+const (
+	syncCmdFragment           = "aws s3 sync"
+	chownCmdFragment          = "chown -R 1000:1000"
+	registerRepoCmdFragment   = "-X PUT 'localhost:9200/_snapshot/rdm_backup_repo'"
+	deregisterRepoCmdFragment = "-X DELETE 'localhost:9200/_snapshot/rdm_backup_repo'"
+	deleteSnapshotCmdFragment = "-X DELETE 'localhost:9200/_snapshot/rdm_backup_repo/rdm-20260819-160031'"
+	verifyIndicesCmdFragment  = "_cat/indices/caltechdata-rdmrecords"
+)
+
+// The chown must land strictly between the sync and the registration.
+// After the sync because that is what creates the root-owned files; before
+// the registration because registration only ever verifies a write into
+// the repository's *top-level* directory -- the one place the path.repo
+// retrofit's own chown already reached -- so registering first would
+// succeed against a broken tree and destroy the signal (DR-0175).
+func TestRestoreOpenSearchSnapshot_ChownsBetweenSyncAndRegister(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+
+	if err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sent := ssmClient.sentCommands
+	sync := commandIndex(t, sent, syncCmdFragment)
+	chown := commandIndex(t, sent, chownCmdFragment)
+	register := commandIndex(t, sent, registerRepoCmdFragment)
+	if !(sync < chown && chown < register) {
+		t.Errorf("want sync < chown < register, got sync=%d chown=%d register=%d; sent: %v", sync, chown, register, sent)
+	}
+	if want := "chown -R 1000:1000 '/opt/rdm_opensearch_backups'"; !commandSent(sent, want) {
+		t.Errorf("expected the chown to target the operator's own directory (%q); sent: %v", want, sent)
+	}
+}
+
+// Cleanup is the mirror of Archive's own post-verify delete: the snapshot
+// goes through the OpenSearch API (DR-0131), then the repository is
+// deregistered, leaving the directory empty and owned by uid 1000 and the
+// instance ready to archive.
+func TestRestoreOpenSearchSnapshot_CleansUpAfterVerification(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+
+	if err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sent := ssmClient.sentCommands
+	verify := commandIndex(t, sent, verifyIndicesCmdFragment)
+	deleteSnap := commandIndex(t, sent, deleteSnapshotCmdFragment)
+	deregister := commandIndex(t, sent, deregisterRepoCmdFragment)
+	if !(verify < deleteSnap && deleteSnap < deregister) {
+		t.Errorf("want verify < delete-snapshot < deregister, got verify=%d delete=%d deregister=%d; sent: %v", verify, deleteSnap, deregister, sent)
+	}
+}
+
+// TestRestoreOpenSearchSnapshot_FailedVerificationLeavesTheRepositoryAlone
+// is the test that carries DR-0175's governing principle: never destroy
+// the current state before a verified replacement exists. An earlier draft
+// of the design also cleared the repository directory *before* the sync,
+// which would leave a failed sync with neither the old lineage nor a
+// restore; that was rejected at review. This asserts the shape the review
+// settled on, so a later refactor cannot quietly reintroduce it -- if
+// verification fails, nothing is deleted and nothing is deregistered.
+func TestRestoreOpenSearchSnapshot_FailedVerificationLeavesTheRepositoryAlone(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "")
+	// Make the post-restore verification itself fail.
+	for i, r := range ssmClient.responses {
+		if r.substring == "_cat/indices/caltechdata-rdmrecords" {
+			ssmClient.responses[i].status = types.CommandInvocationStatusFailed
+			ssmClient.responses[i].stdout = "boom"
+		}
+	}
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+
+	err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	if err == nil {
+		t.Fatal("expected the verification failure to propagate")
+	}
+
+	sent := ssmClient.sentCommands
+	if commandSent(sent, deleteSnapshotCmdFragment) {
+		t.Errorf("snapshot was deleted despite an unverified restore; sent: %v", sent)
+	}
+	if commandSent(sent, deregisterRepoCmdFragment) {
+		t.Errorf("repository was deregistered despite an unverified restore; sent: %v", sent)
+	}
+	// The chown is not destructive and must still have happened -- it is
+	// the repair, not the cleanup.
+	if !commandSent(sent, chownCmdFragment) {
+		t.Errorf("expected the chown to have run before the failure; sent: %v", sent)
 	}
 }
 
