@@ -27,6 +27,206 @@
 <h1 id="action-items">Action items</h1>
 <h2 id="bugs-and-issues">Bugs and issues</h2>
 <ul class="task-list">
+<li><label><input type="checkbox" checked="" />Restore OpenSearch
+Snapshot from S3 leaves the local snapshot repository unwritable by
+OpenSearch, so the <em>next</em> Archive OpenSearch Snapshot on the same
+instance always fails – and fails with a 404 that names nothing useful.
+<code>buildSyncFromS3Command</code>
+(<code>internal/workflow/restore_opensearch.go:27</code>) runs
+<code>aws s3 sync</code> over SSM, which executes as <strong>root on the
+host</strong>, so every file and directory it writes into the repo
+directory is <code>root:root</code>; OpenSearch runs as uid 1000 inside
+the <code>search</code> container and can only write where the retrofit
+runbook’s one-time <code>chown 1000:1000</code> reaches – the top-level
+directory. Nothing in the restore path chowns the synced result, and
+nothing ever clears the directory afterwards, so the residue is
+permanent. Found 2026-09-16 archiving CaltechAUTHORS production
+(<code>caltechauthors-v13</code>, <code>i-0effbcc6cfb91097e</code>), the
+first archive ever attempted on a box that had been <em>restored</em> to
+– twice during the Granian migration (<code>rdm-20260827-212721</code>
+on 2026-08-27, <code>rdm-20260910-152618</code> on cutover day
+2026-09-10, both synced into the same
+<code>/opt/rdm_opensearch_backups</code>). Repo registration returned
+<code>{"acknowledged":true}</code> and
+<code>PUT _snapshot/rdm_backup_repo/rdm-20260916-153647</code> returned
+<code>{"accepted":true}</code>, because registration only verifies a
+write into the top-level directory; 35ms later every one of the 61
+shards failed with
+<code>IndexShardSnapshotFailedException: Failed to write shard level snapshot metadata</code>,
+<code>Caused by: java.nio.file.AccessDeniedException: /usr/share/opensearch/backups/indices/&lt;uuid&gt;/0/index-&lt;id&gt;</code>,
+then <code>finalizeSnapshot</code> failed the same way on each
+<code>indices/&lt;uuid&gt;/meta-*.dat</code>. With finalization dead the
+snapshot entry was discarded, so clasm’s first state check five seconds
+later got <code>404 snapshot_missing_exception</code> – see the
+Diagnosability item below. Measured on the box: 6,367 entries not owned
+by uid 1000 against 3 that were (the directory plus the two top-level
+blobs that run did manage to write), all 122
+<code>indices/&lt;uuid&gt;/</code> and <code>&lt;uuid&gt;/0/</code>
+subdirectories <code>root:root drwxr-xr-x</code>. Everything else
+checked out – bind mount correct, repo registered at the right container
+path, 194G free, 66 <code>caltechauthors-*</code> indices matching the
+prefix. <strong>Fix:</strong> <code>chown -R 1000:1000</code> the target
+directory after the restore sync completes (the uid is already a fixed
+convention – <code>DefaultOpenSearchContainerRepoPath</code>’s own
+comment and <code>rdm-opensearch-path-repo-retrofit.md</code> Step 1
+both assume it), and consider clearing the directory <em>before</em> the
+sync too, since a restore has no more reason than an archive to
+accumulate foreign snapshot lineages there. Note the archive path’s
+<code>aws s3 sync</code> uploads the whole repo directory, so stale
+restore residue would otherwise be re-uploaded into the next archive’s
+S3 prefix. Remediated by hand on <code>caltechauthors-v13</code>
+2026-09-16 (deregister the repo via
+<code>DELETE _snapshot/rdm_backup_repo</code>, clear the 13G/6,369-entry
+directory on the host, <code>chown 1000:1000</code> +
+<code>chmod 775</code>, re-run the archive) – DR-0131’s “never a raw
+filesystem delete” was honoured by deregistering first, and the S3
+copies were the source of truth throughout. <strong>FIXED 2026-09-16,
+test-first – DR-0175, PLAN.md Phase 20.63</strong> (with the two items
+below; one defect, three symptoms, one change).
+<code>NormalizeSnapshotRepoOwnership</code> runs
+<code>chown -R 1000:1000</code> as its own SSM step, placed strictly
+between the sync and the repo registration – before the registration
+specifically because registration only verifies a top-level write, so
+registering first would report success against a broken tree and destroy
+the signal. The uid is now
+<code>DefaultOpenSearchRepoUID</code>/<code>-GID</code>. <strong>Two
+corrections to this item’s own “Fix” text, both found while
+implementing:</strong> (1) the claim that
+<code>DefaultOpenSearchContainerRepoPath</code>’s doc comment assumes
+uid 1000 is wrong – that comment is entirely about the host-vs-container
+path distinction; the convention is documented only in
+<code>rdm-opensearch-path-repo-retrofit.md</code> (line 175, and the
+Step 1 chown at line 180), which is what the new code cites. (2) The
+suggested “clear the directory <em>before</em> the sync too” was
+<strong>rejected at review</strong> – it destroys the current contents
+before their replacement is known good, so a sync failing afterwards
+leaves the instance with neither the old lineage nor a restore. Cleanup
+happens only after a verified restore instead; see the <em>Clean up the
+local snapshot repository</em> item below. Consequence, deliberate: an
+instance already carrying residue is not swept clean, but is not left
+broken either, since the <code>chown -R</code> covers the whole
+directory including the residue. The leftover junk still gets
+re-uploaded into the next archive’s S3 prefix – wasteful, not incorrect
+– and detecting it belongs to the <em>Verify backup readiness</em> item,
+which already probes <code>find &lt;dir&gt; ! -user 1000 | wc -l</code>.
+<strong>Not real-AWS-verified</strong> – deferred to the CaltechDATA
+Granian dev-instance migration (DR-0175 decision 7), since
+<code>caltechauthors-v13</code> is hand-remediated and can no longer
+exhibit the bug.</label></li>
+<li><label><input type="checkbox"
+checked="" /><code>rdmOpenSearchSnapshotIndexPatterns</code>
+(<code>internal/workflow/opensearch_index_patterns.go:11</code>) misses
+two live indices, so they are in no archived snapshot. Found 2026-09-16
+diffing the successful <code>rdm-20260916-155958</code> snapshot’s 61
+index names against CaltechAUTHORS production v13’s 66 live
+<code>caltechauthors-*</code> indices. Three of the five omissions are
+the documented deliberate <code>events-stats-*</code> exclusion (already
+covered by the opt-in “include raw event indices” request below). The
+other two match no pattern at all:
+<strong><code>caltechauthors-auditlog-audit-log-v1.0.0</code></strong>
+(532 docs, created 2026-09-09T23:25Z, newest document 2026-09-16T15:22Z
+– actively written) and
+<strong><code>caltechauthors-job-logs</code></strong> (142 docs). The
+allowlist’s only audit entry is
+<code>.ds-&lt;prefix&gt;-auditlog-audit-log-*</code>, which matches a
+<em>different</em> index:
+<code>.ds-caltechauthors-auditlog-audit-log-v1.0.0-000001</code>
+(302,252 docs, created 2025-10-08, holds the
+<code>caltechauthors-auditlog</code> alias), restored from production
+and present in the snapshot. So the historical audit log is backed up
+and everything since the cutover is not. Both are
+<code>invenio-audit-logs</code> – document fields
+<code>@timestamp</code>/<code>action</code>/<code>id</code>/<code>metadata</code>/<code>resource</code>/<code>updated</code>/<code>user</code>/<code>version_id</code>,
+sampled actions <code>draft.create</code> and <code>draft.edit</code> on
+<code>resource.type: record</code>. <strong>Neither is a registered data
+stream</strong> (<code>GET _data_stream/...</code> returns
+<code>{"data_streams":[]}</code>), which is itself the explanation for
+the split: <code>include_global_state:false</code> means a snapshot
+carries <code>"data_streams":[]</code>, so restoring a backing index
+yields a plain index with its alias but no stream definition, and the
+app then starts a fresh ordinary audit-log index beside it. Expect that
+on every restore. <strong>Decision needed first:</strong> are audit logs
+and job logs in scope for RDM backup? If yes, the allowlist needs
+<code>&lt;prefix&gt;-auditlog-*</code> (not just the <code>.ds-</code>
+form) plus <code>&lt;prefix&gt;-job-logs</code>, and the
+data-stream-definition question needs an answer; if no, record it as
+deliberate the way <code>events-stats-*</code> was. Note the
+<code>.ds-</code> trap for future readers: a name <em>starting</em>
+<code>.ds-</code> is OpenSearch’s data-stream backing-index convention
+and has nothing to do with WorkLab’s directories <em>ending</em> in
+<code>.ds</code> (Dataset collections) or with COLD’s harvests, which
+read RDM over its REST API from another host entirely. <strong>Scope
+confirmed by the user and FIXED 2026-09-16, test-first:
+DR-0173.</strong> The allowlist gains
+<code>&lt;prefix&gt;-auditlog-*</code>,
+<code>&lt;prefix&gt;-job-logs*</code> and
+<code>.ds-&lt;prefix&gt;-job-logs-*</code> (21 patterns now); the
+existing <code>.ds-&lt;prefix&gt;-auditlog-audit-log-*</code> stays,
+because a restored instance carries one form of each log and a fleet
+check found both job-log forms too – production’s
+<code>.ds-&lt;prefix&gt;-job-logs-*</code> (the omission the raw-events
+item below had already spotted and left unresolved) and v13’s plain
+<code>caltechauthors-job-logs</code>. The pattern-list and
+<code>matchesAnyPattern</code> tests were extended and observed failing
+(18 against 20 expected) before the change; <code>gofmt</code>,
+<code>go build ./...</code>, <code>go vet ./...</code> and
+<code>go test -race ./...</code> all clean after. Note the restore-side
+consequence recorded in DR-0173: the same function drives restore
+conflict detection, so a restore now deletes and replaces a target’s
+<code>&lt;prefix&gt;-auditlog-*</code>/<code>&lt;prefix&gt;-job-logs*</code>
+indices where it previously left them alone. Left open deliberately:
+whether a restore should also re-register the data stream, rather than
+leaving an orphaned <code>.ds-</code> index plus a fresh ordinary one.
+<strong>Not released</strong> – part of the next release.</label></li>
+<li><label><input type="checkbox" checked="" />Diagnosability, same
+2026-09-16 incident: an OpenSearch snapshot that dies <em>after</em>
+being accepted is reported as a raw curl failure, with no hint where to
+look. <code>CreateSnapshot</code>
+(<code>internal/workflow/opensearch_snapshot.go:91</code>) treats
+<code>{"accepted":true}</code> as success with no read-back, which is
+correct – acceptance is all the API promises without
+<code>wait_for_completion</code> – but it means an initialization-time
+failure can only ever surface later, as the poller’s own error.
+<code>PollSnapshotUntilComplete</code>
+(<code>internal/workflow/opensearch_snapshot.go:149</code>) then hands
+<code>snapshot_missing_exception</code> straight to
+<code>curlFailureError</code>, so the operator sees a 404 for a snapshot
+clasm itself created seconds earlier and has no way to tell that from a
+transport problem. It should recognize
+<code>snapshot_missing_exception</code> specifically and say what it
+means – creation failed after acceptance, the entry was discarded, and
+the cause is in the <code>search</code> container’s own log
+(<code>docker logs &lt;instance&gt;-search-1 | grep -iE 'snapshot|repositor'</code>),
+which is where the <code>AccessDeniedException</code> above was actually
+found. Worth also deciding whether a 404 on the <em>first</em> check
+should tolerate a retry or two, to rule out a cluster-state race on a
+busy master rather than assuming the snapshot is gone. <strong>FIXED
+2026-09-16, test-first – DR-0175 decision 5, PLAN.md Phase
+20.63.</strong> <code>isSnapshotMissing</code> classifies the body by
+exception <em>name</em> rather than by status code, so
+<code>repository_missing_exception</code> – a different failure with a
+different remedy – is not absorbed; the check sits inside
+<code>PollSnapshotUntilComplete</code>’s existing
+non-<code>Success</code> branch, which is the only place it can be seen,
+since <code>--fail-with-body</code> delivers a 404 as a non-zero curl
+exit carrying the body on stdout rather than as a parseable state. The
+retry question resolved as yes: two consecutive misses are tolerated
+(<code>snapshotMissingGraceChecks</code>), the third fails with an
+explanation. <code>CreateSnapshot</code>’s treat-acceptance-as-success
+behaviour is unchanged, as this item itself argued it should be.
+<strong>One deviation from the text above:</strong> the suggested
+<code>docker logs &lt;instance&gt;-search-1</code> is not constructible
+here – that name comes from the deployment’s Docker Compose project
+name, not the EC2 instance id the function receives, so interpolating it
+would print a name that is always wrong. The message tells the operator
+how to find the container
+(<code>docker ps --format '{{.Names}}' | grep search</code>) and then
+read it. Mutation testing during implementation caught a gap the plan
+had not anticipated: the consecutive-miss counter’s <em>reset</em> was
+untested, and removing it left every test green – which would let a long
+snapshot accumulate scattered transient 404s over an hour and be
+declared discarded while running normally. Now covered. <strong>Not
+real-AWS-verified</strong> (see the item above).</label></li>
 <li><label><input type="checkbox"
 checked="" /><code>RunShellCommand</code>’s SSM <code>SendCommand</code>
 never sets <code>TimeoutSeconds</code>, so AWS silently applies its own
@@ -255,9 +455,113 @@ invoke <code>make</code> itself, not to build the plain Go binary via
 </ul>
 <h2 id="requested-features">Requested features</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" />Archive OpenSearch Snapshot to S3
-needs an opt-in “include raw event indices” mode, for migration/cutover
-rather than routine backup.
+<li><label><input type="checkbox" checked="" /><strong>Documentation,
+not a code change</strong> (user decision, 2026-09-16): S3 backup
+history splitting by production instance is the INTENDED behaviour, not
+a defect to fix. <code>clasm</code> derives the S3 prefix from the
+instance <code>Name</code> tag, so CaltechAUTHORS’s OpenSearch history
+is <code>newauthors/</code> up to the 2026-09-10 cutover
+(<code>rdm-20260909-173909</code>, <code>rdm-20260910-152618</code>) and
+<code>caltechauthors-v13/</code> from 2026-09-16 on – the same accepted
+split already recorded for SQL backups, where retagging was rejected
+because the <code>Name</code> tag is load-bearing in
+<code>~/.clasm</code>’s <code>rdm_postgres_config</code> and in
+<code>CLASM_CALTECHAUTHORS_SETUP.md</code>. The only requirement is that
+a migration to a NEW instance can restore from the last working old
+instance’s backups, which <code>restoreOpenSearchSnapshot</code> already
+supports: its “Source instance name (the S3 prefix to restore from)”
+prompt defaults to the <em>target’s</em> own <code>Name</code> tag but
+is editable, exactly as it was used to seed v13 from
+<code>newauthors/</code>. What needs writing down, because the default
+makes it look broken: on a fresh <code>caltechauthors-v14</code> the
+default resolves to an empty prefix and the workflow prints “No
+OpenSearch snapshots found under
+s3://…/caltechauthors-v14/opensearch-snapshots/” and returns cleanly –
+type the <em>source</em> instance’s name instead. Same shape on the SQL
+side. Belongs in <code>CLASM_CALTECHAUTHORS_SETUP.md</code>’s migration
+procedure and in the project’s operating notes, not in a picker feature.
+<strong>WRITTEN 2026-09-16:</strong>
+<code>CLASM_CALTECHAUTHORS_SETUP.md</code>’s “Archiving, rotation, and
+the S3 prefix” section now covers the OpenSearch half of the split
+alongside the SQL half it already documented, and a new subsection,
+“Restoring across the split – read before a v14 migration”, records the
+empty-prefix default, the exact message it prints, and the instruction
+to type the source instance’s name; the “Cutover to production”
+checklist gains a step 8 pointing at it.</label></li>
+<li><label><input type="checkbox" /><strong>Verify backup readiness for
+an instance</strong> – a new action (or a pre-flight inside the existing
+archive workflows) that confirms an instance is actually set up to
+archive SQL <em>and</em> OpenSearch, instead of that only becoming
+apparent when an archive run finds nothing or dies. Requested by the
+user 2026-09-16, grounded in two real incidents where a production
+instance was silently not backed up: the 2026-09-10 cutover left
+<code>caltechauthors-v13</code> with no
+<code>/opt/rdm_sql_backups</code>, no crontab at all and no
+<code>postgres_env.cfg</code>, discovered 2026-09-15 when the morning
+Archive SQL Backup run had nothing to archive – <strong>five days of
+production with no SQL backup</strong>; and the OpenSearch repository
+directory was left root-owned by the restore path, so the first archive
+failed with a 404 that named nothing useful (see the two 2026-09-16
+items above). Both were invisible to <code>verify_rdm_boot.bash</code>,
+which checks that the app serves. Candidate checks, all already
+implemented as one-off SSM probes in those two sessions and all
+read-only: SQL side – backup directory exists with the expected
+ownership/mode, a crontab entry exists and names the right script and
+database container, <code>postgres_env.cfg</code> is present (a
+<em>restore</em> fails without it even though backups succeed), the
+backup script and <code>docker</code> are at the paths the script
+hardcodes, the instance profile grants Put on the bucket, and the newest
+object under the instance’s own S3 prefix is recent rather than stale;
+OpenSearch side – <code>path.repo</code> is configured and the backups
+directory is bind-mounted into the <code>search</code> container,
+<code>find &lt;dir&gt; ! -user 1000 | wc -l</code> is 0, the repo
+registers, and free disk exceeds the live index size. Report
+per-instance pass/fail rather than fixing silently. The check that would
+have caught both incidents on day one is the S3-freshness one, so it
+should be prominent.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Clean up the
+local snapshot repository after a verified restore</strong> – requested
+by the user 2026-09-16, and the other half of the missing
+<code>chown</code> recorded under <em>Bugs and issues</em>. Archive
+already deletes its local snapshot once the S3 sync is verified
+(<code>DeleteSnapshot</code>, unconditional every run, DESIGN.md step
+9); Restore has no equivalent, so the synced-down snapshot sits in
+<code>/opt/rdm_opensearch_backups</code> indefinitely – 13 GB across two
+stale lineages on v13 by 2026-09-16. Once the restore is verified
+(<code>VerifyRestoredIndices</code> already provides the signal), clear
+the directory and leave it owned <code>1000:1000</code>, which fixes the
+ownership defect and the accumulation in one step and leaves the
+instance ready to archive. Deregister the repo via the API before any
+filesystem delete, per DR-0131. Consider clearing <em>before</em> the
+sync too, since a restore has no more reason than an archive to inherit
+a foreign snapshot lineage. <strong>IMPLEMENTED 2026-09-16, test-first –
+DR-0175 decisions 2 and 3, PLAN.md Phase 20.63.</strong> After
+<code>VerifyRestoredIndices</code> succeeds, the restored snapshot goes
+out through <code>DeleteSnapshot</code> and the repository is
+deregistered, leaving an empty directory owned <code>1000:1000</code> –
+the state Archive expects to find. Archive and Restore now read as one
+sentence in either direction: create → sync → verify → delete, and sync
+→ restore → verify → delete. <strong>The “clear before the sync too”
+suggestion was rejected at review</strong>, on the principle that
+nothing destructive may precede a verified replacement: a sync failing
+after the directory was emptied leaves the instance strictly worse off
+than before the run, with neither the old lineage nor a restore. It also
+turned out that deferring cleanup to <em>after</em> verification removes
+the need for a DR-0131 carve-out entirely – at that point the repository
+still knows the snapshot, so the API can delete it and nothing reaches
+past the API. Only orphaned blobs from a pre-20.63 clasm remain
+API-unreachable, and removing those is an operator-confirmed remediation
+rather than something a routine restore does in passing. The gate is
+pinned by a regression test
+(<code>TestRestoreOpenSearchSnapshot_FailedVerificationLeavesTheRepositoryAlone</code>):
+a failed verification deletes nothing and deregisters nothing, while the
+chown still runs, since that is the repair rather than the cleanup.
+Mutation-checked – ignoring the verification error, and hoisting cleanup
+above verification, are both caught. <strong>Not
+real-AWS-verified</strong> (see <em>Bugs and issues</em>).</label></li>
+<li><label><input type="checkbox" checked="" />Archive OpenSearch
+Snapshot to S3 needs an opt-in “include raw event indices” mode, for
+migration/cutover rather than routine backup.
 <code>rdmOpenSearchSnapshotIndexPatterns</code>
 (<code>internal/workflow/opensearch_index_patterns.go:11</code>)
 deliberately excludes <code>&lt;prefix&gt;-events-stats-*</code> as
@@ -286,7 +590,76 @@ omission rather than a decision; and
 <code>&lt;prefix&gt;-stats-bookmarks</code> <em>is</em> restored (23,946
 docs) while recording how far aggregation has progressed through events
 indices that will not exist on the target – an untested interaction
-worth checking before relying on it.</label></li>
+worth checking before relying on it. <strong>Update 2026-09-16:</strong>
+the <code>.ds-&lt;prefix&gt;-job-logs-*</code> omission is RESOLVED – it
+and three other log patterns are in the allowlist as of DR-0173, so only
+the <code>events-stats-*</code> opt-in and the
+<code>stats-bookmarks</code> interaction remain open here.
+<strong>CLOSED as deliberate 2026-09-16, no code change.</strong> The
+open question – whether re-aggregating usage statistics from raw events
+is something this repository would ever actually need – was put to the
+repository administrators, and the user’s manager answered: “I think
+it’s unlikely we would want to re-aggregate.” So raw
+<code>events-stats-*</code> indices stay excluded from every snapshot,
+routine and migration alike, and the opt-in prompt is not wanted. The
+2026-07-28 exclusion rationale stands unchanged and now covers the
+migration case too: at cutover the aggregates restore correctly and the
+raw events are accepted as permanently lost. The
+<code>stats-bookmarks</code> interaction noted here is carried forward
+as its own item below, because closing this one does not answer it – it
+makes it permanent.</label></li>
+<li><label><input
+type="checkbox" /><code>&lt;prefix&gt;-stats-bookmarks</code> survives a
+restore while the events indices it bookmarks do not – carried forward
+from the raw-events item above, which closed as deliberate on 2026-09-16
+and so makes this permanent rather than transitional. The index
+<em>is</em> included in the allowlist and restores with real content
+(23,946 docs on the 2026-08-27 CaltechAUTHORS measurement); what it
+records is how far Invenio’s aggregation task has progressed through
+<code>events-stats-*</code> indices that, on a restored instance, will
+never exist. The interaction is untested: the open question is whether
+the aggregator treats a bookmark pointing past the end of an absent
+source as “nothing new to do” (harmless, the aggregates are already
+there) or as something to error on or reset. Worth one live check
+against a restored instance before the next migration relies on it –
+<code>caltechauthors-v13</code> has been through exactly this twice and
+is available to look at. If it turns out to need clearing, the natural
+home is the restore workflow’s own post-verification step, alongside the
+repository cleanup item above.</label></li>
+<li><label><input type="checkbox" />“Show all tags” truncates and
+overflows for EC2 instances, and offers no way to read one resource’s
+tags in full without leaving for Manage tags. Raised by the user
+2026-09-16. Two parts, both in <code>tagsListViewConfig</code>
+(<code>internal/ui/display.go:359</code>) and its List-tier host.
+<strong>(1)</strong> The row is <code>ID</code> padded to 22,
+<code>LABEL</code> padded to 40, then <code>flattenTags</code>’ full
+<code>key=value, key2=value2</code> string with no width bound at all –
+so on an instance carrying many or long tag pairs the tags run past the
+right edge of the box and are lost to the terminal width, while a long
+instance Name is separately clipped at 40 by <code>truncate</code>. The
+user asks for roughly 4 more characters of name (LABEL 40 -&gt; 44);
+note that widening LABEL pushes the unbounded TAGS column further right,
+so the two halves of this item interact and the column change alone is
+not a fix. <strong>(2)</strong> Selecting a row should show that one
+resource’s tags stacked vertically, one <code>key: value</code> per
+line, which is the shape that actually reads well for the long values
+and makes the truncation moot. <strong>This is not free:</strong>
+<code>ListViewModel</code> (<code>internal/tui/listview.go:49</code>) is
+deliberately read-only – “Quitting (‘q’/ctrl+c) is the only way out –
+there’s nothing to tag or act on here” – and that read-only contract is
+what DESIGN.md’s “Terminal UI Architecture: Menus, Actions, Lists, and
+Managers” uses to distinguish the List tier from
+<code>internal/filemanager</code>’s interactive Manager tier. A cursor
+already exists (<code>m.filter.cursor</code>, shared with PickerModel),
+so the mechanism is cheap, but giving the List tier a selection key
+changes a documented architectural boundary for every List-tier screen
+at once, not just this one. So it wants a decision: add an optional
+select-and-drill affordance to the shared List tier (available
+everywhere, e.g. instance detail from the instance list), or keep List
+read-only and build the tag drill-down on the Picker tier instead. Worth
+noting the destination view already exists in substance – Manage tags
+shows exactly this per-resource detail – so part (2) is mostly a
+reachability problem.</label></li>
 <li><label><input type="checkbox" />Restore SQL Backup should set
 <code>synchronous_commit=off</code> on the load connection only, via
 <code>PGOPTIONS</code>. Measured 2026-08-27 restoring a real

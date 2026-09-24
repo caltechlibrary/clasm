@@ -291,15 +291,18 @@ reporting bytes freed – it is the same workflow that manages the nightly
 cron job’s output, which is why it is separate from Generate SQL Backup
 rather than chained to it. <strong>Archive OpenSearch Snapshot to
 S3</strong> does the equivalent for OpenSearch’s snapshot repository
-directory (configured separately from the SQL backup directory). The two
-<strong>Restore</strong> items are the reverse: pick a target instance,
-pick an archive from S3, and load it back. Both are gated behind
-type-to-confirm on the exact instance ID or Name tag, and neither keeps
-any recall history of the last instance used – restoring is a rare,
-deliberate action, and clasm deliberately does not pre-position the
-cursor on a previous target. See <code>DESIGN.md</code>, “RDM Backup
-&amp; Restore Domain” for the full prompt sequence and the snapshot
-scope.</p>
+directory (configured separately from the SQL backup directory). Both of
+these two items also have a non-interactive command-line form once you
+trust them enough for unattended use – see “Non-interactive (CLI) Usage”
+below; a successful interactive run of either prints the exact command
+that reproduces it. The two <strong>Restore</strong> items are the
+reverse: pick a target instance, pick an archive from S3, and load it
+back. Both are gated behind type-to-confirm on the exact instance ID or
+Name tag, and neither keeps any recall history of the last instance used
+– restoring is a rare, deliberate action, and clasm deliberately does
+not pre-position the cursor on a previous target. See
+<code>DESIGN.md</code>, “RDM Backup &amp; Restore Domain” for the full
+prompt sequence and the snapshot scope.</p>
 <h2 id="configuration-menu">Configuration Menu</h2>
 <p>Choosing Configuration presents:</p>
 <ol type="1">
@@ -349,28 +352,90 @@ error.
 standard informational flags.
 </dd>
 </dl>
+<h2 id="non-interactive-cli-usage">Non-interactive (CLI) Usage</h2>
+<p>Beyond the flags above, clasm also accepts a
+<code>&lt;domain&gt; [&lt;action&gt; [args...]]</code> path on the
+command line – the same route you’d take through the domain picker and
+its menus, expressed directly, so a menu action you trust can be
+scripted or put in a crontab once it no longer needs a human watching
+it:</p>
+<ul>
+<li><code>clasm</code> (no path) – the domain picker, as above.</li>
+<li><code>clasm &lt;domain&gt;</code> – jumps straight into that
+domain’s own menu, as if you’d picked it from the domain picker
+yourself. Backing out with <code>q</code> returns you to the domain
+picker exactly as normal navigation would.</li>
+<li><code>clasm &lt;domain&gt; &lt;action&gt;</code> – jumps straight
+into that one action’s own interactive prompts, skipping the domain
+menu. Once it finishes, you’re back at that domain’s menu, same as
+choosing the action normally would leave you.</li>
+<li><code>clasm &lt;domain&gt; &lt;action&gt; &lt;arg1&gt; &lt;arg2&gt; ...&gt;</code>
+– runs the action non-interactively: no prompts, no confirmation, and a
+real process exit status (0 success, 1 the action itself failed, 2 a
+usage error – an unrecognized domain/action name or the wrong number of
+arguments). Safe to use in an unattended job: a mistyped invocation
+fails immediately with a clear message rather than hanging, waiting for
+input from a terminal that isn’t there.</li>
+</ul>
+<p>Only the <strong>RDM Backup &amp; Restore</strong> domain
+(<code>rdm-backup-and-restore</code>) has any actions with the full
+non-interactive form today:</p>
+<dl>
+<dt><code>archive-sql-backups-to-s3 &lt;instance&gt; &lt;directory&gt; &lt;bucket&gt; &lt;trim-days-or-""&gt;</code></dt>
+<dd>
+the non-interactive form of <strong>Archive SQL Backups to S3 (and trim
+local copies)</strong>. <code>&lt;instance&gt;</code> matches an
+instance’s Name tag first, falling back to its instance ID if no Name
+matches – an error, never a guess, if either matches more than one
+instance. <code>&lt;trim-days-or-""&gt;</code> mirrors the interactive
+prompt exactly: an empty string (<code>""</code> on most shells) keeps
+every local copy, <code>0</code> deletes every file successfully
+archived, and a positive integer deletes only files older than that many
+days.
+</dd>
+<dt><code>archive-opensearch-snapshot-to-s3 &lt;instance&gt; &lt;directory&gt; &lt;bucket&gt; &lt;cleanup-days-or-""&gt;</code></dt>
+<dd>
+the non-interactive form of <strong>Archive OpenSearch Snapshot to
+S3</strong>. Same instance-matching rule as above.
+<code>&lt;cleanup-days-or-""&gt;</code> is a <em>different</em>
+threshold from the SQL form’s trim argument – it governs deleting this
+instance’s own previously-archived snapshots already in S3, never
+anything on the instance itself or the snapshot this run just created.
+An empty string skips cleanup entirely; unlike the SQL form,
+<code>0</code> is not a valid choice here.
+</dd>
+</dl>
+<pre class="shell"><code>clasm rdm-backup-and-restore archive-sql-backups-to-s3 \
+  caltechauthors-v13 /opt/rdm_sql_backups \
+  s3://sql-backups.library.caltech.edu &quot;&quot;</code></pre>
+<p>Both forms run every safety check the interactive menu does first
+(confirming the AWS CLI is present on the target instance, resolving and
+checking access to the destination bucket) – only the interactive
+confirmation prompt is skipped. After a successful <em>interactive</em>
+run of either action, clasm prints the exact non-interactive command
+that reproduces it, ready to copy into a script or crontab entry.</p>
 <h2 id="configuration-.clasm">Configuration (<code>~/.clasm</code>)</h2>
 <p>An optional YAML file for clasm’ own operational settings – never AWS
 credentials or profile selection. Can be viewed and edited from within
 clasm itself (Configuration domain, above), or hand-edited directly:</p>
-<div class="sourceCode" id="cb2"><pre
-class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">regions</span><span class="kw">:</span></span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> us-west-1</span></span>
-<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> us-west-2</span></span>
-<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="fu">backup_directories</span><span class="kw">:</span></span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/rdm_sql_backups</span></span>
-<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu">opensearch_backup_directories</span><span class="kw">:</span></span>
-<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
-<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/opensearch_snapshots</span></span>
-<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="fu">rdm_postgres_config</span><span class="kw">:</span></span>
-<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
-<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">container_name</span><span class="kw">:</span><span class="at"> etd-db-1</span></span>
-<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_name</span><span class="kw">:</span><span class="at"> etd</span></span>
-<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_user</span><span class="kw">:</span><span class="at"> etd</span></span>
-<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="fu">origin_tag</span><span class="kw">:</span></span>
-<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">key</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;Origin&quot;</span></span>
-<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">dld_value</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">regions</span><span class="kw">:</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> us-west-1</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> us-west-2</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="fu">backup_directories</span><span class="kw">:</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/rdm_sql_backups</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="fu">opensearch_backup_directories</span><span class="kw">:</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">directory</span><span class="kw">:</span><span class="at"> /opt/opensearch_snapshots</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">rdm_postgres_config</span><span class="kw">:</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;etd-*&quot;</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">container_name</span><span class="kw">:</span><span class="at"> etd-db-1</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_name</span><span class="kw">:</span><span class="at"> etd</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">db_user</span><span class="kw">:</span><span class="at"> etd</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="fu">origin_tag</span><span class="kw">:</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">key</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;Origin&quot;</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">dld_value</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;&quot;</span></span></code></pre></div>
 <p><code>regions</code> narrows or changes which regions every listing
 and picker operates against (default: us-west-1, us-west-2, if the file
 or key is absent). <code>backup_directories</code> is an ordered list of
