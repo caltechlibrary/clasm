@@ -29,6 +29,13 @@ func resolveSSM(clients map[string]awsclient.SSMAPI, region string) (awsclient.S
 	return client, nil
 }
 
+// ResolveSSMClient is resolveSSM, exported for cmd/clasm/main.go's CLI
+// dispatch path (PLAN.md Phase 20.64), which needs the same per-region
+// resolution every interactive workflow already gets via resolveSSM.
+func ResolveSSMClient(clients map[string]awsclient.SSMAPI, region string) (awsclient.SSMAPI, error) {
+	return resolveSSM(clients, region)
+}
+
 func resolveEC2AndSSM(ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, region string) (awsclient.EC2API, awsclient.SSMAPI, error) {
 	ec2Client, err := resolveEC2(ec2Clients, region)
 	if err != nil {

@@ -367,3 +367,157 @@ func TestArchiveOpenSearchSnapshot_SyncFailureAbortsBeforeEBSDelete(t *testing.T
 		}
 	}
 }
+
+// TestRunArchiveOpenSearchSnapshot_CleansUpWithoutPrompting drives Archive
+// OpenSearch Snapshot to S3's params-driven core directly (PLAN.md Phase
+// 20.64) -- no input/output pipes, since prompting has already happened
+// by this point and the cleanup confirmation gate is the injected
+// confirm, not a real prompt. Same scenario as
+// TestArchiveOpenSearchSnapshot_ThresholdWithRealCandidates_CleansUpAfterNewSnapshot
+// one layer up, asserting the extraction changed nothing about the
+// actual work done.
+func TestRunArchiveOpenSearchSnapshot_CleansUpWithoutPrompting(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+
+	term, buf := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	inner := &fakeS3Client{allObjects: []s3types.Object{
+		{Key: aws.String("newauthors/opensearch-snapshots/rdm-20200101-000000/index-0")},
+	}}
+	s3Client := &echoingS3Client{fakeS3Client: inner}
+
+	var confirmCalls int
+	confirm := func(candidates []SnapshotPrefixInfo) (bool, error) {
+		confirmCalls++
+		return true, nil
+	}
+
+	err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 30, true, confirm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalls != 1 {
+		t.Errorf("confirm called %d times, want 1", confirmCalls)
+	}
+	if !strings.Contains(buf.String(), "Removed 1 old snapshot") {
+		t.Errorf("expected a 'Removed 1 old snapshot' report, got:\n%s", buf.String())
+	}
+	if len(inner.deleteObjectsCalls) != 1 {
+		t.Fatalf("deleteObjectsCalls = %d, want 1 (exactly the pre-captured old candidate)", len(inner.deleteObjectsCalls))
+	}
+}
+
+// TestRunArchiveOpenSearchSnapshot_ConfirmDeclinedCancelsBeforeSnapshotCreated
+// pins that a false confirm result behaves exactly like a declined
+// interactive prompt: the run is cancelled before the new snapshot is
+// even created, and nothing is deleted.
+func TestRunArchiveOpenSearchSnapshot_ConfirmDeclinedCancelsBeforeSnapshotCreated(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+
+	term, buf := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	inner := &fakeS3Client{allObjects: []s3types.Object{
+		{Key: aws.String("newauthors/opensearch-snapshots/rdm-20200101-000000/index-0")},
+	}}
+	s3Client := &echoingS3Client{fakeS3Client: inner}
+
+	confirm := func(candidates []SnapshotPrefixInfo) (bool, error) { return false, nil }
+
+	err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 30, true, confirm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Cancelled") {
+		t.Errorf("expected a Cancelled message, got:\n%s", buf.String())
+	}
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, `"indices"`) {
+			t.Error("a declined confirm must cancel the entire run before the new snapshot is even created")
+		}
+	}
+	if len(inner.deleteObjectsCalls) != 0 {
+		t.Error("a declined confirm must not delete anything")
+	}
+}
+
+// TestRunArchiveOpenSearchSnapshotAuto_NeverPromptsAndCleansUp pins the
+// non-interactive entry point's whole contract (PLAN.md Phase 20.64),
+// the OpenSearch-side analog of TestRunBackupArchiveAndTrimAuto_
+// NeverPromptsAndUploads.
+func TestRunArchiveOpenSearchSnapshotAuto_NeverPromptsAndCleansUp(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+
+	term, buf := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	inner := &fakeS3Client{allObjects: []s3types.Object{
+		{Key: aws.String("newauthors/opensearch-snapshots/rdm-20200101-000000/index-0")},
+	}}
+	s3Client := &echoingS3Client{fakeS3Client: inner}
+
+	err := RunArchiveOpenSearchSnapshotAuto(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 30, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Removed 1 old snapshot") {
+		t.Errorf("expected a 'Removed 1 old snapshot' report, got:\n%s", buf.String())
+	}
+	if len(inner.deleteObjectsCalls) != 1 {
+		t.Errorf("deleteObjectsCalls = %d, want 1 (confirmed without prompting)", len(inner.deleteObjectsCalls))
+	}
+}
+
+// TestArchiveOpenSearchSnapshot_ReportsResolvedParamsOnceParamsAreKnown
+// is the OpenSearch-side analog of
+// TestBackupArchiveAndTrim_ReportsResolvedParamsOnceParamsAreKnown
+// (PLAN.md Phase 20.64 item 5).
+func TestArchiveOpenSearchSnapshot_ReportsResolvedParamsOnceParamsAreKnown(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	input := "\n" +
+		"my-os-bucket\n" +
+		"30\n" +
+		"i-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	inner := &fakeS3Client{allObjects: []s3types.Object{
+		{Key: aws.String("newauthors/opensearch-snapshots/rdm-20200101-000000/index-0")},
+	}}
+	s3Client := &echoingS3Client{fakeS3Client: inner}
+
+	var reported []ArchiveOpenSearchParams
+	report := func(p ArchiveOpenSearchParams) { reported = append(reported, p) }
+
+	err := archiveOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf, report)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := ArchiveOpenSearchParams{InstanceID: "i-1", Directory: "/opt/rdm_opensearch_backups", Bucket: "my-os-bucket", CleanupDays: 30, CleanupRequested: true}
+	if len(reported) != 1 || reported[0] != want {
+		t.Errorf("reported = %+v, want exactly one call with %+v", reported, want)
+	}
+}
+
+// TestArchiveOpenSearchSnapshot_DoesNotReportWhenAbortedBeforeParamsAreKnown
+// pins that an abort before params are ever resolved (here: the S3
+// bucket inaccessible, which happens before the cleanup prompt) never
+// invokes report.
+func TestArchiveOpenSearchSnapshot_DoesNotReportWhenAbortedBeforeParamsAreKnown(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	input := "\n" +
+		"my-os-bucket\n"
+
+	term, le, buf := newPipeEditor(input)
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{headBucketErr: errors.New("Forbidden")}}
+
+	var reportCalls int
+	report := func(p ArchiveOpenSearchParams) { reportCalls++ }
+
+	err := archiveOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf, report)
+	if err == nil {
+		t.Fatal("expected an error when the S3 bucket is inaccessible")
+	}
+	if reportCalls != 0 {
+		t.Errorf("report called %d times, want 0 (aborted before params were resolved)", reportCalls)
+	}
+}

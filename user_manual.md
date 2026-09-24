@@ -273,7 +273,11 @@ reporting bytes freed -- it is the same workflow that manages the
 nightly cron job's output, which is why it is separate from Generate SQL
 Backup rather than chained to it. **Archive OpenSearch Snapshot to S3**
 does the equivalent for OpenSearch's snapshot repository directory
-(configured separately from the SQL backup directory). The two
+(configured separately from the SQL backup directory). Both of these two
+items also have a non-interactive command-line form once you trust them
+enough for unattended use -- see "Non-interactive (CLI) Usage" below; a
+successful interactive run of either prints the exact command that
+reproduces it. The two
 **Restore** items are the reverse: pick a target instance, pick an
 archive from S3, and load it back. Both are gated behind
 type-to-confirm on the exact instance ID or Name tag, and neither keeps
@@ -324,6 +328,65 @@ Domain."
 
 `-help`, `-license`, `-version`
 : standard informational flags.
+
+## Non-interactive (CLI) Usage
+
+Beyond the flags above, clasm also accepts a `<domain> [<action>
+[args...]]` path on the command line -- the same route you'd take
+through the domain picker and its menus, expressed directly, so a menu
+action you trust can be scripted or put in a crontab once it no longer
+needs a human watching it:
+
+- `clasm` (no path) -- the domain picker, as above.
+- `clasm <domain>` -- jumps straight into that domain's own menu, as if
+  you'd picked it from the domain picker yourself. Backing out with `q`
+  returns you to the domain picker exactly as normal navigation would.
+- `clasm <domain> <action>` -- jumps straight into that one action's own
+  interactive prompts, skipping the domain menu. Once it finishes,
+  you're back at that domain's menu, same as choosing the action
+  normally would leave you.
+- `clasm <domain> <action> <arg1> <arg2> ...>` -- runs the action
+  non-interactively: no prompts, no confirmation, and a real process
+  exit status (0 success, 1 the action itself failed, 2 a usage error --
+  an unrecognized domain/action name or the wrong number of arguments).
+  Safe to use in an unattended job: a mistyped invocation fails
+  immediately with a clear message rather than hanging, waiting for
+  input from a terminal that isn't there.
+
+Only the **RDM Backup & Restore** domain (`rdm-backup-and-restore`) has
+any actions with the full non-interactive form today:
+
+`archive-sql-backups-to-s3 <instance> <directory> <bucket> <trim-days-or-"">`
+: the non-interactive form of **Archive SQL Backups to S3 (and trim
+  local copies)**. `<instance>` matches an instance's Name tag first,
+  falling back to its instance ID if no Name matches -- an error, never
+  a guess, if either matches more than one instance. `<trim-days-or-"">`
+  mirrors the interactive prompt exactly: an empty string (`""` on most
+  shells) keeps every local copy, `0` deletes every file successfully
+  archived, and a positive integer deletes only files older than that
+  many days.
+
+`archive-opensearch-snapshot-to-s3 <instance> <directory> <bucket> <cleanup-days-or-"">`
+: the non-interactive form of **Archive OpenSearch Snapshot to S3**.
+  Same instance-matching rule as above. `<cleanup-days-or-"">` is a
+  *different* threshold from the SQL form's trim argument -- it governs
+  deleting this instance's own previously-archived snapshots already in
+  S3, never anything on the instance itself or the snapshot this run
+  just created. An empty string skips cleanup entirely; unlike the SQL
+  form, `0` is not a valid choice here.
+
+~~~shell
+clasm rdm-backup-and-restore archive-sql-backups-to-s3 \
+  caltechauthors-v13 /opt/rdm_sql_backups \
+  s3://sql-backups.library.caltech.edu ""
+~~~
+
+Both forms run every safety check the interactive menu does first
+(confirming the AWS CLI is present on the target instance, resolving and
+checking access to the destination bucket) -- only the interactive
+confirmation prompt is skipped. After a successful *interactive* run of
+either action, clasm prints the exact non-interactive command that
+reproduces it, ready to copy into a script or crontab entry.
 
 ## Configuration (`~/.clasm`)
 

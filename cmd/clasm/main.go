@@ -61,12 +61,27 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Resolve any `<domain-slug> [<leaf-slug> [args...]]` path (PLAN.md
+	// Phase 20.64) before anything else -- an unrecognized domain/leaf is
+	// a usage error reported and exited on the spot, with no AWS client
+	// built and no decorative output printed, same "script/pipe-friendly"
+	// treatment as -help/-license/-version above.
+	cliMode, cliDomainSlug, cliLeafSlug, cliLeafArgs, cliErr := classifyCLIArgs(flag.Args())
+	if cliErr != nil {
+		fmt.Fprintf(eout, "%s: %v\n", appName, cliErr)
+		os.Exit(2)
+	}
+
 	// Clear the terminal before clasm's first line of output, so old
 	// scrollback never lingers behind the app (DECISIONS.md, "Clear the
 	// screen at startup") -- but only for the actual interactive
-	// session, not -help/-license/-version above, which should stay
-	// script/pipe-friendly.
-	ui.ClearScreen(out)
+	// session, not -help/-license/-version above (which stay script/
+	// pipe-friendly) and not a full non-interactive run (cliModeRun),
+	// which must never clear the caller's terminal or write anything
+	// ahead of its own output -- it's meant to be pasted into a script.
+	if cliMode != cliModeRun {
+		ui.ClearScreen(out)
+	}
 
 	// Ctrl+C (or SIGTERM) between prompts cancels ctx, which every
 	// workflow's poll loop already selects on; Ctrl+C *during* an active
@@ -191,7 +206,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(out, "clasm %s -- authenticated as AWS account %s\n", version, account)
+	if cliMode != cliModeRun {
+		fmt.Fprintf(out, "clasm %s -- authenticated as AWS account %s\n", version, account)
+	}
 
 	colorEnabled := ui.ColorEnabled()
 	ui.SetColorEnabled(colorEnabled)
@@ -509,8 +526,21 @@ func main() {
 	// field it's assigned to changed. Named so RunSQLBackup can invoke it
 	// directly on confirm (DESIGN.md, "Run SQL Backup"), without a
 	// struct-self-reference.
+	// archiveSQLAction prints the non-interactive equivalent of a
+	// successful run right after it, via the report callback (PLAN.md
+	// Phase 20.64 item 5) -- report fires once the params this run uses
+	// are resolved, whatever happens afterward, so haveReport alone (not
+	// err == nil) is the right guard: a "No files ... nothing to do."
+	// early return is still success worth reproducing later.
 	archiveSQLAction := func(ctx context.Context) error {
-		return workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories, backupHistory)
+		var reported workflow.BackupArchiveParams
+		var haveReport bool
+		err := workflow.BackupArchiveAndTrim(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.BackupDirectories, backupHistory,
+			func(p workflow.BackupArchiveParams) { reported, haveReport = p, true })
+		if err == nil && haveReport {
+			fmt.Fprintf(out, "\nReproduce this run non-interactively:\n  %s\n", pastableArchiveSQLCommand(appName, reported))
+		}
+		return err
 	}
 
 	rdmActions := workflow.RDMBackupRestoreActions{
@@ -522,7 +552,14 @@ func main() {
 		// RestoreOpenSearch (Phase 20.51) all now implemented -- no
 		// remaining stubs in this domain.
 		ArchiveOpenSearch: func(ctx context.Context) error {
-			return workflow.ArchiveOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories, openSearchArchiveHistory)
+			var reported workflow.ArchiveOpenSearchParams
+			var haveReport bool
+			err := workflow.ArchiveOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories, openSearchArchiveHistory,
+				func(p workflow.ArchiveOpenSearchParams) { reported, haveReport = p, true })
+			if err == nil && haveReport {
+				fmt.Fprintf(out, "\nReproduce this run non-interactively:\n  %s\n", pastableArchiveOpenSearchCommand(appName, reported))
+			}
+			return err
 		},
 		RestoreSQL: func(ctx context.Context) error {
 			return workflow.RestoreSQLBackup(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules)
@@ -612,8 +649,34 @@ func main() {
 		},
 	}
 
-	if err := workflow.RunDomainPicker(ctx, out, domains); err != nil {
-		fmt.Fprintf(eout, "%v\n", err)
-		os.Exit(1)
+	switch cliMode {
+	case cliModeNone:
+		if err := workflow.RunDomainPicker(ctx, out, domains); err != nil {
+			fmt.Fprintf(eout, "%v\n", err)
+			os.Exit(1)
+		}
+	case cliModeDomain:
+		if _, err := workflow.RunDomainPickerFromSlug(ctx, out, domains, cliDomainSlug); err != nil {
+			fmt.Fprintf(eout, "%v\n", err)
+			os.Exit(1)
+		}
+	case cliModeLeaf:
+		// Same refresh domains.RDMBackupRestore's own closure runs on
+		// entry (DESIGN.md, "Navigation: Domain Picker") -- the
+		// deep-linked leaf picks from state.instances too.
+		if err := refresh(ctx); err != nil {
+			fmt.Fprintf(eout, "%v\n", err)
+			os.Exit(1)
+		}
+		if _, err := workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug); err != nil {
+			fmt.Fprintf(eout, "%v\n", err)
+			os.Exit(1)
+		}
+	case cliModeRun:
+		if err := refresh(ctx); err != nil {
+			fmt.Fprintf(eout, "%v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, ssmClients, s3Client, newS3Client, state.instances))
 	}
 }

@@ -2,10 +2,8 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -112,7 +110,7 @@ type BackupHistory struct {
 // directory default (DECISIONS.md, "Recall Backup Archive & Trim's
 // instance/directory choices per-instance"); its zero value disables
 // all of that.
-func BackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule, hist BackupHistory) error {
+func BackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule, hist BackupHistory, report ...func(BackupArchiveParams)) error {
 	if len(instances) == 0 {
 		fmt.Fprintln(w, "No instances found.")
 		return nil
@@ -122,7 +120,7 @@ func BackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
-	return backupArchiveAndTrim(ctx, w, ssmClients, s3Client, newS3Client, inst, backupDirRules, hist, nil, nil)
+	return backupArchiveAndTrim(ctx, w, ssmClients, s3Client, newS3Client, inst, backupDirRules, hist, nil, nil, report...)
 }
 
 // backupArchiveAndTrim is BackupArchiveAndTrim's testable core, once an
@@ -131,8 +129,15 @@ func BackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 // can't be driven by a test's pipe input, same limitation as
 // terminateEC2Instance (terminate_instance.go). input/output are nil in
 // production and supplied by tests to drive every prompt/confirm in this
-// function through its accessible-mode pipe path instead.
-func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, hist BackupHistory, input io.Reader, output io.Writer) error {
+// function through its accessible-mode pipe path instead. report is an
+// optional (variadic so every existing call site keeps compiling
+// unchanged) callback invoked once, right after the params this run will
+// actually use are resolved -- before the confirm gate, so it fires
+// whether the operator goes on to confirm or decline, but never on an
+// abort before params exist at all (PLAN.md Phase 20.64 item 5: lets
+// cmd/clasm/main.go print the non-interactive equivalent of a
+// successful interactive run without re-deriving it from output text).
+func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, hist BackupHistory, input io.Reader, output io.Writer, report ...func(BackupArchiveParams)) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err
@@ -180,7 +185,52 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 	}
 
 	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: directory, AgeDays: trimDays, TrimRequested: trimRequested, Bucket: bucket}
+	for _, r := range report {
+		r(params)
+	}
 
+	// Friction tracks the actual risk, not the menu entry: a run that
+	// deletes nothing is a pure copy and gets a plain yes/no, while one
+	// that removes files still demands the instance name typed out
+	// (DR-0170, decision 6). This is the interactive path's confirm;
+	// runBackupArchiveAndTrim's non-interactive callers (PLAN.md Phase
+	// 20.64) supply their own.
+	confirm := func(toUpload, aged []BackupFile, bucket, prefix string) (bool, error) {
+		if len(aged) > 0 {
+			return ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
+		}
+		return Confirm(fmt.Sprintf("Copy %d file(s) to s3://%s/%s/ ? Nothing will be deleted.", len(toUpload), bucket, prefix), WithConfirmIO(input, output))
+	}
+
+	return runBackupArchiveAndTrim(ctx, w, ssmClient, bucketClient, inst, params, confirm)
+}
+
+// runBackupArchiveAndTrim is Backup Archive & Trim's params-driven core
+// (PLAN.md Phase 20.64) -- prompt-free from here on, unchanged from the
+// original backupArchiveAndTrim except that the interactive confirmation
+// prompts are replaced by the injected confirm. ssmClient and
+// bucketClient must already be resolved to the right region (resolveSSM/
+// BucketRegion+newS3Client, as backupArchiveAndTrim does above); the
+// preflight checks (CheckAWSCLIAvailable, CheckS3BucketAccess) likewise
+// stay the caller's responsibility, interactive or not, per the design
+// brief's "preflight checks always run" rule -- they can't move into
+// this core without duplicating them ahead of every prompt that also
+// needs them first (e.g. the bucket picker itself needs a working S3
+// client before CheckS3BucketAccess can even run).
+// RunBackupArchiveAndTrimAuto runs Backup Archive & Trim non-interactively
+// (PLAN.md Phase 20.64): ssmClient and bucketClient must already be
+// resolved to the right region and the preflight checks
+// (CheckAWSCLIAvailable, BucketRegion, CheckS3BucketAccess) already run --
+// the CLI dispatcher's responsibility, same as the interactive wrapper's
+// (see runBackupArchiveAndTrim's own doc comment). The confirmation gate
+// always answers yes; there is no operator present to ask.
+func RunBackupArchiveAndTrimAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, params BackupArchiveParams) error {
+	return runBackupArchiveAndTrim(ctx, w, ssmClient, bucketClient, inst, params, func(toUpload, aged []BackupFile, bucket, prefix string) (bool, error) {
+		return true, nil
+	})
+}
+
+func runBackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, params BackupArchiveParams, confirm func(toUpload, aged []BackupFile, bucket, prefix string) (bool, error)) error {
 	allFiles, err := ListBackupFiles(ctx, ssmClient, params.InstanceID, params.Directory, DefaultBackupListTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
@@ -190,17 +240,10 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 		return nil
 	}
 
-	// Namespaces every uploaded key by the source instance, so backups
-	// from different systems sharing this bucket don't collide on
-	// identically- or similarly-named files (see DECISIONS.md,
-	// "Namespace backup uploads by instance"). Falls back to the
-	// instance ID when Name is blank -- an untagged instance still
-	// needs a non-empty, unique prefix. Resolved before the dry run
-	// because the already-archived pre-pass needs the destination keys.
-	prefix := inst.Name
-	if prefix == "" {
-		prefix = inst.InstanceID
-	}
+	// Namespaces every uploaded key by the source instance (see
+	// InstanceUploadPrefix). Resolved before the dry run because the
+	// already-archived pre-pass needs the destination keys.
+	prefix := InstanceUploadPrefix(inst)
 
 	// Every file in the directory is a copy candidate (DR-0170,
 	// decision 1); the pre-pass then drops the ones already safely in
@@ -233,16 +276,7 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 
 	displayBackupDryRun(w, toUpload, len(allFiles)-len(toUpload), aged, prefix, archivedKeys)
 
-	// Friction tracks the actual risk, not the menu entry: a run that
-	// deletes nothing is a pure copy and gets a plain yes/no, while one
-	// that removes files still demands the instance name typed out
-	// (DR-0170, decision 6).
-	var ok bool
-	if len(aged) > 0 {
-		ok, err = ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
-	} else {
-		ok, err = Confirm(fmt.Sprintf("Copy %d file(s) to s3://%s/%s/ ? Nothing will be deleted.", len(toUpload), params.Bucket, prefix), WithConfirmIO(input, output))
-	}
+	ok, err := confirm(toUpload, aged, params.Bucket, prefix)
 	if err != nil {
 		return err
 	}
@@ -414,25 +448,13 @@ func promptBackupBucket(ctx context.Context, w io.Writer, s3Client awsclient.S3A
 // terser wording genuinely ambiguous about which.
 func promptLocalTrimDays(input io.Reader, output io.Writer) (days int, requested bool, err error) {
 	raw, err := ui.Prompt("Delete local backup files on the instance's EBS volume older than how many days? (blank to keep all local copies; 0 to delete every file successfully archived)", ui.WithValidator(func(s string) error {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return nil
-		}
-		n, convErr := strconv.Atoi(s)
-		if convErr != nil || n < 0 {
-			return errors.New("must be blank (keep all local copies), 0, or a positive integer")
-		}
-		return nil
+		_, _, err := parseTrimDaysValue(s)
+		return err
 	}), ui.WithIO(input, output))
 	if err != nil {
 		return 0, false, err
 	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false, nil
-	}
-	n, _ := strconv.Atoi(raw) // already validated above
-	return n, true, nil
+	return parseTrimDaysValue(raw) // already validated above
 }
 
 // displayBackupDryRun shows the two sets this workflow now derives, in

@@ -288,8 +288,18 @@ type DomainActions struct {
 // domainItem pairs a domain-picker label with the DomainActions field it
 // dispatches to.
 type domainItem struct {
-	label  string
-	action func(DomainActions, context.Context) error
+	label string
+	// cliSlug is this domain's stable CLI path segment (PLAN.md Phase
+	// 20.64, design brief "cli_forms_for_tui_leaves.md") -- generated
+	// once via the mechanical rule (lowercase, "&" -> "and", hyphenate,
+	// drop parentheticals) and then hand-committed here, never
+	// recomputed from label at build/run time: renaming label must stay
+	// free, but renaming cliSlug is a breaking change to anyone's
+	// crontab. Empty means this domain has no CLI form yet and is
+	// unreachable from the CLI path entirely, not just missing a
+	// full-args form.
+	cliSlug string
+	action  func(DomainActions, context.Context) error
 }
 
 // domainItems is DESIGN.md's domain picker, in order. No "Exit" entry --
@@ -299,14 +309,21 @@ type domainItem struct {
 // separate "Exit" choice would just be a second way to do what 'q'
 // already does (matching s3MenuItems' own drop of "Back to domain
 // picker" in Phase 20.7).
+// RDMBackupRestoreDomainCLISlug is "RDM Backup & Restore"'s cliSlug,
+// exported (PLAN.md Phase 20.64) for the same reason as
+// ArchiveSQLBackupsCLISlug/ArchiveOpenSearchSnapshotCLISlug
+// (rdm_menu.go): cmd/clasm's dispatcher needs to name this domain
+// without re-typing its slug as a second literal.
+const RDMBackupRestoreDomainCLISlug = "rdm-backup-and-restore"
+
 var domainItems = []domainItem{
-	{"Compute (EC2 & AMI)", func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
-	{"Key Management", func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
-	{"S3 (Buckets & Static Websites)", func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
-	{"Tag Management", func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
-	{"IAM", func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
-	{"RDM Backup & Restore", func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
-	{"Configuration", func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
+	{label: "Compute (EC2 & AMI)", action: func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
+	{label: "Key Management", action: func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
+	{label: "S3 (Buckets & Static Websites)", action: func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
+	{label: "Tag Management", action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
+	{label: "IAM", action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
+	{label: "RDM Backup & Restore", cliSlug: RDMBackupRestoreDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
+	{label: "Configuration", action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }
 
 // pickDomainItem runs the domain picker's huh.Select and returns the
@@ -349,6 +366,59 @@ func pickDomainItem(w io.Writer, input io.Reader, output io.Writer) (domainItem,
 // huh.Select").
 func RunDomainPicker(ctx context.Context, w io.Writer, actions DomainActions) error {
 	return runDomainPicker(ctx, w, actions, nil, nil)
+}
+
+// domainItemBySlug finds the domainItem whose cliSlug matches slug
+// (PLAN.md Phase 20.64) -- a domain with no CLI form yet has cliSlug ==
+// "", so it never matches here regardless of what slug is asked for.
+func domainItemBySlug(slug string) (domainItem, bool) {
+	for _, item := range domainItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return domainItem{}, false
+}
+
+// DomainCLISlugExists reports whether slug is a registered domain CLI
+// slug (PLAN.md Phase 20.64) -- a cheap, static lookup needing no AWS
+// clients, so a CLI entry point (cmd/clasm/main.go) can usage-error out
+// on an unrecognized domain before building any of the setup a real
+// dispatch would need.
+func DomainCLISlugExists(slug string) bool {
+	_, found := domainItemBySlug(slug)
+	return found
+}
+
+// RunDomainPickerFromSlug runs slug's own domain action once, then --
+// for exactly the outcomes that would have continued the root picker's
+// own loop -- falls into a fresh RunDomainPicker, so `clasm <domain-slug>`
+// behaves exactly as if the operator had started at plain `clasm` and
+// picked that domain themselves (PLAN.md Phase 20.64, design brief
+// decision 1: a path that resolves to a domain with no further args
+// deep-links into that domain's own interactive flow). ok is false when
+// slug isn't a registered domain CLI slug; the picker is not run at all
+// in that case, so the caller can usage-error out instead.
+func RunDomainPickerFromSlug(ctx context.Context, w io.Writer, actions DomainActions, slug string) (ok bool, err error) {
+	return runDomainPickerFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+// runDomainPickerFromSlug is RunDomainPickerFromSlug's testable core --
+// menuInput/menuOutput drive the picker `RunDomainPicker` falls into on
+// continuation, same convention as runDomainPicker itself.
+func runDomainPickerFromSlug(ctx context.Context, w io.Writer, actions DomainActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := domainItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	err = item.action(actions, ctx)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrBackToDomainPicker) {
+		return true, runDomainPicker(ctx, w, actions, menuInput, menuOutput)
+	}
+	return true, err
 }
 
 // runDomainPicker is RunDomainPicker's testable core: menuInput/

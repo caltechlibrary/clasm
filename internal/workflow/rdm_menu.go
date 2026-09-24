@@ -37,8 +37,14 @@ type RDMBackupRestoreActions struct {
 // rdmItem pairs an RDM Backup & Restore menu label with the
 // RDMBackupRestoreActions field it dispatches to.
 type rdmItem struct {
-	label  string
-	action func(RDMBackupRestoreActions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment (PLAN.md Phase
+	// 20.64, design brief "cli_forms_for_tui_leaves.md") -- same
+	// frozen-once, hand-committed convention as domainItem.cliSlug.
+	// Empty means this leaf has no CLI form and is unreachable from the
+	// CLI path entirely.
+	cliSlug string
+	action  func(RDMBackupRestoreActions, context.Context) error
 }
 
 // rdmMenuItems is DESIGN.md's RDM Backup & Restore menu, in order:
@@ -57,12 +63,23 @@ type rdmItem struct {
 // unconditional and covers every backup in the directory, while the
 // trim is a separate, optional phase, and the old label described
 // neither.
+// ArchiveSQLBackupsCLISlug/ArchiveOpenSearchSnapshotCLISlug are the two
+// archive leaves' cliSlug values, exported (PLAN.md Phase 20.64) so
+// every other place that needs to name a leaf -- ParseBackupArchiveArgs/
+// ParseOpenSearchArchiveArgs's own usage messages (cli_args.go),
+// cmd/clasm's non-interactive dispatch switch, its pastable-command
+// builder -- shares this one literal instead of each re-typing it.
+const (
+	ArchiveSQLBackupsCLISlug         = "archive-sql-backups-to-s3"
+	ArchiveOpenSearchSnapshotCLISlug = "archive-opensearch-snapshot-to-s3"
+)
+
 var rdmMenuItems = []rdmItem{
-	{"Generate SQL Backup", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
-	{"Archive SQL Backups to S3 (and trim local copies)", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
-	{"Archive OpenSearch Snapshot to S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
-	{"Restore SQL Backup from S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
-	{"Restore OpenSearch Snapshot from S3", func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
+	{label: "Generate SQL Backup", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
+	{label: "Archive SQL Backups to S3 (and trim local copies)", cliSlug: ArchiveSQLBackupsCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
+	{label: "Archive OpenSearch Snapshot to S3", cliSlug: ArchiveOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
+	{label: "Restore SQL Backup from S3", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
+	{label: "Restore OpenSearch Snapshot from S3", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
 }
 
 // pickRDMBackupRestoreItem runs the RDM Backup & Restore menu's huh.Select
@@ -99,6 +116,66 @@ func pickRDMBackupRestoreItem(w io.Writer, input io.Reader, output io.Writer) (r
 // error is shown and the loop continues.
 func RunRDMBackupRestoreMenu(ctx context.Context, w io.Writer, actions RDMBackupRestoreActions) error {
 	return runRDMBackupRestoreMenu(ctx, w, actions, nil, nil)
+}
+
+// rdmItemBySlug finds the rdmItem whose cliSlug matches slug (PLAN.md
+// Phase 20.64) -- a leaf with no CLI form yet has cliSlug == "", so it
+// never matches here regardless of what slug is asked for (design
+// brief, decision 3: unreachable from the CLI path entirely, not just
+// missing a full-args form).
+func rdmItemBySlug(slug string) (rdmItem, bool) {
+	for _, item := range rdmMenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return rdmItem{}, false
+}
+
+// RDMLeafCLISlugExists reports whether slug is a registered RDM leaf CLI
+// slug -- same reasoning as DomainCLISlugExists, one level deeper.
+func RDMLeafCLISlugExists(slug string) bool {
+	_, found := rdmItemBySlug(slug)
+	return found
+}
+
+// RunRDMBackupRestoreMenuFromSlug runs slug's own leaf action once,
+// exactly as one iteration of RunRDMBackupRestoreMenu's own loop would
+// (print/pause on error, pause+refresh on success), then falls into a
+// fresh RunRDMBackupRestoreMenu for continuation -- so
+// `clasm rdm-backup-and-restore <leaf-slug>` behaves exactly as if the
+// operator had navigated to this domain and chosen that one menu entry
+// themselves (PLAN.md Phase 20.64, design brief decision 1, applied one
+// level deeper than RunDomainPickerFromSlug). ok is false when slug
+// isn't a registered leaf CLI slug; nothing is run in that case.
+func RunRDMBackupRestoreMenuFromSlug(ctx context.Context, w io.Writer, actions RDMBackupRestoreActions, slug string) (ok bool, err error) {
+	return runRDMBackupRestoreMenuFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+// runRDMBackupRestoreMenuFromSlug is RunRDMBackupRestoreMenuFromSlug's
+// testable core.
+func runRDMBackupRestoreMenuFromSlug(ctx context.Context, w io.Writer, actions RDMBackupRestoreActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := rdmItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+
+	if err := item.action(actions, ctx); err != nil {
+		if isExitSignal(err) {
+			printExiting(w)
+			return true, nil
+		}
+		fmt.Fprintf(w, "Error: %s\n", formatError(err))
+		pauseForAcknowledgment(menuInput, menuOutput)
+		return true, runRDMBackupRestoreMenu(ctx, w, actions, menuInput, menuOutput)
+	}
+
+	pauseForAcknowledgment(menuInput, menuOutput)
+	if refreshErr := actions.Refresh(ctx); refreshErr != nil {
+		fmt.Fprintf(w, "Error refreshing: %s\n", formatError(refreshErr))
+		pauseForAcknowledgment(menuInput, menuOutput)
+	}
+	return true, runRDMBackupRestoreMenu(ctx, w, actions, menuInput, menuOutput)
 }
 
 // runRDMBackupRestoreMenu is RunRDMBackupRestoreMenu's testable core:

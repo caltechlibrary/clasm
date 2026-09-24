@@ -253,6 +253,129 @@ func TestDomainItems_NoExitEntry(t *testing.T) {
 	}
 }
 
+// TestDomainItems_CLISlugs pins PLAN.md Phase 20.64: only "RDM Backup &
+// Restore" gets a cliSlug in this phase (mechanical rule: lowercase, "&"
+// -> "and", hyphenate). Every other domain stays "" -- genuinely
+// unreachable from the CLI path, not just missing a full-args form (see
+// the design brief, decision 3).
+func TestDomainItems_CLISlugs(t *testing.T) {
+	want := map[string]string{
+		"Compute (EC2 & AMI)":            "",
+		"Key Management":                 "",
+		"S3 (Buckets & Static Websites)": "",
+		"Tag Management":                 "",
+		"IAM":                            "",
+		"RDM Backup & Restore":           "rdm-backup-and-restore",
+		"Configuration":                  "",
+	}
+	for _, item := range domainItems {
+		wantSlug, ok := want[item.label]
+		if !ok {
+			t.Fatalf("unexpected domain label %q -- update this test's want map", item.label)
+		}
+		if item.cliSlug != wantSlug {
+			t.Errorf("domainItems[%q].cliSlug = %q, want %q", item.label, item.cliSlug, wantSlug)
+		}
+	}
+}
+
+// TestRunDomainPickerFromSlug_UnknownSlugIsNotFound pins that an
+// unregistered slug does nothing at all -- no picker, no action, no
+// error -- so a CLI entry point can tell "not a domain" apart from
+// every other outcome and usage-error out itself.
+func TestRunDomainPickerFromSlug_UnknownSlugIsNotFound(t *testing.T) {
+	term, buf := newTermOnly()
+	actions := DomainActions{}
+
+	ok, err := runDomainPickerFromSlug(context.Background(), term, actions, "no-such-domain", nil, nil)
+	if ok {
+		t.Error("expected ok = false for an unregistered slug")
+	}
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for an unregistered slug, got:\n%s", buf.String())
+	}
+}
+
+// TestRunDomainPickerFromSlug_RunsThatDomainThenFallsBackToPickerOnBack
+// pins PLAN.md Phase 20.64's domain-level deep-link: `clasm
+// rdm-backup-and-restore` runs that domain directly, and if the operator
+// backs out of it (ErrBackToDomainPicker), lands on the exact same root
+// picker a plain `clasm` would have shown -- not a dead end, not an
+// immediate exit.
+func TestRunDomainPickerFromSlug_RunsThatDomainThenFallsBackToPickerOnBack(t *testing.T) {
+	var rdm, compute int
+	ctx, cancel := context.WithCancel(context.Background())
+	menuInput := newHuhAccessibleInput("1\n") // the picker's first entry, Compute, once we fall back to it
+	term, buf := newTermOnly()
+
+	actions := DomainActions{
+		// Cancels ctx so the picker's loop exits cleanly on its next
+		// iteration's ctx.Err() check, instead of trying to read a
+		// second selection from the now-exhausted menuInput -- same
+		// idiom TestRunDomainPicker_DispatchesToTheChosenDomain uses.
+		Compute:          cancelingBackToPickerAction(&compute, cancel),
+		RDMBackupRestore: backToPickerAction(&rdm),
+	}
+
+	ok, err := runDomainPickerFromSlug(ctx, term, actions, "rdm-backup-and-restore", menuInput, buf)
+	if !ok {
+		t.Fatal("expected ok = true for a registered slug")
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rdm != 1 {
+		t.Errorf("rdm calls = %d, want 1 (the deep-linked domain, run once)", rdm)
+	}
+	if compute != 1 {
+		t.Errorf("compute calls = %d, want 1 (chosen from the picker after falling back)", compute)
+	}
+}
+
+// TestRunDomainPickerFromSlug_CleanExitPropagatesAsNil pins that a
+// domain action returning nil (a genuine exit signal, not "back to
+// picker") ends the whole run cleanly, exactly like RunDomainPicker's
+// own top-level loop.
+func TestRunDomainPickerFromSlug_CleanExitPropagatesAsNil(t *testing.T) {
+	term, buf := newTermOnly()
+	var calls int
+	actions := DomainActions{
+		RDMBackupRestore: func(ctx context.Context) error {
+			calls++
+			return nil
+		},
+	}
+
+	ok, err := runDomainPickerFromSlug(context.Background(), term, actions, "rdm-backup-and-restore", nil, buf)
+	if !ok || err != nil {
+		t.Fatalf("got ok=%t err=%v, want ok=true err=nil", ok, err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+// TestRunDomainPickerFromSlug_ErrorPropagates pins that a genuine error
+// (neither ErrBackToDomainPicker nor nil) propagates as-is.
+func TestRunDomainPickerFromSlug_ErrorPropagates(t *testing.T) {
+	term, _ := newTermOnly()
+	boom := errors.New("boom")
+	actions := DomainActions{
+		RDMBackupRestore: func(ctx context.Context) error { return boom },
+	}
+
+	ok, err := runDomainPickerFromSlug(context.Background(), term, actions, "rdm-backup-and-restore", nil, nil)
+	if !ok {
+		t.Fatal("expected ok = true for a registered slug")
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the domain's error to propagate, got: %v", err)
+	}
+}
+
 func TestNotYetImplemented_PrintsAMessageAndReturnsToPicker(t *testing.T) {
 	var buf bytes.Buffer
 

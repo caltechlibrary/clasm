@@ -37,6 +37,12 @@ template, show/export cloud-init) reachable after picking that domain;
 resource listings are shown on request via each domain's own "Show..."
 choice, not dumped automatically at startup.
 
+Some menu actions can also be run directly from the command line, once
+trusted enough for unattended use (e.g. via cron), bypassing every
+prompt: {app_name} \<domain\> \<action\> \<args...\>. See user_manual.md,
+"Non-interactive (CLI) Usage" for the full syntax and which actions
+currently support it.
+
 # OPTIONS
 
 -config

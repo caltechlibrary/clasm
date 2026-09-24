@@ -1,13 +1,9 @@
 package workflow
 
 import (
-	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
@@ -70,10 +66,24 @@ const (
 // longer bound than the quick repo/snapshot REST calls.
 const DefaultOpenSearchSyncTimeout = 1 * time.Hour
 
+// ArchiveOpenSearchParams is the resolved parameter set for one Archive
+// OpenSearch Snapshot to S3 run (PLAN.md Phase 20.64 item 5) -- the
+// OpenSearch-side analog of BackupArchiveParams, reported the same way
+// via an optional callback rather than bundled into the workflow's own
+// params the way BackupArchiveParams already was, since this workflow
+// never needed one internally before now.
+type ArchiveOpenSearchParams struct {
+	InstanceID       string
+	Directory        string
+	Bucket           string
+	CleanupDays      int
+	CleanupRequested bool
+}
+
 // ArchiveOpenSearchSnapshot runs the full Archive OpenSearch Snapshot to
 // S3 workflow (DESIGN.md, "Archive OpenSearch Snapshot to S3"; PLAN.md
 // Phase 20.49): pick an instance, then delegate to the testable core.
-func ArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, openSearchBackupDirRules []config.BackupDirectoryRule, hist BackupHistory) error {
+func ArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, openSearchBackupDirRules []config.BackupDirectoryRule, hist BackupHistory, report ...func(ArchiveOpenSearchParams)) error {
 	if len(instances) == 0 {
 		fmt.Fprintln(w, "No instances found.")
 		return nil
@@ -83,14 +93,18 @@ func ArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
-	return archiveOpenSearchSnapshot(ctx, w, ssmClients, s3Client, newS3Client, inst, openSearchBackupDirRules, hist, nil, nil)
+	return archiveOpenSearchSnapshot(ctx, w, ssmClients, s3Client, newS3Client, inst, openSearchBackupDirRules, hist, nil, nil, report...)
 }
 
 // archiveOpenSearchSnapshot is ArchiveOpenSearchSnapshot's testable core,
 // once an instance is resolved. input/output are nil in production and
 // supplied by tests to drive every prompt/confirm in this function
-// through its accessible-mode pipe path instead.
-func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, openSearchBackupDirRules []config.BackupDirectoryRule, hist BackupHistory, input io.Reader, output io.Writer) error {
+// through its accessible-mode pipe path instead. report is optional
+// (variadic, so every existing call site keeps compiling unchanged) --
+// same contract as backupArchiveAndTrim's own report: invoked once,
+// right after every value this run will use is resolved, before the
+// confirm gate.
+func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, openSearchBackupDirRules []config.BackupDirectoryRule, hist BackupHistory, input io.Reader, output io.Writer, report ...func(ArchiveOpenSearchParams)) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err
@@ -135,35 +149,59 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	}
 
 	// Namespaces every archived snapshot by the source instance, same
-	// convention as Feature 11's own upload prefix (backup_archive.go).
+	// convention as Feature 11's own upload prefix (InstanceUploadPrefix).
 	// This is purely an S3 key-naming choice -- CaltechAUTHORS's Name tag
 	// ("newauthors", a legacy label) is deliberately kept here even
 	// though it differs from its Project tag (DECISIONS.md,
 	// "CaltechAUTHORS's Name tag drives its S3 upload prefix, by
 	// design").
-	prefix := inst.Name
-	if prefix == "" {
-		prefix = inst.InstanceID
-	}
+	prefix := InstanceUploadPrefix(inst)
 
 	// Distinct from the S3 key prefix above: this is what OpenSearch
-	// itself must match against real index names, via
-	// rdmOpenSearchSnapshotIndexPatterns below. A real incident
-	// (2026-08-17, CaltechAUTHORS production) found inst.Name silently
-	// matching zero indices -- ignore_unavailable: true makes a wrong
-	// pattern fail quietly, not loudly -- because this instance's real
-	// index prefix is its Project tag ("caltechauthors"), not its Name
-	// tag ("newauthors"). Same fix shape as Phase 20.52's Postgres
-	// db_name/db_user defaulting (DECISIONS.md, "Default db_name/db_user
-	// to the instance's Project tag, not its Name tag"): prefer
-	// inst.Project, fall back to inst.Name only when Project is blank.
-	indexPrefix := cmp.Or(inst.Project, prefix)
+	// itself must match against real index names (see
+	// OpenSearchIndexPrefix), via rdmOpenSearchSnapshotIndexPatterns
+	// below. A real incident (2026-08-17, CaltechAUTHORS production)
+	// found inst.Name silently matching zero indices -- ignore_unavailable:
+	// true makes a wrong pattern fail quietly, not loudly.
+	indexPrefix := OpenSearchIndexPrefix(inst)
 
 	cleanupDays, cleanupRequested, err := promptOpenSearchCleanupDays(input, output)
 	if err != nil {
 		return err
 	}
 
+	for _, r := range report {
+		r(ArchiveOpenSearchParams{InstanceID: inst.InstanceID, Directory: directory, Bucket: bucket, CleanupDays: cleanupDays, CleanupRequested: cleanupRequested})
+	}
+
+	// This is the interactive path's confirm; runArchiveOpenSearchSnapshot's
+	// non-interactive callers (PLAN.md Phase 20.64) supply their own.
+	confirm := func(candidates []SnapshotPrefixInfo) (bool, error) {
+		return ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
+	}
+
+	return runArchiveOpenSearchSnapshot(ctx, w, ssmClient, bucketClient, inst, directory, bucket, indexPrefix, prefix, cleanupDays, cleanupRequested, confirm)
+}
+
+// runArchiveOpenSearchSnapshot is Archive OpenSearch Snapshot to S3's
+// params-driven core (PLAN.md Phase 20.64) -- prompt-free from here on,
+// unchanged from the original archiveOpenSearchSnapshot except that the
+// interactive confirmation prompt (only ever reached when cleanupRequested
+// and there are candidates) is replaced by the injected confirm. ssmClient
+// and bucketClient must already be resolved to the right region, and the
+// preflight checks stay the caller's responsibility, same reasoning as
+// runBackupArchiveAndTrim.
+// RunArchiveOpenSearchSnapshotAuto runs Archive OpenSearch Snapshot to S3
+// non-interactively (PLAN.md Phase 20.64) -- same preflight-stays-the-
+// caller's-responsibility contract as RunBackupArchiveAndTrimAuto, and
+// the same always-yes confirmation gate.
+func RunArchiveOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, directory, bucket, indexPrefix, prefix string, cleanupDays int, cleanupRequested bool) error {
+	return runArchiveOpenSearchSnapshot(ctx, w, ssmClient, bucketClient, inst, directory, bucket, indexPrefix, prefix, cleanupDays, cleanupRequested, func(candidates []SnapshotPrefixInfo) (bool, error) {
+		return true, nil
+	})
+}
+
+func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, directory, bucket, indexPrefix, prefix string, cleanupDays int, cleanupRequested bool, confirm func(candidates []SnapshotPrefixInfo) (bool, error)) error {
 	var toCleanup []SnapshotPrefixInfo
 	if cleanupRequested {
 		existing, err := ListArchivedSnapshotPrefixes(ctx, bucketClient, bucket, prefix)
@@ -173,7 +211,7 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		candidates := FilterOlderThan(existing, cleanupDays, time.Now())
 		if len(candidates) > 0 {
 			displayCleanupDryRun(w, candidates)
-			ok, err := ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
+			ok, err := confirm(candidates)
 			if err != nil {
 				return err
 			}
@@ -242,23 +280,11 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 // snapshot this run is about to create.
 func promptOpenSearchCleanupDays(input io.Reader, output io.Writer) (days int, requested bool, err error) {
 	raw, err := ui.Prompt("Delete this instance's previously-archived OpenSearch snapshots in S3 older than how many days? (blank to skip -- does not affect anything on the instance itself, or the snapshot this run is about to create)", ui.WithValidator(func(s string) error {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return nil
-		}
-		n, convErr := strconv.Atoi(s)
-		if convErr != nil || n <= 0 {
-			return errors.New("must be blank (skip cleanup), or a positive integer")
-		}
-		return nil
+		_, _, err := parseCleanupDaysValue(s)
+		return err
 	}), ui.WithIO(input, output))
 	if err != nil {
 		return 0, false, err
 	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false, nil
-	}
-	n, _ := strconv.Atoi(raw) // already validated above
-	return n, true, nil
+	return parseCleanupDaysValue(raw) // already validated above
 }

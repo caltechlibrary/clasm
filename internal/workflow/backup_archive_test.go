@@ -1018,3 +1018,190 @@ func TestPromptLocalTrimDays_QuestionNamesTheEBSVolume(t *testing.T) {
 		t.Errorf("expected the question to name the EBS volume explicitly, got:\n%s", buf.String())
 	}
 }
+
+// TestRunBackupArchiveAndTrim_HappyPath drives Backup Archive & Trim's
+// params-driven core directly (PLAN.md Phase 20.64) -- no input/output
+// pipes at all, since prompting has already happened by this point and
+// the confirmation gate is the injected confirm, not a real prompt. This
+// is the same scenario as TestBackupArchiveAndTrim_HappyPath one layer
+// up, asserting the extraction changed nothing about the actual work
+// done.
+func TestRunBackupArchiveAndTrim_HappyPath(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+
+	term, buf := newTermOnly()
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: "/opt/rdm_sql_backups: 1 GiB trimmed\n"},
+		},
+	}
+
+	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: "/opt/rdm_sql_backups", Bucket: "my-backup-bucket", AgeDays: 7, TrimRequested: true}
+	var confirmCalls int
+	confirm := func(toUpload, aged []BackupFile, bucket, prefix string) (bool, error) {
+		confirmCalls++
+		return true, nil
+	}
+
+	if err := runBackupArchiveAndTrim(context.Background(), term, ssmClient, s3Client, inst, params, confirm); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalls != 1 {
+		t.Errorf("confirm called %d times, want 1", confirmCalls)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1048576") {
+		t.Errorf("expected bytes-freed total in output, got:\n%s", out)
+	}
+	// list, upload, delete, fstrim = 4 SendCommand calls -- no CLI
+	// availability check here, since that preflight stays in the
+	// interactive wrapper (and, per the design brief, will be the CLI
+	// dispatcher's own responsibility in Phase 20.64 item 4).
+	if ssmClient.sendCommandCalls() != 4 {
+		t.Errorf("sendCommandCalls = %d, want 4 (list, upload, delete, fstrim)", ssmClient.sendCommandCalls())
+	}
+}
+
+// TestRunBackupArchiveAndTrim_ConfirmDeclinedCancelsWithoutUploading
+// pins that a false confirm result behaves exactly like a declined
+// interactive prompt: no upload, no delete, a plain "Cancelled." message.
+func TestRunBackupArchiveAndTrim_ConfirmDeclinedCancelsWithoutUploading(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+
+	term, buf := newTermOnly()
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		responses: []ssmCommandResponse{
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+		},
+	}
+
+	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: "/opt/rdm_sql_backups", Bucket: "my-backup-bucket", AgeDays: 7, TrimRequested: true}
+	confirm := func(toUpload, aged []BackupFile, bucket, prefix string) (bool, error) { return false, nil }
+
+	if err := runBackupArchiveAndTrim(context.Background(), term, ssmClient, s3Client, inst, params, confirm); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Cancelled.") {
+		t.Errorf("expected a Cancelled. message, got:\n%s", buf.String())
+	}
+	// list only -- a declined confirm must not reach upload/delete/fstrim.
+	if ssmClient.sendCommandCalls() != 1 {
+		t.Errorf("sendCommandCalls = %d, want 1 (list only)", ssmClient.sendCommandCalls())
+	}
+}
+
+// TestRunBackupArchiveAndTrimAuto_NeverPromptsAndUploads pins the
+// non-interactive entry point's whole contract (PLAN.md Phase 20.64):
+// same work as the interactive path, confirmation always yes, and no
+// prompting surface at all -- it takes no input/output reader/writer for
+// a prompt to even reach.
+func TestRunBackupArchiveAndTrimAuto_NeverPromptsAndUploads(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+
+	term, buf := newTermOnly()
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: "/opt/rdm_sql_backups: 1 GiB trimmed\n"},
+		},
+	}
+
+	params := BackupArchiveParams{InstanceID: inst.InstanceID, Directory: "/opt/rdm_sql_backups", Bucket: "my-backup-bucket", AgeDays: 7, TrimRequested: true}
+
+	if err := RunBackupArchiveAndTrimAuto(context.Background(), term, ssmClient, s3Client, inst, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1048576") {
+		t.Errorf("expected bytes-freed total in output, got:\n%s", buf.String())
+	}
+	if ssmClient.sendCommandCalls() != 4 {
+		t.Errorf("sendCommandCalls = %d, want 4 (list, upload, delete, fstrim -- confirmed without prompting)", ssmClient.sendCommandCalls())
+	}
+}
+
+// TestBackupArchiveAndTrim_ReportsResolvedParamsOnceParamsAreKnown pins
+// the optional report callback (PLAN.md Phase 20.64 item 5) that lets
+// cmd/clasm/main.go recover the exact params an interactive run used,
+// for the pastable-command line -- a variadic trailing parameter so
+// every other existing call site (there are dozens) keeps compiling
+// unchanged.
+func TestBackupArchiveAndTrim_ReportsResolvedParamsOnceParamsAreKnown(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	oldEpoch := nowUnix() - int64(30*24*3600)
+	input := "/opt/rdm_sql_backups\n" +
+		"my-backup-bucket\n" +
+		"7\n" +
+		"i-1\n"
+
+	term, le, buf := newPipeEditor(input)
+	s3Client := &fakeS3Client{}
+	ssmClient := &fakeSSMClient{
+		commandID: "cmd-1",
+		s3Sink:    s3Client,
+		responses: []ssmCommandResponse{
+			{substring: "command -v aws", status: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/aws\n"},
+			{substring: "find ", status: types.CommandInvocationStatusSuccess,
+				stdout: "1048576\t" + itoa(oldEpoch) + "\t/opt/rdm_sql_backups/old-1.sql.gz\n"},
+			{substring: "aws s3 cp", status: types.CommandInvocationStatusSuccess,
+				stdout: "OK\tnewauthors/old-1.sql.gz\t1048576\n"},
+			{substring: "rm -f", status: types.CommandInvocationStatusSuccess, stdout: ""},
+			{substring: "fstrim", status: types.CommandInvocationStatusSuccess, stdout: "/opt/rdm_sql_backups: 1 GiB trimmed\n"},
+		},
+	}
+
+	var reported []BackupArchiveParams
+	report := func(p BackupArchiveParams) { reported = append(reported, p) }
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf, report)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := BackupArchiveParams{InstanceID: "i-1", Directory: "/opt/rdm_sql_backups", Bucket: "my-backup-bucket", AgeDays: 7, TrimRequested: true}
+	if len(reported) != 1 || reported[0] != want {
+		t.Errorf("reported = %+v, want exactly one call with %+v", reported, want)
+	}
+}
+
+// TestBackupArchiveAndTrim_DoesNotReportWhenAbortedBeforeParamsAreKnown
+// pins that an abort before params are ever constructed (here: the AWS
+// CLI missing on the target instance, the very first check) never
+// invokes report -- there is nothing valid to reproduce.
+func TestBackupArchiveAndTrim_DoesNotReportWhenAbortedBeforeParamsAreKnown(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, le, buf := newPipeEditor("")
+
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
+	s3Client := &fakeS3Client{}
+
+	var reportCalls int
+	report := func(p BackupArchiveParams) { reportCalls++ }
+
+	err := backupArchiveAndTrim(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, BackupHistory{}, le, buf, report)
+	if err == nil {
+		t.Fatal("expected an error when the AWS CLI is missing on the target instance")
+	}
+	if reportCalls != 0 {
+		t.Errorf("report called %d times, want 0 (aborted before params were resolved)", reportCalls)
+	}
+}

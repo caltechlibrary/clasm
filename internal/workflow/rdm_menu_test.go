@@ -283,3 +283,110 @@ func TestRDMMenuItems_Order(t *testing.T) {
 		}
 	}
 }
+
+// TestRDMMenuItems_CLISlugs pins PLAN.md Phase 20.64: only the two
+// archive leaves get a cliSlug in this phase (mechanical rule:
+// lowercase, hyphenate, drop parentheticals). Generate SQL Backup and
+// both Restore leaves stay "" -- unreachable from the CLI path entirely,
+// per the design brief's decision 3.
+func TestRDMMenuItems_CLISlugs(t *testing.T) {
+	want := map[string]string{
+		"Generate SQL Backup":                               "",
+		"Archive SQL Backups to S3 (and trim local copies)": "archive-sql-backups-to-s3",
+		"Archive OpenSearch Snapshot to S3":                 "archive-opensearch-snapshot-to-s3",
+		"Restore SQL Backup from S3":                        "",
+		"Restore OpenSearch Snapshot from S3":               "",
+	}
+	for _, item := range rdmMenuItems {
+		wantSlug, ok := want[item.label]
+		if !ok {
+			t.Fatalf("unexpected rdm menu label %q -- update this test's want map", item.label)
+		}
+		if item.cliSlug != wantSlug {
+			t.Errorf("rdmMenuItems[%q].cliSlug = %q, want %q", item.label, item.cliSlug, wantSlug)
+		}
+	}
+}
+
+// TestRunRDMBackupRestoreMenuFromSlug_UnknownSlugIsNotFound pins that an
+// unregistered slug does nothing at all, same contract as
+// domainItemBySlug/RunDomainPickerFromSlug one level up.
+func TestRunRDMBackupRestoreMenuFromSlug_UnknownSlugIsNotFound(t *testing.T) {
+	term, buf := newTermOnly()
+	var refreshCalls int
+	actions := testRDMBackupRestoreActions(&refreshCalls)
+
+	ok, err := runRDMBackupRestoreMenuFromSlug(context.Background(), term, actions, "no-such-leaf", nil, nil)
+	if ok {
+		t.Error("expected ok = false for an unregistered slug")
+	}
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for an unregistered slug, got:\n%s", buf.String())
+	}
+}
+
+// TestRunRDMBackupRestoreMenuFromSlug_RunsThatLeafThenContinuesTheNormalMenu
+// pins PLAN.md Phase 20.64's leaf-level deep-link: `clasm
+// rdm-backup-and-restore archive-sql-backups-to-s3` (zero further args)
+// runs that one leaf directly -- consuming no menu input to get there --
+// then behaves exactly as if the operator were now sitting at the normal
+// RDM menu (able to pick a different entry next), not a dead end and not
+// an immediate exit.
+func TestRunRDMBackupRestoreMenuFromSlug_RunsThatLeafThenContinuesTheNormalMenu(t *testing.T) {
+	var refreshCalls, archiveSQLCalls, archiveOSCalls int
+	ctx, cancel := context.WithCancel(context.Background())
+	term, buf := newTermOnly()
+
+	actions := testRDMBackupRestoreActions(&refreshCalls)
+	actions.ArchiveSQL = countingAction(&archiveSQLCalls)                // the deep-linked leaf -- must consume no menu input
+	actions.ArchiveOpenSearch = cancelingAction(&archiveOSCalls, cancel) // chosen from the fallback menu
+
+	// Three lines: pauseForAcknowledgment after the deep-linked leaf
+	// consumes one (its content doesn't matter -- huh's accessible Input
+	// has no validator here); "3" is the actual menu pick (Archive
+	// OpenSearch Snapshot to S3, not "1", so a wrongly-consumed line
+	// would produce a visibly wrong result, not an accidental pass); the
+	// third is runRDMBackupRestoreMenu's own post-dispatch pause.
+	menuInput := newHuhAccessibleInput("\n3\n\n")
+
+	ok, err := runRDMBackupRestoreMenuFromSlug(ctx, term, actions, "archive-sql-backups-to-s3", menuInput, buf)
+	if !ok {
+		t.Fatal("expected ok = true for a registered leaf slug")
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if archiveSQLCalls != 1 {
+		t.Errorf("archiveSQLCalls = %d, want 1 (the deep-linked leaf, run once)", archiveSQLCalls)
+	}
+	if archiveOSCalls != 1 {
+		t.Errorf("archiveOSCalls = %d, want 1 (chosen from the menu after falling back to it)", archiveOSCalls)
+	}
+	if refreshCalls != 2 {
+		t.Errorf("refreshCalls = %d, want 2 (once after the deep-linked leaf, once after the menu-chosen one)", refreshCalls)
+	}
+}
+
+// TestRunRDMBackupRestoreMenuFromSlug_ExitSignalReturnsNilWithoutContinuing
+// pins that an exit signal from the deep-linked leaf itself ends the
+// whole run cleanly, without falling into the menu at all.
+func TestRunRDMBackupRestoreMenuFromSlug_ExitSignalReturnsNilWithoutContinuing(t *testing.T) {
+	term, buf := newTermOnly()
+	var refreshCalls int
+	actions := testRDMBackupRestoreActions(&refreshCalls)
+	actions.ArchiveSQL = func(ctx context.Context) error { return huh.ErrUserAborted }
+
+	ok, err := runRDMBackupRestoreMenuFromSlug(context.Background(), term, actions, "archive-sql-backups-to-s3", nil, nil)
+	if !ok || err != nil {
+		t.Fatalf("got ok=%t err=%v, want ok=true err=nil", ok, err)
+	}
+	if refreshCalls != 0 {
+		t.Errorf("refreshCalls = %d, want 0 (an exit signal must not refresh or continue into the menu)", refreshCalls)
+	}
+	if !strings.Contains(buf.String(), "Exiting") {
+		t.Errorf("expected an Exiting message, got:\n%s", buf.String())
+	}
+}
