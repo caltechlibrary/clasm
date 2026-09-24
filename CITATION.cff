@@ -4,7 +4,7 @@ message: "If you use this software, please cite it as below."
 type: software
 title: clasm
 abstract: |-
-  Interactive Go TUI (clasm) for administering Caltech Library DLD's AWS EC2 instances, AMIs, launch templates, and key pairs, plus S3 buckets and backup archives, IAM roles/instance profiles/policies, and Invenio RDM's own SQL/OpenSearch backup and restore lifecycle, with cross-resource tag management and cloud-init inspection.
+  Go TUI (clasm) with scriptable command-line support for administering Caltech Library DLD's AWS EC2 instances, AMIs, launch templates, and key pairs, plus S3 buckets and backup archives, IAM roles/instance profiles/policies, and Invenio RDM's own SQL/OpenSearch backup and restore lifecycle, with cross-resource tag management and cloud-init inspection.
 authors:
   - family-names: Doiel
     given-names: R. S.
@@ -13,7 +13,7 @@ authors:
 
 
 repository-code: "https://github.com/caltechlibrary/clasm"
-version: 0.0.8
-date-released: 2026-09-16
+version: 0.0.9
+date-released: 2026-09-24
 
 
