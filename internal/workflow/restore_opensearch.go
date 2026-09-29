@@ -41,8 +41,8 @@ func SyncOpenSearchBackupsFromS3(ctx context.Context, client awsclient.SSMAPI, i
 	return nil
 }
 
-// buildChownRepoCommand builds the `chown` that hands the synced snapshot
-// repository back to the uid OpenSearch actually runs as. It pairs with
+// buildChownTreeCommand builds the `chown -R` that hands a directory tree to
+// owner. For the OpenSearch snapshot repository it pairs with
 // buildSyncFromS3Command above and must run after it, every time.
 //
 // `aws s3 sync` is executed by SSM, which runs as **root on the host**, so
@@ -52,11 +52,18 @@ func SyncOpenSearchBackupsFromS3(ctx context.Context, client awsclient.SSMAPI, i
 // directory alone. Without this step the repository is silently unwritable
 // below its own root, and the damage surfaces not here but on the
 // instance's *next* archive (DR-0175, PLAN.md Phase 20.63).
-func buildChownRepoCommand(dir string) string {
-	return fmt.Sprintf("chown -R %d:%d %s", DefaultOpenSearchRepoUID, DefaultOpenSearchRepoGID, shellQuote(dir))
+//
+// The owner is the service user's own uid *and* gid (DR-0176), looked up on
+// the instance. This used to be a hardcoded 1000:1000, and on the current
+// images ubuntu is 1000:1001 -- gid 1000 is the docker group -- so the
+// repository ended up ubuntu:docker. It worked, because the container
+// writes as the owner uid, but the group was an accident that handed
+// docker-group members access nobody intended.
+func buildChownTreeCommand(dir string, owner ServiceOwner) string {
+	return fmt.Sprintf("chown -R %d:%d %s", owner.UID, owner.GID, shellQuote(dir))
 }
 
-// NormalizeSnapshotRepoOwnership runs buildChownRepoCommand via SSM.
+// NormalizeSnapshotRepoOwnership runs buildChownTreeCommand via SSM.
 //
 // Deliberately a separate SSM round trip rather than `&& chown ...`
 // appended to the sync command (DR-0175 decision 1): this project has
@@ -64,8 +71,8 @@ func buildChownRepoCommand(dir string) string {
 // -- `pg_dump | gzip` masking pg_dump's own exit status, and gunzip's
 // "unknown suffix" message vanishing with stderr -- and one extra round
 // trip is cheap next to a restore.
-func NormalizeSnapshotRepoOwnership(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildChownRepoCommand(dir), timeout, pollInterval)
+func NormalizeSnapshotRepoOwnership(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildChownTreeCommand(dir, owner), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
@@ -494,7 +501,21 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	// retrofit already chowned -- so registering first would report
 	// success against a tree OpenSearch cannot write and destroy the one
 	// signal available here (DR-0175, PLAN.md Phase 20.63).
-	if err := NormalizeSnapshotRepoOwnership(ctx, ssmClient, inst.InstanceID, directory, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	//
+	// The owner is looked up here, and the uid checked, only as an interim
+	// (Phase 20.65 item 3): chowning to a service user whose uid is not the
+	// container's would leave the repository unwritable by the container,
+	// the very defect this step exists to prevent. Item 6 moves both to the
+	// top of the workflow, ahead of the conflicting-index deletion, where a
+	// mismatch can be reported before anything is destroyed.
+	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
+	if err != nil {
+		return err
+	}
+	if err := CheckOwnerMatchesOpenSearch(owner); err != nil {
+		return err
+	}
+	if err := NormalizeSnapshotRepoOwnership(ctx, ssmClient, inst.InstanceID, directory, owner, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	if err := RegisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {

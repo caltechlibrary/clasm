@@ -30,9 +30,12 @@ func TestBuildSyncFromS3Command(t *testing.T) {
 	}
 }
 
-func TestBuildChownRepoCommand(t *testing.T) {
-	got := buildChownRepoCommand("/opt/rdm_opensearch_backups")
-	want := "chown -R 1000:1000 '/opt/rdm_opensearch_backups'"
+// The gid is the service user's own, not the container's: on the current
+// images ubuntu is 1000:1001 and gid 1000 is the docker group, which is
+// what the old hardcoded 1000:1000 was quietly handing the repository to.
+func TestBuildChownTreeCommand(t *testing.T) {
+	got := buildChownTreeCommand("/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001})
+	want := "chown -R 1000:1001 '/opt/rdm_opensearch_backups'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -41,9 +44,9 @@ func TestBuildChownRepoCommand(t *testing.T) {
 // The directory is operator-typed (the workflow's own backup-directory
 // prompt), so it has to survive a space the same way every other
 // SSM-bound path in this package does.
-func TestBuildChownRepoCommand_QuotesDirectory(t *testing.T) {
-	got := buildChownRepoCommand("/opt/rdm opensearch backups")
-	want := "chown -R 1000:1000 '/opt/rdm opensearch backups'"
+func TestBuildChownTreeCommand_QuotesDirectory(t *testing.T) {
+	got := buildChownTreeCommand("/opt/rdm opensearch backups", ServiceOwner{UID: 1000, GID: 1001})
+	want := "chown -R 1000:1001 '/opt/rdm opensearch backups'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -51,13 +54,13 @@ func TestBuildChownRepoCommand_QuotesDirectory(t *testing.T) {
 
 func TestNormalizeSnapshotRepoOwnership_SendsChown(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	if err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", time.Second, testPollInterval); err != nil {
+	if err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.sendCommandCalls() != 1 {
 		t.Fatalf("expected exactly 1 SendCommand call, got %d", fake.sendCommandCalls())
 	}
-	if want := "chown -R 1000:1000 '/opt/rdm_opensearch_backups'"; fake.lastCommandText != want {
+	if want := "chown -R 1000:1001 '/opt/rdm_opensearch_backups'"; fake.lastCommandText != want {
 		t.Errorf("sent %q, want %q", fake.lastCommandText, want)
 	}
 }
@@ -67,7 +70,7 @@ func TestNormalizeSnapshotRepoOwnership_SendsChown(t *testing.T) {
 // unable to archive, so it must never fail quietly.
 func TestNormalizeSnapshotRepoOwnership_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "chown: cannot access"}
-	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
+	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "chown: cannot access") {
 		t.Errorf("expected an error including the remote output, got: %v", err)
 	}
@@ -75,7 +78,7 @@ func TestNormalizeSnapshotRepoOwnership_PropagatesFailedStatus(t *testing.T) {
 
 func TestNormalizeSnapshotRepoOwnership_PropagatesTransportError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
-	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
+	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
 		t.Errorf("expected the transport error to propagate, got: %v", err)
 	}
@@ -330,6 +333,7 @@ func restoreOpenSearchFake(existingIndicesStdout, recoveryStdout, verifyStdout s
 		finalStatus: types.CommandInvocationStatusSuccess,
 		responses: []ssmCommandResponse{
 			{substring: "command -v aws", stdout: "/usr/bin/aws", status: types.CommandInvocationStatusSuccess},
+			{substring: "id -u", stdout: "1000 1001\n", status: types.CommandInvocationStatusSuccess}, // the service owner lookup: ubuntu is uid 1000, gid 1001
 			{substring: "_cat/indices/caltechdata-*,.ds-caltechdata-*", stdout: existingIndicesStdout, status: types.CommandInvocationStatusSuccess},
 			{substring: "_cat/indices/caltechdata-rdmrecords", stdout: verifyStdout, status: types.CommandInvocationStatusSuccess},
 			{substring: "DELETE 'localhost:9200/", status: types.CommandInvocationStatusSuccess},
@@ -499,7 +503,7 @@ func deleteIndicesCommandSent(sent []string) bool {
 // deregisterRepoCmdFragment is load-bearing.
 const (
 	syncCmdFragment           = "aws s3 sync"
-	chownCmdFragment          = "chown -R 1000:1000"
+	chownCmdFragment          = "chown -R 1000:1001"
 	registerRepoCmdFragment   = "-X PUT 'localhost:9200/_snapshot/rdm_backup_repo'"
 	deregisterRepoCmdFragment = "-X DELETE 'localhost:9200/_snapshot/rdm_backup_repo'"
 	deleteSnapshotCmdFragment = "-X DELETE 'localhost:9200/_snapshot/rdm_backup_repo/rdm-20260819-160031'"
@@ -530,8 +534,58 @@ func TestRestoreOpenSearchSnapshot_ChownsBetweenSyncAndRegister(t *testing.T) {
 	if !(sync < chown && chown < register) {
 		t.Errorf("want sync < chown < register, got sync=%d chown=%d register=%d; sent: %v", sync, chown, register, sent)
 	}
-	if want := "chown -R 1000:1000 '/opt/rdm_opensearch_backups'"; !commandSent(sent, want) {
+	if want := "chown -R 1000:1001 '/opt/rdm_opensearch_backups'"; !commandSent(sent, want) {
 		t.Errorf("expected the chown to target the operator's own directory (%q); sent: %v", want, sent)
+	}
+}
+
+// The owner is looked up on the instance, not assumed: a chown to the
+// hardcoded 1000:1000 is what made the repository ubuntu:docker.
+func TestRestoreOpenSearchSnapshot_ChownsToTheResolvedOwner(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	for i := range ssmClient.responses {
+		if ssmClient.responses[i].substring == "id -u" {
+			ssmClient.responses[i].stdout = "1000 1234\n"
+		}
+	}
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+
+	if err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "chown -R 1000:1234 '/opt/rdm_opensearch_backups'"; !commandSent(ssmClient.sentCommands, want) {
+		t.Errorf("expected the chown to use the looked-up gid (%q); sent: %v", want, ssmClient.sentCommands)
+	}
+}
+
+// DR-0176 decision 5, in its interim position (item 6 moves the check to
+// the top of the workflow): when the service user's uid is not the
+// container's, chowning to it would leave the search container unable to
+// write the repository, which is the defect DR-0175 fixed. Stop before the
+// chown, and before registering or restoring anything.
+func TestRestoreOpenSearchSnapshot_OwnerUIDMismatchStopsBeforeChown(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	for i := range ssmClient.responses {
+		if ssmClient.responses[i].substring == "id -u" {
+			ssmClient.responses[i].stdout = "1001 1001\n"
+		}
+	}
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+
+	err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	if err == nil || !strings.Contains(err.Error(), "1001") || !strings.Contains(err.Error(), "1000") {
+		t.Fatalf("expected an error naming both uids, got: %v", err)
+	}
+	for _, fragment := range []string{chownCmdFragment, "chown -R", registerRepoCmdFragment, "_restore"} {
+		if commandSent(ssmClient.sentCommands, fragment) {
+			t.Errorf("a command containing %q was sent after a uid mismatch; sent: %v", fragment, ssmClient.sentCommands)
+		}
 	}
 }
 
