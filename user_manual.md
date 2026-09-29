@@ -286,6 +286,42 @@ deliberate action, and clasm deliberately does not pre-position the
 cursor on a previous target. See `DESIGN.md`, "RDM Backup &
 Restore Domain" for the full prompt sequence and the snapshot scope.
 
+### File ownership on the instance
+
+clasm reaches an instance over SSM, which runs commands as root, so
+anything it writes would be root-owned and unwritable by the account the
+RDM services run as. To prevent that, every workflow that writes into a
+backup directory makes that directory belong to the **`ubuntu`** user
+(the account that owns `/Sites/<repo>` and runs `invenio-cli`), looking
+up `ubuntu`'s uid and gid on the instance each time. You do not create or
+`chown` these directories by hand.
+
+| Directory | Owner and mode | What clasm does |
+|---|---|---|
+| SQL backups (e.g. `/opt/rdm_sql_backups`) | `ubuntu:ubuntu`, `0750` | **Generate SQL Backup** creates or repairs the directory before the dump, then hands the directory and its dumps to `ubuntu` after a successful dump. A failed dump changes no ownership. |
+| OpenSearch backups (e.g. `/opt/rdm_opensearch_backups`) | `ubuntu:ubuntu`, `0775` | **Archive** and **Restore OpenSearch Snapshot** create or repair the directory before using it. **Restore** also hands everything it synced down to `ubuntu`. |
+
+Creating or repairing a directory never deletes anything and never
+recurses into what is already there; the two workflows that do change
+ownership below the top level are Generate SQL Backup (after its dump)
+and Restore OpenSearch Snapshot (after its sync).
+
+**OpenSearch needs one extra condition.** The search container writes to
+its snapshot repository as uid 1000, so `ubuntu` must also be uid 1000 on
+the instance. Both OpenSearch workflows check this first and, if it is
+not, stop before changing or deleting anything, naming both uids. The
+group id is not compared: on the current images `ubuntu` is uid 1000 but
+gid 1001. Generate SQL Backup has no such condition, because nothing in
+a container writes into the SQL directory.
+
+clasm refuses to set ownership on `/` or on a relative path, since these
+steps run as root on a directory you type.
+
+An existing SQL backup directory that was `root:www-data 0770` becomes
+`ubuntu:ubuntu 0750` at the next Generate SQL Backup on that instance,
+and its existing dumps become `ubuntu`'s. See `DESIGN.md`, "One Service
+Owner for Everything clasm Writes on an RDM Host".
+
 ## Configuration Menu
 
 Choosing Configuration presents:
