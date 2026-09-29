@@ -65,6 +65,12 @@ const DefaultOpenSearchContainerRepoPath = "/usr/share/opensearch/backups"
 // already fixed). See DR-0175 and PLAN.md Phase 20.63.
 const DefaultOpenSearchRepoUID = 1000
 
+// openSearchRepoDirMode is the mode of the snapshot repository directory
+// (this plan's choice under DR-0176, Phase 20.65): 0775, matching the
+// retrofit runbook's `chmod 775` and what production carries. Group write is
+// harmless -- the group is the service user's own.
+const openSearchRepoDirMode = "0775"
+
 // DefaultOpenSearchSyncTimeout bounds the `aws s3 sync` SSM command --
 // an ~8GB snapshot can legitimately take a while, so this gets a much
 // longer bound than the quick repo/snapshot REST calls.
@@ -206,6 +212,29 @@ func RunArchiveOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClien
 }
 
 func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, directory, bucket, indexPrefix, prefix string, cleanupDays int, cleanupRequested bool, confirm func(candidates []SnapshotPrefixInfo) (bool, error)) error {
+	// Ownership comes first, ahead of the S3 cleanup below (DR-0176). The
+	// cleanup deletes objects, so a uid mismatch found after it would delete
+	// an old snapshot and only then refuse; the check needs nothing but the
+	// instance, so it goes first. The directory is then made or repaired for
+	// the service user *before* the repository is registered, because
+	// registration only verifies a write into the top-level directory: a
+	// missing or wrongly owned one passes every pre-flight and the snapshot
+	// fails afterwards with a 404 that names nothing useful. That is the
+	// only thing protecting an instance that was never restored to.
+	//
+	// Ensure only, no chown -R: pre-existing residue underneath is reported by
+	// the readiness check, not repaired by an archive (DR-0175 decision 4).
+	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	if err != nil {
+		return err
+	}
+	if err := CheckOwnerMatchesOpenSearch(owner); err != nil {
+		return err
+	}
+	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+
 	var toCleanup []SnapshotPrefixInfo
 	if cleanupRequested {
 		existing, err := ListArchivedSnapshotPrefixes(ctx, bucketClient, bucket, prefix)

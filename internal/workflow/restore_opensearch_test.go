@@ -561,30 +561,137 @@ func TestRestoreOpenSearchSnapshot_ChownsToTheResolvedOwner(t *testing.T) {
 	}
 }
 
-// DR-0176 decision 5, in its interim position (item 6 moves the check to
-// the top of the workflow): when the service user's uid is not the
-// container's, chowning to it would leave the search container unable to
-// write the repository, which is the defect DR-0175 fixed. Stop before the
-// chown, and before registering or restoring anything.
-func TestRestoreOpenSearchSnapshot_OwnerUIDMismatchStopsBeforeChown(t *testing.T) {
-	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
-	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
-	term, le, buf := newPipeEditor(input)
-	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
-	for i := range ssmClient.responses {
-		if ssmClient.responses[i].substring == "id -u" {
-			ssmClient.responses[i].stdout = "1001 1001\n"
+const openSearchEnsureExact = "install -d -o 1000 -g 1001 -m 0775 '/opt/rdm_opensearch_backups'"
+
+func setRestoreOwnerStdout(f *fakeSSMClient, stdout string) {
+	for i := range f.responses {
+		if f.responses[i].substring == "id -u" {
+			f.responses[i].stdout = stdout
+			return
 		}
 	}
+	panic("no id -u response scripted")
+}
+
+func countCommandsContaining(sent []string, fragment string) int {
+	n := 0
+	for _, c := range sent {
+		if strings.Contains(c, fragment) {
+			n++
+		}
+	}
+	return n
+}
+
+// DR-0176 decision 5: when the service user's uid is not the container's,
+// no owner can serve both, so stop *before anything is written or destroyed*.
+// The fixture has a conflicting index, so the deletion is reachable and a
+// mismatch found late would already have destroyed it: the failure this
+// test exists to prevent (never destroy the current state before a verified
+// replacement). Nothing after the lookup may be sent -- no index deletion,
+// no ensure, no sync, no chown, no register, no restore.
+func TestRestoreOpenSearchSnapshot_OwnerUIDMismatchStopsBeforeAnythingIsDestroyed(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	// If the workflow wrongly carried on, these answers would drive it
+	// through the confirm and the whole restore.
+	input := "\n" + "i-1\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("caltechdata-rdmrecords-a\n", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	setRestoreOwnerStdout(ssmClient, "1001 1001\n")
 	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
 
 	err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
 	if err == nil || !strings.Contains(err.Error(), "1001") || !strings.Contains(err.Error(), "1000") {
 		t.Fatalf("expected an error naming both uids, got: %v", err)
 	}
-	for _, fragment := range []string{chownCmdFragment, "chown -R", registerRepoCmdFragment, "_restore"} {
-		if commandSent(ssmClient.sentCommands, fragment) {
-			t.Errorf("a command containing %q was sent after a uid mismatch; sent: %v", fragment, ssmClient.sentCommands)
+	sent := ssmClient.sentCommands
+	if deleteIndicesCommandSent(sent) {
+		t.Errorf("an index was deleted before the uid mismatch was reported; sent: %v", sent)
+	}
+	for _, fragment := range []string{"install -d", syncCmdFragment, "chown -R", registerRepoCmdFragment, "_restore"} {
+		if commandSent(sent, fragment) {
+			t.Errorf("a command containing %q was sent after a uid mismatch; sent: %v", fragment, sent)
+		}
+	}
+}
+
+// The full order of a restore that has to delete conflicting indices:
+// the owner is known before the deletion, and the directory is ensured
+// after the deletion but strictly before the sync, then chowned, then
+// registered. The lookup happens once -- moved to the top, not duplicated
+// beside the chown.
+func TestRestoreOpenSearchSnapshot_OwnerLookupBeforeDeletionEnsureBeforeSync(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "i-1\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("caltechdata-rdmrecords-a\n", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+
+	if err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sent := ssmClient.sentCommands
+	lookup := commandIndex(t, sent, "id -u")
+	del := -1
+	for i, c := range sent {
+		if isDeleteIndicesCommand(c) {
+			del = i
+			break
+		}
+	}
+	ensure := commandIndex(t, sent, openSearchEnsureExact)
+	sync := commandIndex(t, sent, syncCmdFragment)
+	chown := commandIndex(t, sent, chownCmdFragment)
+	register := commandIndex(t, sent, registerRepoCmdFragment)
+	if del < 0 {
+		t.Fatalf("fixture should have deleted a conflicting index; sent: %v", sent)
+	}
+	if !(lookup < del && del < ensure && ensure < sync && sync < chown && chown < register) {
+		t.Errorf("want lookup < delete < ensure < sync < chown < register, got %d %d %d %d %d %d; sent: %v", lookup, del, ensure, sync, chown, register, sent)
+	}
+	if n := countCommandsContaining(sent, "id -u"); n != 1 {
+		t.Errorf("the owner was looked up %d times, want exactly 1", n)
+	}
+}
+
+// The ensure step is create-or-repair of the directory itself and must not
+// recurse: the restore's own chown -R, after the sync, is the only
+// recursive step, and it is asserted separately.
+func TestRestoreOpenSearchSnapshot_EnsureIsNonRecursive(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+	if err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !commandSent(ssmClient.sentCommands, "install -d") {
+		t.Fatalf("no ensure step was sent, so there is nothing to check; sent: %v", ssmClient.sentCommands)
+	}
+	for _, c := range ssmClient.sentCommands {
+		if strings.Contains(c, "install -d") && (strings.Contains(c, "-R") || strings.Contains(c, "chown")) {
+			t.Errorf("the ensure step recursed or chowned: %q", c)
+		}
+	}
+}
+
+// A directory that cannot be made or repaired means the sync would write
+// into the wrong place: stop before it.
+func TestRestoreOpenSearchSnapshot_FailedEnsureAbortsBeforeSync(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
+	input := "\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
+	term, le, buf := newPipeEditor(input)
+	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
+	ssmClient.responses = append([]ssmCommandResponse{{substring: "install -d", stdout: "install: cannot change owner", status: types.CommandInvocationStatusFailed}}, ssmClient.responses...)
+	s3Client := &fakeS3Client{allObjects: oneOpenSearchSnapshotObject("caltechdata", "rdm-20260819-160031")}
+	err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
+	if err == nil || !strings.Contains(err.Error(), "/opt/rdm_opensearch_backups") {
+		t.Fatalf("expected an error naming the directory, got: %v", err)
+	}
+	for _, f := range []string{syncCmdFragment, "chown -R", registerRepoCmdFragment} {
+		if commandSent(ssmClient.sentCommands, f) {
+			t.Errorf("%q sent after a failed ensure; sent: %v", f, ssmClient.sentCommands)
 		}
 	}
 }

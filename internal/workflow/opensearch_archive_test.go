@@ -51,6 +51,8 @@ func (e *echoingS3Client) ListObjectsV2(ctx context.Context, params *s3.ListObje
 func openSearchHappyPathResponses() []ssmCommandResponse {
 	return []ssmCommandResponse{
 		{substring: "command -v aws", status: types.CommandInvocationStatusSuccess},
+		{substring: "id -u", status: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"},
+		{substring: "install -d", status: types.CommandInvocationStatusSuccess},
 		{substring: `"type":"fs"`, status: types.CommandInvocationStatusSuccess},
 		{substring: `"indices"`, status: types.CommandInvocationStatusSuccess},
 		{substring: "-X GET", status: types.CommandInvocationStatusSuccess, stdout: `{"snapshots":[{"state":"SUCCESS"}]}`},
@@ -315,6 +317,8 @@ func TestArchiveOpenSearchSnapshot_FailedSnapshotStateAbortsBeforeSyncDeleteClea
 
 	responses := []ssmCommandResponse{
 		{substring: "command -v aws", status: types.CommandInvocationStatusSuccess},
+		{substring: "id -u", status: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"},
+		{substring: "install -d", status: types.CommandInvocationStatusSuccess},
 		{substring: `"type":"fs"`, status: types.CommandInvocationStatusSuccess},
 		{substring: `"indices"`, status: types.CommandInvocationStatusSuccess},
 		{substring: "-X GET", status: types.CommandInvocationStatusSuccess, stdout: `{"snapshots":[{"state":"FAILED"}]}`},
@@ -347,6 +351,8 @@ func TestArchiveOpenSearchSnapshot_SyncFailureAbortsBeforeEBSDelete(t *testing.T
 
 	responses := []ssmCommandResponse{
 		{substring: "command -v aws", status: types.CommandInvocationStatusSuccess},
+		{substring: "id -u", status: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"},
+		{substring: "install -d", status: types.CommandInvocationStatusSuccess},
 		{substring: `"type":"fs"`, status: types.CommandInvocationStatusSuccess},
 		{substring: `"indices"`, status: types.CommandInvocationStatusSuccess},
 		{substring: "-X GET", status: types.CommandInvocationStatusSuccess, stdout: `{"snapshots":[{"state":"SUCCESS"}]}`},
@@ -519,5 +525,152 @@ func TestArchiveOpenSearchSnapshot_DoesNotReportWhenAbortedBeforeParamsAreKnown(
 	}
 	if reportCalls != 0 {
 		t.Errorf("report called %d times, want 0 (aborted before params were resolved)", reportCalls)
+	}
+}
+
+// --- ownership (Phase 20.65 item 5, DR-0176) ---
+
+const archiveEnsureExact = "install -d -o 1000 -g 1001 -m 0775 '/opt/rdm_opensearch_backups'"
+
+func setArchiveOwnerStdout(f *fakeSSMClient, stdout string) {
+	for i := range f.responses {
+		if f.responses[i].substring == "id -u" {
+			f.responses[i].stdout = stdout
+			return
+		}
+	}
+	panic("no id -u response scripted")
+}
+
+// The directory is ensured before the repository is registered. Registration
+// only verifies a write into the top-level directory, so a wrongly owned or
+// missing directory passes every pre-flight and the snapshot then fails with
+// an opaque 404; ensuring it first is the only thing that protects an
+// instance that was never restored to. Ensure only -- no chown -R: residue
+// on an existing tree is reported by the readiness check, not repaired by an
+// archive (DR-0175 decision 4).
+func TestRunArchiveOpenSearchSnapshot_EnsuresDirectoryBeforeRegisteringRepo(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, _ := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{}}
+
+	err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 0, false, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sent := ssmClient.sentCommands
+	lookup := commandIndex(t, sent, "id -u")
+	ensure := commandIndex(t, sent, archiveEnsureExact)
+	register := commandIndex(t, sent, `"type":"fs"`)
+	sync := commandIndex(t, sent, "aws s3 sync")
+	if !(lookup < ensure && ensure < register && register < sync) {
+		t.Errorf("want lookup < ensure < register < sync, got %d %d %d %d; sent: %v", lookup, ensure, register, sync, sent)
+	}
+	if commandSent(sent, "chown -R") {
+		t.Errorf("an archive must not chown -R the repository; sent: %v", sent)
+	}
+	if n := countCommandsContaining(sent, "install -d"); n != 1 {
+		t.Errorf("install -d sent %d times, want 1", n)
+	}
+}
+
+// The params-driven core is shared with the non-interactive form (Phase
+// 20.64), so the non-interactive path is covered by construction -- pin it.
+func TestRunArchiveOpenSearchSnapshotAuto_EnsuresDirectory(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, _ := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{}}
+
+	if err := RunArchiveOpenSearchSnapshotAuto(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 0, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !commandSent(ssmClient.sentCommands, archiveEnsureExact) {
+		t.Errorf("expected %q; sent: %v", archiveEnsureExact, ssmClient.sentCommands)
+	}
+}
+
+// DR-0176 decision 5, "before writing anything": a uid mismatch stops the
+// run before the directory is touched, before the repository is registered,
+// before a snapshot exists -- and before the S3 cleanup, which deletes
+// objects. The cleanup is requested here with a real candidate and a
+// confirm that would say yes, so a check placed after it would delete an
+// old snapshot from S3 and only then refuse.
+func TestRunArchiveOpenSearchSnapshot_OwnerUIDMismatchStopsBeforeAnyWriteOrS3Deletion(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, _ := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	setArchiveOwnerStdout(ssmClient, "1001 1001\n")
+	inner := &fakeS3Client{allObjects: []s3types.Object{
+		{Key: aws.String("newauthors/opensearch-snapshots/rdm-20200101-000000/index-0")},
+	}}
+	s3Client := &echoingS3Client{fakeS3Client: inner}
+	var confirmCalls int
+	confirm := func(candidates []SnapshotPrefixInfo) (bool, error) {
+		confirmCalls++
+		return true, nil
+	}
+
+	err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 30, true, confirm)
+	if err == nil || !strings.Contains(err.Error(), "1001") || !strings.Contains(err.Error(), "1000") {
+		t.Fatalf("expected an error naming both uids, got: %v", err)
+	}
+	if confirmCalls != 0 {
+		t.Errorf("the cleanup confirm ran %d times before the uid check", confirmCalls)
+	}
+	if len(inner.deleteObjectsCalls) != 0 {
+		t.Errorf("S3 objects were deleted before the uid check: %d DeleteObjects calls", len(inner.deleteObjectsCalls))
+	}
+	for _, f := range []string{"install -d", `"type":"fs"`, `"indices"`, "aws s3 sync", "-X DELETE"} {
+		if commandSent(ssmClient.sentCommands, f) {
+			t.Errorf("a command containing %q was sent after a uid mismatch; sent: %v", f, ssmClient.sentCommands)
+		}
+	}
+}
+
+func TestRunArchiveOpenSearchSnapshot_FailedOwnerLookupAbortsBeforeAnyWrite(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, _ := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: append([]ssmCommandResponse{{substring: "id -u", stdout: "id: 'ubuntu': no such user", status: types.CommandInvocationStatusFailed}}, openSearchHappyPathResponses()...)}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{}}
+	err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 0, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "no such user") {
+		t.Fatalf("expected the lookup failure, got: %v", err)
+	}
+	for _, f := range []string{"install -d", `"type":"fs"`, "aws s3 sync"} {
+		if commandSent(ssmClient.sentCommands, f) {
+			t.Errorf("%q sent after a failed lookup; sent: %v", f, ssmClient.sentCommands)
+		}
+	}
+}
+
+func TestRunArchiveOpenSearchSnapshot_FailedEnsureAbortsBeforeRegistration(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, _ := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: append([]ssmCommandResponse{{substring: "install -d", stdout: "install: cannot change owner", status: types.CommandInvocationStatusFailed}}, openSearchHappyPathResponses()...)}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{}}
+	err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/opt/rdm_opensearch_backups", "my-os-bucket", "newauthors", "newauthors", 0, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "/opt/rdm_opensearch_backups") {
+		t.Fatalf("expected an error naming the directory, got: %v", err)
+	}
+	for _, f := range []string{`"type":"fs"`, "aws s3 sync"} {
+		if commandSent(ssmClient.sentCommands, f) {
+			t.Errorf("%q sent after a failed ensure; sent: %v", f, ssmClient.sentCommands)
+		}
+	}
+}
+
+// The ensure runs on the directory the operator actually typed, and quotes it.
+func TestRunArchiveOpenSearchSnapshot_EnsuresTheOperatorsDirectory(t *testing.T) {
+	inst := inventory.Instance{InstanceID: "i-1", Name: "newauthors", Region: "us-east-1"}
+	term, _ := newTermOnly()
+	ssmClient := &fakeSSMClient{commandID: "cmd-1", responses: openSearchHappyPathResponses()}
+	s3Client := &echoingS3Client{fakeS3Client: &fakeS3Client{}}
+	if err := runArchiveOpenSearchSnapshot(context.Background(), term, ssmClient, s3Client, inst, "/srv/os backups", "my-os-bucket", "newauthors", "newauthors", 0, false, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "install -d -o 1000 -g 1001 -m 0775 '/srv/os backups'"; !commandSent(ssmClient.sentCommands, want) {
+		t.Errorf("expected %q; sent: %v", want, ssmClient.sentCommands)
 	}
 }

@@ -399,6 +399,21 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return err
 	}
 
+	// The service owner is looked up and its uid checked first of all
+	// (DR-0176 decision 5), before any prompt and above all before
+	// DeleteConflictingIndices below: a mismatch found after that deletion
+	// would already have destroyed the current indices ahead of any verified
+	// replacement, which this workflow's own ordering (DR-0175 decision 2)
+	// exists to refuse. The check needs only the instance, so nothing forces
+	// it later.
+	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	if err != nil {
+		return err
+	}
+	if err := CheckOwnerMatchesOpenSearch(owner); err != nil {
+		return err
+	}
+
 	// indexPrefix defaults to the target's own Project tag (falling back
 	// to Name), same reasoning as Archive OpenSearch Snapshot's own fix
 	// (DECISIONS.md, "Real bug: Archive OpenSearch Snapshot's
@@ -491,6 +506,12 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return cancelledIsNil(w, err)
 	}
 
+	// Made or repaired for the service user immediately before the sync,
+	// which needs the directory the operator just typed. Non-recursive: the
+	// chown -R below, after the sync, is the only recursive step.
+	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
 	if err := SyncOpenSearchBackupsFromS3(ctx, ssmClient, inst.InstanceID, bucket, sourceName, snap.Name, directory, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
@@ -501,20 +522,6 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	// retrofit already chowned -- so registering first would report
 	// success against a tree OpenSearch cannot write and destroy the one
 	// signal available here (DR-0175, PLAN.md Phase 20.63).
-	//
-	// The owner is looked up here, and the uid checked, only as an interim
-	// (Phase 20.65 item 3): chowning to a service user whose uid is not the
-	// container's would leave the repository unwritable by the container,
-	// the very defect this step exists to prevent. Item 6 moves both to the
-	// top of the workflow, ahead of the conflicting-index deletion, where a
-	// mismatch can be reported before anything is destroyed.
-	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
-	if err != nil {
-		return err
-	}
-	if err := CheckOwnerMatchesOpenSearch(owner); err != nil {
-		return err
-	}
 	if err := NormalizeSnapshotRepoOwnership(ctx, ssmClient, inst.InstanceID, directory, owner, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
