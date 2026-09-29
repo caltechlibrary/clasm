@@ -49,8 +49,8 @@ func buildEnsureDirCommand(dir string, owner ServiceOwner, mode string) string {
 // The directory is operator-typed at the backup-directory prompt, so both
 // are one typo away.
 func EnsureBackupDirectory(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, mode string, timeout, pollInterval time.Duration) error {
-	if !strings.HasPrefix(dir, "/") || path.Clean(dir) == "/" {
-		return fmt.Errorf("refusing to set ownership of %q on %s: want an absolute path to a backup directory, not the filesystem root", dir, instanceID)
+	if err := checkBackupDirectory(dir, instanceID); err != nil {
+		return err
 	}
 	if !ensureDirModePattern.MatchString(mode) {
 		return fmt.Errorf("refusing to set mode %q on %q: want three or four octal digits", mode, dir)
@@ -61,6 +61,40 @@ func EnsureBackupDirectory(ctx context.Context, client awsclient.SSMAPI, instanc
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
 		return curlFailureError(fmt.Sprintf("creating or repairing the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	}
+	return nil
+}
+
+// checkBackupDirectory is the refusal shared by every step here that runs as
+// root and sets an owner on an operator-typed directory: "/" (or anything that
+// cleans to it) and relative paths.
+func checkBackupDirectory(dir, instanceID string) error {
+	if !strings.HasPrefix(dir, "/") || path.Clean(dir) == "/" {
+		return fmt.Errorf("refusing to set ownership of %q on %s: want an absolute path to a backup directory, not the filesystem root", dir, instanceID)
+	}
+	return nil
+}
+
+// ChownBackupDirectory hands everything under dir to owner via SSM
+// (`chown -R`), as its own step. Unlike EnsureBackupDirectory this *does*
+// recurse, and it is only called where a decision says so: after a dump, so
+// that the new file -- root-owned, because SSM runs as root -- and any
+// root-owned dumps an older clasm left behind end up the service user's
+// (DR-0176 decisions 2 and 3). It changes ownership only; it never deletes.
+//
+// Refuses the same directories EnsureBackupDirectory does, and for the same
+// reason, before sending anything: `chown -R /` as root is the worst command
+// this package could send.
+func ChownBackupDirectory(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, instanceID); err != nil {
+		return err
+	}
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildChownTreeCommand(dir, owner), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("setting ownership of the backup directory %q on %s failed", dir, instanceID), status, stdout)
 	}
 	return nil
 }

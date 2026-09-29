@@ -20,6 +20,13 @@ import (
 // mirrors DefaultBackupUploadTimeout's 30-minute bound.
 const DefaultSQLDumpTimeout = 30 * time.Minute
 
+// sqlBackupDirMode is the mode of the SQL backup directory (DR-0176 decision
+// 2): the service user reads and writes, its group reads, nobody else does.
+// Nothing needs group write -- the dump runs inside the Postgres container
+// via `docker exec` and the file's owner is whoever runs it -- and the old
+// root:www-data 0770 was historical residue, not a requirement.
+const sqlBackupDirMode = "0750"
+
 // buildSQLDumpCommand builds the pg_dump command Run SQL Backup sends
 // via SSM, matching invenio-sql-backup.bash's own command and filename
 // convention exactly: pg_dump --column-inserts redirects to a plain
@@ -120,6 +127,21 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	// first noticed).
 	fmt.Fprintf(w, "Using Postgres container %q, database %q, user %q.\n", containerName, dbName, dbUser)
 
+	// Ownership (DR-0176). SSM runs as root, so left alone the dump is a
+	// root-owned file in a directory somebody made by hand: the ubuntu cron
+	// script's own same-day redirect onto it is then refused. So the
+	// directory is made or repaired for the service user first -- after the
+	// prompts and discovery above, so a lookup failure costs nothing -- and
+	// handed over again once the dump exists, which also repairs any
+	// root-owned dumps an older clasm left. A failed dump chowns nothing.
+	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	if err != nil {
+		return err
+	}
+	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, sqlBackupDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+
 	command := buildSQLDumpCommand(containerName, dbName, dbUser, directory, time.Now().Format("2006-01-02"))
 	_, status, err := RunShellCommand(ctx, ssmClient, inst.InstanceID, command, DefaultSQLDumpTimeout, DefaultSSMPollInterval)
 	if err != nil {
@@ -127,6 +149,9 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
 		return fmt.Errorf("SQL dump failed on %s (status: %s)", inst.InstanceID, status)
+	}
+	if err := ChownBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+		return err
 	}
 	fmt.Fprintf(w, "SQL backup created in %s on %s.\n", directory, inst.InstanceID)
 	return nil

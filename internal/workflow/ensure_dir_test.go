@@ -139,3 +139,59 @@ func TestEnsureBackupDirectory_RefusesBadMode(t *testing.T) {
 		}
 	}
 }
+
+func TestChownBackupDirectory_SendsRecursiveChownToTheOwner(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
+	if err := ChownBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.sendCommandCalls() != 1 {
+		t.Fatalf("expected exactly 1 SendCommand call, got %d", fake.sendCommandCalls())
+	}
+	if want := "chown -R 1000:1001 '/opt/rdm_sql_backups'"; fake.lastCommandText != want {
+		t.Errorf("sent %q, want %q", fake.lastCommandText, want)
+	}
+}
+
+func TestChownBackupDirectory_FailedStatusNamesDirectoryAndInstance(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "chown: invalid user"}
+	err := ChownBackupDirectory(context.Background(), fake, "i-abc", "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"/opt/rdm_sql_backups", "i-abc", "invalid user"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestChownBackupDirectory_PropagatesTransportError(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
+	err := ChownBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval)
+	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
+		t.Errorf("expected the transport error to propagate, got: %v", err)
+	}
+}
+
+// `chown -R /` as root is the worst thing this package could send, so the
+// recursive step gets the same refusal the ensure step has, before anything
+// is sent.
+func TestChownBackupDirectory_RefusesUnsafeDirectories(t *testing.T) {
+	for _, dir := range []string{"", "/", "//", "/.", "/opt/..", "relative/dir"} {
+		fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
+		err := ChownBackupDirectory(context.Background(), fake, "i-1", dir, testOwner, time.Second, testPollInterval)
+		if err == nil {
+			t.Errorf("dir %q: expected an error, got none", dir)
+		}
+		if fake.sendCommandCalls() != 0 {
+			t.Errorf("dir %q: sent %d commands; an unsafe directory must be refused before anything is sent", dir, fake.sendCommandCalls())
+		}
+	}
+}
+
+func TestDefaultOwnershipTimeout(t *testing.T) {
+	if DefaultOwnershipTimeout < time.Minute {
+		t.Errorf("DefaultOwnershipTimeout = %v; a recursive chown over a directory of dumps needs more than a minute of headroom", DefaultOwnershipTimeout)
+	}
+}

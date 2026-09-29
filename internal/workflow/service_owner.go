@@ -23,6 +23,11 @@ import (
 // is speculative until a deployment differs.
 const DefaultRDMServiceUser = "ubuntu"
 
+// DefaultOwnershipTimeout bounds the short ownership steps: the owner lookup,
+// the ensure-directory step, and a recursive chown over a directory of dumps.
+// None is slow, but a chown -R walks every entry, so it gets headroom.
+const DefaultOwnershipTimeout = 5 * time.Minute
+
 // ServiceOwner is DefaultRDMServiceUser's numeric identity on one instance.
 //
 // The uid and gid are resolved on the instance and kept separate because
