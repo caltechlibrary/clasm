@@ -119,7 +119,7 @@ func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
 }
 
 func TestClassifyCLIArgs_PathUnderADomainWithNoLeafFormsIsAUsageError(t *testing.T) {
-	for _, args := range [][]string{{"s3", "show-buckets"}, {"tag-management", "show-all-tags", "extra"}, {"configuration", "edit-regions"}} {
+	for _, args := range [][]string{{"configuration", "edit-regions"}, {"configuration", "show-config", "extra"}} {
 		mode, _, _, _, err := classifyCLIArgs(args)
 		if mode != cliModeNone {
 			t.Errorf("%v: mode = %q, want %q", args, mode, cliModeNone)
@@ -414,19 +414,81 @@ func TestRunCLILeaf_IAMUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T) {
 }
 
 // Each domain loads only the data its leaves read: IAM must not wait on (or
-// fail because of) the EC2 listings.
+// fail because of) the EC2 listings, and S3 must not load key pairs.
 func TestRefreshForCLIDomain_LoadsOnlyWhatTheDomainReads(t *testing.T) {
 	for domain, want := range map[string]string{
-		"compute": "ec2", "rdm-backup-and-restore": "ec2", "key-management": "keys", "iam": "",
+		"compute": "ec2", "rdm-backup-and-restore": "ec2", "key-management": "keys", "s3": "s3", "tag-management": "tags", "iam": "",
 	} {
 		var called []string
-		ec2 := func(context.Context) error { called = append(called, "ec2"); return nil }
-		keys := func(context.Context) error { called = append(called, "keys"); return nil }
-		if err := refreshForCLIDomain(context.Background(), domain, ec2, keys); err != nil {
+		mark := func(name string) func(context.Context) error {
+			return func(context.Context) error { called = append(called, name); return nil }
+		}
+		loaders := map[string]func(context.Context) error{
+			"compute": mark("ec2"), "rdm-backup-and-restore": mark("ec2"), "key-management": mark("keys"),
+			"s3": mark("s3"), "tag-management": mark("tags"),
+		}
+		if err := refreshForCLIDomain(context.Background(), domain, loaders); err != nil {
 			t.Fatal(err)
 		}
 		if got := strings.Join(called, ","); got != want {
 			t.Errorf("%s loaded %q, want %q", domain, got, want)
 		}
+	}
+}
+
+func TestClassifyCLIArgs_S3AndTagManagementLeaves(t *testing.T) {
+	for _, tc := range [][]string{{"s3", "show-buckets"}, {"tag-management", "show-all-tags"}} {
+		mode, _, leafSlug, _, err := classifyCLIArgs(tc)
+		if err != nil || mode != cliModeLeaf || leafSlug != tc[1] {
+			t.Errorf("%v: mode=%q leaf=%q err=%v", tc, mode, leafSlug, err)
+		}
+	}
+	mode, _, _, leafArgs, err := classifyCLIArgs([]string{"tag-management", "show-all-tags", "instance"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 1 {
+		t.Errorf("a kind argument is a run: mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+	for _, tc := range [][]string{{"s3", "delete-bucket"}, {"tag-management", "manage-tags"}} {
+		if _, _, _, _, err := classifyCLIArgs(tc); err == nil {
+			t.Errorf("%v: want a usage error", tc)
+		}
+	}
+}
+
+func TestRunCLILeaf_ShowBuckets(t *testing.T) {
+	env := cliEnv{buckets: []inventory.Bucket{{Name: "sql-backups", Region: "us-west-2", Purpose: "backup"}}}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-buckets", []string{"-json"}, env); code != 0 || !strings.Contains(out.String(), `"name": "sql-backups"`) || eout.Len() != 0 {
+		t.Errorf("-json: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-buckets", []string{"-jsonl"}, env); code != 0 || strings.Count(out.String(), "\n") != 1 {
+		t.Errorf("-jsonl: code=%d out=%q", code, out.String())
+	}
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-buckets", []string{"-json", "stray"}, env); code != 2 {
+		t.Errorf("stray word: code=%d", code)
+	}
+}
+
+func TestRunCLILeaf_ShowAllTags(t *testing.T) {
+	env := cliEnv{instances: []inventory.Instance{{InstanceID: "i-1", Name: "web-1", Tags: map[string]string{"Owner": "dld"}}}}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-all-tags", []string{"-json", "instance"}, env); code != 0 || !strings.Contains(out.String(), `"Owner": "dld"`) || !strings.Contains(out.String(), `"kind": "instance"`) {
+		t.Errorf("code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	for _, args := range [][]string{nil, {"-json"}, {"instance", "ami"}, {"-json", "-text", "instance"}} {
+		out.Reset()
+		eout.Reset()
+		if code := runCLILeaf(context.Background(), &out, &eout, "show-all-tags", args, env); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm tag-management show-all-tags") {
+			t.Errorf("%v: want exit 2 with usage; code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-all-tags", []string{"volume"}, env); code != 2 || !strings.Contains(eout.String(), `unknown kind "volume"`) || !strings.Contains(eout.String(), "iam-policy") {
+		t.Errorf("unknown kind: code=%d err=%q", code, eout.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-all-tags", []string{"--help"}, env); code != 0 || !strings.Contains(out.String(), "launch-template") || !strings.Contains(out.String(), "iam-instance-profile") {
+		t.Errorf("--help should list the kinds: code=%d out=%q", code, out.String())
 	}
 }

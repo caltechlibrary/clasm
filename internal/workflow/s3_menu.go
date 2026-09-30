@@ -36,8 +36,11 @@ type S3Actions struct {
 // s3Item pairs an S3 menu label with the S3Actions field it dispatches
 // to.
 type s3Item struct {
-	label  string
-	action func(S3Actions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment (DR-0177); empty means it has
+	// no CLI form yet.
+	cliSlug string
+	action  func(S3Actions, context.Context) error
 }
 
 // s3MenuItems is DESIGN.md 21.2's S3 domain menu, in order. "Show
@@ -49,12 +52,12 @@ type s3Item struct {
 // key everywhere, so a redundant menu item would just be a second way to
 // do the same thing.
 var s3MenuItems = []s3Item{
-	{"Show Buckets", func(a S3Actions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
-	{"Create Bucket", func(a S3Actions, ctx context.Context) error { return a.CreateBucket(ctx) }},
-	{"Configure Static Website Hosting", func(a S3Actions, ctx context.Context) error { return a.ConfigureWebsite(ctx) }},
-	{"Browse & Manage Objects", func(a S3Actions, ctx context.Context) error { return a.BrowseAndManageObjects(ctx) }},
-	{"Manage Bucket Lifecycle Policies", func(a S3Actions, ctx context.Context) error { return a.ManageLifecyclePolicies(ctx) }},
-	{"Delete Bucket", func(a S3Actions, ctx context.Context) error { return a.DeleteBucket(ctx) }},
+	{label: "Show Buckets", cliSlug: ShowBucketsCLISlug, action: func(a S3Actions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
+	{label: "Create Bucket", action: func(a S3Actions, ctx context.Context) error { return a.CreateBucket(ctx) }},
+	{label: "Configure Static Website Hosting", action: func(a S3Actions, ctx context.Context) error { return a.ConfigureWebsite(ctx) }},
+	{label: "Browse & Manage Objects", action: func(a S3Actions, ctx context.Context) error { return a.BrowseAndManageObjects(ctx) }},
+	{label: "Manage Bucket Lifecycle Policies", action: func(a S3Actions, ctx context.Context) error { return a.ManageLifecyclePolicies(ctx) }},
+	{label: "Delete Bucket", action: func(a S3Actions, ctx context.Context) error { return a.DeleteBucket(ctx) }},
 }
 
 // RunS3Menu runs the S3 domain's interactive menu loop, the same shape as
@@ -138,4 +141,34 @@ func pickS3MenuItem(w io.Writer, input io.Reader, output io.Writer) (s3Item, err
 		return s3Item{}, err
 	}
 	return s3MenuItems[idx], nil
+}
+
+// S3DomainCLISlug is the S3 domain's cliSlug.
+const S3DomainCLISlug = "s3"
+
+// ShowBucketsCLISlug is "Show Buckets"'s cliSlug (DR-0177's mechanical rule).
+const ShowBucketsCLISlug = "show-buckets"
+
+func s3ItemBySlug(slug string) (s3Item, bool) {
+	for _, item := range s3MenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return s3Item{}, false
+}
+
+// RunS3MenuFromSlug runs slug's leaf once, then falls into the S3 menu. ok is
+// false, and nothing runs, for an unregistered slug.
+func RunS3MenuFromSlug(ctx context.Context, w io.Writer, actions S3Actions, slug string) (ok bool, err error) {
+	return runS3MenuFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+func runS3MenuFromSlug(ctx context.Context, w io.Writer, actions S3Actions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := s3ItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	return true, runLeafThenMenu(ctx, w, func(ctx context.Context) error { return item.action(actions, ctx) }, actions.Refresh,
+		func() error { return runS3Menu(ctx, w, actions, menuInput, menuOutput) }, menuInput, menuOutput)
 }

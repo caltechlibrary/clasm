@@ -405,13 +405,14 @@ spaces becomes one hyphen (so "Resize instance's root volume" is
 `s3`, `tag-management`, `iam`, `rdm-backup-and-restore` and
 `configuration`.
 
-Four domains have actions with the full non-interactive form today:
+Six domains have actions with the full non-interactive form today:
 **RDM Backup & Restore** (`rdm-backup-and-restore`, below) and the
 read-only "Show" actions of **Compute** (`compute`), **Key Management**
-(`key-management`) and **IAM** (`iam`), described under "Read-only
-forms". A path *under* any other domain (`clasm s3 show-buckets`) is a
-usage error saying that domain has no CLI sub-commands yet. An action
-slug is valid only under its own domain.
+(`key-management`), **IAM** (`iam`), **S3** (`s3`) and **Tag Management**
+(`tag-management`), described under "Read-only forms". A path *under*
+the remaining domain, Configuration (`clasm configuration edit-regions`), is
+a usage error saying it has no CLI sub-commands yet. An action slug is valid
+only under its own domain.
 
 The RDM actions:
 
@@ -505,6 +506,27 @@ cloud-init, below, which is refused unless you ask for it.)
 
 Timestamps in JSON are RFC 3339 in UTC (`2026-07-23T17:30:00Z`). In the
 text view they keep the screen's `2026-07-23 17:30` layout.
+
+#### S3 and Tag Management
+
+`s3 show-buckets`
+: the bucket listing: name, region, whether static website hosting is
+  configured, and the `Purpose` tag (`website`, `backup`, `internal`, or empty
+  when untagged). Browsing objects, lifecycle policies and the bucket editors
+  stay interactive.
+
+`tag-management show-all-tags <kind>`
+: every resource of one kind with its **complete** tag set. As in the
+  interactive view the kind is chosen first, since covering every kind at
+  once would cost a tag lookup per bucket and per IAM resource every time.
+  `<kind>` is one of `instance`, `ami`, `launch-template`, `key-pair`,
+  `s3-bucket`, `iam-role`, `iam-instance-profile` or `iam-policy`; anything
+  else is a usage error that lists them. Each JSON record carries its `kind`,
+  so `-jsonl` lines stay self-describing when several runs are concatenated.
+  In the text view the tags are one `key=value, key=value` column, sorted by
+  key; in JSON they are an object, `{}` when untagged. S3 is the slow kind
+  (one `GetBucketTagging` call per bucket: about twenty seconds for 78
+  buckets); IAM roles take under ten.
 
 #### Output formats
 

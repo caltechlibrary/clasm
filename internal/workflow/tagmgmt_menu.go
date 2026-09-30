@@ -31,8 +31,11 @@ type TagMgmtActions struct {
 // tagMgmtItem pairs a Tag Management menu label with the
 // TagMgmtActions field it dispatches to.
 type tagMgmtItem struct {
-	label  string
-	action func(TagMgmtActions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment (DR-0177); empty means it has
+	// no CLI form yet.
+	cliSlug string
+	action  func(TagMgmtActions, context.Context) error
 }
 
 // tagMgmtMenuItems is DESIGN.md's Tag Management menu, in order. "Show
@@ -44,8 +47,8 @@ type tagMgmtItem struct {
 // key everywhere, so a redundant menu item would just be a second way to
 // do the same thing.
 var tagMgmtMenuItems = []tagMgmtItem{
-	{"Show all tags", func(a TagMgmtActions, ctx context.Context) error { return a.ShowAllTags(ctx) }},
-	{"Manage tags", func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
+	{label: "Show all tags", cliSlug: ShowAllTagsCLISlug, action: func(a TagMgmtActions, ctx context.Context) error { return a.ShowAllTags(ctx) }},
+	{label: "Manage tags", action: func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 }
 
 // pickTagMgmtItem runs the Tag Management menu's huh.Select and returns
@@ -120,4 +123,34 @@ func runTagMgmtMenu(ctx context.Context, w io.Writer, actions TagMgmtActions, me
 			pauseForAcknowledgment(menuInput, menuOutput)
 		}
 	}
+}
+
+// TagManagementDomainCLISlug is the Tag Management domain's cliSlug.
+const TagManagementDomainCLISlug = "tag-management"
+
+// ShowAllTagsCLISlug is "Show all tags"'s cliSlug (DR-0177's mechanical rule).
+const ShowAllTagsCLISlug = "show-all-tags"
+
+func tagMgmtItemBySlug(slug string) (tagMgmtItem, bool) {
+	for _, item := range tagMgmtMenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return tagMgmtItem{}, false
+}
+
+// RunTagMgmtMenuFromSlug runs slug's leaf once, then falls into the Tag
+// Management menu. ok is false, and nothing runs, for an unregistered slug.
+func RunTagMgmtMenuFromSlug(ctx context.Context, w io.Writer, actions TagMgmtActions, slug string) (ok bool, err error) {
+	return runTagMgmtMenuFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+func runTagMgmtMenuFromSlug(ctx context.Context, w io.Writer, actions TagMgmtActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := tagMgmtItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	return true, runLeafThenMenu(ctx, w, func(ctx context.Context) error { return item.action(actions, ctx) }, actions.Refresh,
+		func() error { return runTagMgmtMenu(ctx, w, actions, menuInput, menuOutput) }, menuInput, menuOutput)
 }

@@ -77,18 +77,15 @@ func classifyCLIArgs(args []string) (mode, domainSlug, leafSlug string, leafArgs
 	return cliModeRun, domainSlug, leafSlug, leafArgs, nil
 }
 
-// refreshForCLIDomain loads the data domainSlug's leaves read, the same load the
-// interactive path does on entering that domain. Compute and RDM Backup &
-// Restore read the EC2 listings; Key Management reads key pairs; IAM loads
-// nothing up front, so a script using it never waits on the EC2 listings.
-func refreshForCLIDomain(ctx context.Context, domainSlug string, refresh, refreshKeyMgmt func(context.Context) error) error {
-	switch domainSlug {
-	case workflow.KeyManagementDomainCLISlug:
-		return refreshKeyMgmt(ctx)
-	case workflow.IAMDomainCLISlug:
-		return nil
+// refreshForCLIDomain runs domainSlug's loader, the same load the interactive
+// path does on entering that domain. A domain with no loader loads nothing up
+// front (IAM fetches what it shows), so a script using it never waits on -- or
+// fails because of -- another domain's listings.
+func refreshForCLIDomain(ctx context.Context, domainSlug string, loaders map[string]func(context.Context) error) error {
+	if load, ok := loaders[domainSlug]; ok {
+		return load(ctx)
 	}
-	return refresh(ctx)
+	return nil
 }
 
 // cliEnv is everything a CLI leaf may need, gathered once by main: the AWS
@@ -103,6 +100,7 @@ type cliEnv struct {
 	images               []inventory.Image
 	launchTemplates      []inventory.LaunchTemplate
 	keyPairs             []inventory.KeyPair
+	buckets              []inventory.Bucket
 	iamClient            awsclient.IAMAPI
 	originTag            config.OriginTagConfig
 	rdmPostgresRules     []config.RDMPostgresRule
@@ -195,6 +193,9 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 			return code
 		}
 		if code, handled := runKeyMgmtIAMLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
+			return code
+		}
+		if code, handled := runS3TagLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
 			return code
 		}
 		// Unreachable: classifyCLIArgs already validated leafSlug

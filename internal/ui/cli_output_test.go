@@ -200,3 +200,65 @@ func TestWriteIAMListings_TextAndEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteBuckets(t *testing.T) {
+	bs := []inventory.Bucket{{Name: "sql-backups.library.caltech.edu", Region: "us-west-2", StaticWebsite: false, Purpose: "backup"}, {Name: "site", Region: "us-east-1", StaticWebsite: true}}
+	var b bytes.Buffer
+	if err := WriteBuckets(&b, bs, FormatText); err != nil || !strings.HasPrefix(b.String(), "NAME") || !strings.Contains(b.String(), "backup") || strings.Contains(b.String(), "\x1b") {
+		t.Errorf("text: %q err=%v", b.String(), err)
+	}
+	b.Reset()
+	if err := WriteBuckets(&b, bs, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(b.Bytes(), &got); err != nil || len(got) != 2 {
+		t.Fatalf("%v\n%s", err, b.String())
+	}
+	if got[0]["name"] != "sql-backups.library.caltech.edu" || got[0]["region"] != "us-west-2" || got[0]["static_website"] != false || got[0]["purpose"] != "backup" {
+		t.Errorf("bucket 0: %v", got[0])
+	}
+	// A real boolean, and an untagged bucket's purpose is empty, not a placeholder.
+	if got[1]["static_website"] != true || got[1]["purpose"] != "" {
+		t.Errorf("bucket 1: %v", got[1])
+	}
+	b.Reset()
+	if err := WriteBuckets(&b, nil, FormatJSON); err != nil || strings.TrimSpace(b.String()) != "[]" {
+		t.Errorf("empty: %q err=%v", b.String(), err)
+	}
+}
+
+func TestWriteTaggedResources(t *testing.T) {
+	rs := []TaggedResource{
+		{ID: "i-1", Label: "web-1 (running)", Tags: map[string]string{"Name": "web-1", "Owner": "dld"}},
+		{ID: "i-2", Label: "bare"},
+	}
+	var b bytes.Buffer
+	if err := WriteTaggedResources(&b, "instance", rs, FormatText); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[1], "Name=web-1, Owner=dld") || !strings.Contains(lines[2], "(no tags)") {
+		t.Errorf("text:\n%s", b.String())
+	}
+	b.Reset()
+	if err := WriteTaggedResources(&b, "instance", rs, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(b.Bytes(), &got); err != nil || len(got) != 2 {
+		t.Fatalf("%v\n%s", err, b.String())
+	}
+	// The kind travels with each record so JSONL lines stay self-describing; an
+	// untagged resource has {} and never the "(no tags)" display text.
+	if got[0]["kind"] != "instance" || got[0]["id"] != "i-1" || got[0]["label"] != "web-1 (running)" {
+		t.Errorf("record 0: %v", got[0])
+	}
+	if tags, ok := got[1]["tags"].(map[string]any); !ok || len(tags) != 0 {
+		t.Errorf("untagged wants {}, got %v", got[1]["tags"])
+	}
+	b.Reset()
+	if err := WriteTaggedResources(&b, "instance", rs, FormatJSONL); err != nil || strings.Count(b.String(), "\n") != 2 || !strings.Contains(strings.Split(b.String(), "\n")[0], `"kind":"instance"`) {
+		t.Errorf("jsonl: %q err=%v", b.String(), err)
+	}
+}

@@ -261,3 +261,44 @@ func WriteIAMPolicies(w io.Writer, summaries []inventory.IAMPolicySummary, forma
 	}
 	return writeRecords(w, recs, format)
 }
+
+type bucketJSON struct {
+	Name          string `json:"name"`
+	Region        string `json:"region"`
+	StaticWebsite bool   `json:"static_website"`
+	Purpose       string `json:"purpose"`
+}
+
+// WriteBuckets writes S3 buckets in format.
+func WriteBuckets(w io.Writer, buckets []inventory.Bucket, format Format) error {
+	if format == FormatText {
+		cfg := bucketListViewConfig(buckets)
+		return writeText(w, cfg.Header, cfg.Rows)
+	}
+	recs := make([]any, len(buckets))
+	for i, b := range buckets {
+		recs[i] = bucketJSON{b.Name, b.Region, b.StaticWebsite, b.Purpose}
+	}
+	return writeRecords(w, recs, format)
+}
+
+type taggedResourceJSON struct {
+	Kind  string            `json:"kind"`
+	ID    string            `json:"id"`
+	Label string            `json:"label"`
+	Tags  map[string]string `json:"tags"`
+}
+
+// WriteTaggedResources writes one kind's resources with their complete tag sets
+// in format. kind is the CLI kind slug, carried on every JSON record.
+func WriteTaggedResources(w io.Writer, kind string, resources []TaggedResource, format Format) error {
+	if format == FormatText {
+		cfg := tagsListViewConfig("", resources)
+		return writeText(w, cfg.Header, cfg.Rows)
+	}
+	recs := make([]any, len(resources))
+	for i, r := range resources {
+		recs[i] = taggedResourceJSON{kind, r.ID, r.Label, nonNilTags(r.Tags)}
+	}
+	return writeRecords(w, recs, format)
+}

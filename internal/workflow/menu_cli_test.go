@@ -56,7 +56,11 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 		{"iam", "delete-role", false}, // no form yet
 		{"key-management", "show-key-pairs", true},
 		{"key-management", "show-roles", false}, // IAM's slug, not Key Management's
-		{"s3", "show-buckets", false},           // no leaf forms yet
+		{"s3", "show-buckets", true},
+		{"s3", "delete-bucket", false}, // no form yet
+		{"tag-management", "show-all-tags", true},
+		{"tag-management", "manage-tags", false},
+		{"configuration", "edit-regions", false}, // no leaf forms yet
 		{"no-such-domain", "show-instances", false},
 	} {
 		if got := LeafCLISlugExists(tc.domain, tc.leaf); got != tc.want {
@@ -69,7 +73,7 @@ func TestDomainHasLeafCLIForms(t *testing.T) {
 	for domain, want := range map[string]bool{
 		"compute": true, "rdm-backup-and-restore": true,
 		"iam": true, "key-management": true,
-		"s3": false, "tag-management": false, "configuration": false,
+		"s3": true, "tag-management": true, "configuration": false,
 	} {
 		if got := DomainHasLeafCLIForms(domain); got != want {
 			t.Errorf("DomainHasLeafCLIForms(%q) = %t, want %t", domain, got, want)
@@ -187,5 +191,57 @@ func TestRunIAMMenuFromSlug(t *testing.T) {
 	term2, buf2 := newTermOnly()
 	if ok, err := runIAMMenuFromSlug(context.Background(), term2, actions, "show-roles", nil, nil); !ok || err != nil || !strings.Contains(buf2.String(), "Exiting") {
 		t.Errorf("exit signal: ok=%t err=%v out=%q", ok, err, buf2.String())
+	}
+}
+
+func TestS3AndTagMgmtMenuItems_CLISlugs(t *testing.T) {
+	wantS3 := map[string]string{
+		"Show Buckets": "show-buckets", "Create Bucket": "", "Configure Static Website Hosting": "",
+		"Browse & Manage Objects": "", "Manage Bucket Lifecycle Policies": "", "Delete Bucket": "",
+	}
+	for _, item := range s3MenuItems {
+		if want, ok := wantS3[item.label]; !ok || item.cliSlug != want {
+			t.Errorf("s3MenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, want, ok)
+		}
+	}
+	wantTag := map[string]string{"Show all tags": "show-all-tags", "Manage tags": ""}
+	for _, item := range tagMgmtMenuItems {
+		if want, ok := wantTag[item.label]; !ok || item.cliSlug != want {
+			t.Errorf("tagMgmtMenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, want, ok)
+		}
+	}
+}
+
+func TestRunS3MenuFromSlug(t *testing.T) {
+	term, buf := newTermOnly()
+	var refreshCalls int
+	if ok, err := runS3MenuFromSlug(context.Background(), term, testS3Actions(&refreshCalls), "no-such-leaf", nil, nil); ok || err != nil || buf.Len() != 0 {
+		t.Errorf("unknown slug: ok=%t err=%v out=%q", ok, err, buf.String())
+	}
+	var showCalls, createCalls int
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := testS3Actions(&refreshCalls)
+	actions.ShowResourceLists = countingAction(&showCalls)
+	actions.CreateBucket = cancelingAction(&createCalls, cancel)
+	ok, err := runS3MenuFromSlug(ctx, term, actions, "show-buckets", newHuhAccessibleInput("\n2\n\n"), buf)
+	if !ok || err != nil || showCalls != 1 || createCalls != 1 {
+		t.Errorf("ok=%t err=%v show=%d create=%d", ok, err, showCalls, createCalls)
+	}
+}
+
+func TestRunTagMgmtMenuFromSlug(t *testing.T) {
+	term, buf := newTermOnly()
+	var refreshCalls int
+	if ok, err := runTagMgmtMenuFromSlug(context.Background(), term, testTagMgmtActions(&refreshCalls), "no-such-leaf", nil, nil); ok || err != nil || buf.Len() != 0 {
+		t.Errorf("unknown slug: ok=%t err=%v out=%q", ok, err, buf.String())
+	}
+	var showCalls, manageCalls int
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := testTagMgmtActions(&refreshCalls)
+	actions.ShowAllTags = countingAction(&showCalls)
+	actions.ManageTags = cancelingAction(&manageCalls, cancel)
+	ok, err := runTagMgmtMenuFromSlug(ctx, term, actions, "show-all-tags", newHuhAccessibleInput("\n2\n\n"), buf)
+	if !ok || err != nil || showCalls != 1 || manageCalls != 1 {
+		t.Errorf("ok=%t err=%v show=%d manage=%d", ok, err, showCalls, manageCalls)
 	}
 }

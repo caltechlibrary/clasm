@@ -649,6 +649,16 @@ func main() {
 		},
 	}
 
+	// The loader each CLI domain runs first -- the same one its interactive
+	// closure runs on entry. IAM has none.
+	cliLoaders := map[string]func(context.Context) error{
+		workflow.ComputeDomainCLISlug:          refresh,
+		workflow.RDMBackupRestoreDomainCLISlug: refresh,
+		workflow.KeyManagementDomainCLISlug:    refreshKeyMgmt,
+		workflow.S3DomainCLISlug:               refreshS3,
+		workflow.TagManagementDomainCLISlug:    refreshTagMgmt,
+	}
+
 	switch cliMode {
 	case cliModeNone:
 		if err := workflow.RunDomainPicker(ctx, out, domains); err != nil {
@@ -664,7 +674,7 @@ func main() {
 		// Same data each domain's own closure loads on entry (DESIGN.md,
 		// "Navigation: Domain Picker") -- the deep-linked leaf reads the same
 		// state. IAM fetches what it shows and loads nothing up front.
-		if err := refreshForCLIDomain(ctx, cliDomainSlug, refresh, refreshKeyMgmt); err != nil {
+		if err := refreshForCLIDomain(ctx, cliDomainSlug, cliLoaders); err != nil {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
@@ -676,6 +686,10 @@ func main() {
 			_, leafErr = workflow.RunKeyMgmtMenuFromSlug(ctx, out, keyMgmtActions, cliLeafSlug)
 		case workflow.IAMDomainCLISlug:
 			_, leafErr = workflow.RunIAMMenuFromSlug(ctx, out, iamActions, cliLeafSlug)
+		case workflow.S3DomainCLISlug:
+			_, leafErr = workflow.RunS3MenuFromSlug(ctx, out, s3Actions, cliLeafSlug)
+		case workflow.TagManagementDomainCLISlug:
+			_, leafErr = workflow.RunTagMgmtMenuFromSlug(ctx, out, tagMgmtActions, cliLeafSlug)
 		default:
 			_, leafErr = workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug)
 		}
@@ -684,15 +698,22 @@ func main() {
 			os.Exit(1)
 		}
 	case cliModeRun:
-		if err := refreshForCLIDomain(ctx, cliDomainSlug, refresh, refreshKeyMgmt); err != nil {
+		if err := refreshForCLIDomain(ctx, cliDomainSlug, cliLoaders); err != nil {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
-		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, cliEnv{
+		env := cliEnv{
 			ssmClients: ssmClients, ec2Clients: ec2Clients, s3Client: s3Client, newS3Client: newS3Client,
 			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
-			keyPairs: keyMgmtState.keyPairs, iamClient: iamClient, originTag: cfg.OriginTag,
+			keyPairs: keyMgmtState.keyPairs, buckets: s3State.buckets, iamClient: iamClient, originTag: cfg.OriginTag,
 			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
-		}))
+		}
+		if cliDomainSlug == workflow.TagManagementDomainCLISlug {
+			// Tag Management loads its own five lists independently of Compute,
+			// Key Management and S3 (refreshTagMgmt); its leaves read those.
+			env.instances, env.images, env.launchTemplates = tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates
+			env.keyPairs, env.buckets = tagMgmtState.keyPairs, tagMgmtState.buckets
+		}
+		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, env))
 	}
 }

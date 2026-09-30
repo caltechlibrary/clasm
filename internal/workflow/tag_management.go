@@ -466,39 +466,67 @@ func showAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.
 		return cancelledIsNil(w, err)
 	}
 
+	title, rows, err := taggedResourcesForKind(ctx, kind, TagSources{
+		NewS3Client: newS3Client, IAMClient: iamClient, OriginTag: originTag,
+		Instances: instances, Images: images, LaunchTemplates: launchTemplates, KeyPairs: keyPairs, Buckets: buckets,
+	})
+	if err != nil {
+		return err
+	}
+	if title == "" {
+		return nil
+	}
+	return ui.DisplayAllTags(ctx, title, rows)
+}
+
+// TagSources is everything "Show all tags" reads, for either the interactive
+// view or the non-interactive form: the preloaded EC2 and key pair listings,
+// the S3 bucket list (whose tags are fetched on demand) and the IAM client.
+type TagSources struct {
+	NewS3Client     func(ctx context.Context, region string) (awsclient.S3API, error)
+	IAMClient       awsclient.IAMAPI
+	OriginTag       config.OriginTagConfig
+	Instances       []inventory.Instance
+	Images          []inventory.Image
+	LaunchTemplates []inventory.LaunchTemplate
+	KeyPairs        []inventory.KeyPair
+	Buckets         []inventory.Bucket
+}
+
+// taggedResourcesForKind returns one kind's screen title and rows, fetching
+// whatever that kind needs (bucket tags, the IAM lists). An unknown kind
+// returns an empty title and no error.
+func taggedResourcesForKind(ctx context.Context, kind string, src TagSources) (title string, rows []ui.TaggedResource, err error) {
 	switch kind {
 	case "Instance":
-		return ui.DisplayAllTags(ctx, "EC2 Instances -- All Tags", instanceTaggedResources(instances))
+		return "EC2 Instances -- All Tags", instanceTaggedResources(src.Instances), nil
 	case "AMI":
-		return ui.DisplayAllTags(ctx, "AMIs -- All Tags", imageTaggedResources(images))
+		return "AMIs -- All Tags", imageTaggedResources(src.Images), nil
 	case "Launch Template":
-		return ui.DisplayAllTags(ctx, "Launch Templates -- All Tags", launchTemplateTaggedResources(launchTemplates))
+		return "Launch Templates -- All Tags", launchTemplateTaggedResources(src.LaunchTemplates), nil
 	case "Key Pair":
-		return ui.DisplayAllTags(ctx, "Key Pairs -- All Tags", keyPairTaggedResources(keyPairs))
+		return "Key Pairs -- All Tags", keyPairTaggedResources(src.KeyPairs), nil
 	case "S3 Bucket":
-		rows, err := bucketTaggedResources(ctx, newS3Client, buckets)
-		if err != nil {
-			return err
-		}
-		return ui.DisplayAllTags(ctx, "S3 Buckets -- All Tags", rows)
+		rows, err := bucketTaggedResources(ctx, src.NewS3Client, src.Buckets)
+		return "S3 Buckets -- All Tags", rows, err
 	case "IAM Role":
-		roles, err := inventory.ListIAMRoleSummaries(ctx, iamClient, originTag)
+		roles, err := inventory.ListIAMRoleSummaries(ctx, src.IAMClient, src.OriginTag)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
-		return ui.DisplayAllTags(ctx, "IAM Roles -- All Tags", iamRoleTaggedResources(roles))
+		return "IAM Roles -- All Tags", iamRoleTaggedResources(roles), nil
 	case "IAM Instance Profile":
-		profiles, err := inventory.ListIAMInstanceProfileSummaries(ctx, iamClient, originTag)
+		profiles, err := inventory.ListIAMInstanceProfileSummaries(ctx, src.IAMClient, src.OriginTag)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
-		return ui.DisplayAllTags(ctx, "IAM Instance Profiles -- All Tags", iamInstanceProfileTaggedResources(profiles))
+		return "IAM Instance Profiles -- All Tags", iamInstanceProfileTaggedResources(profiles), nil
 	case "IAM Policy":
-		policies, err := inventory.ListIAMPolicySummaries(ctx, iamClient, originTag)
+		policies, err := inventory.ListIAMPolicySummaries(ctx, src.IAMClient, src.OriginTag)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
-		return ui.DisplayAllTags(ctx, "IAM Policies -- All Tags", iamPolicyTaggedResources(policies))
+		return "IAM Policies -- All Tags", iamPolicyTaggedResources(policies), nil
 	}
-	return nil
+	return "", nil, nil
 }

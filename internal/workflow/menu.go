@@ -318,6 +318,12 @@ func LeafCLISlugExists(domainSlug, leafSlug string) bool {
 	case IAMDomainCLISlug:
 		_, found := iamItemBySlug(leafSlug)
 		return found
+	case S3DomainCLISlug:
+		_, found := s3ItemBySlug(leafSlug)
+		return found
+	case TagManagementDomainCLISlug:
+		_, found := tagMgmtItemBySlug(leafSlug)
+		return found
 	}
 	return false
 }
@@ -326,7 +332,7 @@ func LeafCLISlugExists(domainSlug, leafSlug string) bool {
 // form yet; a path under a domain that has none is refused as a usage error.
 func DomainHasLeafCLIForms(domainSlug string) bool {
 	switch domainSlug {
-	case ComputeDomainCLISlug, RDMBackupRestoreDomainCLISlug, KeyManagementDomainCLISlug, IAMDomainCLISlug:
+	case ComputeDomainCLISlug, RDMBackupRestoreDomainCLISlug, KeyManagementDomainCLISlug, IAMDomainCLISlug, S3DomainCLISlug, TagManagementDomainCLISlug:
 		return true
 	}
 	return false
