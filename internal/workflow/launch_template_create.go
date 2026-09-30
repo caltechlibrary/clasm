@@ -146,9 +146,24 @@ func createLaunchTemplate(ctx context.Context, w io.Writer, client awsclient.EC2
 		return nil
 	}
 
-	templateData, err := buildRequestLaunchTemplateData(params, name)
+	id, _, err := createLaunchTemplateFromParams(ctx, client, name, params)
 	if err != nil {
 		return err
+	}
+
+	fmt.Fprintf(w, "Created launch template %s (%s), version 1.\n", id, name)
+	return nil
+}
+
+// createLaunchTemplateFromParams is the API step shared by the interactive
+// wizard and the non-interactive form: build the template data (IMDSv2 forced,
+// the instance tag spec including templateName) and create the template with
+// the wizard's tags on the template resource itself. It returns the new
+// template's ID and version number.
+func createLaunchTemplateFromParams(ctx context.Context, client awsclient.EC2API, name string, params LaunchInstanceParams) (id string, version int64, err error) {
+	templateData, err := buildRequestLaunchTemplateData(params, name)
+	if err != nil {
+		return "", 0, err
 	}
 
 	ctx, cancel := withCallTimeout(ctx)
@@ -159,9 +174,11 @@ func createLaunchTemplate(ctx context.Context, w io.Writer, client awsclient.EC2
 		TagSpecifications:  []types.TagSpecification{buildTagSpecification(types.ResourceTypeLaunchTemplate, params.Tags)},
 	})
 	if err != nil {
-		return fmt.Errorf("creating launch template: %w", err)
+		return "", 0, fmt.Errorf("creating launch template: %w", err)
 	}
-
-	fmt.Fprintf(w, "Created launch template %s (%s), version 1.\n", aws.ToString(out.LaunchTemplate.LaunchTemplateId), name)
-	return nil
+	version = aws.ToInt64(out.LaunchTemplate.LatestVersionNumber)
+	if version == 0 {
+		version = 1
+	}
+	return aws.ToString(out.LaunchTemplate.LaunchTemplateId), version, nil
 }

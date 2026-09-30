@@ -497,6 +497,54 @@ cloud-init, below, which is refused unless you ask for it.)
   add `-launch-temporary-instance`. If an instance was launched with no
   user-data, a note goes to standard error and the exit status is 0.
 
+#### Creating a launch template and launching from it
+
+Unlike the "Show" forms above, these two change things. Neither asks for
+confirmation, so they can run from a script.
+
+`create-launch-template-from-cloud-init-yaml [options] <cloud-init.yaml>`
+: the non-interactive form of **Create launch template from cloud-init
+  YAML**: version 1 of a new template. The wizard's prompts are options:
+
+  ~~~shell
+  clasm compute create-launch-template-from-cloud-init-yaml \
+    --name caltechauthors-v14 --ami caltechauthors-v13-base \
+    --instance-type m7i-flex.2xlarge --key-pair caltechauthors \
+    --security-group sg-ada165d0 --subnet subnet-5870b473 \
+    --iam-instance-profile rdm-backups \
+    --name-tag caltechauthors-v14 --environment test \
+    --root-volume-gb 250 cloud-init.yaml
+  ~~~
+
+  `--name`, `--ami` (a name or ID, in this account or an official Ubuntu image),
+  `--instance-type`, `--key-pair`, `--security-group` (repeat it or separate with
+  commas), `--subnet`, `--iam-instance-profile`, `--name-tag` and
+  `--environment` (`production`, `development` or `test`) are required.
+  `--project` defaults to the AMI's own project tag, and `--root-volume-gb` to
+  the AMI's own size (it may not be smaller). IMDSv2 is always required, and
+  instances launched from the template are tagged `Name`, `project`,
+  `Environment` and `templateName`, the template's own name. `-json` prints
+  `{template_id, name, version, region}`.
+
+  Everything the wizard checks is checked, but nothing is offered as a fix:
+  an instance type of the wrong architecture, needing ENA the AMI lacks, or not
+  offered in the subnet's zone is refused (exit 2) with the reason, and so is a
+  security group, subnet, key pair or instance profile that does not exist, an
+  instance profile that is not SSM-capable, or a missing or empty cloud-init
+  file. **The form never creates a key pair, an instance profile or a role**;
+  the ones you name must already exist. A template name already in use is an
+  AWS error (exit 1). Nothing is created unless every check passes.
+
+`create-ec2-instance-from-launch-template [-text|-json] <template> [version]`
+: the non-interactive form of **Create EC2 instance from launch template**.
+  `<template>` matches the template's name or ID, and `version` is a number
+  (`2` or `v2`), `$Latest`, or left out for `$Default`. It **launches one
+  billable instance** and waits for it to be running, then prints the
+  connection info (or, with `-json`, `{instance_id, state, public_ip, private_ip,
+  region, template_id, template_name, version}`). The progress line goes to
+  standard error, so standard output is the result alone. There is no
+  terminate form yet; end the instance from the Compute menu.
+
 #### Key Management and IAM
 
 `key-management show-key-pairs`

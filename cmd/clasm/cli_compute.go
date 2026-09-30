@@ -15,10 +15,11 @@ const (
 	showAMIsUsage            = "usage: clasm compute show-amis [-text|-json|-jsonl]"
 	showLaunchTemplatesUsage = "usage: clasm compute show-launch-templates [-text|-json|-jsonl]"
 
-	showInstanceDetailUsage       = "usage: clasm compute show-instance-detail [-text|-json] <instance-name-or-id>"
-	showAMIDetailUsage            = "usage: clasm compute show-ami-detail [-text|-json] <ami-name-or-id>"
-	showLaunchTemplateDetailUsage = "usage: clasm compute show-launch-template-detail [-text|-json] [-versions] <template-name-or-id> [version]"
-	showExportCloudInitUsage      = "usage: clasm compute show-export-cloud-init-for-an-instance-or-ami [-text|-json] [-launch-temporary-instance] <instance-or-ami-name-or-id> [file]"
+	showInstanceDetailUsage         = "usage: clasm compute show-instance-detail [-text|-json] <instance-name-or-id>"
+	showAMIDetailUsage              = "usage: clasm compute show-ami-detail [-text|-json] <ami-name-or-id>"
+	showLaunchTemplateDetailUsage   = "usage: clasm compute show-launch-template-detail [-text|-json] [-versions] <template-name-or-id> [version]"
+	createInstanceFromTemplateUsage = "usage: clasm compute create-ec2-instance-from-launch-template [-text|-json] <template-name-or-id> [version]"
+	showExportCloudInitUsage        = "usage: clasm compute show-export-cloud-init-for-an-instance-or-ami [-text|-json] [-launch-temporary-instance] <instance-or-ami-name-or-id> [file]"
 )
 
 // runComputeLeaf runs one of Compute's read-only CLI forms (DR-0177). handled is
@@ -60,6 +61,22 @@ func runComputeLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, l
 			version = words[1]
 		}
 		return reportCLIError(out, eout, workflow.RunShowLaunchTemplateDetailCLI(ctx, out, env.ec2Clients, env.launchTemplates, words[0], version, opts.Versions, opts.Format)), true
+	case workflow.CreateEC2InstanceFromLaunchTemplateCLISlug:
+		opts, words, err := parseLeafWords(leafSlug, createInstanceFromTemplateUsage, workflow.ComputeAllowNone, leafArgs, 1, 2)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		version := ""
+		if len(words) == 2 {
+			version = words[1]
+		}
+		return reportCLIError(out, eout, workflow.RunLaunchFromTemplateCLI(ctx, out, eout, env.ec2Clients, env.launchTemplates, words[0], version, opts.Format)), true
+	case workflow.CreateLaunchTemplateFromCloudInitCLISlug:
+		opts, yamlPath, err := workflow.ParseCreateLaunchTemplateArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunCreateLaunchTemplateCLI(ctx, out, env.ec2Clients, env.iamClient, env.images, opts, yamlPath)), true
 	case workflow.ShowExportCloudInitCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showExportCloudInitUsage, workflow.ComputeAllowLaunch, leafArgs, 1, 2)
 		if err != nil {

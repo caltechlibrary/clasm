@@ -534,3 +534,68 @@ func TestRunCLILeaf_GenerateSQLBackupWithoutAnSSMClientIsAFailure(t *testing.T) 
 		t.Errorf("code=%d err=%q, want exit 1 with a message", code, eout.String())
 	}
 }
+
+func TestClassifyCLIArgs_ComputeCreateLeaves(t *testing.T) {
+	for _, leaf := range []string{"create-ec2-instance-from-launch-template", "create-launch-template-from-cloud-init-yaml"} {
+		mode, _, leafSlug, _, err := classifyCLIArgs([]string{"compute", leaf})
+		if err != nil || mode != cliModeLeaf || leafSlug != leaf {
+			t.Errorf("%s: no further words must deep-link: mode=%q leaf=%q err=%v", leaf, mode, leafSlug, err)
+		}
+		mode, _, _, leafArgs, err := classifyCLIArgs([]string{"compute", leaf, "-json"})
+		if err != nil || mode != cliModeRun || len(leafArgs) != 1 {
+			t.Errorf("%s: an option alone is a run: mode=%q args=%v err=%v", leaf, mode, leafArgs, err)
+		}
+	}
+}
+
+func TestRunCLILeaf_CreateEC2InstanceFromLaunchTemplate(t *testing.T) {
+	// Usage errors never reach AWS (nil ec2Clients would fail a call).
+	for name, args := range map[string][]string{
+		"no template": nil, "only an option": {"-json"}, "three": {"a", "1", "x"}, "list-only option": {"-jsonl", "a"},
+		"unknown template": {"no-such-template"},
+	} {
+		var out, eout bytes.Buffer
+		code := runCLILeaf(context.Background(), &out, &eout, "create-ec2-instance-from-launch-template", args, computeEnv())
+		if code != 2 || out.Len() != 0 || eout.Len() == 0 {
+			t.Errorf("%s: code=%d out=%q err=%q", name, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "create-ec2-instance-from-launch-template", []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "<template") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+func TestRunCLILeaf_CreateLaunchTemplateFromCloudInitYAML(t *testing.T) {
+	const leaf = "create-launch-template-from-cloud-init-yaml"
+	valid := []string{
+		"--name", "t", "--ami", "ami-1", "--instance-type", "t3.micro", "--key-pair", "k", "--security-group", "sg-1",
+		"--subnet", "subnet-1", "--iam-instance-profile", "p", "--name-tag", "n", "--environment", "test",
+	}
+	// Usage errors never reach AWS (an empty cliEnv has no clients).
+	for name, args := range map[string][]string{
+		"no arguments":  nil,
+		"no file":       valid,
+		"missing ami":   {"--name", "t", "x.yaml"},
+		"bad env":       append(append([]string{}, valid[:len(valid)-1]...), "staging", "x.yaml"),
+		"jsonl refused": append([]string{"-jsonl"}, append(append([]string{}, valid...), "x.yaml")...),
+	} {
+		var out, eout bytes.Buffer
+		code := runCLILeaf(context.Background(), &out, &eout, leaf, args, cliEnv{})
+		if code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm compute "+leaf) {
+			t.Errorf("%s: want exit 2 with the usage; code=%d out=%q err=%q", name, code, out.String(), eout.String())
+		}
+	}
+	// Valid options reach the form itself: an unreadable file is refused before
+	// any AWS call, so nil clients are safe.
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, leaf, append(append([]string{}, valid...), "/no/such/cloud-init.yaml"), cliEnv{})
+	if code != 2 || !strings.Contains(eout.String(), "/no/such/cloud-init.yaml") {
+		t.Errorf("unreadable file: code=%d err=%q", code, eout.String())
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "--security-group") || !strings.Contains(out.String(), "never creates") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}

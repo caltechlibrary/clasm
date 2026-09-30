@@ -106,6 +106,10 @@ const (
 	// ShowExportCloudInitCLISlug is awkward (the label is); both will be
 	// shortened together later.
 	ShowExportCloudInitCLISlug = "show-export-cloud-init-for-an-instance-or-ami"
+
+	// The first two mutating Compute leaves with a form (DR-0177, same rule).
+	CreateEC2InstanceFromLaunchTemplateCLISlug = "create-ec2-instance-from-launch-template"
+	CreateLaunchTemplateFromCloudInitCLISlug   = "create-launch-template-from-cloud-init-yaml"
 )
 
 // mainMenuItems is DESIGN.md's Main Menu, grouped View/Inspect -> Instance
@@ -134,7 +138,7 @@ var mainMenuItems = []menuItem{
 	// Instance lifecycle
 	{label: "Create EC2 instance from AMI", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
 	{label: "Create EC2 instance from cloud-init YAML", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
-	{label: "Create EC2 instance from launch template", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
+	{label: "Create EC2 instance from launch template", cliSlug: CreateEC2InstanceFromLaunchTemplateCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
 	{label: "Start EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
 	{label: "Stop EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
 	{label: "Terminate EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
@@ -145,7 +149,7 @@ var mainMenuItems = []menuItem{
 	{label: "Create AMI from EC2 instance (running or stopped)", action: func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},
 	{label: "Remove AMI", action: func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},
 	// Launch Template lifecycle
-	{label: "Create launch template from cloud-init YAML", action: func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
+	{label: "Create launch template from cloud-init YAML", cliSlug: CreateLaunchTemplateFromCloudInitCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
 	{label: "Sync cloud-init YAML to a launch template", action: func(a MenuActions, ctx context.Context) error { return a.SyncLaunchTemplate(ctx) }},
 	{label: "Modify launch template's instance type / EBS root volume size", action: func(a MenuActions, ctx context.Context) error { return a.ModifyLaunchTemplateSize(ctx) }},
 	{label: "Promote a launch template version to default", action: func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
