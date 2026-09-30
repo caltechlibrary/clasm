@@ -48,3 +48,11 @@ func pastableArchiveOpenSearchCommand(appName string, p workflow.ArchiveOpenSear
 		appName, workflow.RDMBackupRestoreDomainCLISlug, workflow.ArchiveOpenSearchSnapshotCLISlug,
 		quoteArg(p.InstanceID), quoteArg(p.Directory), quoteArg(p.Bucket), quoteArg(cleanup))
 }
+
+// pastableGenerateSQLBackupCommand is the non-interactive equivalent of an
+// interactive Generate SQL Backup run that just used p.
+func pastableGenerateSQLBackupCommand(appName string, p workflow.SQLBackupParams) string {
+	return fmt.Sprintf("%s %s %s %s %s",
+		appName, workflow.RDMBackupRestoreDomainCLISlug, workflow.GenerateSQLBackupCLISlug,
+		quoteArg(p.InstanceID), quoteArg(p.Directory))
+}

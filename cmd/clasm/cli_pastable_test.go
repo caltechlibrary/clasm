@@ -74,3 +74,16 @@ func TestPastableArchiveOpenSearchCommand_NoCleanupRendersAnEmptyQuotedArgument(
 		t.Errorf("got %q, want it to end with an empty quoted cleanup argument", got)
 	}
 }
+
+func TestPastableGenerateSQLBackupCommand(t *testing.T) {
+	got := pastableGenerateSQLBackupCommand("clasm", workflow.SQLBackupParams{InstanceID: "i-0abc", Directory: "/opt/rdm_sql_backups"})
+	want := "clasm rdm-backup-and-restore generate-sql-backup 'i-0abc' '/opt/rdm_sql_backups'"
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	// A directory that grows a space or a quote must still paste.
+	got = pastableGenerateSQLBackupCommand("clasm", workflow.SQLBackupParams{InstanceID: "i-1", Directory: "/opt/it's here"})
+	if !strings.Contains(got, `'/opt/it'\''s here'`) {
+		t.Errorf("the directory was not shell-quoted: %s", got)
+	}
+}

@@ -435,18 +435,31 @@ The RDM actions:
   just created. An empty string skips cleanup entirely; unlike the SQL
   form, `0` is not a valid choice here.
 
+`generate-sql-backup <instance> <directory>`
+: the non-interactive form of **Generate SQL Backup**: writes a gzipped
+  `pg_dump` of the instance's RDM database into `<directory>` on the
+  instance, named `<container>-<database>-<date>.sql.gz`, and makes the
+  directory and its dumps belong to the service user (see "File ownership
+  on the instance"). The Postgres container and database are discovered on
+  the instance exactly as the interactive form does, and saved to `~/.clasm`
+  the first time. It needs only Docker on the instance, not the AWS CLI. There
+  is no confirmation: it writes one file and changes nothing else. A second
+  run on the same day **replaces that day's dump**, as the instance's own backup
+  script does. The interactive form prints this command after a run.
+
 ~~~shell
+clasm rdm-backup-and-restore generate-sql-backup caltechauthors-v13 /opt/rdm_sql_backups
 clasm rdm-backup-and-restore archive-sql-backups-to-s3 \
   caltechauthors-v13 /opt/rdm_sql_backups \
   s3://sql-backups.library.caltech.edu ""
 ~~~
 
-Both forms run every safety check the interactive menu does first
+The archive forms run every safety check the interactive menu does first
 (confirming the AWS CLI is present on the target instance, resolving and
 checking access to the destination bucket) -- only the interactive
 confirmation prompt is skipped. After a successful *interactive* run of
-either action, clasm prints the exact non-interactive command that
-reproduces it, ready to copy into a script or crontab entry.
+any of these three actions, clasm prints the exact non-interactive command
+that reproduces it, ready to copy into a script or crontab entry.
 
 ### Read-only forms
 

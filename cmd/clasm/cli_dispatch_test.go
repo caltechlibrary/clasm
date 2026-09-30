@@ -492,3 +492,45 @@ func TestRunCLILeaf_ShowAllTags(t *testing.T) {
 		t.Errorf("--help should list the kinds: code=%d out=%q", code, out.String())
 	}
 }
+
+// The last RDM leaf with a form: Generate SQL Backup (DR-0177).
+func TestClassifyCLIArgs_GenerateSQLBackupLeaf(t *testing.T) {
+	const leaf = "generate-sql-backup"
+	mode, _, leafSlug, _, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf})
+	if err != nil || mode != cliModeLeaf || leafSlug != leaf {
+		t.Errorf("no further words must deep-link into the prompts: mode=%q leaf=%q err=%v", mode, leafSlug, err)
+	}
+	mode, _, _, leafArgs, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf, "box", "/d"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 2 {
+		t.Errorf("arguments are a run: mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+}
+
+func TestRunCLILeaf_GenerateSQLBackupUsageErrorsExitTwoWithoutTouchingAWS(t *testing.T) {
+	insts := []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-east-1"}}
+	for name, args := range map[string][]string{
+		"one argument": {"box"}, "three": {"box", "/d", "x"}, "unknown box": {"nope", "/d"}, "empty dir": {"box", ""},
+	} {
+		var out, eout bytes.Buffer
+		// nil clients: any AWS call would panic, so reaching one would fail this test.
+		code := runCLILeaf(context.Background(), &out, &eout, "generate-sql-backup", args, cliEnv{instances: insts})
+		if code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "generate-sql-backup") {
+			t.Errorf("%s: code=%d out=%q err=%q", name, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "generate-sql-backup", []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "<instance> <directory>") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+// A region with no SSM client is a failure (exit 1), not a usage error.
+func TestRunCLILeaf_GenerateSQLBackupWithoutAnSSMClientIsAFailure(t *testing.T) {
+	insts := []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-east-1"}}
+	var eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "generate-sql-backup", []string{"box", "/d"},
+		cliEnv{instances: insts, ssmClients: map[string]awsclient.SSMAPI{}})
+	if code != 1 || eout.Len() == 0 {
+		t.Errorf("code=%d err=%q, want exit 1 with a message", code, eout.String())
+	}
+}

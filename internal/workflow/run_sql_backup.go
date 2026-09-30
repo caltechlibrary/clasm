@@ -64,7 +64,7 @@ func buildSQLDumpCommand(containerName, dbName, dbUser, directory, date string) 
 // SQL Backup: drop the Archive-SQL auto-chain, rename to 'Generate SQL
 // Backup'"; PLAN.md Phase 20.54). Archive SQL Backup to S3 remains a
 // separate menu entry for an operator who wants to archive right after.
-func RunSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
+func RunSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error, report ...func(SQLBackupParams)) error {
 	if len(instances) == 0 {
 		fmt.Fprintln(w, "No instances found.")
 		return nil
@@ -74,13 +74,13 @@ func RunSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
-	return runSQLBackup(ctx, w, ssmClients, inst, backupDirRules, rdmPostgresRules, hist, saveRDMPostgresRules, nil, nil)
+	return runSQLBackup(ctx, w, ssmClients, inst, backupDirRules, rdmPostgresRules, hist, saveRDMPostgresRules, nil, nil, report...)
 }
 
 // runSQLBackup is RunSQLBackup's testable core, once an instance is
 // resolved -- input/output are nil in production and supplied by tests
 // to drive every prompt through its accessible-mode pipe path instead.
-func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error, input io.Reader, output io.Writer) error {
+func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, inst inventory.Instance, backupDirRules []config.BackupDirectoryRule, rdmPostgresRules []config.RDMPostgresRule, hist BackupHistory, saveRDMPostgresRules func([]config.RDMPostgresRule) error, input io.Reader, output io.Writer, report ...func(SQLBackupParams)) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err
@@ -108,6 +108,38 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 		}
 	}
 
+	// Reported once the directory is known, whatever happens afterward, so main
+	// can print the pastable command (PLAN.md Phase 20.64 item 5). A run that
+	// failed before this point has nothing worth reproducing.
+	for _, r := range report {
+		r(SQLBackupParams{InstanceID: inst.InstanceID, Directory: directory})
+	}
+	return executeSQLBackup(ctx, w, ssmClient, inst, directory, rdmPostgresRules, saveRDMPostgresRules)
+}
+
+// SQLBackupParams are the resolved arguments of a Generate SQL Backup run: the
+// whole of what the interactive form collects.
+type SQLBackupParams struct {
+	InstanceID string
+	Directory  string
+}
+
+// RunSQLBackupAuto is the non-interactive Generate SQL Backup form (DR-0177):
+// the interactive run minus the directory prompt and the recall history. The
+// Docker check still comes first, then the same steps in the same order as
+// runSQLBackup. There is no confirmation, like the archive forms: it writes a
+// dump on the instance and changes nothing else, and is meant for cron.
+func RunSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, inst inventory.Instance, p SQLBackupParams, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
+	if err := CheckDockerAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	return executeSQLBackup(ctx, w, ssmClient, inst, p.Directory, rdmPostgresRules, saveRDMPostgresRules)
+}
+
+// executeSQLBackup is everything after the directory is known, shared by the
+// interactive and non-interactive forms: discover the Postgres identity, make
+// the directory the service user's, dump, and hand the dump over.
+func executeSQLBackup(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, inst inventory.Instance, directory string, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
 	// fallbackIdentifier prefers the instance's Project tag over its Name
 	// tag for defaulting dbName/dbUser -- confirmed via a real incident
 	// (2026-07-29) that an instance's Name tag can be a legacy label

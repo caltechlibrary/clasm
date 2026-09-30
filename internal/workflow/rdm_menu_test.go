@@ -287,11 +287,11 @@ func TestRDMMenuItems_Order(t *testing.T) {
 // TestRDMMenuItems_CLISlugs pins which RDM leaves have a cliSlug: the two
 // archive leaves (Phase 20.64) and, since 2026-09-30, both Restore leaves
 // (DR-0177, DR-0180; the mechanical rule: lowercase, hyphenate, drop
-// parentheticals). Generate SQL Backup is still "" -- unreachable from the CLI
-// path -- until its form is built.
+// parentheticals). Generate SQL Backup got its own on 2026-09-30, so every RDM
+// leaf now has a form.
 func TestRDMMenuItems_CLISlugs(t *testing.T) {
 	want := map[string]string{
-		"Generate SQL Backup":                               "",
+		"Generate SQL Backup":                               "generate-sql-backup",
 		"Archive SQL Backups to S3 (and trim local copies)": "archive-sql-backups-to-s3",
 		"Archive OpenSearch Snapshot to S3":                 "archive-opensearch-snapshot-to-s3",
 		"Restore SQL Backup from S3":                        "restore-sql-backup-from-s3",

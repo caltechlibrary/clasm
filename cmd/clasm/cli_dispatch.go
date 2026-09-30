@@ -155,6 +155,21 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		}
 		return 0
 
+	case workflow.GenerateSQLBackupCLISlug:
+		// Mutating but not destructive, and meant for cron: no confirmation, like
+		// the archive forms (DR-0177). A usage error never reaches AWS.
+		inst, params, err := workflow.ParseSQLBackupArgs(leafArgs, instances)
+		if err != nil {
+			return reportCLIError(out, eout, err)
+		}
+		ssmClient, err := workflow.ResolveSSMClient(ssmClients, inst.Region)
+		if err != nil {
+			fmt.Fprintf(eout, "%v\n", err)
+			return 1
+		}
+		err = workflow.RunSQLBackupAuto(ctx, out, ssmClient, inst, params, rdmPostgresRules, saveRDMPostgresRules)
+		return reportCLIError(out, eout, err)
+
 	case workflow.RestoreOpenSearchSnapshotCLISlug:
 		// The first destructive form (DR-0177, DR-0180): a dry run unless
 		// --confirm names the target or a terminal answers the prompt.

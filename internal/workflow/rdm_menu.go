@@ -79,10 +79,13 @@ const (
 	// RestoreSQLBackupCLISlug is the second destructive leaf's slug, derived the
 	// same way from "Restore SQL Backup from S3".
 	RestoreSQLBackupCLISlug = "restore-sql-backup-from-s3"
+	// GenerateSQLBackupCLISlug is the last RDM leaf's slug, from "Generate SQL
+	// Backup" by the same rule.
+	GenerateSQLBackupCLISlug = "generate-sql-backup"
 )
 
 var rdmMenuItems = []rdmItem{
-	{label: "Generate SQL Backup", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
+	{label: "Generate SQL Backup", cliSlug: GenerateSQLBackupCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
 	{label: "Archive SQL Backups to S3 (and trim local copies)", cliSlug: ArchiveSQLBackupsCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
 	{label: "Archive OpenSearch Snapshot to S3", cliSlug: ArchiveOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
 	{label: "Restore SQL Backup from S3", cliSlug: RestoreSQLBackupCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},

@@ -545,7 +545,14 @@ func main() {
 
 	rdmActions := workflow.RDMBackupRestoreActions{
 		RunSQLBackup: func(ctx context.Context) error {
-			return workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules)
+			var reported workflow.SQLBackupParams
+			var haveReport bool
+			err := workflow.RunSQLBackup(ctx, out, ssmClients, state.instances, cfg.BackupDirectories, cfg.RDMPostgresConfig, backupHistory, saveRDMPostgresRules,
+				func(p workflow.SQLBackupParams) { reported, haveReport = p, true })
+			if err == nil && haveReport {
+				fmt.Fprintf(out, "\nReproduce this run non-interactively:\n  %s\n", pastableGenerateSQLBackupCommand(appName, reported))
+			}
+			return err
 		},
 		ArchiveSQL: archiveSQLAction,
 		// ArchiveOpenSearch (Phase 20.49), RestoreSQL (Phase 20.50), and
