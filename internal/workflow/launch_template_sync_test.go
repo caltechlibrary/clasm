@@ -206,3 +206,17 @@ func TestSyncLaunchTemplate_DeclinedConfirmationDoesNotCreateVersion(t *testing.
 		t.Error("CreateLaunchTemplateVersion was called despite a declined confirmation")
 	}
 }
+
+// GitHub issue #1: the templateName tag lives in a version's instance tag
+// spec and reaches new versions by inheritance from SourceVersion. That only
+// works if these paths never set TagSpecifications themselves (a supplied list
+// replaces the source's), so that is pinned here and in the Modify test below.
+func TestCreateLaunchTemplateVersion_LeavesTagSpecificationsToBeInherited(t *testing.T) {
+	fake := &fakeEC2Client{createLaunchTemplateVersionNumber: 5}
+	if _, err := createLaunchTemplateVersion(context.Background(), fake, "lt-1", "2", "#cloud-config"); err != nil {
+		t.Fatal(err)
+	}
+	if ts := fake.lastCreateLaunchTemplateVersionInput.LaunchTemplateData.TagSpecifications; ts != nil {
+		t.Errorf("Sync must not set TagSpecifications (they would replace the source version's), got %+v", ts)
+	}
+}

@@ -14,6 +14,13 @@ import (
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
+// launchTemplateNameTagKey is the tag every instance launched from a template
+// carries to name that template (GitHub issue #1). Not "Name": that is the
+// instance's own name, which the wizard asks for separately and puts in the same
+// tag spec. Not aws:-prefixed either: EC2 reserves that namespace, so the key
+// cannot mimic AWS's own aws:ec2launchtemplate:* tags.
+const launchTemplateNameTagKey = "templateName"
+
 // buildRequestLaunchTemplateData converts a LaunchInstanceParams (the
 // exact parameter set Feature 3's cloud-init wizard already collects)
 // into the launch-template request shape, curated the same way as
@@ -27,7 +34,7 @@ import (
 // entry rather than the top-level SecurityGroupIds field, per AWS's own
 // documented constraint on that field (confirmed by reading the SDK's
 // field comments, not assumed).
-func buildRequestLaunchTemplateData(params LaunchInstanceParams) (*types.RequestLaunchTemplateData, error) {
+func buildRequestLaunchTemplateData(params LaunchInstanceParams, templateName string) (*types.RequestLaunchTemplateData, error) {
 	data := &types.RequestLaunchTemplateData{
 		ImageId:      aws.String(params.ImageID),
 		InstanceType: types.InstanceType(params.InstanceType),
@@ -57,8 +64,23 @@ func buildRequestLaunchTemplateData(params LaunchInstanceParams) (*types.Request
 	if params.IAMInstanceProfile != "" {
 		data.IamInstanceProfile = &types.LaunchTemplateIamInstanceProfileSpecificationRequest{Name: aws.String(params.IAMInstanceProfile)}
 	}
-	if len(params.Tags) > 0 {
-		spec := buildTagSpecification(types.ResourceTypeInstance, params.Tags)
+	// Instances launched from this template are tagged with the template's own
+	// name (GitHub issue #1), next to AWS's aws:ec2launchtemplate:id, so a
+	// report by tag can group instances by the template they came from -- from
+	// clasm, the console, the CLI or an Auto Scaling group alike. The name is
+	// fixed at creation (EC2 cannot rename a template), so it never goes
+	// stale, and new versions made by Sync and Modify inherit it (they override
+	// only user-data or size). It goes into a copy: params.Tags also tags the
+	// template resource itself, which does not need it.
+	tags := make(map[string]string, len(params.Tags)+1)
+	for k, v := range params.Tags {
+		tags[k] = v
+	}
+	if templateName != "" {
+		tags[launchTemplateNameTagKey] = templateName
+	}
+	if len(tags) > 0 {
+		spec := buildTagSpecification(types.ResourceTypeInstance, tags)
 		data.TagSpecifications = []types.LaunchTemplateTagSpecificationRequest{
 			{ResourceType: spec.ResourceType, Tags: spec.Tags},
 		}
@@ -124,7 +146,7 @@ func createLaunchTemplate(ctx context.Context, w io.Writer, client awsclient.EC2
 		return nil
 	}
 
-	templateData, err := buildRequestLaunchTemplateData(params)
+	templateData, err := buildRequestLaunchTemplateData(params, name)
 	if err != nil {
 		return err
 	}

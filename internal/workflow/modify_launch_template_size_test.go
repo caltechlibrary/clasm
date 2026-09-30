@@ -259,3 +259,13 @@ func TestModifyLaunchTemplateSize_DeclinedConfirmationDoesNotCreateVersion(t *te
 		t.Error("CreateLaunchTemplateVersion was called despite a declined confirmation")
 	}
 }
+
+func TestModifyLaunchTemplateVersion_LeavesTagSpecificationsToBeInherited(t *testing.T) {
+	fake := &fakeEC2Client{createLaunchTemplateVersionNumber: 3}
+	if _, err := modifyLaunchTemplateVersion(context.Background(), fake, "lt-1", "2", "m5.large", "ami-new", "/dev/xvda", 100); err != nil {
+		t.Fatal(err)
+	}
+	if ts := fake.lastCreateLaunchTemplateVersionInput.LaunchTemplateData.TagSpecifications; ts != nil {
+		t.Errorf("Modify must not set TagSpecifications (they would replace the source version's), got %+v", ts)
+	}
+}

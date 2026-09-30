@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,7 +25,7 @@ func TestBuildRequestLaunchTemplateData_SetsIMDSv2RequiredAndSubnetViaNetworkInt
 		Tags:               map[string]string{"Name": "web", "Project": "caltechauthors", "Environment": "production"},
 	}
 
-	data, err := buildRequestLaunchTemplateData(params)
+	data, err := buildRequestLaunchTemplateData(params, "rdm-app")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,21 +62,22 @@ func TestBuildRequestLaunchTemplateData_SetsIMDSv2RequiredAndSubnetViaNetworkInt
 	if len(data.TagSpecifications) != 1 || data.TagSpecifications[0].ResourceType != types.ResourceTypeInstance {
 		t.Fatalf("TagSpecifications = %+v, want one instance-scoped spec", data.TagSpecifications)
 	}
-	if len(data.TagSpecifications[0].Tags) != 3 {
-		t.Errorf("Tags = %+v, want 3 entries", data.TagSpecifications[0].Tags)
+	if len(data.TagSpecifications[0].Tags) != 4 {
+		t.Errorf("Tags = %+v, want the 3 given plus templateName", data.TagSpecifications[0].Tags)
 	}
 }
 
 func TestBuildRequestLaunchTemplateData_NoIAMProfileOrTagsOmitsFields(t *testing.T) {
-	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"}, "rdm-app")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if data.IamInstanceProfile != nil {
 		t.Errorf("IamInstanceProfile = %+v, want nil", data.IamInstanceProfile)
 	}
-	if data.TagSpecifications != nil {
-		t.Errorf("TagSpecifications = %+v, want nil", data.TagSpecifications)
+	// No other tags, but the template's name is always recorded (GitHub issue #1).
+	if got := instanceTags(data); len(got) != 1 || got[launchTemplateNameTagKey] != "rdm-app" {
+		t.Errorf("instance tags = %v, want only templateName=rdm-app", got)
 	}
 	if data.UserData != nil {
 		t.Errorf("UserData = %v, want nil", aws.ToString(data.UserData))
@@ -91,7 +93,7 @@ func TestBuildRequestLaunchTemplateData_SetsRootVolumeSize(t *testing.T) {
 		SubnetID:         "subnet-1",
 		RootDeviceName:   "/dev/xvda",
 		RootVolumeSizeGB: 250,
-	})
+	}, "rdm-app")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +110,7 @@ func TestBuildRequestLaunchTemplateData_SetsRootVolumeSize(t *testing.T) {
 }
 
 func TestBuildRequestLaunchTemplateData_OmitsBlockDeviceMappingsWhenSizeNotSet(t *testing.T) {
-	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"})
+	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"}, "rdm-app")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +124,7 @@ func TestBuildRequestLaunchTemplateData_PropagatesEncodeUserDataError(t *testing
 		ImageID:  "ami-1",
 		SubnetID: "subnet-1",
 		UserData: string(pseudoRandomBytes(20000)),
-	})
+	}, "rdm-app")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -190,5 +192,108 @@ func TestCreateLaunchTemplateFromCloudInit_DeclinedConfirmationDoesNotCreate(t *
 	}
 	if ec2Client.lastCreateLaunchTemplateInput != nil {
 		t.Error("CreateLaunchTemplate was called despite a declined confirmation")
+	}
+}
+
+// instanceTags flattens data's instance-scoped tag spec into a map.
+func instanceTags(data *types.RequestLaunchTemplateData) map[string]string {
+	got := map[string]string{}
+	for _, spec := range data.TagSpecifications {
+		if spec.ResourceType != types.ResourceTypeInstance {
+			continue
+		}
+		for _, tg := range spec.Tags {
+			got[aws.ToString(tg.Key)] = aws.ToString(tg.Value)
+		}
+	}
+	return got
+}
+
+// GitHub issue #1 (Tom): the template's name goes into the template's own
+// instance tag spec, so every instance launched from it -- by clasm, the
+// console, the CLI or an Auto Scaling group -- carries the name of the template
+// it came from, next to AWS's aws:ec2launchtemplate:id. A template named for the
+// role its instances will grow into (caltechauthors-v14) says so on each one.
+func TestBuildRequestLaunchTemplateData_TagsInstancesWithTheTemplateName(t *testing.T) {
+	params := LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1", Tags: map[string]string{"Name": "web", "Project": "caltechauthors"}}
+	data, err := buildRequestLaunchTemplateData(params, "caltechauthors-v14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := instanceTags(data)
+	if got["templateName"] != "caltechauthors-v14" || got["Name"] != "web" || got["Project"] != "caltechauthors" || len(got) != 3 {
+		t.Errorf("instance tags = %v", got)
+	}
+	if len(data.TagSpecifications) != 1 {
+		t.Errorf("want a single instance tag spec, got %+v", data.TagSpecifications)
+	}
+}
+
+// The tag is built into a copy: params.Tags also tags the template resource
+// itself, which is not given this tag.
+func TestBuildRequestLaunchTemplateData_DoesNotMutateTheCallersTags(t *testing.T) {
+	params := LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1", Tags: map[string]string{"Name": "web"}}
+	if _, err := buildRequestLaunchTemplateData(params, "rdm-app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, leaked := params.Tags[launchTemplateNameTagKey]; leaked || len(params.Tags) != 1 {
+		t.Errorf("params.Tags was modified: %v", params.Tags)
+	}
+}
+
+// The name is the template's identity and immutable: it beats a stale or
+// hand-typed value of the same key.
+func TestBuildRequestLaunchTemplateData_TheTemplateNameWinsOverAnExistingTag(t *testing.T) {
+	params := LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1", Tags: map[string]string{"templateName": "something-else"}}
+	data, err := buildRequestLaunchTemplateData(params, "rdm-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := instanceTags(data); got["templateName"] != "rdm-app" {
+		t.Errorf("tag = %q, want rdm-app", got["templateName"])
+	}
+}
+
+func TestBuildRequestLaunchTemplateData_NoNameAddsNoTag(t *testing.T) {
+	data, err := buildRequestLaunchTemplateData(LaunchInstanceParams{ImageID: "ami-1", SubnetID: "subnet-1"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.TagSpecifications != nil {
+		t.Errorf("want no tag spec, got %+v", data.TagSpecifications)
+	}
+}
+
+func TestTemplateNameTagKey_IsNotInTheReservedNamespace(t *testing.T) {
+	if strings.HasPrefix(strings.ToLower(launchTemplateNameTagKey), "aws:") {
+		t.Errorf("tag key %q is in the reserved aws: namespace, which EC2 rejects", launchTemplateNameTagKey)
+	}
+	if launchTemplateNameTagKey != "templateName" {
+		t.Errorf("tag key = %q; the documented key is templateName", launchTemplateNameTagKey)
+	}
+}
+
+// End to end through the creation flow: the name typed at the prompt reaches the
+// template's instance tag spec, and the template resource's own tags are the
+// ones it always had.
+func TestCreateLaunchTemplateFromCloudInit_TagsInstancesWithTheTypedName(t *testing.T) {
+	image := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
+	input := "web\n1\n\nnew\nmy-key\nsg-1\nsubnet-1\n\ncaltechauthors\nproduction\ncaltechauthors-v14\ny\n"
+	var buf bytes.Buffer
+	ec2Client := &fakeEC2Client{describeKeyPairsErr: errNoKeyPairsConfigured, createLaunchTemplateID: "lt-1"}
+	err := createLaunchTemplateFromCloudInit(context.Background(), &buf, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": &fakeSSMClient{}}, fakeIAMClientNoProfiles(), "#cloud-config", image, newHuhAccessibleInput(input), &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := ec2Client.lastCreateLaunchTemplateInput
+	if got := instanceTags(in.LaunchTemplateData); got["templateName"] != "caltechauthors-v14" {
+		t.Errorf("instance tags = %v, want templateName=caltechauthors-v14", got)
+	}
+	for _, spec := range in.TagSpecifications { // the template resource's own tags
+		for _, tg := range spec.Tags {
+			if aws.ToString(tg.Key) == "templateName" {
+				t.Errorf("the template resource itself should not carry the tag: %+v", spec)
+			}
+		}
 	}
 }
