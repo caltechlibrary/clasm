@@ -48,10 +48,43 @@ func buildRegisterRepoCommand(repo, location string) string {
 // this, a real incident (2026-07-29, CaltechAUTHORS production) required
 // manually inspecting the --debug JSONL log to find the actual cause.
 func curlFailureError(action string, status ssmtypes.CommandInvocationStatus, stdout string) error {
-	if strings.TrimSpace(stdout) == "" {
+	body := strings.TrimSpace(stdout)
+	if body == "" {
 		return fmt.Errorf("%s (status: %s)", action, status)
 	}
-	return fmt.Errorf("%s (status: %s): %s", action, status, strings.TrimSpace(stdout))
+	if reason := openSearchErrorReason(body); reason != "" {
+		body = reason
+	}
+	return fmt.Errorf("%s (status: %s): %s", action, status, body)
+}
+
+// openSearchErrorReason pulls "type: reason" out of an OpenSearch JSON error
+// body ({"error":{"type":...,"reason":...},"status":N}), or the reason alone
+// when there is no type. It returns "" for anything else -- not JSON, no
+// error object, no reason -- so callers fall back to the raw text and never
+// show less than they had.
+func openSearchErrorReason(stdout string) string {
+	var resp struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(stdout)), &resp) != nil || len(resp.Error) == 0 {
+		return ""
+	}
+	var plain string
+	if json.Unmarshal(resp.Error, &plain) == nil {
+		return plain
+	}
+	var e struct {
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(resp.Error, &e) != nil || e.Reason == "" {
+		return ""
+	}
+	if e.Type == "" {
+		return e.Reason
+	}
+	return e.Type + ": " + e.Reason
 }
 
 // RegisterSnapshotRepo runs buildRegisterRepoCommand via SSM and errors

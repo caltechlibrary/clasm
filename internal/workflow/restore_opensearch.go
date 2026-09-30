@@ -3,9 +3,12 @@ package workflow
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -153,30 +156,83 @@ func detectExistingOpenSearchIndices(ctx context.Context, client awsclient.SSMAP
 	return matched, nil
 }
 
+// backingIndexRE matches the name of a data stream's backing index in
+// OpenSearch: ".ds-<stream>-<six-digit generation>", e.g.
+// ".ds-caltechauthors-auditlog-audit-log-v1.0.0-000001", whose stream is
+// "caltechauthors-auditlog-audit-log-v1.0.0" (the mapping OpenSearch itself
+// reported in its 2026-09-30 refusal to delete that index by name).
+var backingIndexRE = regexp.MustCompile(`^\.ds-(.+)-\d{6}$`)
+
+// dataStreamOfBackingIndex reports the data stream a backing index belongs
+// to, derived from its name, and whether index is a backing index at all.
+func dataStreamOfBackingIndex(index string) (string, bool) {
+	m := backingIndexRE.FindStringSubmatch(index)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // buildDeleteIndicesCommand builds the curl command that deletes every
 // name in indices via a single comma-joined DELETE request -- OpenSearch's
 // real REST API accepts a comma-separated index list on one DELETE call,
 // same shape as buildCreateSnapshotCommand's comma-joined indices value.
 // Never a raw filesystem operation, matching buildDeleteSnapshotCommand's
-// own precedent.
+// own precedent. indices must hold no data-stream backing index; see
+// buildDeleteDataStreamsCommand.
 func buildDeleteIndicesCommand(indices []string) string {
 	url := fmt.Sprintf("localhost:9200/%s", strings.Join(indices, ","))
 	return fmt.Sprintf("curl --fail-with-body -sS -X DELETE %s", shellQuote(url))
 }
 
-// DeleteConflictingIndices runs buildDeleteIndicesCommand via SSM for a
-// non-empty indices list -- a no-op (no SSM call at all) when indices is
-// empty, so callers don't need their own empty-check before calling this.
+// buildDeleteDataStreamsCommand builds the curl command that deletes data
+// streams, and with them their backing indices. A backing index cannot be
+// deleted by name while it is its stream's write index -- OpenSearch answers
+// HTTP 400 and, because the request is one comma-joined DELETE, refuses the
+// ordinary indices in it too (found live 2026-09-30, Phase 20.65 step 4).
+func buildDeleteDataStreamsCommand(streams []string) string {
+	url := fmt.Sprintf("localhost:9200/_data_stream/%s", strings.Join(streams, ","))
+	return fmt.Sprintf("curl --fail-with-body -sS -X DELETE %s", shellQuote(url))
+}
+
+// DeleteConflictingIndices deletes indices via SSM: data-stream backing
+// indices through their streams first, then every ordinary index by name.
+// A no-op (no SSM call at all) when indices is empty, so callers don't need
+// their own empty-check before calling this.
 func DeleteConflictingIndices(ctx context.Context, client awsclient.SSMAPI, instanceID string, indices []string, timeout, pollInterval time.Duration) error {
 	if len(indices) == 0 {
 		return nil
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteIndicesCommand(indices), timeout, pollInterval)
+	var ordinary, streams []string
+	seen := map[string]bool{}
+	for _, name := range indices {
+		if stream, ok := dataStreamOfBackingIndex(name); ok {
+			if !seen[stream] {
+				seen[stream] = true
+				streams = append(streams, stream)
+			}
+			continue
+		}
+		ordinary = append(ordinary, name)
+	}
+	if len(streams) > 0 {
+		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteDataStreamsCommand(streams), timeout, pollInterval)
+		if err != nil {
+			return err
+		}
+		if status != ssmtypes.CommandInvocationStatusSuccess {
+			return curlFailureError(fmt.Sprintf("deleting data stream(s) %s on %s failed", strings.Join(streams, ", "), instanceID), status, stdout)
+		}
+	}
+	if len(ordinary) == 0 {
+		return nil
+	}
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteIndicesCommand(ordinary), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("deleting %d conflicting index/indices on %s failed", len(indices), instanceID), status, stdout)
+		return curlFailureError(fmt.Sprintf("deleting %d conflicting index/indices on %s failed", len(ordinary), instanceID), status, stdout)
 	}
 	return nil
 }
@@ -195,10 +251,34 @@ func buildRestoreSnapshotCommand(repo, snapshotName string, indices []string) st
 		shellQuote(url), shellQuote(body))
 }
 
+// errNoIndicesRestored is RestoreSnapshot's answer to a restore request
+// OpenSearch accepted but which matched nothing in the snapshot.
+var errNoIndicesRestored = errors.New("the snapshot restored no indices")
+
+// restoredIndexCount reads the number of indices from a `_restore` response
+// ({"snapshot":{"indices":[...],...}}). known is false when the response is
+// not that shape -- an unrecognised answer must not be read as "nothing".
+func restoredIndexCount(stdout string) (n int, known bool) {
+	var resp struct {
+		Snapshot *struct {
+			Indices []string `json:"indices"`
+		} `json:"snapshot"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(stdout)), &resp) != nil || resp.Snapshot == nil {
+		return 0, false
+	}
+	return len(resp.Snapshot.Indices), true
+}
+
 // RestoreSnapshot runs buildRestoreSnapshotCommand via SSM and errors on a
 // non-Success SSM invocation status. Returns once the restore request has
 // been accepted -- it does not wait for the restore itself to finish; see
 // PollRestoreUntilComplete for that.
+//
+// ignore_unavailable is true, so a request matching nothing in the snapshot
+// is still accepted (HTTP 200, "indices":[], 0 shards). That is reported as
+// errNoIndicesRestored rather than left to fail later on a 404 from the
+// recovery poll, for indices that were never there.
 func RestoreSnapshot(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName string, indices []string, timeout, pollInterval time.Duration) error {
 	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildRestoreSnapshotCommand(repo, snapshotName, indices), timeout, pollInterval)
 	if err != nil {
@@ -206,6 +286,9 @@ func RestoreSnapshot(ctx context.Context, client awsclient.SSMAPI, instanceID, r
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
 		return curlFailureError(fmt.Sprintf("restoring snapshot %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+	}
+	if n, known := restoredIndexCount(stdout); known && n == 0 {
+		return errNoIndicesRestored
 	}
 	return nil
 }
@@ -530,6 +613,9 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	}
 
 	if err := RestoreSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snap.Name, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		if errors.Is(err, errNoIndicesRestored) {
+			return fmt.Errorf("snapshot %q holds no indices matching the index prefix %q, so nothing was restored (the synced snapshot is still in %s): the index prefix is the name the indices carry inside the snapshot (e.g. caltechauthors), not the source instance name used as the S3 prefix (e.g. caltechauthors-v13)", snap.Name, indexPrefix, directory)
+		}
 		return err
 	}
 	if err := PollRestoreUntilComplete(ctx, w, ssmClient, inst.InstanceID, indices, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
