@@ -86,9 +86,27 @@ type MenuActions struct {
 // menuItem pairs a main-menu label with the MenuActions field it
 // dispatches to.
 type menuItem struct {
-	label  string
-	action func(MenuActions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment under `clasm compute`
+	// (DR-0177): the mechanical rule applied to the label. Empty means the
+	// leaf has no CLI form and is unreachable from the CLI path.
+	cliSlug string
+	action  func(MenuActions, context.Context) error
 }
+
+// The Compute read-only leaves' cliSlug values, exported so the dispatch
+// switch, usage messages and tests share one literal.
+const (
+	ShowInstancesCLISlug            = "show-instances"
+	ShowInstanceDetailCLISlug       = "show-instance-detail"
+	ShowAMIsCLISlug                 = "show-amis"
+	ShowAMIDetailCLISlug            = "show-ami-detail"
+	ShowLaunchTemplatesCLISlug      = "show-launch-templates"
+	ShowLaunchTemplateDetailCLISlug = "show-launch-template-detail"
+	// ShowExportCloudInitCLISlug is awkward (the label is); both will be
+	// shortened together later.
+	ShowExportCloudInitCLISlug = "show-export-cloud-init-for-an-instance-or-ami"
+)
 
 // mainMenuItems is DESIGN.md's Main Menu, grouped View/Inspect -> Instance
 // lifecycle -> AMI lifecycle -> Launch Template lifecycle -> Maintenance
@@ -106,33 +124,33 @@ type menuItem struct {
 // drop of "Back to domain picker" in Phase 20.7).
 var mainMenuItems = []menuItem{
 	// View/Inspect
-	{"Show instances", func(a MenuActions, ctx context.Context) error { return a.ShowInstances(ctx) }},
-	{"Show instance detail", func(a MenuActions, ctx context.Context) error { return a.ShowInstanceDetail(ctx) }},
-	{"Show AMIs", func(a MenuActions, ctx context.Context) error { return a.ShowAMIs(ctx) }},
-	{"Show AMI detail", func(a MenuActions, ctx context.Context) error { return a.ShowAMIDetail(ctx) }},
-	{"Show launch templates", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplates(ctx) }},
-	{"Show launch template detail", func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplate(ctx) }},
-	{"Show/export cloud-init for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ShowCloudInit(ctx) }},
+	{label: "Show instances", cliSlug: ShowInstancesCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowInstances(ctx) }},
+	{label: "Show instance detail", cliSlug: ShowInstanceDetailCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowInstanceDetail(ctx) }},
+	{label: "Show AMIs", cliSlug: ShowAMIsCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowAMIs(ctx) }},
+	{label: "Show AMI detail", cliSlug: ShowAMIDetailCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowAMIDetail(ctx) }},
+	{label: "Show launch templates", cliSlug: ShowLaunchTemplatesCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplates(ctx) }},
+	{label: "Show launch template detail", cliSlug: ShowLaunchTemplateDetailCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowLaunchTemplate(ctx) }},
+	{label: "Show/export cloud-init for an instance or AMI", cliSlug: ShowExportCloudInitCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.ShowCloudInit(ctx) }},
 	// Instance lifecycle
-	{"Create EC2 instance from AMI", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
-	{"Create EC2 instance from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
-	{"Create EC2 instance from launch template", func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
-	{"Start EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
-	{"Stop EC2 instance", func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
-	{"Terminate EC2 instance", func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
-	{"Resize instance's root volume", func(a MenuActions, ctx context.Context) error { return a.ResizeInstanceRootVolume(ctx) }},
-	{"Associate/replace IAM instance profile", func(a MenuActions, ctx context.Context) error { return a.AssociateOrReplaceInstanceProfile(ctx) }},
-	{"Manage tags for an instance or AMI", func(a MenuActions, ctx context.Context) error { return a.ManageTags(ctx) }},
+	{label: "Create EC2 instance from AMI", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
+	{label: "Create EC2 instance from cloud-init YAML", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
+	{label: "Create EC2 instance from launch template", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
+	{label: "Start EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
+	{label: "Stop EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
+	{label: "Terminate EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
+	{label: "Resize instance's root volume", action: func(a MenuActions, ctx context.Context) error { return a.ResizeInstanceRootVolume(ctx) }},
+	{label: "Associate/replace IAM instance profile", action: func(a MenuActions, ctx context.Context) error { return a.AssociateOrReplaceInstanceProfile(ctx) }},
+	{label: "Manage tags for an instance or AMI", action: func(a MenuActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 	// AMI lifecycle
-	{"Create AMI from EC2 instance (running or stopped)", func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},
-	{"Remove AMI", func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},
+	{label: "Create AMI from EC2 instance (running or stopped)", action: func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},
+	{label: "Remove AMI", action: func(a MenuActions, ctx context.Context) error { return a.RemoveAMI(ctx) }},
 	// Launch Template lifecycle
-	{"Create launch template from cloud-init YAML", func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
-	{"Sync cloud-init YAML to a launch template", func(a MenuActions, ctx context.Context) error { return a.SyncLaunchTemplate(ctx) }},
-	{"Modify launch template's instance type / EBS root volume size", func(a MenuActions, ctx context.Context) error { return a.ModifyLaunchTemplateSize(ctx) }},
-	{"Promote a launch template version to default", func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
-	{"Delete launch template version(s)", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
-	{"Delete a launch template", func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},
+	{label: "Create launch template from cloud-init YAML", action: func(a MenuActions, ctx context.Context) error { return a.CreateLaunchTemplateFromCloudInit(ctx) }},
+	{label: "Sync cloud-init YAML to a launch template", action: func(a MenuActions, ctx context.Context) error { return a.SyncLaunchTemplate(ctx) }},
+	{label: "Modify launch template's instance type / EBS root volume size", action: func(a MenuActions, ctx context.Context) error { return a.ModifyLaunchTemplateSize(ctx) }},
+	{label: "Promote a launch template version to default", action: func(a MenuActions, ctx context.Context) error { return a.PromoteLaunchTemplateVersion(ctx) }},
+	{label: "Delete launch template version(s)", action: func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplateVersions(ctx) }},
+	{label: "Delete a launch template", action: func(a MenuActions, ctx context.Context) error { return a.DeleteLaunchTemplate(ctx) }},
 }
 
 // pickMainMenuItem runs the Compute main menu's huh.Select and returns
@@ -240,4 +258,66 @@ func pauseForAcknowledgment(input io.Reader, output io.Writer) {
 
 func isExitSignal(err error) bool {
 	return errors.Is(err, ui.ErrCancelled) || errors.Is(err, huh.ErrUserAborted) || errors.Is(err, io.EOF)
+}
+
+// mainMenuItemBySlug finds the menuItem whose cliSlug matches slug.
+func mainMenuItemBySlug(slug string) (menuItem, bool) {
+	for _, item := range mainMenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return menuItem{}, false
+}
+
+// RunMainMenuFromSlug runs slug's leaf once, then falls into the Compute menu,
+// exactly as RunRDMBackupRestoreMenuFromSlug does for RDM: `clasm compute
+// show-instances` with no further words behaves as if the operator had chosen
+// that entry themselves. ok is false, and nothing runs, for an unregistered slug.
+func RunMainMenuFromSlug(ctx context.Context, w io.Writer, actions MenuActions, slug string) (ok bool, err error) {
+	return runMainMenuFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+func runMainMenuFromSlug(ctx context.Context, w io.Writer, actions MenuActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := mainMenuItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	if err := item.action(actions, ctx); err != nil {
+		if isExitSignal(err) {
+			printExiting(w)
+			return true, nil
+		}
+		fmt.Fprintf(w, "Error: %s\n", formatError(err))
+		pauseForAcknowledgment(menuInput, menuOutput)
+		return true, runMainMenu(ctx, w, actions, menuInput, menuOutput)
+	}
+	pauseForAcknowledgment(menuInput, menuOutput)
+	if refreshErr := actions.Refresh(ctx); refreshErr != nil {
+		fmt.Fprintf(w, "Error refreshing listings: %s\n", formatError(refreshErr))
+		pauseForAcknowledgment(menuInput, menuOutput)
+	}
+	return true, runMainMenu(ctx, w, actions, menuInput, menuOutput)
+}
+
+// ComputeDomainCLISlug is the Compute domain's cliSlug.
+const ComputeDomainCLISlug = "compute"
+
+// LeafCLISlugExists reports whether leafSlug is a registered leaf CLI slug under
+// domainSlug. A slug is only valid under the domain that registered it.
+func LeafCLISlugExists(domainSlug, leafSlug string) bool {
+	switch domainSlug {
+	case ComputeDomainCLISlug:
+		_, found := mainMenuItemBySlug(leafSlug)
+		return found
+	case RDMBackupRestoreDomainCLISlug:
+		return RDMLeafCLISlugExists(leafSlug)
+	}
+	return false
+}
+
+// DomainHasLeafCLIForms reports whether any leaf under domainSlug has a CLI
+// form yet; a path under a domain that has none is refused as a usage error.
+func DomainHasLeafCLIForms(domainSlug string) bool {
+	return domainSlug == ComputeDomainCLISlug || domainSlug == RDMBackupRestoreDomainCLISlug
 }

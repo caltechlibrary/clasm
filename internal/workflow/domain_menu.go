@@ -318,7 +318,7 @@ type domainItem struct {
 const RDMBackupRestoreDomainCLISlug = "rdm-backup-and-restore"
 
 var domainItems = []domainItem{
-	{label: "Compute (EC2 & AMI)", cliSlug: "compute", action: func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
+	{label: "Compute (EC2 & AMI)", cliSlug: ComputeDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
 	{label: "Key Management", cliSlug: "key-management", action: func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
 	{label: "S3 (Buckets & Static Websites)", cliSlug: "s3", action: func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
 	{label: "Tag Management", cliSlug: "tag-management", action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},

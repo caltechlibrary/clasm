@@ -668,8 +668,14 @@ func main() {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
-		if _, err := workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug); err != nil {
-			fmt.Fprintf(eout, "%v\n", err)
+		var leafErr error
+		if cliDomainSlug == workflow.ComputeDomainCLISlug {
+			_, leafErr = workflow.RunMainMenuFromSlug(ctx, out, actions, cliLeafSlug)
+		} else {
+			_, leafErr = workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug)
+		}
+		if leafErr != nil {
+			fmt.Fprintf(eout, "%v\n", leafErr)
 			os.Exit(1)
 		}
 	case cliModeRun:
@@ -677,6 +683,10 @@ func main() {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
-		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, ssmClients, s3Client, newS3Client, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules))
+		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, cliEnv{
+			ssmClients: ssmClients, ec2Clients: ec2Clients, s3Client: s3Client, newS3Client: newS3Client,
+			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
+			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
+		}))
 	}
 }

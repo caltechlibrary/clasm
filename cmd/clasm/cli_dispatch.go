@@ -61,12 +61,12 @@ func classifyCLIArgs(args []string) (mode, domainSlug, leafSlug string, leafArgs
 	// any of them, but only RDM Backup & Restore has leaf-level CLI forms yet.
 	// A path *under* any other domain is refused here, loudly, rather than
 	// silently checking RDM's leaf registry for a domain that isn't RDM.
-	if domainSlug != workflow.RDMBackupRestoreDomainCLISlug {
+	if !workflow.DomainHasLeafCLIForms(domainSlug) {
 		return cliModeNone, "", "", nil, fmt.Errorf("%q has no CLI sub-commands yet", domainSlug)
 	}
 
 	leafSlug = args[1]
-	if !workflow.RDMLeafCLISlugExists(leafSlug) {
+	if !workflow.LeafCLISlugExists(domainSlug, leafSlug) {
 		return cliModeNone, "", "", nil, fmt.Errorf("unknown command %q under %q", leafSlug, domainSlug)
 	}
 
@@ -75,6 +75,21 @@ func classifyCLIArgs(args []string) (mode, domainSlug, leafSlug string, leafArgs
 		return cliModeLeaf, domainSlug, leafSlug, nil, nil
 	}
 	return cliModeRun, domainSlug, leafSlug, leafArgs, nil
+}
+
+// cliEnv is everything a CLI leaf may need, gathered once by main: the AWS
+// clients, the listings refresh() has just loaded, and the Postgres rules.
+// A leaf takes only the fields it uses, so a test fills in only those.
+type cliEnv struct {
+	ssmClients           map[string]awsclient.SSMAPI
+	ec2Clients           map[string]awsclient.EC2API
+	s3Client             awsclient.S3API
+	newS3Client          func(ctx context.Context, region string) (awsclient.S3API, error)
+	instances            []inventory.Instance
+	images               []inventory.Image
+	launchTemplates      []inventory.LaunchTemplate
+	rdmPostgresRules     []config.RDMPostgresRule
+	saveRDMPostgresRules func([]config.RDMPostgresRule) error
 }
 
 // runCLILeaf resolves leafSlug's positional leafArgs and runs that
@@ -87,7 +102,9 @@ func classifyCLIArgs(args []string) (mode, domainSlug, leafSlug string, leafArgs
 // "preflight checks always run" rule. Returns the process exit code to
 // use: 0 on success, 1 on an AWS/workflow failure, 2 on a usage error
 // (bad arguments -- never reached AWS at all).
-func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafArgs []string, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error) int {
+func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafArgs []string, env cliEnv) int {
+	ssmClients, s3Client, newS3Client, instances := env.ssmClients, env.s3Client, env.newS3Client, env.instances
+	rdmPostgresRules, saveRDMPostgresRules := env.rdmPostgresRules, env.saveRDMPostgresRules
 	switch leafSlug {
 	case workflow.ArchiveSQLBackupsCLISlug:
 		inst, params, err := workflow.ParseBackupArchiveArgs(leafArgs, instances)
@@ -157,6 +174,9 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		return reportCLIError(out, eout, err)
 
 	default:
+		if code, handled := runComputeLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
+			return code
+		}
 		// Unreachable: classifyCLIArgs already validated leafSlug
 		// against the registered leaf slugs before mode became
 		// cliModeRun.

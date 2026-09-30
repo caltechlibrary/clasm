@@ -405,10 +405,14 @@ spaces becomes one hyphen (so "Resize instance's root volume" is
 `s3`, `tag-management`, `iam`, `rdm-backup-and-restore` and
 `configuration`.
 
-Only the **RDM Backup & Restore** domain (`rdm-backup-and-restore`) has
-any actions with the full non-interactive form today; a path *under* any
-other domain (`clasm compute show-instances`) is a usage error saying
-that domain has no CLI sub-commands yet:
+Two domains have actions with the full non-interactive form today:
+**RDM Backup & Restore** (`rdm-backup-and-restore`, below) and the
+read-only "Show" actions of **Compute** (`compute`, see "Read-only
+Compute forms"). A path *under* any other domain (`clasm iam show-roles`)
+is a usage error saying that domain has no CLI sub-commands yet. An
+action slug is valid only under its own domain.
+
+The RDM actions:
 
 `archive-sql-backups-to-s3 <instance> <directory> <bucket> <trim-days-or-"">`
 : the non-interactive form of **Archive SQL Backups to S3 (and trim
@@ -441,6 +445,64 @@ checking access to the destination bucket) -- only the interactive
 confirmation prompt is skipped. After a successful *interactive* run of
 either action, clasm prints the exact non-interactive command that
 reproduces it, ready to copy into a script or crontab entry.
+
+### Read-only Compute forms
+
+The seven "Show" actions of the Compute domain have command-line forms.
+They change nothing, ask nothing and need no confirmation; the only AWS
+calls they make are reads. (The one exception to "no cost" is an AMI's
+cloud-init, below, which is refused unless you ask for it.)
+
+`show-instances`, `show-amis`, `show-launch-templates`
+: the listings the Compute menu shows, from the same data. They take no
+  arguments.
+
+`show-instance-detail <instance>`, `show-ami-detail <ami>`
+: the detail view for one resource. `<instance>` and `<ami>` match the
+  Name tag first and fall back to the ID, exactly like the RDM forms; a
+  name that matches nothing, or more than one resource, is a usage error
+  (exit 2), never a guess.
+
+`show-launch-template-detail [-versions] <template> [version]`
+: one version's detail; `version` is a number (`2` or `v2`), `$Latest`,
+  or left out for `$Default`. With `-versions` it lists every version
+  instead (and takes no `version`). Diffing two versions is interactive
+  only for now.
+
+`show-export-cloud-init-for-an-instance-or-ami [-launch-temporary-instance] <instance-or-ami> [file]`
+: the decoded cloud-init. Standard output receives the YAML and nothing
+  else, so it can be piped; with `file` it is written there instead. An
+  instance's cloud-init is one free read. An AMI's can only be read by
+  launching a temporary, billable instance, so clasm refuses unless you
+  add `-launch-temporary-instance`. If an instance was launched with no
+  user-data, a note goes to standard error and the exit status is 0.
+
+**Output formats.** Every form takes one of:
+
+| Option | Output |
+|---|---|
+| `-text` | The default: the screen layout, plain, with no colour. Columns are truncated as they are on screen; it is for people. |
+| `-json` | One JSON document with complete values and the full tag set: an array for a listing, an object for a detail. An empty listing is `[]`. |
+| `-jsonl` | Listings only: one compact JSON object per line, for streaming and `jq -c`. An empty listing writes nothing. A detail is a single object, so `-json` covers it. |
+
+Giving more than one format is a usage error. JSON keys are `snake_case`
+and are kept separate from clasm's internals, but they are experimental
+like everything else here. Unknown or unset values are empty strings, not
+the `unknown`/`none` placeholders of the text view.
+
+Options come *before* the arguments (`show-instance-detail -json box`); a
+word after an argument is an argument. `--help` on any form prints its
+usage and options and exits 0.
+
+A listing has no required argument, so `clasm compute show-instances`
+alone opens the interactive view. Any option makes it a non-interactive
+run, and `-text` is the way to ask for the default explicitly:
+
+~~~shell
+clasm compute show-instances -json | jq -r '.[] | select(.state=="stopped") | .name'
+clasm compute show-instance-detail -json caltechauthors-v13 | jq .total_ebs_gib
+clasm compute show-export-cloud-init-for-an-instance-or-ami caltechauthors-v13 > cloud-init.yaml
+~~~
 
 ### Destructive forms: a dry run unless you confirm
 

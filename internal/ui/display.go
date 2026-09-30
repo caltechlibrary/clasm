@@ -92,7 +92,12 @@ func stateColor(state string) string {
 // reverse-video highlight because reverseVideo (internal/tui/style.go)
 // re-asserts itself after any inner reset a row already carries.
 func instanceListViewConfig(instances []inventory.Instance) tui.ListViewConfig {
-	colorEnabled := ColorEnabled()
+	return instanceListViewConfigColor(instances, ColorEnabled())
+}
+
+// instanceListViewConfigColor is instanceListViewConfig with colour decided by
+// the caller, so the non-interactive text form can ask for none.
+func instanceListViewConfigColor(instances []inventory.Instance, colorEnabled bool) tui.ListViewConfig {
 
 	header := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
 		padRight("INSTANCE ID", 20),

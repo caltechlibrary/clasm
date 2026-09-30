@@ -91,7 +91,7 @@ func TestClassifyCLIArgs_TrailingArgsAlwaysMeanRunRegardlessOfCount(t *testing.T
 // for this case, so nil arguments are safe to pass.
 func TestRunCLILeaf_UnknownSlugIsAnInternalErrorNotAPanic(t *testing.T) {
 	var eout bytes.Buffer
-	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "no-such-leaf", nil, map[string]awsclient.SSMAPI{}, nil, nil, nil, nil, nil)
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "no-such-leaf", nil, cliEnv{ssmClients: map[string]awsclient.SSMAPI{}})
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -119,7 +119,7 @@ func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
 }
 
 func TestClassifyCLIArgs_PathUnderADomainWithNoLeafFormsIsAUsageError(t *testing.T) {
-	for _, args := range [][]string{{"compute", "show-instances"}, {"iam", "show-roles", "extra"}} {
+	for _, args := range [][]string{{"iam", "show-roles"}, {"iam", "show-roles", "extra"}, {"s3", "show-buckets"}} {
 		mode, _, _, _, err := classifyCLIArgs(args)
 		if mode != cliModeNone {
 			t.Errorf("%v: mode = %q, want %q", args, mode, cliModeNone)
@@ -149,7 +149,7 @@ func TestClassifyCLIArgs_RestoreOpenSearchLeaf(t *testing.T) {
 
 func TestRunCLILeaf_RestoreOpenSearchUsageErrorExitsTwoWithoutTouchingAWS(t *testing.T) {
 	var out, eout bytes.Buffer
-	code := runCLILeaf(context.Background(), &out, &eout, "restore-opensearch-snapshot-from-s3", []string{"only-one-arg"}, nil, nil, nil, nil, nil, nil)
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-opensearch-snapshot-from-s3", []string{"only-one-arg"}, cliEnv{})
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -160,7 +160,7 @@ func TestRunCLILeaf_RestoreOpenSearchUsageErrorExitsTwoWithoutTouchingAWS(t *tes
 
 func TestRunCLILeaf_RestoreOpenSearchHelpPrintsTheUsageAndExitsZero(t *testing.T) {
 	var out, eout bytes.Buffer
-	code := runCLILeaf(context.Background(), &out, &eout, "restore-opensearch-snapshot-from-s3", []string{"--help"}, nil, nil, nil, nil, nil, nil)
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-opensearch-snapshot-from-s3", []string{"--help"}, cliEnv{})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -172,7 +172,7 @@ func TestRunCLILeaf_RestoreOpenSearchHelpPrintsTheUsageAndExitsZero(t *testing.T
 func TestRunCLILeaf_RestoreOpenSearchUnknownInstanceExitsTwo(t *testing.T) {
 	var eout bytes.Buffer
 	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-opensearch-snapshot-from-s3",
-		[]string{"no-such-box", "/d", "b", "s", "latest", "p"}, nil, nil, nil, nil, nil, nil)
+		[]string{"no-such-box", "/d", "b", "s", "latest", "p"}, cliEnv{})
 	if code != 2 || !strings.Contains(eout.String(), "no-such-box") {
 		t.Errorf("want exit 2 naming the instance, got %d:\n%s", code, eout.String())
 	}
@@ -193,7 +193,7 @@ func TestClassifyCLIArgs_RestoreSQLLeaf(t *testing.T) {
 
 func TestRunCLILeaf_RestoreSQLUsageErrorExitsTwoWithoutTouchingAWS(t *testing.T) {
 	var out, eout bytes.Buffer
-	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3", []string{"only-one-arg"}, nil, nil, nil, nil, nil, nil)
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3", []string{"only-one-arg"}, cliEnv{})
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -204,7 +204,7 @@ func TestRunCLILeaf_RestoreSQLUsageErrorExitsTwoWithoutTouchingAWS(t *testing.T)
 
 func TestRunCLILeaf_RestoreSQLHelpPrintsTheUsageAndExitsZero(t *testing.T) {
 	var out, eout bytes.Buffer
-	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3", []string{"--help"}, nil, nil, nil, nil, nil, nil)
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3", []string{"--help"}, cliEnv{})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -216,7 +216,7 @@ func TestRunCLILeaf_RestoreSQLHelpPrintsTheUsageAndExitsZero(t *testing.T) {
 func TestRunCLILeaf_RestoreSQLUnknownInstanceExitsTwo(t *testing.T) {
 	var eout bytes.Buffer
 	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-sql-backup-from-s3",
-		[]string{"no-such-box", "b", "s", "latest"}, nil, nil, nil, nil, nil, nil)
+		[]string{"no-such-box", "b", "s", "latest"}, cliEnv{})
 	if code != 2 || !strings.Contains(eout.String(), "no-such-box") {
 		t.Errorf("want exit 2 naming the instance, got %d:\n%s", code, eout.String())
 	}
@@ -227,8 +227,125 @@ func TestRunCLILeaf_RestoreSQLConfirmTypoExitsTwoBeforeAnyAWSCall(t *testing.T) 
 	insts := []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-east-1"}}
 	// nil clients: any AWS call would panic, so reaching preflight would fail this test.
 	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-sql-backup-from-s3",
-		[]string{"--confirm", "not-the-box", "box", "b", "s", "latest"}, nil, nil, nil, insts, nil, nil)
+		[]string{"--confirm", "not-the-box", "box", "b", "s", "latest"}, cliEnv{instances: insts})
 	if code != 2 || !strings.Contains(eout.String(), "does not match") {
 		t.Errorf("want exit 2 with the mismatch, got %d:\n%s", code, eout.String())
+	}
+}
+
+// Compute's seven read-only leaves have CLI forms (DR-0177). A leaf slug is only
+// valid under the domain that registered it.
+func TestClassifyCLIArgs_ComputeLeaves(t *testing.T) {
+	mode, domainSlug, leafSlug, leafArgs, err := classifyCLIArgs([]string{"compute", "show-instances"})
+	if err != nil || mode != cliModeLeaf || domainSlug != "compute" || leafSlug != "show-instances" || leafArgs != nil {
+		t.Errorf("no further words must deep-link into the leaf: got mode=%q domain=%q leaf=%q args=%v err=%v", mode, domainSlug, leafSlug, leafArgs, err)
+	}
+	// Options alone are a run, so `-json` never falls into the TUI.
+	mode, _, _, leafArgs, err = classifyCLIArgs([]string{"compute", "show-instances", "-json"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 1 {
+		t.Errorf("an option alone must be a run: got mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+	for _, args := range [][]string{
+		{"compute", "start-ec2-instance"},
+		{"compute", "archive-sql-backups-to-s3"},
+		{"rdm-backup-and-restore", "show-instances"},
+	} {
+		if _, _, _, _, err := classifyCLIArgs(args); err == nil {
+			t.Errorf("%v: want a usage error for a leaf under the wrong domain", args)
+		}
+	}
+}
+
+func computeEnv() cliEnv {
+	return cliEnv{
+		instances:       []inventory.Instance{{InstanceID: "i-1", Name: "box", State: "running", Region: "us-west-2"}},
+		images:          []inventory.Image{{ImageID: "ami-1", Name: "img", Region: "us-west-2"}},
+		launchTemplates: []inventory.LaunchTemplate{{TemplateID: "lt-1", Name: "tmpl", DefaultVersion: 1, LatestVersion: 1, Region: "us-west-2"}},
+	}
+}
+
+// The three listings are the state refresh() already loaded: no AWS client is
+// touched, so a nil ec2Clients map must be enough.
+func TestRunCLILeaf_ShowListings(t *testing.T) {
+	for _, tc := range []struct {
+		leaf, textWant, jsonWant string
+	}{
+		{"show-instances", "INSTANCE ID", `"instance_id": "i-1"`},
+		{"show-amis", "AMI ID", `"ami_id": "ami-1"`},
+		{"show-launch-templates", "TEMPLATE ID", `"template_id": "lt-1"`},
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, []string{"-text"}, computeEnv()); code != 0 || !strings.Contains(out.String(), tc.textWant) || eout.Len() != 0 {
+			t.Errorf("%s -text: code=%d out=%q err=%q", tc.leaf, code, out.String(), eout.String())
+		}
+		out.Reset()
+		if code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, []string{"-json"}, computeEnv()); code != 0 || !strings.Contains(out.String(), tc.jsonWant) {
+			t.Errorf("%s -json: code=%d out=%q", tc.leaf, code, out.String())
+		}
+		out.Reset()
+		if code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, []string{"-jsonl"}, computeEnv()); code != 0 || strings.Count(out.String(), "\n") != 1 {
+			t.Errorf("%s -jsonl: want exactly one line, code=%d out=%q", tc.leaf, code, out.String())
+		}
+	}
+}
+
+func TestRunCLILeaf_ShowListingsUsageErrors(t *testing.T) {
+	for _, args := range [][]string{{"-json", "-text"}, {"-yaml"}, {"-json", "stray-word"}} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, "show-instances", args, computeEnv()); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm compute show-instances") {
+			t.Errorf("%v: want exit 2, usage on stderr, nothing on stdout; code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-instances", []string{"--help"}, computeEnv()); code != 0 || !strings.Contains(out.String(), "-jsonl") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+// Every detail form needs its one argument (two for cloud-init's optional file);
+// a wrong count is a usage error that never reaches AWS (nil ec2Clients).
+func TestRunCLILeaf_ComputeDetailArityAndOptions(t *testing.T) {
+	for _, tc := range []struct {
+		leaf string
+		args []string
+		want string
+	}{
+		{"show-instance-detail", nil, "usage: clasm compute show-instance-detail"},
+		{"show-instance-detail", []string{"-json"}, "usage: clasm compute show-instance-detail"},
+		{"show-instance-detail", []string{"box", "extra"}, "usage: clasm compute show-instance-detail"},
+		{"show-instance-detail", []string{"-jsonl", "box"}, "usage: clasm compute show-instance-detail"}, // list-only option
+		{"show-ami-detail", []string{"img", "extra"}, "usage: clasm compute show-ami-detail"},
+		{"show-launch-template-detail", []string{"a", "1", "extra"}, "usage: clasm compute show-launch-template-detail"},
+		{"show-launch-template-detail", []string{"-versions", "tmpl", "2"}, "-versions"},
+		{"show-export-cloud-init-for-an-instance-or-ami", []string{"a", "f", "extra"}, "usage: clasm compute show-export-cloud-init"},
+		{"show-export-cloud-init-for-an-instance-or-ami", []string{"-launch-temporary-instance"}, "usage: clasm compute show-export-cloud-init"},
+		{"show-instance-detail", []string{"no-such-box"}, "no-such-box"},
+	} {
+		var out, eout bytes.Buffer
+		code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, tc.args, computeEnv())
+		if code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), tc.want) {
+			t.Errorf("%s %v: want exit 2 mentioning %q; code=%d out=%q err=%q", tc.leaf, tc.args, tc.want, code, out.String(), eout.String())
+		}
+	}
+}
+
+func TestRunCLILeaf_ComputeDetailHelp(t *testing.T) {
+	for leaf, want := range map[string]string{
+		"show-instance-detail":                          "-json",
+		"show-launch-template-detail":                   "-versions",
+		"show-export-cloud-init-for-an-instance-or-ami": "-launch-temporary-instance",
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), want) || eout.Len() != 0 {
+			t.Errorf("%s --help: code=%d out=%q err=%q", leaf, code, out.String(), eout.String())
+		}
+	}
+}
+
+func TestRunCLILeaf_ExportCloudInitAMIWithoutConsentExitsTwo(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "show-export-cloud-init-for-an-instance-or-ami", []string{"ami-1"}, computeEnv())
+	if code != 2 || !strings.Contains(eout.String(), "-launch-temporary-instance") {
+		t.Errorf("code=%d err=%q", code, eout.String())
 	}
 }
