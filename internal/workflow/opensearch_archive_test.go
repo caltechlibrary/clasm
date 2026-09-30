@@ -53,6 +53,7 @@ func openSearchHappyPathResponses() []ssmCommandResponse {
 		{substring: "command -v aws", status: types.CommandInvocationStatusSuccess},
 		{substring: "id -u", status: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"},
 		{substring: "install -d", status: types.CommandInvocationStatusSuccess},
+		{substring: "clasm-owner-probe", status: types.CommandInvocationStatusSuccess, stdout: "clasm-owner-probe 0 yes\n"}, // a clean tree: nothing to repair
 		{substring: `"type":"fs"`, status: types.CommandInvocationStatusSuccess},
 		{substring: `"indices"`, status: types.CommandInvocationStatusSuccess},
 		{substring: "-X GET", status: types.CommandInvocationStatusSuccess, stdout: `{"snapshots":[{"state":"SUCCESS"}]}`},
@@ -319,6 +320,7 @@ func TestArchiveOpenSearchSnapshot_FailedSnapshotStateAbortsBeforeSyncDeleteClea
 		{substring: "command -v aws", status: types.CommandInvocationStatusSuccess},
 		{substring: "id -u", status: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"},
 		{substring: "install -d", status: types.CommandInvocationStatusSuccess},
+		{substring: "clasm-owner-probe", status: types.CommandInvocationStatusSuccess, stdout: "clasm-owner-probe 0 yes\n"},
 		{substring: `"type":"fs"`, status: types.CommandInvocationStatusSuccess},
 		{substring: `"indices"`, status: types.CommandInvocationStatusSuccess},
 		{substring: "-X GET", status: types.CommandInvocationStatusSuccess, stdout: `{"snapshots":[{"state":"FAILED"}]}`},
@@ -353,6 +355,7 @@ func TestArchiveOpenSearchSnapshot_SyncFailureAbortsBeforeEBSDelete(t *testing.T
 		{substring: "command -v aws", status: types.CommandInvocationStatusSuccess},
 		{substring: "id -u", status: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"},
 		{substring: "install -d", status: types.CommandInvocationStatusSuccess},
+		{substring: "clasm-owner-probe", status: types.CommandInvocationStatusSuccess, stdout: "clasm-owner-probe 0 yes\n"},
 		{substring: `"type":"fs"`, status: types.CommandInvocationStatusSuccess},
 		{substring: `"indices"`, status: types.CommandInvocationStatusSuccess},
 		{substring: "-X GET", status: types.CommandInvocationStatusSuccess, stdout: `{"snapshots":[{"state":"SUCCESS"}]}`},

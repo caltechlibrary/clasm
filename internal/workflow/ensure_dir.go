@@ -3,8 +3,10 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,5 +98,95 @@ func ChownBackupDirectory(ctx context.Context, client awsclient.SSMAPI, instance
 	if status != ssmtypes.CommandInvocationStatusSuccess {
 		return curlFailureError(fmt.Sprintf("setting ownership of the backup directory %q on %s failed", dir, instanceID), status, stdout)
 	}
+	return nil
+}
+
+// ownershipProbeTag marks the probe's one line of output, so a parse does not
+// depend on anything else the remote shell happens to print.
+const ownershipProbeTag = "clasm-owner-probe"
+
+// buildOwnershipProbeCommand builds the read-only command that looks at a
+// repository directory before it is repaired (DR-0179): how many entries below
+// the top level are not owned by the service user, and whether the directory
+// looks like an OpenSearch snapshot repository -- an index.latest file or an
+// indices directory, the two things OpenSearch itself creates there. It prints
+// one line, "clasm-owner-probe <count> <yes|no>", and changes nothing: no
+// chown, no chmod, no delete, no redirect into the tree.
+func buildOwnershipProbeCommand(dir string, owner ServiceOwner) string {
+	q := shellQuote(dir)
+	return fmt.Sprintf(`n=$(find %s -mindepth 1 ! -user %d | wc -l | tr -d ' '); if [ -e %s/index.latest ] || [ -d %s/indices ]; then m=yes; else m=no; fi; echo "%s $n $m"`,
+		q, owner.UID, q, q, ownershipProbeTag)
+}
+
+// parseOwnershipProbe reads buildOwnershipProbeCommand's output. known is
+// false when no well-formed probe line is present, so an unreadable answer is
+// never taken for "nothing to repair" or "not a repository".
+func parseOwnershipProbe(stdout string) (n int, looksLikeRepo, known bool) {
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != ownershipProbeTag {
+			continue
+		}
+		count, err := strconv.Atoi(fields[1])
+		if err != nil || count < 0 {
+			return 0, false, false
+		}
+		switch fields[2] {
+		case "yes":
+			return count, true, true
+		case "no":
+			return count, false, true
+		}
+		return 0, false, false
+	}
+	return 0, false, false
+}
+
+// RepairSnapshotRepoOwnership hands everything under an OpenSearch snapshot
+// repository directory to the service user when entries below its top level
+// are owned by someone else (DR-0179). EnsureBackupDirectory repairs the top
+// level only, by design (DR-0176); a tree left root-owned below it -- by a
+// clasm that predates DR-0175, or anything that wrote there as root -- passes
+// that step and then fails in the search container, after a multi-minute
+// snapshot, with an AccessDeniedException. This finds it first.
+//
+// It looks before it touches (one read-only SSM call), does nothing when the
+// count is zero, and refuses to recurse across a directory that does not look
+// like a snapshot repository: the path is operator-typed, and a recursive
+// chown of a mistyped /opt or /home is exactly the mistake the guard exists
+// for. The repair itself is ChownBackupDirectory, as its own SSM step. It asks
+// no confirmation: it changes ownership only, is idempotent, and is what
+// Restore already does unprompted. An unreadable probe warns and proceeds,
+// since the repair is a courtesy and the archive reports its own failures.
+func RepairSnapshotRepoOwnership(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, instanceID); err != nil {
+		return err
+	}
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildOwnershipProbeCommand(dir, owner), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("checking the ownership of the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	}
+	n, looksLikeRepo, known := parseOwnershipProbe(stdout)
+	if !known {
+		fmt.Fprintf(w, "warning: could not read the ownership of %s on %s; skipping the ownership repair.\n", dir, instanceID)
+		return nil
+	}
+	if n == 0 {
+		return nil
+	}
+	noun := "entries"
+	if n == 1 {
+		noun = "entry"
+	}
+	if !looksLikeRepo {
+		return fmt.Errorf("the backup directory %q on %s holds %d %s not owned by the service user, but it does not look like an OpenSearch snapshot repository (no index.latest file, no indices directory), so clasm will not change ownership recursively across it; if that really is the directory, fix its ownership by hand", dir, instanceID, n, noun)
+	}
+	if err := ChownBackupDirectory(ctx, client, instanceID, dir, owner, timeout, pollInterval); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Repaired ownership of %d %s under %s (not owned by uid %d, left over from an earlier run).\n", n, noun, dir, owner.UID)
 	return nil
 }

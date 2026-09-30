@@ -222,8 +222,11 @@ func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient aw
 	// fails afterwards with a 404 that names nothing useful. That is the
 	// only thing protecting an instance that was never restored to.
 	//
-	// Ensure only, no chown -R: pre-existing residue underneath is reported by
-	// the readiness check, not repaired by an archive (DR-0175 decision 4).
+	// The ensure step is top level only and never recurses (DR-0176). What sits
+	// *below* it is handled separately, by RepairSnapshotRepoOwnership, which
+	// looks first, refuses anything that is not a snapshot repository, and
+	// repairs the rest (DR-0179): a tree left root-owned underneath used to pass
+	// this step and fail in the search container after the whole snapshot.
 	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
@@ -232,6 +235,9 @@ func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient aw
 		return err
 	}
 	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	if err := RepairSnapshotRepoOwnership(ctx, w, ssmClient, inst.InstanceID, directory, owner, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
