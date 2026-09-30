@@ -13,8 +13,8 @@ import (
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
-// sqlBackupFake builds a fakeSSMClient that distinguishes the three
-// commands runSQLBackup sends in sequence (CLI check, docker ps
+// sqlBackupFake builds a fakeSSMClient that distinguishes the commands
+// runSQLBackup sends in sequence (docker check, docker ps
 // discovery, owner lookup, ensure-directory, pg_dump, chown) by substring, so each can report its own
 // stdout/status independently.
 func sqlBackupFake(discoveryStdout string, dumpStatus types.CommandInvocationStatus) *fakeSSMClient {
@@ -22,7 +22,7 @@ func sqlBackupFake(discoveryStdout string, dumpStatus types.CommandInvocationSta
 		commandID:   "cmd-1",
 		finalStatus: types.CommandInvocationStatusSuccess,
 		responses: []ssmCommandResponse{
-			{substring: "command -v aws", stdout: "/usr/bin/aws", status: types.CommandInvocationStatusSuccess},
+			{substring: "command -v docker", stdout: "/usr/bin/docker", status: types.CommandInvocationStatusSuccess},
 			{substring: "docker ps", stdout: discoveryStdout, status: types.CommandInvocationStatusSuccess},
 			{substring: "id -u", stdout: "1000 1001\n", status: types.CommandInvocationStatusSuccess}, // ubuntu on the current images
 			{substring: "install -d", stdout: "", status: types.CommandInvocationStatusSuccess},

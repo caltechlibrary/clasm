@@ -46,7 +46,11 @@ const sqlBackupDirMode = "0750"
 // resulting filename is identical either way.
 func buildSQLDumpCommand(containerName, dbName, dbUser, directory, date string) string {
 	rawFile := fmt.Sprintf("%s/%s-%s-%s.sql", directory, containerName, dbName, date)
-	return fmt.Sprintf("set -e; docker exec %s pg_dump --username=%s --column-inserts %s > %s; gzip -f %s",
+	// `exec 2>&1` folds stderr into stdout, the only stream SSM returns, so a
+	// failing docker exec or pg_dump says why (DR-0178). It does not reach the
+	// dump: only docker's stdout is redirected to the file below, and stderr
+	// was already pointed at the command's own output before that redirect.
+	return fmt.Sprintf("set -e; exec 2>&1; docker exec %s pg_dump --username=%s --column-inserts %s > %s; gzip -f %s",
 		shellQuote(containerName), shellQuote(dbUser), shellQuote(dbName), shellQuote(rawFile), shellQuote(rawFile))
 }
 
@@ -81,7 +85,9 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	if err != nil {
 		return err
 	}
-	if err := CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	// Docker, not the AWS CLI: nothing this workflow does touches S3 (DR-0178).
+	// Still the first SSM call, before any prompt.
+	if err := CheckDockerAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -143,12 +149,12 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	}
 
 	command := buildSQLDumpCommand(containerName, dbName, dbUser, directory, time.Now().Format("2006-01-02"))
-	_, status, err := RunShellCommand(ctx, ssmClient, inst.InstanceID, command, DefaultSQLDumpTimeout, DefaultSSMPollInterval)
+	dumpOut, status, err := RunShellCommand(ctx, ssmClient, inst.InstanceID, command, DefaultSQLDumpTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return fmt.Errorf("SQL dump failed on %s (status: %s)", inst.InstanceID, status)
+		return curlFailureError(fmt.Sprintf("SQL dump failed on %s", inst.InstanceID), status, dumpOut)
 	}
 	if err := ChownBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err

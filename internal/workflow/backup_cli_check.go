@@ -28,3 +28,23 @@ func CheckAWSCLIAvailable(ctx context.Context, client awsclient.SSMAPI, instance
 	}
 	return nil
 }
+
+// CheckDockerAvailable runs a quick `command -v docker` preflight on
+// instanceID via SSM: the check Generate SQL Backup makes in place of
+// CheckAWSCLIAvailable (DR-0178). That workflow runs `docker exec pg_dump`,
+// `install -d` and `chown -R`, and nothing in it touches S3, so the AWS CLI
+// check reported a missing tool the operation does not use and blocked an
+// instance that could have been backed up. This one names what it does need,
+// and sits in the same place -- the first SSM call, before any prompt -- so it
+// keeps the early "is this instance reachable and sane" signal the AWS CLI
+// check gave by accident.
+func CheckDockerAvailable(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) error {
+	_, status, err := RunShellCommand(ctx, client, instanceID, "command -v docker", timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return fmt.Errorf("docker not found on instance %s -- Generate SQL Backup runs pg_dump inside the Postgres container with `docker exec`", instanceID)
+	}
+	return nil
+}
