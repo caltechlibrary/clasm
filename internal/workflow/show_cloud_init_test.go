@@ -63,7 +63,7 @@ func TestShowCloudInit_AMIPathAcceptedConfirmation(t *testing.T) {
 	ec2Client := &fakeEC2Client{runInstancesID: "i-temp1", runningAfterCall: 1}
 	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "#cloud-config from AMI"}
 
-	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, le, buf)
+	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, "", le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestShowCloudInit_AMIPathDeclinedConfirmation(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, le, buf)
+	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, "", le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestShowCloudInit_NoInstances(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := showCloudInit(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, newHuhAccessibleInput("1\n"), buf)
+	err := showCloudInit(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, "", newHuhAccessibleInput("1\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,11 +109,47 @@ func TestShowCloudInit_NoAMIs(t *testing.T) {
 	ec2Client := &fakeEC2Client{}
 	ssmClient := &fakeSSMClient{}
 
-	err := showCloudInit(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, newHuhAccessibleInput("2\n"), buf)
+	err := showCloudInit(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, nil, nil, "", newHuhAccessibleInput("2\n"), buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "No AMIs") {
 		t.Errorf("expected a no-AMIs message, got:\n%s", buf.String())
+	}
+}
+
+// An AMI whose source had no user-data reads back empty. That is "none found",
+// said plainly, not a blank cloud-init block followed by a prompt to save
+// nothing to a file.
+func TestShowCloudInit_AMIPathEmptyUserDataSaysSoAndDoesNotOfferToSave(t *testing.T) {
+	img := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
+	term, le, buf := newPipeEditor("y\n") // confirm only; a second prompt would hang the test's pipe
+	ec2Client := extractionFake(egressAll())
+	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: ""}
+
+	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, "", le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "No user-data was found in AMI ami-1") {
+		t.Errorf("want the plain message, got:\n%s", out)
+	}
+	if strings.Contains(out, "--- cloud-init ---") || strings.Contains(out, "Save to file") {
+		t.Errorf("an empty result must not be displayed as a cloud-init block or offered for saving:\n%s", out)
+	}
+}
+
+func TestShowCloudInit_AMIPathPassesTheConfiguredSecurityGroup(t *testing.T) {
+	img := inventory.Image{ImageID: "ami-1", Name: "base", Region: "us-east-1"}
+	term, le, buf := newPipeEditor("y\n\n")
+	ec2Client := extractionFake(nil) // default group closed; the configured one is open
+	ssmClient := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "#cloud-config"}
+	err := showCloudInitForAMI(context.Background(), term, map[string]awsclient.EC2API{"us-east-1": ec2Client}, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, img, "sg-open", le, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := ec2Client.lastRunInstancesInput.SecurityGroupIds; len(got) != 1 || got[0] != "sg-open" {
+		t.Errorf("SecurityGroupIds = %v, want [sg-open]", got)
 	}
 }

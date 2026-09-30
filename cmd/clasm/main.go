@@ -372,7 +372,7 @@ func main() {
 			return workflow.RemoveAMI(ctx, out, ec2Clients, state.images, state.instances)
 		},
 		ShowCloudInit: func(ctx context.Context) error {
-			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images)
+			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images, cfg.CloudInitExtractionSecurityGroup)
 		},
 		ShowLaunchTemplate: func(ctx context.Context) error {
 			return workflow.ShowLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
@@ -714,6 +714,7 @@ func main() {
 			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
 			keyPairs: keyMgmtState.keyPairs, buckets: s3State.buckets, iamClient: iamClient, originTag: cfg.OriginTag,
 			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
+			cloudInitExtractionSG: cfg.CloudInitExtractionSecurityGroup,
 		}
 		if cliDomainSlug == workflow.TagManagementDomainCLISlug {
 			// Tag Management loads its own five lists independently of Compute,

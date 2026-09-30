@@ -82,3 +82,20 @@ func TestParseComputeArgs_OptionAfterPositionalIsPositional(t *testing.T) {
 		t.Errorf("got %+v %v err=%v", opts, pos, err)
 	}
 }
+
+// -security-group names the group for an AMI's temporary instance; only the
+// cloud-init form declares it.
+func TestParseComputeArgs_SecurityGroupOption(t *testing.T) {
+	opts, _, err := ParseComputeArgs(ShowExportCloudInitCLISlug, "usage: x", ComputeAllowLaunch, []string{"-launch-temporary-instance", "-security-group", "sg-open", "ami-1"})
+	if err != nil || opts.SecurityGroup != "sg-open" || !opts.LaunchTemporaryInstance {
+		t.Errorf("got %+v err=%v", opts, err)
+	}
+	if _, _, err := ParseComputeArgs(ShowInstanceDetailCLISlug, "usage: x", ComputeAllowNone, []string{"-security-group", "sg-1", "box"}); err == nil {
+		t.Error("-security-group must be refused on a leaf that does not declare it")
+	}
+	_, _, err = ParseComputeArgs(ShowExportCloudInitCLISlug, "usage: x", ComputeAllowLaunch, []string{"--help"})
+	var help *HelpRequested
+	if !errors.As(err, &help) || !strings.Contains(help.Usage, "-security-group") {
+		t.Errorf("help should describe -security-group, got %v", err)
+	}
+}

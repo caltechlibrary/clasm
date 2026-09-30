@@ -92,19 +92,22 @@ func refreshForCLIDomain(ctx context.Context, domainSlug string, loaders map[str
 // clients, the listings refresh() has just loaded, and the Postgres rules.
 // A leaf takes only the fields it uses, so a test fills in only those.
 type cliEnv struct {
-	ssmClients           map[string]awsclient.SSMAPI
-	ec2Clients           map[string]awsclient.EC2API
-	s3Client             awsclient.S3API
-	newS3Client          func(ctx context.Context, region string) (awsclient.S3API, error)
-	instances            []inventory.Instance
-	images               []inventory.Image
-	launchTemplates      []inventory.LaunchTemplate
-	keyPairs             []inventory.KeyPair
-	buckets              []inventory.Bucket
-	iamClient            awsclient.IAMAPI
-	originTag            config.OriginTagConfig
-	rdmPostgresRules     []config.RDMPostgresRule
-	saveRDMPostgresRules func([]config.RDMPostgresRule) error
+	ssmClients      map[string]awsclient.SSMAPI
+	ec2Clients      map[string]awsclient.EC2API
+	s3Client        awsclient.S3API
+	newS3Client     func(ctx context.Context, region string) (awsclient.S3API, error)
+	instances       []inventory.Instance
+	images          []inventory.Image
+	launchTemplates []inventory.LaunchTemplate
+	keyPairs        []inventory.KeyPair
+	buckets         []inventory.Bucket
+	iamClient       awsclient.IAMAPI
+	originTag       config.OriginTagConfig
+	// cloudInitExtractionSG is the configured security group for an AMI's
+	// temporary instance (cloud_init_extraction_security_group).
+	cloudInitExtractionSG string
+	rdmPostgresRules      []config.RDMPostgresRule
+	saveRDMPostgresRules  func([]config.RDMPostgresRule) error
 }
 
 // runCLILeaf resolves leafSlug's positional leafArgs and runs that

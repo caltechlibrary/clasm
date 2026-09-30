@@ -55,6 +55,13 @@ type Config struct {
 	// since an instance's SQL and OpenSearch backup directories are
 	// unrelated paths.
 	OpenSearchBackupDirectories []BackupDirectoryRule `yaml:"opensearch_backup_directories"`
+	// CloudInitExtractionSecurityGroup is the ID of an existing security group
+	// for the disposable instance that reads an AMI's cloud-init. It must allow
+	// outbound HTTPS, or the instance's SSM agent cannot register and the
+	// extraction times out. Left empty, the VPC's default group is used, which
+	// fails in any account whose default group has no outbound rules (found
+	// 2026-09-30).
+	CloudInitExtractionSecurityGroup string `yaml:"cloud_init_extraction_security_group,omitempty"`
 }
 
 // OriginTagConfig names the tag clasm treats as the IAM

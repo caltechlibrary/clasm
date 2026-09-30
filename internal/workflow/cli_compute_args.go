@@ -31,6 +31,9 @@ type ComputeOptions struct {
 	// LaunchTemporaryInstance (-launch-temporary-instance) is the explicit
 	// consent to the billable temporary instance an AMI's cloud-init needs.
 	LaunchTemporaryInstance bool
+	// SecurityGroup (-security-group) is an existing group for an AMI's temporary
+	// instance; "" means the configured one, else the VPC default.
+	SecurityGroup string
 }
 
 // ParseComputeArgs parses a read-only Compute leaf's options with a FlagSet of
@@ -44,6 +47,7 @@ func ParseComputeArgs(leaf, usage string, allow ComputeAllow, args []string) (Co
 	text := fs.Bool("text", false, "")
 	asJSON := fs.Bool("json", false, "")
 	var jsonl, versions, launch *bool
+	var securityGroup *string
 	if allow&ComputeAllowJSONL != 0 {
 		jsonl = fs.Bool("jsonl", false, "")
 	}
@@ -52,6 +56,7 @@ func ParseComputeArgs(leaf, usage string, allow ComputeAllow, args []string) (Co
 	}
 	if allow&ComputeAllowLaunch != 0 {
 		launch = fs.Bool("launch-temporary-instance", false, "")
+		securityGroup = fs.String("security-group", "", "")
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -78,6 +83,9 @@ func ParseComputeArgs(leaf, usage string, allow ComputeAllow, args []string) (Co
 	}
 	opts.Versions = versions != nil && *versions
 	opts.LaunchTemporaryInstance = launch != nil && *launch
+	if securityGroup != nil {
+		opts.SecurityGroup = *securityGroup
+	}
 	return opts, fs.Args(), nil
 }
 
@@ -95,6 +103,7 @@ func computeHelp(usage string, allow ComputeAllow) string {
 	}
 	if allow&ComputeAllowLaunch != 0 {
 		b.WriteString("  -launch-temporary-instance\n      Required for an AMI: its cloud-init can only be read by launching a\n      temporary billable instance. Not needed for an instance.\n")
+		b.WriteString("  -security-group <sg-id>\n      An existing security group for that temporary instance. It must allow\n      outbound HTTPS, or the instance's SSM agent cannot register. Default: the\n      cloud_init_extraction_security_group setting in ~/.clasm, else the VPC default.\n")
 	}
 	b.WriteString("  -h, --help\n      Show this help.\n")
 	return b.String()

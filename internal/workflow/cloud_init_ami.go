@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
@@ -25,7 +26,7 @@ const CloudInitExtractionInstanceType = "t3.micro"
 // Feature 10).
 const DefaultCloudInitExtractionTimeout = 3 * time.Minute
 
-func launchDisposableInstance(ctx context.Context, client awsclient.EC2API, imageID string) (string, error) {
+func launchDisposableInstance(ctx context.Context, client awsclient.EC2API, imageID, securityGroupID string) (string, error) {
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String(imageID),
 		InstanceType: types.InstanceType(CloudInitExtractionInstanceType),
@@ -35,6 +36,9 @@ func launchDisposableInstance(ctx context.Context, client awsclient.EC2API, imag
 			"Name":    "cloud-init-extraction-temp",
 			"Purpose": "cloud-init-extraction",
 		})},
+	}
+	if securityGroupID != "" {
+		input.SecurityGroupIds = []string{securityGroupID}
 	}
 	ctx, cancel := withCallTimeout(ctx)
 	defer cancel()
@@ -56,8 +60,14 @@ func launchDisposableInstance(ctx context.Context, client awsclient.EC2API, imag
 // runs via defer against a cleanup-scoped context, decoupled from ctx,
 // so it isn't skipped by an early return or by ctx itself being
 // cancelled (see DESIGN.md, Feature 10, and Security Considerations).
-func ExtractCloudInitFromAMI(ctx context.Context, ec2Client awsclient.EC2API, ssmClient awsclient.SSMAPI, imageID string, timeout, pollInterval time.Duration) (string, error) {
-	instanceID, err := launchDisposableInstance(ctx, ec2Client, imageID)
+func ExtractCloudInitFromAMI(ctx context.Context, ec2Client awsclient.EC2API, ssmClient awsclient.SSMAPI, imageID, securityGroupID string, timeout, pollInterval time.Duration) (string, error) {
+	// Refuse before launching anything billable if the instance could not reach
+	// SSM (found live 2026-09-30: a default group with no outbound rules made
+	// every extraction time out after three minutes).
+	if err := checkExtractionSecurityGroup(ctx, ec2Client, securityGroupID); err != nil {
+		return "", err
+	}
+	instanceID, err := launchDisposableInstance(ctx, ec2Client, imageID, securityGroupID)
 	if err != nil {
 		return "", err
 	}
@@ -77,7 +87,7 @@ func ExtractCloudInitFromAMI(ctx context.Context, ec2Client awsclient.EC2API, ss
 		return "", err
 	}
 	if !online {
-		return "", fmt.Errorf("SSM never came online on temporary instance %s", instanceID)
+		return "", fmt.Errorf("SSM never came online on temporary instance %s; it was launched into %s, whose outbound rules must allow HTTPS to the SSM endpoints", instanceID, describeExtractionGroup(securityGroupID))
 	}
 
 	stdout, status, err := RunShellCommand(ctx, ssmClient, instanceID, "cat /var/lib/cloud/instance/user-data.txt", timeout, pollInterval)
@@ -88,4 +98,102 @@ func ExtractCloudInitFromAMI(ctx context.Context, ec2Client awsclient.EC2API, ss
 		return "", fmt.Errorf("reading user-data from %s failed (status: %s)", instanceID, status)
 	}
 	return stdout, nil
+}
+
+// describeExtractionGroup names the group for messages.
+func describeExtractionGroup(securityGroupID string) string {
+	if securityGroupID == "" {
+		return "the VPC's default security group"
+	}
+	return "security group " + securityGroupID
+}
+
+// extractionGroupAdvice is the fix, repeated wherever the group is at fault.
+const extractionGroupAdvice = "name an existing group that allows outbound HTTPS: set cloud_init_extraction_security_group in ~/.clasm, or pass -security-group <sg-id>"
+
+// checkExtractionSecurityGroup refuses, as a *UsageError, a group that would
+// leave the disposable instance unable to reach the SSM endpoints: one with no
+// outbound rule allowing HTTPS (port 443). With securityGroupID empty the group
+// is the default VPC's default group, which is what RunInstances picks; a named
+// group must exist. It blocks only on positive evidence: when the default VPC or
+// its group cannot be found, or a lookup fails, the launch proceeds as it always
+// did, since it cannot be shown to fail.
+func checkExtractionSecurityGroup(ctx context.Context, client awsclient.EC2API, securityGroupID string) error {
+	if securityGroupID != "" {
+		ctx, cancel := withCallTimeout(ctx)
+		defer cancel()
+		out, err := client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{GroupIds: []string{securityGroupID}})
+		if err != nil {
+			var apiErr smithy.APIError
+			if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "InvalidGroup.NotFound" || apiErr.ErrorCode() == "InvalidGroupId.Malformed") {
+				return &UsageError{Msg: fmt.Sprintf("security group %s for the temporary instance was not found in this region", securityGroupID)}
+			}
+			return err // a failed lookup is not the caller's mistake
+		}
+		for _, g := range out.SecurityGroups {
+			if aws.ToString(g.GroupId) != securityGroupID {
+				continue
+			}
+			if !allowsHTTPSEgress(g) {
+				return &UsageError{Msg: fmt.Sprintf("security group %s has no outbound rule allowing HTTPS (port 443), so the temporary instance's SSM agent could not register; %s", securityGroupID, extractionGroupAdvice)}
+			}
+			return nil
+		}
+		return &UsageError{Msg: fmt.Sprintf("security group %s for the temporary instance was not found in this region", securityGroupID)}
+	}
+
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	subnets, err := client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []types.Filter{{Name: aws.String("default-for-az"), Values: []string{"true"}}},
+	})
+	if err != nil {
+		return nil
+	}
+	vpcID := ""
+	for _, s := range subnets.Subnets {
+		if aws.ToBool(s.DefaultForAz) && aws.ToString(s.VpcId) != "" {
+			vpcID = aws.ToString(s.VpcId)
+			break
+		}
+	}
+	if vpcID == "" {
+		return nil
+	}
+	groups, err := client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+		Filters: []types.Filter{
+			{Name: aws.String("vpc-id"), Values: []string{vpcID}},
+			{Name: aws.String("group-name"), Values: []string{"default"}},
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	for _, g := range groups.SecurityGroups {
+		if aws.ToString(g.GroupName) != "default" || aws.ToString(g.VpcId) != vpcID {
+			continue
+		}
+		if !allowsHTTPSEgress(g) {
+			return &UsageError{Msg: fmt.Sprintf("the VPC's default security group %s has no outbound rule allowing HTTPS (port 443), so the temporary instance's SSM agent could not register and the extraction would time out; %s", aws.ToString(g.GroupId), extractionGroupAdvice)}
+		}
+		return nil
+	}
+	return nil
+}
+
+// allowsHTTPSEgress reports whether g has an outbound rule covering TCP 443: all
+// traffic, or TCP with a port range that includes it. The destination is not
+// examined: a group may send HTTPS only to a VPC endpoint.
+func allowsHTTPSEgress(g types.SecurityGroup) bool {
+	for _, p := range g.IpPermissionsEgress {
+		switch aws.ToString(p.IpProtocol) {
+		case "-1":
+			return true
+		case "tcp", "6":
+			if aws.ToInt32(p.FromPort) <= 443 && 443 <= aws.ToInt32(p.ToPort) {
+				return true
+			}
+		}
+	}
+	return false
 }

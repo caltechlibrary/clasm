@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -275,5 +276,59 @@ func TestReadOnlyComputeForms_SendNoMutatingCall(t *testing.T) {
 	}
 	if fake.describeCalls == 0 {
 		t.Error("the guard is vacuous: no Describe call was recorded")
+	}
+}
+
+// The AMI path of the cloud-init form: the security group reaches the launch,
+// and a source with no user-data is reported as none, not as an empty cloud-init.
+func amiExportEnv(stdout string, defaultEgress []types.IpPermission) (map[string]awsclient.EC2API, map[string]awsclient.SSMAPI, *fakeEC2Client) {
+	ec2Client := extractionFake(defaultEgress)
+	ssm := &fakeSSMClient{onlineAfterCalls: 1, commandID: "cmd-1", finalStatus: ssmtypes.CommandInvocationStatusSuccess, stdout: stdout}
+	return map[string]awsclient.EC2API{"us-west-2": ec2Client}, map[string]awsclient.SSMAPI{"us-west-2": ssm}, ec2Client
+}
+
+func TestRunExportCloudInitCLI_AMIUsesTheGivenSecurityGroup(t *testing.T) {
+	ec2s, ssms, ec2Client := amiExportEnv("#cloud-config\nx: 1\n", nil)
+	var out, eout bytes.Buffer
+	opts := ComputeOptions{Format: ui.FormatText, LaunchTemporaryInstance: true, SecurityGroup: "sg-open"}
+	if err := RunExportCloudInitCLI(context.Background(), &out, &eout, ec2s, ssms, cliInstances(), cliImages(), "ami-abc123", "", opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := ec2Client.lastRunInstancesInput.SecurityGroupIds; len(got) != 1 || got[0] != "sg-open" {
+		t.Errorf("SecurityGroupIds = %v, want [sg-open]", got)
+	}
+	if out.String() != "#cloud-config\nx: 1\n" {
+		t.Errorf("stdout must be the YAML alone, got %q", out.String())
+	}
+}
+
+func TestRunExportCloudInitCLI_AMIClosedDefaultGroupIsAUsageErrorBeforeLaunch(t *testing.T) {
+	ec2s, ssms, ec2Client := amiExportEnv("x", nil)
+	opts := ComputeOptions{Format: ui.FormatText, LaunchTemporaryInstance: true}
+	err := RunExportCloudInitCLI(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, ec2s, ssms, cliInstances(), cliImages(), "ami-abc123", "", opts)
+	usageErr(t, err, "cloud_init_extraction_security_group")
+	if ec2Client.lastRunInstancesInput != nil {
+		t.Error("nothing may be launched")
+	}
+}
+
+func TestRunExportCloudInitCLI_AMIWithNoUserData(t *testing.T) {
+	ec2s, ssms, _ := amiExportEnv("", egressAll())
+	var out, eout bytes.Buffer
+	if err := RunExportCloudInitCLI(context.Background(), &out, &eout, ec2s, ssms, cliInstances(), cliImages(), "ami-abc123", "", ComputeOptions{Format: ui.FormatText, LaunchTemporaryInstance: true}); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 || !strings.Contains(eout.String(), "No user-data was found in AMI ami-abc123") {
+		t.Errorf("out=%q err=%q", out.String(), eout.String())
+	}
+
+	ec2s, ssms, _ = amiExportEnv("", egressAll())
+	out.Reset()
+	if err := RunExportCloudInitCLI(context.Background(), &out, &bytes.Buffer{}, ec2s, ssms, cliInstances(), cliImages(), "ami-abc123", "", ComputeOptions{Format: ui.FormatJSON, LaunchTemporaryInstance: true}); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || got["kind"] != "ami" || got["user_data_set"] != false || got["user_data"] != "" {
+		t.Errorf("got %v err=%v", got, err)
 	}
 }

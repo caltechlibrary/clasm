@@ -212,6 +212,8 @@ func TestSave_RoundTripsThroughLoad(t *testing.T) {
 		Regions:           []string{"us-east-1", "us-east-2"},
 		BackupDirectories: []BackupDirectoryRule{{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"}},
 		OriginTag:         OriginTagConfig{Key: "Origin", DLDValue: "DLD"},
+
+		CloudInitExtractionSecurityGroup: "sg-0123456789abcdef0",
 	}
 
 	if err := Save(path, cfg); err != nil {
@@ -230,6 +232,9 @@ func TestSave_RoundTripsThroughLoad(t *testing.T) {
 	}
 	if got.OriginTag != cfg.OriginTag {
 		t.Errorf("OriginTag = %v, want %v", got.OriginTag, cfg.OriginTag)
+	}
+	if got.CloudInitExtractionSecurityGroup != "sg-0123456789abcdef0" {
+		t.Errorf("CloudInitExtractionSecurityGroup = %q, want it round-tripped", got.CloudInitExtractionSecurityGroup)
 	}
 }
 

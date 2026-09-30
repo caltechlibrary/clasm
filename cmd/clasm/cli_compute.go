@@ -19,7 +19,7 @@ const (
 	showAMIDetailUsage              = "usage: clasm compute show-ami-detail [-text|-json] <ami-name-or-id>"
 	showLaunchTemplateDetailUsage   = "usage: clasm compute show-launch-template-detail [-text|-json] [-versions] <template-name-or-id> [version]"
 	createInstanceFromTemplateUsage = "usage: clasm compute create-ec2-instance-from-launch-template [-text|-json] <template-name-or-id> [version]"
-	showExportCloudInitUsage        = "usage: clasm compute show-export-cloud-init-for-an-instance-or-ami [-text|-json] [-launch-temporary-instance] <instance-or-ami-name-or-id> [file]"
+	showExportCloudInitUsage        = "usage: clasm compute show-export-cloud-init-for-an-instance-or-ami [-text|-json] [-launch-temporary-instance [-security-group <sg-id>]] <instance-or-ami-name-or-id> [file]"
 )
 
 // runComputeLeaf runs one of Compute's read-only CLI forms (DR-0177). handled is
@@ -85,6 +85,9 @@ func runComputeLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, l
 		file := ""
 		if len(words) == 2 {
 			file = words[1]
+		}
+		if opts.SecurityGroup == "" {
+			opts.SecurityGroup = env.cloudInitExtractionSG
 		}
 		return reportCLIError(out, eout, workflow.RunExportCloudInitCLI(ctx, out, eout, env.ec2Clients, env.ssmClients, env.instances, env.images, words[0], file, opts)), true
 	}

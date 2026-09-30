@@ -335,16 +335,21 @@ func RunExportCloudInitCLI(ctx context.Context, w, eout io.Writer, ec2Clients ma
 			return err
 		}
 		stop := startProgressTicker(eout, "extracting cloud-init from a temporary instance")
-		data, err = ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
+		data, err = ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, opts.SecurityGroup, DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
 		stop()
 		if err != nil {
 			return err
 		}
-		id, kind, set = img.ImageID, "ami", true
+		// An AMI whose source had no user-data reads back empty: none found.
+		id, kind, set = img.ImageID, "ami", data != ""
 	}
 
 	if !set && opts.Format == ui.FormatText {
-		fmt.Fprintf(eout, "No user-data was set at launch for %s.\n", id)
+		if kind == "ami" {
+			fmt.Fprintf(eout, "No user-data was found in AMI %s.\n", id)
+		} else {
+			fmt.Fprintf(eout, "No user-data was set at launch for %s.\n", id)
+		}
 		return nil
 	}
 	rec := cloudInitJSON{ID: id, Kind: kind, UserDataSet: set, UserData: data}

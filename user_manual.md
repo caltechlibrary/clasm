@@ -489,13 +489,19 @@ cloud-init, below, which is refused unless you ask for it.)
   instead (and takes no `version`). Diffing two versions is interactive
   only for now.
 
-`show-export-cloud-init-for-an-instance-or-ami [-launch-temporary-instance] <instance-or-ami> [file]`
+`show-export-cloud-init-for-an-instance-or-ami [-launch-temporary-instance [-security-group <sg-id>]] <instance-or-ami> [file]`
 : the decoded cloud-init. Standard output receives the YAML and nothing
   else, so it can be piped; with `file` it is written there instead. An
   instance's cloud-init is one free read. An AMI's can only be read by
   launching a temporary, billable instance, so clasm refuses unless you
-  add `-launch-temporary-instance`. If an instance was launched with no
-  user-data, a note goes to standard error and the exit status is 0.
+  add `-launch-temporary-instance`. That instance needs a security group
+  that allows outbound HTTPS, or its SSM agent cannot register: name one with
+  `-security-group`, or set `cloud_init_extraction_security_group` in
+  `~/.clasm` (see "Configuration"). clasm checks the group first and refuses
+  at once, exit 2, if it has no outbound rule for port 443. If an instance was
+  launched with no user-data, or an AMI's source had none, a note goes to
+  standard error, stdout is empty and the exit status is 0. While it waits,
+  a redirected stderr gets one plain progress line every 30 seconds.
 
 #### Creating a launch template and launching from it
 
@@ -709,6 +715,7 @@ rdm_postgres_config:
 origin_tag:
   key: "Origin"
   dld_value: ""
+cloud_init_extraction_security_group: sg-ada165d0
 ~~~
 
 `regions` narrows or changes which regions every listing and picker
@@ -727,6 +734,15 @@ discovered live and saved back here, or edited by hand. `origin_tag`
 names the tag the IAM domain treats as its DLD-ownership convention --
 `key` defaults to `"Origin"`, `dld_value` defaults to empty (meaning no
 value is recognized as DLD-owned yet, until your group settles on one).
+`cloud_init_extraction_security_group` is the ID of an existing security group
+for the temporary instance that reads an AMI's cloud-init (Show/export
+cloud-init, AMI branch). It **must allow outbound HTTPS**: the instance's SSM
+agent has to reach the SSM endpoints to register, and in an account whose VPC
+default security group has no outbound rules the extraction would otherwise
+time out. Left unset, the default group is used, and clasm refuses up front
+(rather than after three minutes and a billable launch) if it finds that group
+has no outbound rule for port 443. Edit it by hand for now; the Configure
+clasm menu does not offer it yet.
 See `DESIGN.md`, "Configuration" for the full schema and
 validation behavior.
 
