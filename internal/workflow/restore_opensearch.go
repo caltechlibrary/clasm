@@ -180,10 +180,13 @@ func dataStreamOfBackingIndex(index string) (string, bool) {
 // real REST API accepts a comma-separated index list on one DELETE call,
 // same shape as buildCreateSnapshotCommand's comma-joined indices value.
 // Never a raw filesystem operation, matching buildDeleteSnapshotCommand's
-// own precedent. indices must hold no data-stream backing index; see
-// buildDeleteDataStreamsCommand.
+// own precedent. Run after buildDeleteDataStreamsCommand, never before: a
+// backing index that is still its stream's write index cannot be deleted by
+// name.
 func buildDeleteIndicesCommand(indices []string) string {
-	url := fmt.Sprintf("localhost:9200/%s", strings.Join(indices, ","))
+	// ignore_unavailable: a name already removed -- a data stream's backing
+	// index that the stream delete just took with it -- is not an error.
+	url := fmt.Sprintf("localhost:9200/%s?ignore_unavailable=true", strings.Join(indices, ","))
 	return fmt.Sprintf("curl --fail-with-body -sS -X DELETE %s", shellQuote(url))
 }
 
@@ -197,25 +200,30 @@ func buildDeleteDataStreamsCommand(streams []string) string {
 	return fmt.Sprintf("curl --fail-with-body -sS -X DELETE %s", shellQuote(url))
 }
 
-// DeleteConflictingIndices deletes indices via SSM: data-stream backing
-// indices through their streams first, then every ordinary index by name.
-// A no-op (no SSM call at all) when indices is empty, so callers don't need
-// their own empty-check before calling this.
+// DeleteConflictingIndices deletes indices via SSM: first the data streams that
+// own any backing index in the list, then every listed name by name, including
+// the backing indices. A no-op (no SSM call at all) when indices is empty, so
+// callers don't need their own empty-check before calling this.
+//
+// Both steps are needed. A backing index that is a stream's write index can only
+// go with its stream (found live 2026-09-30: HTTP 400 on the plain delete).
+// But a backing index is often *not* in a stream any more: a restore brings the
+// audit log back as a plain index with no stream (DR-0173), so deleting "its
+// stream" removes nothing and the next _restore fails with "an open index with
+// same name already exists" (found live the same day). OpenSearch answers 200 for
+// a stream that does not exist and, with ignore_unavailable, for an index already
+// gone, so doing both is safe in every case.
 func DeleteConflictingIndices(ctx context.Context, client awsclient.SSMAPI, instanceID string, indices []string, timeout, pollInterval time.Duration) error {
 	if len(indices) == 0 {
 		return nil
 	}
-	var ordinary, streams []string
+	var streams []string
 	seen := map[string]bool{}
 	for _, name := range indices {
-		if stream, ok := dataStreamOfBackingIndex(name); ok {
-			if !seen[stream] {
-				seen[stream] = true
-				streams = append(streams, stream)
-			}
-			continue
+		if stream, ok := dataStreamOfBackingIndex(name); ok && !seen[stream] {
+			seen[stream] = true
+			streams = append(streams, stream)
 		}
-		ordinary = append(ordinary, name)
 	}
 	if len(streams) > 0 {
 		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteDataStreamsCommand(streams), timeout, pollInterval)
@@ -226,15 +234,12 @@ func DeleteConflictingIndices(ctx context.Context, client awsclient.SSMAPI, inst
 			return curlFailureError(fmt.Sprintf("deleting data stream(s) %s on %s failed", strings.Join(streams, ", "), instanceID), status, stdout)
 		}
 	}
-	if len(ordinary) == 0 {
-		return nil
-	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteIndicesCommand(ordinary), timeout, pollInterval)
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteIndicesCommand(indices), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
 	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("deleting %d conflicting index/indices on %s failed", len(ordinary), instanceID), status, stdout)
+		return curlFailureError(fmt.Sprintf("deleting %d conflicting index/indices on %s failed", len(indices), instanceID), status, stdout)
 	}
 	return nil
 }
@@ -731,10 +736,52 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return cancelledIsNil(w, err)
 	}
 
+	return executeOpenSearchRestore(ctx, w, ssmClient, openSearchRestoreRun{
+		inst: inst, owner: owner, directory: directory, bucket: bucket, sourceName: sourceName,
+		indexPrefix: indexPrefix, snap: snap, indices: indices, existing: existing,
+	})
+}
+
+// openSearchRestoreRun is everything a confirmed Restore OpenSearch run needs,
+// however it was collected: prompts in the interactive form, arguments and a
+// read-only plan in the CLI form (DR-0180). Both call executeOpenSearchRestore,
+// so the order of the destructive steps exists once.
+type openSearchRestoreRun struct {
+	inst        inventory.Instance
+	owner       ServiceOwner
+	directory   string
+	bucket      string
+	sourceName  string
+	indexPrefix string
+	snap        SnapshotPrefixInfo
+	indices     []string // the index patterns to restore, from rdmOpenSearchSnapshotIndexPatterns
+	existing    []string // the conflicting indices on the target, deleted just before the restore
+}
+
+// executeOpenSearchRestore runs a confirmed restore: ensure the directory, sync
+// the snapshot down, hand it to the service user, register it, check it holds
+// matching indices, delete the conflicting indices, restore, verify, then clean
+// up. Nothing before the delete is destructive, and the delete comes after a
+// verified source (DR-0175 decision 2).
+func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, r openSearchRestoreRun) error {
+	inst, owner, directory, bucket, sourceName := r.inst, r.owner, r.directory, r.bucket, r.sourceName
+	indexPrefix, snap, indices, existing := r.indexPrefix, r.snap, r.indices, r.existing
+
 	// Made or repaired for the service user immediately before the sync,
 	// which needs the directory the operator just typed. Non-recursive: the
 	// chown -R below, after the sync, is the only recursive step.
 	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	// Before the sync, the directory must hold nothing that can shadow the
+	// snapshot about to be synced into it: any earlier registration is dropped
+	// (metadata only), and the generation files an earlier Archive or Restore
+	// left behind are moved aside, never deleted. OpenSearch picks the highest
+	// index-N it finds, not the one index.latest names (found live 2026-09-30).
+	if err := DeregisterSnapshotRepoIfPresent(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	if err := MoveStaleRepositoryGenerations(ctx, w, ssmClient, inst.InstanceID, directory, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	if err := SyncOpenSearchBackupsFromS3(ctx, ssmClient, inst.InstanceID, bucket, sourceName, snap.Name, directory, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
@@ -820,4 +867,107 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		fmt.Fprintf(w, "\nWARNING: %d restored index/indices reported red health -- investigate before trusting this restore.\n", redCount)
 	}
 	return nil
+}
+
+// staleRepoDirPrefix is where the generation files already in a repository
+// directory are moved before a Restore: outside the repository, so the next
+// Archive's `aws s3 sync` of the directory does not upload them, and never
+// deleted, so the move is reversible.
+const staleRepoDirPrefix = "/var/tmp/clasm-stale-repo-"
+
+// buildMoveStaleGenerationsCommand builds the command that moves every index-N
+// file and index.latest in dir into staleDir, and prints one line,
+// "clasm-stale-moved <count> <staleDir>" ("clasm-stale-moved 0" when there was
+// nothing to move, in which case staleDir is not created).
+//
+// Why: every Archive and Restore leaves the repository's metadata behind with N
+// one higher each time, and OpenSearch uses the highest index-N it finds, not
+// the one index.latest names. A leftover index-31 (an empty repository) therefore
+// shadowed a synced snapshot's own index-24 and the repository reported no
+// snapshots (found live 2026-09-30, caltechauthors-test-v13). Only generation
+// files move; snapshot and index data, and anything else in the directory, stay.
+// It moves, never deletes: DR-0131 and DR-0175 avoid raw deletes in a repository.
+func buildMoveStaleGenerationsCommand(dir, staleDir string) string {
+	d, s := shellQuote(dir), shellQuote(staleDir)
+	return fmt.Sprintf(`set -e; d=%s; s=%s; n=0; for f in "$d"/index-* "$d"/index.latest; do [ -e "$f" ] || continue; [ "$n" -eq 0 ] && mkdir -p "$s"; mv "$f" "$s"/; n=$((n+1)); done; if [ "$n" -gt 0 ]; then echo "clasm-stale-moved $n $s"; else echo "clasm-stale-moved 0"; fi`, d, s)
+}
+
+// parseStaleMove reads buildMoveStaleGenerationsCommand's output. ok is false
+// when no well-formed line is present.
+func parseStaleMove(stdout string) (n int, where string, ok bool) {
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "clasm-stale-moved" {
+			continue
+		}
+		count, err := strconv.Atoi(fields[1])
+		if err != nil || count < 0 {
+			return 0, "", false
+		}
+		if count == 0 {
+			return 0, "", true
+		}
+		if len(fields) < 3 {
+			return 0, "", false
+		}
+		return count, fields[2], true
+	}
+	return 0, "", false
+}
+
+// MoveStaleRepositoryGenerations moves the generation files already in dir aside
+// (buildMoveStaleGenerationsCommand) and tells the operator how many and where.
+// It says nothing when there was nothing to move.
+func MoveStaleRepositoryGenerations(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, dir string, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, instanceID); err != nil {
+		return err
+	}
+	staleDir := staleRepoDirPrefix + time.Now().Format("20060102T150405")
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildMoveStaleGenerationsCommand(dir, staleDir), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("moving the stale repository files in %q aside on %s failed", dir, instanceID), status, stdout)
+	}
+	n, where, ok := parseStaleMove(stdout)
+	if !ok {
+		return fmt.Errorf("moving the stale repository files in %q aside on %s gave no result to read: %q", dir, instanceID, strings.TrimSpace(stdout))
+	}
+	if n > 0 {
+		noun := "files"
+		if n == 1 {
+			noun = "file"
+		}
+		fmt.Fprintf(w, "Moved %d stale repository %s (index-N, index.latest) from %s aside to %s on %s: leftovers of an earlier run, which would have shadowed the snapshot being restored. Nothing was deleted.\n", n, noun, dir, where, instanceID)
+	}
+	return nil
+}
+
+// buildDeregisterIfPresentCommand is buildDeregisterRepoCommand without
+// --fail-with-body: it prints the HTTP status instead of failing on a 404, so a
+// repository that is not registered is not an error.
+func buildDeregisterIfPresentCommand(repo string) string {
+	url := fmt.Sprintf("localhost:9200/_snapshot/%s", repo)
+	return fmt.Sprintf("curl -sS -X DELETE -o /dev/null -w '%%{http_code}' %s", shellQuote(url))
+}
+
+// DeregisterSnapshotRepoIfPresent removes repo's registration if there is one,
+// tolerating "not registered" (HTTP 404). Metadata only: no file in the
+// directory is touched (DR-0175). A Restore does this before it syncs, so the
+// repository is registered fresh against the files it is about to hold.
+func DeregisterSnapshotRepoIfPresent(ctx context.Context, client awsclient.SSMAPI, instanceID, repo string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeregisterIfPresentCommand(repo), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("deregistering snapshot repository %q on %s failed", repo, instanceID), status, stdout)
+	}
+	switch code := strings.TrimSpace(stdout); code {
+	case "200", "404":
+		return nil
+	default:
+		return fmt.Errorf("deregistering snapshot repository %q on %s returned HTTP status %q, want 200 or 404", repo, instanceID, code)
+	}
 }

@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
@@ -350,8 +353,7 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 		return err
 	}
 	if len(objects) == 0 {
-		fmt.Fprintf(w, "No SQL backups found under s3://%s/%s/.\n", bucket, sourceName)
-		return nil
+		return noSQLBackupsError(ctx, bucketClient, bucket, sourceName, inst.Name)
 	}
 	object, err := pickS3Object(w, "Select a SQL backup to restore", "Most recent first.", objects, input, output)
 	if err != nil {
@@ -373,6 +375,30 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 		}
 	}
 
+	return executeSQLRestore(ctx, w, ssmClient, sqlRestoreRun{
+		inst: inst, containerName: containerName, dbName: dbName, dbUser: dbUser, bucket: bucket, object: object,
+	})
+}
+
+// sqlRestoreRun is everything a confirmed Restore SQL Backup run needs, however
+// it was collected: prompts in the interactive form, arguments and a read-only
+// plan in the CLI form (DR-0180). Both call executeSQLRestore, so the order of
+// the destructive steps exists once.
+type sqlRestoreRun struct {
+	inst          inventory.Instance
+	containerName string
+	dbName        string
+	dbUser        string
+	bucket        string
+	object        S3Object
+}
+
+// executeSQLRestore runs a confirmed restore: download and decompress the backup
+// on the instance first -- nothing is destroyed until the replacement is in
+// hand -- then drop, create and load the database, then count its tables.
+func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, r sqlRestoreRun) error {
+	inst, containerName, dbName, dbUser, bucket, object := r.inst, r.containerName, r.dbName, r.dbUser, r.bucket, r.object
+
 	sqlFilePath, err := downloadAndDecompressSQLBackup(ctx, ssmClient, inst.InstanceID, bucket, object.Key, DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
@@ -389,4 +415,46 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 
 	fmt.Fprintf(w, "\nRestored %q from s3://%s/%s into database %q on %s -- %d table(s) present.\n", object.Key, bucket, object.Key, dbName, inst.InstanceID, tableCount)
 	return nil
+}
+
+// noSQLBackupsError is what Restore SQL Backup returns when the chosen source
+// prefix holds no backups -- an error, because nothing was restored, and one that
+// names the other prefixes in the bucket, because the source-name prompt defaults
+// to the *target's* own Name, which is only right when a target restores its own
+// backups (the mistake that emptied caltechauthors-test-v13 on 2026-09-30, found
+// for the OpenSearch form and the same here; DR-0177).
+func noSQLBackupsError(ctx context.Context, client awsclient.S3API, bucket, sourceName, targetName string) error {
+	msg := fmt.Sprintf("no SQL backups found under s3://%s/%s/. The source instance name is the S3 prefix the backups were archived under; it defaults to this target's own name (%s), which is right only when restoring the target's own backups", bucket, sourceName, targetName)
+	names, err := listBucketSources(ctx, client, bucket)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%s (the bucket's other prefixes could not be listed: %v)", msg, err)
+	case len(names) == 0:
+		return fmt.Errorf("%s. There is nothing in s3://%s", msg, bucket)
+	}
+	return fmt.Errorf("%s. Prefixes in s3://%s: %s", msg, bucket, summarizeNames(names, 10))
+}
+
+// listBucketSources lists the top-level prefixes of bucket, sorted: one per
+// source instance in a backup bucket.
+func listBucketSources(ctx context.Context, client awsclient.S3API, bucket string) ([]string, error) {
+	var names []string
+	var token *string
+	for {
+		out, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(bucket), Delimiter: aws.String("/"), ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, cp := range out.CommonPrefixes {
+			names = append(names, strings.TrimSuffix(aws.ToString(cp.Prefix), "/"))
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		token = out.NextContinuationToken
+	}
+	sort.Strings(names)
+	return names, nil
 }

@@ -102,6 +102,23 @@ func (g Gate) applyHint() string {
 	return "--confirm " + g.Target.InstanceID
 }
 
+// CheckConfirm reports whether --confirm, when given, names the target: nil if
+// it was not given or equals the instance ID or Name tag exactly, else a
+// *UsageError. A form calls it as soon as its arguments are resolved, so a typo
+// fails before any AWS call, not after the read-only calls that build the plan.
+func (g Gate) CheckConfirm() error {
+	if g.Confirm == "" || slices.Contains(g.accepted(), g.Confirm) {
+		return nil
+	}
+	name := g.Target.Name
+	if name == "" {
+		name = "none"
+	}
+	return &UsageError{Msg: fmt.Sprintf(
+		"--confirm %q does not match the target instance: want its instance ID (%s) or its Name tag (%s), exactly",
+		g.Confirm, g.Target.InstanceID, name)}
+}
+
 // Decide applies the gate (DR-0180):
 //
 //   - --confirm given: its value must equal the target's instance ID or Name
@@ -119,14 +136,8 @@ func (g Gate) applyHint() string {
 // tests and are nil in production.
 func (g Gate) Decide(w io.Writer, input io.Reader, output io.Writer) (GateDecision, error) {
 	if g.Confirm != "" {
-		if !slices.Contains(g.accepted(), g.Confirm) {
-			name := g.Target.Name
-			if name == "" {
-				name = "none"
-			}
-			return GateDeclined, &UsageError{Msg: fmt.Sprintf(
-				"--confirm %q does not match the target instance: want its instance ID (%s) or its Name tag (%s), exactly",
-				g.Confirm, g.Target.InstanceID, name)}
+		if err := g.CheckConfirm(); err != nil {
+			return GateDeclined, err
 		}
 		fmt.Fprintf(w, "Confirmed (--confirm %s): %s\n", g.Confirm, g.Summary)
 		return GateProceed, nil

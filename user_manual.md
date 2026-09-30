@@ -442,6 +442,73 @@ confirmation prompt is skipped. After a successful *interactive* run of
 either action, clasm prints the exact non-interactive command that
 reproduces it, ready to copy into a script or crontab entry.
 
+### Destructive forms: a dry run unless you confirm
+
+The two **Restore** actions replace data on the target instance, so their
+non-interactive forms share one rule, and it is not the AWS CLI's (whose
+destructive commands just run): **a run is a dry run unless you confirm it.**
+
+`restore-opensearch-snapshot-from-s3 [--confirm <instance-id-or-name>] <instance> <directory> <bucket> <source> <snapshot-name-or-latest> <index-prefix>`
+: the non-interactive form of **Restore OpenSearch Snapshot from S3**. Every
+  argument is explicit -- the directory and the index prefix have defaults in
+  the menu, but a script should not restore from a default. `<source>` is the
+  S3 prefix the snapshots were archived under (another instance's name when you
+  restore a production backup onto a test box), and `<index-prefix>` is the
+  name the indices carry *inside* the snapshot (for example `caltechauthors`,
+  not `caltechauthors-v13`); they are different values, and mixing them up is
+  the usual mistake. `<snapshot-name-or-latest>` is an exact snapshot name or
+  the word `latest`.
+
+`restore-sql-backup-from-s3 [--confirm <instance-id-or-name>] <instance> <bucket> <source> <backup-key-or-name-or-latest>`
+: the non-interactive form of **Restore SQL Backup from S3**. The backup is a
+  full S3 key, a file name, or `latest` (the most recently modified object under
+  `<source>/`).
+
+What happens depends on how you run it:
+
+- **With `--confirm <instance-id-or-name>`:** it runs, with no prompt. The value
+  must equal the target instance's ID or its Name tag, exactly; anything else is
+  a usage error (exit 2) before any AWS call. It prints one line saying what it
+  is about to do, so a log shows what ran.
+- **Without `--confirm`, from a terminal:** it prints the plan and then asks you
+  to type the instance ID or Name tag, the same prompt as the menu.
+- **Without `--confirm`, with no terminal** (cron, a pipe, a redirect): it prints
+  the plan, says `Nothing was changed`, and exits 0 **without waiting for input**.
+
+The plan is built from read-only calls -- which indices or database would be
+replaced, the snapshot or backup chosen and its size, the directory -- so a dry
+run is a real preview. One check cannot run in a dry run: for the OpenSearch
+form, confirming that the snapshot holds indices matching the prefix needs the
+snapshot downloaded and registered, so it runs in a confirmed run, before
+anything is deleted.
+
+Options come **before** the positional arguments (`clasm ... <leaf> --confirm
+<name> <instance> ...`); an option after a positional word is treated as a
+positional word. `--help` after the leaf name prints that leaf's usage.
+
+~~~shell
+# preview, then apply
+clasm rdm-backup-and-restore restore-opensearch-snapshot-from-s3 \
+  caltechauthors-test-v13 /opt/rdm_opensearch_backups \
+  opensearch-backups.library.caltech.edu caltechauthors-v13 latest caltechauthors
+clasm rdm-backup-and-restore restore-opensearch-snapshot-from-s3 \
+  --confirm caltechauthors-test-v13 \
+  caltechauthors-test-v13 /opt/rdm_opensearch_backups \
+  opensearch-backups.library.caltech.edu caltechauthors-v13 latest caltechauthors
+~~~
+
+Exit codes are the same as for the other forms: 0 success (a dry run and a help
+request included), 1 the action failed, 2 a usage error.
+
+Two things a restore does to the repository directory that you may notice.
+Before it downloads a snapshot it moves any `index-N` file and `index.latest`
+already in the directory aside to `/var/tmp/clasm-stale-repo-<timestamp>/` on the
+instance, because OpenSearch uses the highest `index-N` it finds and a leftover
+one from an earlier Archive or Restore would hide the snapshot; it says how many
+files moved and where, and deletes nothing. And it deletes every existing index
+matching the prefix, including an audit-log backing index that a previous restore
+left without a data stream.
+
 ## Configuration (`~/.clasm`)
 
 An optional YAML file for clasm' own operational settings -- never AWS

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 func TestClassifyCLIArgs_NoArgsFallsThroughToTUI(t *testing.T) {
@@ -90,7 +91,7 @@ func TestClassifyCLIArgs_TrailingArgsAlwaysMeanRunRegardlessOfCount(t *testing.T
 // for this case, so nil arguments are safe to pass.
 func TestRunCLILeaf_UnknownSlugIsAnInternalErrorNotAPanic(t *testing.T) {
 	var eout bytes.Buffer
-	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "no-such-leaf", nil, map[string]awsclient.SSMAPI{}, nil, nil, nil)
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "no-such-leaf", nil, map[string]awsclient.SSMAPI{}, nil, nil, nil, nil, nil)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -126,5 +127,108 @@ func TestClassifyCLIArgs_PathUnderADomainWithNoLeafFormsIsAUsageError(t *testing
 		if err == nil || !strings.Contains(err.Error(), args[0]) || !strings.Contains(err.Error(), "no CLI sub-commands yet") {
 			t.Errorf("%v: expected a usage error saying %q has no CLI sub-commands yet, got: %v", args, args[0], err)
 		}
+	}
+}
+
+// Restore OpenSearch is the first destructive leaf with a CLI form (DR-0177,
+// DR-0180). The dispatch must route it, map its errors to 0/1/2, and never reach
+// AWS for a usage error or a help request.
+func TestClassifyCLIArgs_RestoreOpenSearchLeaf(t *testing.T) {
+	const leaf = "restore-opensearch-snapshot-from-s3"
+	mode, _, leafSlug, _, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf})
+	if err != nil || mode != cliModeLeaf || leafSlug != leaf {
+		t.Errorf("no further words must deep-link into the leaf's prompts: got mode=%q leaf=%q err=%v", mode, leafSlug, err)
+	}
+	// Options alone are still a run, never a deep-link, so a script cannot fall
+	// into a prompt with no terminal.
+	mode, _, _, leafArgs, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf, "--confirm", "i-1"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 2 {
+		t.Errorf("options alone must be a run: got mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+}
+
+func TestRunCLILeaf_RestoreOpenSearchUsageErrorExitsTwoWithoutTouchingAWS(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-opensearch-snapshot-from-s3", []string{"only-one-arg"}, nil, nil, nil, nil, nil, nil)
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(eout.String(), "want 6 arguments") || !strings.Contains(eout.String(), "--confirm") {
+		t.Errorf("expected the arity error with the usage on stderr, got:\n%s", eout.String())
+	}
+}
+
+func TestRunCLILeaf_RestoreOpenSearchHelpPrintsTheUsageAndExitsZero(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-opensearch-snapshot-from-s3", []string{"--help"}, nil, nil, nil, nil, nil, nil)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "--confirm <instance-id-or-name>") || eout.Len() != 0 {
+		t.Errorf("the usage belongs on stdout and nothing on stderr; stdout:\n%s\nstderr:\n%s", out.String(), eout.String())
+	}
+}
+
+func TestRunCLILeaf_RestoreOpenSearchUnknownInstanceExitsTwo(t *testing.T) {
+	var eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-opensearch-snapshot-from-s3",
+		[]string{"no-such-box", "/d", "b", "s", "latest", "p"}, nil, nil, nil, nil, nil, nil)
+	if code != 2 || !strings.Contains(eout.String(), "no-such-box") {
+		t.Errorf("want exit 2 naming the instance, got %d:\n%s", code, eout.String())
+	}
+}
+
+// The second destructive leaf with a CLI form: Restore SQL Backup.
+func TestClassifyCLIArgs_RestoreSQLLeaf(t *testing.T) {
+	const leaf = "restore-sql-backup-from-s3"
+	mode, _, leafSlug, _, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf})
+	if err != nil || mode != cliModeLeaf || leafSlug != leaf {
+		t.Errorf("no further words must deep-link into the leaf's prompts: got mode=%q leaf=%q err=%v", mode, leafSlug, err)
+	}
+	mode, _, _, leafArgs, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf, "--confirm", "i-1"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 2 {
+		t.Errorf("options alone must be a run: got mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+}
+
+func TestRunCLILeaf_RestoreSQLUsageErrorExitsTwoWithoutTouchingAWS(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3", []string{"only-one-arg"}, nil, nil, nil, nil, nil, nil)
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(eout.String(), "want 4 arguments") || !strings.Contains(eout.String(), "--confirm") {
+		t.Errorf("expected the arity error with the usage on stderr, got:\n%s", eout.String())
+	}
+}
+
+func TestRunCLILeaf_RestoreSQLHelpPrintsTheUsageAndExitsZero(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3", []string{"--help"}, nil, nil, nil, nil, nil, nil)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "--confirm <instance-id-or-name>") || eout.Len() != 0 {
+		t.Errorf("the usage belongs on stdout and nothing on stderr; stdout:\n%s\nstderr:\n%s", out.String(), eout.String())
+	}
+}
+
+func TestRunCLILeaf_RestoreSQLUnknownInstanceExitsTwo(t *testing.T) {
+	var eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-sql-backup-from-s3",
+		[]string{"no-such-box", "b", "s", "latest"}, nil, nil, nil, nil, nil, nil)
+	if code != 2 || !strings.Contains(eout.String(), "no-such-box") {
+		t.Errorf("want exit 2 naming the instance, got %d:\n%s", code, eout.String())
+	}
+}
+
+func TestRunCLILeaf_RestoreSQLConfirmTypoExitsTwoBeforeAnyAWSCall(t *testing.T) {
+	var eout bytes.Buffer
+	insts := []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-east-1"}}
+	// nil clients: any AWS call would panic, so reaching preflight would fail this test.
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-sql-backup-from-s3",
+		[]string{"--confirm", "not-the-box", "box", "b", "s", "latest"}, nil, nil, nil, insts, nil, nil)
+	if code != 2 || !strings.Contains(eout.String(), "does not match") {
+		t.Errorf("want exit 2 with the mismatch, got %d:\n%s", code, eout.String())
 	}
 }

@@ -288,12 +288,10 @@ func TestRestoreSQLBackup_NoBackupsFoundUnderPrefix(t *testing.T) {
 	ssmClient := restoreSQLFake("postgres:14.13\tcaltechauthors-db-1\n", "", types.CommandInvocationStatusSuccess, types.CommandInvocationStatusSuccess)
 	s3Client := &fakeS3Client{}
 
+	// An empty source is an error, not a quiet success: nothing was restored.
 	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(buf.String(), "No SQL backups found") {
-		t.Errorf("expected a no-backups message, got:\n%s", buf.String())
+	if err == nil || !strings.Contains(err.Error(), "no SQL backups found") {
+		t.Fatalf("expected a no-backups error, got: %v", err)
 	}
 }
 

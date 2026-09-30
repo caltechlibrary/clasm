@@ -49,26 +49,38 @@ func TestDeleteConflictingIndices_BackingIndexGoesThroughTheDataStreamAPI(t *tes
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !commandSent(fake.sentCommands, "-X DELETE 'localhost:9200/_data_stream/caltechdata-auditlog-audit-log-v1.0.0'") {
-		t.Errorf("expected a DELETE _data_stream call for the audit-log stream, sent: %v", fake.sentCommands)
-	}
-	for _, s := range fake.sentCommands {
-		if strings.Contains(s, "-X DELETE 'localhost:9200/") && !strings.Contains(s, "_data_stream/") && strings.Contains(s, ".ds-") {
-			t.Errorf("a plain index DELETE still names a data-stream backing index (OpenSearch answers 400): %q", s)
-		}
-	}
-	if !commandSent(fake.sentCommands, "-X DELETE 'localhost:9200/caltechdata-users-user-v3.0.0'") {
-		t.Errorf("the ordinary index must still be deleted by name, sent: %v", fake.sentCommands)
+	stream := commandIndex(t, fake.sentCommands, "-X DELETE 'localhost:9200/_data_stream/caltechdata-auditlog-audit-log-v1.0.0'")
+	plain := commandIndex(t, fake.sentCommands, "-X DELETE 'localhost:9200/"+auditBackingIndex+",caltechdata-users-user-v3.0.0?ignore_unavailable=true'")
+	if stream > plain {
+		t.Errorf("the stream must be deleted before the plain index delete names its backing index (OpenSearch answers 400 for a stream's write index); sent: %v", fake.sentCommands)
 	}
 }
 
-func TestDeleteConflictingIndices_OnlyBackingIndicesSendsNoPlainDelete(t *testing.T) {
+// Found live 2026-09-30: a restore leaves the audit log's backing index as a
+// plain index with no stream (DR-0173), so deleting by stream name removed
+// nothing and the later _restore failed with "an open index with same name
+// already exists". Every listed name, backing indices included, is therefore
+// also deleted by name, after the streams, tolerating "already gone".
+func TestDeleteConflictingIndices_AnOrphanedBackingIndexIsAlsoDeletedByName(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
 	if err := DeleteConflictingIndices(context.Background(), fake, "i-1", []string{auditBackingIndex}, time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fake.sentCommands) != 1 || !strings.Contains(fake.sentCommands[0], "-X DELETE 'localhost:9200/_data_stream/caltechdata-auditlog-audit-log-v1.0.0'") {
-		t.Fatalf("expected exactly one command, the data-stream delete, sent: %v", fake.sentCommands)
+	if len(fake.sentCommands) != 2 {
+		t.Fatalf("want the stream delete then a plain delete, sent: %v", fake.sentCommands)
+	}
+	if !strings.Contains(fake.sentCommands[0], "_data_stream/caltechdata-auditlog-audit-log-v1.0.0") {
+		t.Errorf("the stream delete comes first, got: %s", fake.sentCommands[0])
+	}
+	if !strings.Contains(fake.sentCommands[1], "'localhost:9200/"+auditBackingIndex+"?ignore_unavailable=true'") {
+		t.Errorf("the orphan must be deleted by name, tolerating one already gone, got: %s", fake.sentCommands[1])
+	}
+}
+
+func TestBuildDeleteIndicesCommand_ToleratesAlreadyDeletedIndices(t *testing.T) {
+	got := buildDeleteIndicesCommand([]string{"a-1", "b-2"})
+	if !strings.Contains(got, "'localhost:9200/a-1,b-2?ignore_unavailable=true'") {
+		t.Errorf("got %s", got)
 	}
 }
 

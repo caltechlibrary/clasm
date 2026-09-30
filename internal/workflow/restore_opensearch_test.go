@@ -153,7 +153,7 @@ func TestDetectExistingOpenSearchIndices_SSMFailure(t *testing.T) {
 
 func TestBuildDeleteIndicesCommand(t *testing.T) {
 	got := buildDeleteIndicesCommand([]string{"caltechdata-rdmrecords-a", "caltechdata-rdmrecords-b"})
-	want := "curl --fail-with-body -sS -X DELETE 'localhost:9200/caltechdata-rdmrecords-a,caltechdata-rdmrecords-b'"
+	want := "curl --fail-with-body -sS -X DELETE 'localhost:9200/caltechdata-rdmrecords-a,caltechdata-rdmrecords-b?ignore_unavailable=true'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -336,6 +336,8 @@ func restoreOpenSearchFake(existingIndicesStdout, recoveryStdout, verifyStdout s
 			{substring: "id -u", stdout: "1000 1001\n", status: types.CommandInvocationStatusSuccess}, // the service owner lookup: ubuntu is uid 1000, gid 1001
 			{substring: "_cat/indices/caltechdata-*,.ds-caltechdata-*", stdout: existingIndicesStdout, status: types.CommandInvocationStatusSuccess},
 			{substring: "_cat/indices/caltechdata-rdmrecords", stdout: verifyStdout, status: types.CommandInvocationStatusSuccess},
+			{substring: "%{http_code}", stdout: "404", status: types.CommandInvocationStatusSuccess},                        // nothing registered to deregister
+			{substring: "clasm-stale-moved", stdout: "clasm-stale-moved 0\n", status: types.CommandInvocationStatusSuccess}, // nothing stale to move aside
 			{substring: "DELETE 'localhost:9200/", status: types.CommandInvocationStatusSuccess},
 			{substring: "aws s3 sync", status: types.CommandInvocationStatusSuccess},
 			{substring: "_snapshot/rdm_backup_repo", stdout: "", status: types.CommandInvocationStatusSuccess}, // register + restore + _restore

@@ -72,14 +72,21 @@ type rdmItem struct {
 const (
 	ArchiveSQLBackupsCLISlug         = "archive-sql-backups-to-s3"
 	ArchiveOpenSearchSnapshotCLISlug = "archive-opensearch-snapshot-to-s3"
+	// RestoreOpenSearchSnapshotCLISlug is the first destructive leaf's slug
+	// (DR-0177, DR-0180): the mechanical rule applied to "Restore OpenSearch
+	// Snapshot from S3". Experimental until 1.0, like every slug.
+	RestoreOpenSearchSnapshotCLISlug = "restore-opensearch-snapshot-from-s3"
+	// RestoreSQLBackupCLISlug is the second destructive leaf's slug, derived the
+	// same way from "Restore SQL Backup from S3".
+	RestoreSQLBackupCLISlug = "restore-sql-backup-from-s3"
 )
 
 var rdmMenuItems = []rdmItem{
 	{label: "Generate SQL Backup", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RunSQLBackup(ctx) }},
 	{label: "Archive SQL Backups to S3 (and trim local copies)", cliSlug: ArchiveSQLBackupsCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveSQL(ctx) }},
 	{label: "Archive OpenSearch Snapshot to S3", cliSlug: ArchiveOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
-	{label: "Restore SQL Backup from S3", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
-	{label: "Restore OpenSearch Snapshot from S3", action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
+	{label: "Restore SQL Backup from S3", cliSlug: RestoreSQLBackupCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
+	{label: "Restore OpenSearch Snapshot from S3", cliSlug: RestoreOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
 }
 
 // pickRDMBackupRestoreItem runs the RDM Backup & Restore menu's huh.Select

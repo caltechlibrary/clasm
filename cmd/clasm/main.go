@@ -677,6 +677,6 @@ func main() {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
-		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, ssmClients, s3Client, newS3Client, state.instances))
+		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, ssmClients, s3Client, newS3Client, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules))
 	}
 }
