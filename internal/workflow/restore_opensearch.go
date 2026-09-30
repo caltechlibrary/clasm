@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
@@ -482,6 +484,87 @@ func summarizeNames(names []string, limit int) string {
 	return fmt.Sprintf("%s, and %d more", strings.Join(names[:limit], ", "), len(names)-limit)
 }
 
+// SnapshotSource is one source-instance prefix in a backup bucket that holds
+// archived OpenSearch snapshots.
+type SnapshotSource struct {
+	Name      string
+	Snapshots int
+}
+
+// maxSnapshotSourcesProbed bounds how many top-level prefixes
+// ListSnapshotSources inspects (one listing each). A backup bucket holds one
+// prefix per instance, so this is generous; it only stops a bucket that has
+// been used for something else from making an error message slow.
+const maxSnapshotSourcesProbed = 50
+
+// ListSnapshotSources lists the source prefixes in bucket that hold at least
+// one archived OpenSearch snapshot, sorted by name -- the answer to "which
+// Source instance name did you mean?" when the one typed holds none.
+func ListSnapshotSources(ctx context.Context, client awsclient.S3API, bucket string) ([]SnapshotSource, error) {
+	var names []string
+	var token *string
+	for {
+		out, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(bucket),
+			Delimiter:         aws.String("/"),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, cp := range out.CommonPrefixes {
+			names = append(names, strings.TrimSuffix(aws.ToString(cp.Prefix), "/"))
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		token = out.NextContinuationToken
+	}
+	sort.Strings(names)
+	if len(names) > maxSnapshotSourcesProbed {
+		names = names[:maxSnapshotSourcesProbed]
+	}
+	var sources []SnapshotSource
+	for _, name := range names {
+		snaps, err := ListArchivedSnapshotPrefixes(ctx, client, bucket, name)
+		if err != nil {
+			return nil, err
+		}
+		if len(snaps) > 0 {
+			sources = append(sources, SnapshotSource{Name: name, Snapshots: len(snaps)})
+		}
+	}
+	return sources, nil
+}
+
+// noSnapshotsError is what Restore returns when the chosen source prefix
+// holds no snapshots. It is an error rather than a quiet return because
+// nothing was restored, and it says what to try, because the source-name
+// prompt defaults to the *target's* own Name, which is only right when a
+// target restores its own backups -- restoring another instance's (the usual
+// reason for a restore onto a test box) needs that instance's name. Found
+// live 2026-09-30: the default listed an empty prefix and Restore said only
+// that no snapshots were found, and exited successfully.
+func noSnapshotsError(ctx context.Context, client awsclient.S3API, bucket, sourceName, targetName string) error {
+	msg := fmt.Sprintf("no OpenSearch snapshots found under s3://%s/%s/. The source instance name is the S3 prefix the snapshots were archived under; it defaults to this target's own name (%s), which is right only when restoring the target's own backups", bucket, openSearchSnapshotsPrefix(sourceName)+"/", targetName)
+	sources, err := ListSnapshotSources(ctx, client, bucket)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%s (the bucket's other sources could not be listed: %v)", msg, err)
+	case len(sources) == 0:
+		return fmt.Errorf("%s. There is no source in s3://%s that holds any OpenSearch snapshots", msg, bucket)
+	}
+	parts := make([]string, 0, len(sources))
+	for _, src := range sources {
+		unit := "snapshots"
+		if src.Snapshots == 1 {
+			unit = "snapshot"
+		}
+		parts = append(parts, fmt.Sprintf("%s (%d %s)", src.Name, src.Snapshots, unit))
+	}
+	return fmt.Errorf("%s. Sources in s3://%s that hold snapshots: %s", msg, bucket, strings.Join(parts, ", "))
+}
+
 // pickSnapshotPrefix lets the operator pick one of prefixes (already
 // sorted most-recent-first by the caller) -- same shape as pickS3Object.
 func pickSnapshotPrefix(w io.Writer, title, description string, prefixes []SnapshotPrefixInfo, input io.Reader, output io.Writer) (SnapshotPrefixInfo, error) {
@@ -640,8 +723,7 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return err
 	}
 	if len(prefixes) == 0 {
-		fmt.Fprintf(w, "No OpenSearch snapshots found under s3://%s/%s/opensearch-snapshots/.\n", bucket, sourceName)
-		return nil
+		return noSnapshotsError(ctx, bucketClient, bucket, sourceName, inst.Name)
 	}
 	sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].CreatedAt.After(prefixes[j].CreatedAt) })
 	snap, err := pickSnapshotPrefix(w, "Select an OpenSearch snapshot to restore", "Most recent first.", prefixes, input, output)

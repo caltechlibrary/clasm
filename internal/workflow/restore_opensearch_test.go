@@ -356,12 +356,10 @@ func TestRestoreOpenSearchSnapshot_NoSnapshotsFoundUnderPrefix(t *testing.T) {
 	ssmClient := restoreOpenSearchFake("", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
 	s3Client := &fakeS3Client{}
 
+	// An empty source is an error, not a quiet success: nothing was restored.
 	err := restoreOpenSearchSnapshot(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, le, buf)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(buf.String(), "No OpenSearch snapshots found") {
-		t.Errorf("expected a no-snapshots message, got:\n%s", buf.String())
+	if err == nil || !strings.Contains(err.Error(), "no OpenSearch snapshots found") {
+		t.Errorf("expected a no-snapshots error, got: %v", err)
 	}
 }
 

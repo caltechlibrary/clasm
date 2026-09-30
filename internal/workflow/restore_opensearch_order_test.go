@@ -44,8 +44,8 @@ func failingResponse(substring, stdout string) ssmCommandResponse {
 func TestRestoreOpenSearchSnapshot_NoSnapshotsFoundDeletesNothing(t *testing.T) {
 	ssmClient := restoreOpenSearchFake("caltechdata-rdmrecords-a\n", "a snapshot done\n", "caltechdata-rdmrecords-a yellow open 1\n")
 	s3Client := &fakeS3Client{} // the source prefix lists no snapshots
-	if err := runConflictingRestore(t, ssmClient, s3Client); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := runConflictingRestore(t, ssmClient, s3Client); err == nil {
+		t.Fatal("expected an error: the source holds no snapshots")
 	}
 	if deleteIndicesCommandSent(ssmClient.sentCommands) {
 		t.Errorf("live indices were deleted although no snapshot was found to replace them; sent: %v", ssmClient.sentCommands)
