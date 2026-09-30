@@ -3,10 +3,12 @@ package workflow
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"github.com/caltechlibrary/clasm/internal/tui"
 )
@@ -94,14 +96,32 @@ func (m *progressModel) View() string {
 	return fmt.Sprintf("%s %s (elapsed %s)\n", m.sp.View(), m.label, formatDuration(time.Since(m.start)))
 }
 
-// startProgressTicker renders an inline, animated status line to w,
-// giving visual feedback during long unbounded waits (AMI creation,
+// plainProgressInterval is how often the plain (non-terminal) ticker writes a
+// line: sparse enough for a cron log, frequent enough to show a long wait is
+// alive. A variable so tests can shorten it.
+var plainProgressInterval = 30 * time.Second
+
+// writerIsTerminal reports whether w is a terminal, where the animated spinner
+// belongs. Anything else -- a file, a pipe, a buffer -- gets plain lines. A
+// variable so tests can exercise the animated path into a buffer.
+var writerIsTerminal = func(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// startProgressTicker gives feedback during a long unbounded wait (AMI creation,
 // cloud-init AMI extraction, backup upload/verify -- PLAN.md, Phase 15,
-// "loading indicators"). The returned stop function blocks until the
-// spinner has rendered its final (blank) frame and the underlying
-// bubbletea program has fully exited, so no further output can race
+// "loading indicators"). On a terminal it renders an inline, animated status
+// line. Redirected to a file or pipe (a cron log, `2> log`) the animation would
+// write a cursor-escape redraw every 120 ms -- 1,553 of them in one three-minute
+// wait -- so it writes plain lines instead: "<label> ..." at once, then
+// "<label> (elapsed M:SS)" every plainProgressInterval. The returned stop
+// function blocks until the ticker has finished, so no further output can race
 // with whatever the caller writes immediately after stopping.
 func startProgressTicker(w io.Writer, label string) (stop func()) {
+	if !writerIsTerminal(w) {
+		return startPlainProgress(w, label)
+	}
 	p := tea.NewProgram(newProgressModel(label, DefaultSpinnerInterval), tea.WithOutput(w), tea.WithInput(nil))
 
 	done := make(chan struct{})
@@ -112,6 +132,34 @@ func startProgressTicker(w io.Writer, label string) (stop func()) {
 
 	return func() {
 		p.Send(progressStopMsg{})
+		<-done
+	}
+}
+
+// startPlainProgress is the non-terminal ticker: one line per interval, no
+// escape codes, no carriage returns.
+func startPlainProgress(w io.Writer, label string) (stop func()) {
+	start := time.Now()
+	interval := plainProgressInterval
+	fmt.Fprintf(w, "%s ...\n", label)
+
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-quit:
+				return
+			case <-t.C:
+				fmt.Fprintf(w, "%s (elapsed %s)\n", label, formatDuration(time.Since(start)))
+			}
+		}
+	}()
+	return func() {
+		close(quit)
 		<-done
 	}
 }
