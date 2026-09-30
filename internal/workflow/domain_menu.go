@@ -295,9 +295,10 @@ type domainItem struct {
 	// drop parentheticals) and then hand-committed here, never
 	// recomputed from label at build/run time: renaming label must stay
 	// free, but renaming cliSlug is a breaking change to anyone's
-	// crontab. Empty means this domain has no CLI form yet and is
-	// unreachable from the CLI path entirely, not just missing a
-	// full-args form.
+	// crontab. Every domain has one (2026-09-30); a leaf-level form under
+	// a domain is a separate matter (see rdmItem.cliSlug), and only RDM
+	// Backup & Restore has any yet. An empty slug would make a domain
+	// unreachable from the CLI path entirely.
 	cliSlug string
 	action  func(DomainActions, context.Context) error
 }
@@ -317,13 +318,13 @@ type domainItem struct {
 const RDMBackupRestoreDomainCLISlug = "rdm-backup-and-restore"
 
 var domainItems = []domainItem{
-	{label: "Compute (EC2 & AMI)", action: func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
-	{label: "Key Management", action: func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
-	{label: "S3 (Buckets & Static Websites)", action: func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
-	{label: "Tag Management", action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
-	{label: "IAM", action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
+	{label: "Compute (EC2 & AMI)", cliSlug: "compute", action: func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
+	{label: "Key Management", cliSlug: "key-management", action: func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
+	{label: "S3 (Buckets & Static Websites)", cliSlug: "s3", action: func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
+	{label: "Tag Management", cliSlug: "tag-management", action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
+	{label: "IAM", cliSlug: "iam", action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
 	{label: "RDM Backup & Restore", cliSlug: RDMBackupRestoreDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
-	{label: "Configuration", action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
+	{label: "Configuration", cliSlug: "configuration", action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }
 
 // pickDomainItem runs the domain picker's huh.Select and returns the

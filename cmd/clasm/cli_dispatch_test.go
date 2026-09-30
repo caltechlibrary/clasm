@@ -98,3 +98,33 @@ func TestRunCLILeaf_UnknownSlugIsAnInternalErrorNotAPanic(t *testing.T) {
 		t.Errorf("expected the error to name the unhandled slug, got:\n%s", eout.String())
 	}
 }
+
+// 2026-09-30: every domain has a slug, so `clasm <domain>` deep-links into any
+// of them, not only RDM Backup & Restore (which is all the manual could have
+// been describing truthfully before). Domains other than RDM still have no
+// leaf-level CLI forms, so a path *under* one is a clear usage error, not a
+// silent fall-through to some other domain's leaf registry.
+func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
+	for _, slug := range []string{"compute", "key-management", "s3", "tag-management", "iam", "configuration", "rdm-backup-and-restore"} {
+		mode, domainSlug, leafSlug, leafArgs, err := classifyCLIArgs([]string{slug})
+		if err != nil {
+			t.Errorf("%q: unexpected error: %v", slug, err)
+			continue
+		}
+		if mode != cliModeDomain || domainSlug != slug || leafSlug != "" || leafArgs != nil {
+			t.Errorf("%q: got mode=%q domainSlug=%q leafSlug=%q leafArgs=%v, want domain-only", slug, mode, domainSlug, leafSlug, leafArgs)
+		}
+	}
+}
+
+func TestClassifyCLIArgs_PathUnderADomainWithNoLeafFormsIsAUsageError(t *testing.T) {
+	for _, args := range [][]string{{"compute", "show-instances"}, {"iam", "show-roles", "extra"}} {
+		mode, _, _, _, err := classifyCLIArgs(args)
+		if mode != cliModeNone {
+			t.Errorf("%v: mode = %q, want %q", args, mode, cliModeNone)
+		}
+		if err == nil || !strings.Contains(err.Error(), args[0]) || !strings.Contains(err.Error(), "no CLI sub-commands yet") {
+			t.Errorf("%v: expected a usage error saying %q has no CLI sub-commands yet, got: %v", args, args[0], err)
+		}
+	}
+}

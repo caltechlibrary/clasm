@@ -389,8 +389,26 @@ needs a human watching it:
   immediately with a clear message rather than hanging, waiting for
   input from a terminal that isn't there.
 
+**This feature is experimental and under active development. The
+command terms (domain and action names, and the order and meaning of
+their arguments) and the output formats are not stable and will change
+before 1.0, as menu labels are shortened and the forms are refined from
+use. Expect to edit any script you write against it, and check the
+release notes when you upgrade.**
+
+Command names are derived from the menu labels by a fixed rule:
+lowercase, `&` becomes `and`, parenthetical asides are dropped, a
+possessive `'s` is dropped, and every other run of punctuation and
+spaces becomes one hyphen (so "Resize instance's root volume" is
+`resize-instance-root-volume`). Every domain has a name, so
+`clasm <domain>` works for all of them: `compute`, `key-management`,
+`s3`, `tag-management`, `iam`, `rdm-backup-and-restore` and
+`configuration`.
+
 Only the **RDM Backup & Restore** domain (`rdm-backup-and-restore`) has
-any actions with the full non-interactive form today:
+any actions with the full non-interactive form today; a path *under* any
+other domain (`clasm compute show-instances`) is a usage error saying
+that domain has no CLI sub-commands yet:
 
 `archive-sql-backups-to-s3 <instance> <directory> <bucket> <trim-days-or-"">`
 : the non-interactive form of **Archive SQL Backups to S3 (and trim

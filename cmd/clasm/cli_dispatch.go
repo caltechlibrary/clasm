@@ -54,13 +54,10 @@ func classifyCLIArgs(args []string) (mode, domainSlug, leafSlug string, leafArgs
 		return cliModeDomain, domainSlug, "", nil, nil
 	}
 
-	// Currently unreachable with today's registry: DomainCLISlugExists
-	// above already rejects every domain except RDM, since none of them
-	// has a cliSlug assigned yet. Kept as an explicit guard rather than
-	// removed, so that the day another domain earns its own slug (before
-	// it also gains its own leaf-slug dispatch below), a path under it
-	// fails loudly instead of silently checking RDM's leaf registry for
-	// a domain that isn't RDM.
+	// Every domain has a slug (2026-09-30), so `clasm <domain>` deep-links into
+	// any of them, but only RDM Backup & Restore has leaf-level CLI forms yet.
+	// A path *under* any other domain is refused here, loudly, rather than
+	// silently checking RDM's leaf registry for a domain that isn't RDM.
 	if domainSlug != workflow.RDMBackupRestoreDomainCLISlug {
 		return cliModeNone, "", "", nil, fmt.Errorf("%q has no CLI sub-commands yet", domainSlug)
 	}

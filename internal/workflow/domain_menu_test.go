@@ -253,21 +253,26 @@ func TestDomainItems_NoExitEntry(t *testing.T) {
 	}
 }
 
-// TestDomainItems_CLISlugs pins PLAN.md Phase 20.64: only "RDM Backup &
-// Restore" gets a cliSlug in this phase (mechanical rule: lowercase, "&"
-// -> "and", hyphenate). Every other domain stays "" -- genuinely
-// unreachable from the CLI path, not just missing a full-args form (see
-// the design brief, decision 3).
+// TestDomainItems_CLISlugs pins every domain's cliSlug. Phase 20.64 gave one
+// to "RDM Backup & Restore" only and left the rest "" (unreachable from the
+// CLI path); 2026-09-30 (user) gives every domain one, so that `clasm
+// <domain>` deep-links the way the manual says it does. Each slug follows the
+// design brief's mechanical rule (cli_forms_for_tui_leaves.md, "Slugs are
+// stable identifiers"): lowercase, "&" -> "and", parenthetical asides
+// dropped, runs of non-[a-z0-9] collapsed to one hyphen. A slug is a stable
+// identifier once committed -- renaming one breaks someone's crontab -- so
+// this table is the review point, not a wording pass.
 func TestDomainItems_CLISlugs(t *testing.T) {
 	want := map[string]string{
-		"Compute (EC2 & AMI)":            "",
-		"Key Management":                 "",
-		"S3 (Buckets & Static Websites)": "",
-		"Tag Management":                 "",
-		"IAM":                            "",
+		"Compute (EC2 & AMI)":            "compute",
+		"Key Management":                 "key-management",
+		"S3 (Buckets & Static Websites)": "s3",
+		"Tag Management":                 "tag-management",
+		"IAM":                            "iam",
 		"RDM Backup & Restore":           "rdm-backup-and-restore",
-		"Configuration":                  "",
+		"Configuration":                  "configuration",
 	}
+	seen := map[string]string{}
 	for _, item := range domainItems {
 		wantSlug, ok := want[item.label]
 		if !ok {
@@ -276,6 +281,22 @@ func TestDomainItems_CLISlugs(t *testing.T) {
 		if item.cliSlug != wantSlug {
 			t.Errorf("domainItems[%q].cliSlug = %q, want %q", item.label, item.cliSlug, wantSlug)
 		}
+		if other, dup := seen[item.cliSlug]; dup && item.cliSlug != "" {
+			t.Errorf("cliSlug %q used by both %q and %q", item.cliSlug, other, item.label)
+		}
+		seen[item.cliSlug] = item.label
+	}
+}
+
+// Every registered domain slug resolves, and resolves to its own domain.
+func TestDomainCLISlugExists_EveryDomain(t *testing.T) {
+	for _, slug := range []string{"compute", "key-management", "s3", "tag-management", "iam", "rdm-backup-and-restore", "configuration"} {
+		if !DomainCLISlugExists(slug) {
+			t.Errorf("DomainCLISlugExists(%q) = false, want true", slug)
+		}
+	}
+	if DomainCLISlugExists("no-such-domain") {
+		t.Error("DomainCLISlugExists(\"no-such-domain\") = true")
 	}
 }
 
