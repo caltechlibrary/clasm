@@ -408,3 +408,37 @@ func TestNotYetImplemented_PrintsAMessageAndReturnsToPicker(t *testing.T) {
 		t.Errorf("expected the domain name in the message, got:\n%s", buf.String())
 	}
 }
+
+// A path that ends on a menu drops into that menu (user, 2026-09-30): `clasm
+// <domain>` runs exactly that domain's own action, for every domain now that
+// every domain has a slug, and no other domain's. This pins the behaviour that
+// was only tested for RDM Backup & Restore before.
+func TestRunDomainPickerFromSlug_EveryDomainRunsItsOwnActionAndNoOther(t *testing.T) {
+	calls := map[string]int{}
+	count := func(name string) func(context.Context) error {
+		return func(context.Context) error { calls[name]++; return nil }
+	}
+	actions := DomainActions{
+		Compute:          count("compute"),
+		KeyManagement:    count("key-management"),
+		S3:               count("s3"),
+		TagManagement:    count("tag-management"),
+		IAM:              count("iam"),
+		RDMBackupRestore: count("rdm-backup-and-restore"),
+		Configuration:    count("configuration"),
+	}
+	for _, slug := range []string{"compute", "key-management", "s3", "tag-management", "iam", "rdm-backup-and-restore", "configuration"} {
+		for k := range calls {
+			delete(calls, k)
+		}
+		term, buf := newTermOnly()
+		ok, err := runDomainPickerFromSlug(context.Background(), term, actions, slug, nil, buf)
+		if !ok || err != nil {
+			t.Errorf("%s: ok=%v err=%v, want true, nil", slug, ok, err)
+			continue
+		}
+		if calls[slug] != 1 || len(calls) != 1 {
+			t.Errorf("%s: calls = %v, want only %s once", slug, calls, slug)
+		}
+	}
+}
