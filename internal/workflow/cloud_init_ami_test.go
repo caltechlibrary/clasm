@@ -1,10 +1,16 @@
 package workflow
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -212,5 +218,165 @@ func TestExtractCloudInitFromAMI_NeverOnlineMessageNamesTheNetwork(t *testing.T)
 	}
 	if ec2Client.terminateInstancesCallCount != 1 {
 		t.Error("cleanup must still run")
+	}
+}
+
+// --- reading an AMI's user-data (2026-09-30) ---
+//
+// Found by a round trip (template with user-data -> instance -> AMI ->
+// extraction): the extraction returned nothing for an AMI whose source HAD
+// user-data. On boot cloud-init points /var/lib/cloud/instance at the NEW
+// instance's directory, so /var/lib/cloud/instance/user-data.txt is the
+// temporary instance's own, empty file (0 bytes, confirmed on a real
+// AMI-launched instance). The source's user-data is in the other directory
+// under /var/lib/cloud/instances/, and clasm stores user-data gzipped, so the
+// file starts 1f 8b and needs decompressing. These tests run the real remote
+// script, in POSIX sh as SSM does, against a fake /var/lib/cloud tree.
+
+// cloudTree builds a fake /var/lib/cloud under t.TempDir().
+type cloudTree struct {
+	t    *testing.T
+	root string
+}
+
+func newCloudTree(t *testing.T) *cloudTree {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "instances"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return &cloudTree{t: t, root: root}
+}
+
+// instance adds instances/<id> with the given user-data.txt bytes, at mtime age.
+func (c *cloudTree) instance(id string, userData []byte, mtime time.Time) {
+	c.t.Helper()
+	dir := filepath.Join(c.root, "instances", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		c.t.Fatal(err)
+	}
+	if userData != nil {
+		if err := os.WriteFile(filepath.Join(dir, "user-data.txt"), userData, 0o600); err != nil {
+			c.t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(dir, mtime, mtime); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+// current points "instance" at instances/<id>, as cloud-init does on boot.
+func (c *cloudTree) current(id string) {
+	c.t.Helper()
+	if err := os.Symlink(filepath.Join(c.root, "instances", id), filepath.Join(c.root, "instance")); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+// run executes the real remote script against the tree and returns its stdout.
+func (c *cloudTree) run() (string, error) {
+	c.t.Helper()
+	script := strings.ReplaceAll(amiUserDataCommand, "/var/lib/cloud", c.root)
+	out, err := exec.Command("/bin/sh", "-c", script).Output()
+	return string(out), err
+}
+
+func gz(t *testing.T, s string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	w := gzip.NewWriter(&b)
+	if _, err := w.Write([]byte(s)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// The case found live: the current instance has empty user-data, the AMI's
+// source kept its own, gzipped.
+func TestAMIUserDataCommand_ReadsTheSourceInstanceNotTheCurrentOne(t *testing.T) {
+	now := time.Now()
+	c := newCloudTree(t)
+	c.instance("i-source", gz(t, "#cloud-config\n# marker\n"), now.Add(-time.Hour))
+	c.instance("i-temp", []byte{}, now)
+	c.current("i-temp")
+	got, err := c.run()
+	if err != nil || got != "#cloud-config\n# marker\n" {
+		t.Errorf("got %q err=%v, want the source's decompressed user-data", got, err)
+	}
+}
+
+func TestAMIUserDataCommand_PlainUserDataIsPassedThrough(t *testing.T) {
+	now := time.Now()
+	c := newCloudTree(t)
+	c.instance("i-source", []byte("#!/bin/bash\necho hi\n"), now.Add(-time.Hour))
+	c.instance("i-temp", []byte{}, now)
+	c.current("i-temp")
+	if got, err := c.run(); err != nil || got != "#!/bin/bash\necho hi\n" {
+		t.Errorf("got %q err=%v", got, err)
+	}
+}
+
+// An AMI that has been through several instances: the most recent other than
+// the current one is the source the image was taken from.
+func TestAMIUserDataCommand_PicksTheNewestOtherInstance(t *testing.T) {
+	now := time.Now()
+	c := newCloudTree(t)
+	c.instance("i-oldest", gz(t, "oldest\n"), now.Add(-48*time.Hour))
+	c.instance("i-source", gz(t, "source\n"), now.Add(-time.Hour))
+	c.instance("i-temp", []byte{}, now)
+	c.current("i-temp")
+	if got, err := c.run(); err != nil || got != "source\n" {
+		t.Errorf("got %q err=%v, want the newest non-current instance's user-data", got, err)
+	}
+}
+
+// Nothing to find is not an error: the script succeeds with no output, which the
+// caller reports as "no user-data found".
+func TestAMIUserDataCommand_NothingFoundIsEmptyAndSucceeds(t *testing.T) {
+	now := time.Now()
+	for name, build := range map[string]func(*cloudTree){
+		"no other instance": func(c *cloudTree) { c.instance("i-temp", []byte{}, now); c.current("i-temp") },
+		"source without user-data": func(c *cloudTree) {
+			c.instance("i-source", nil, now.Add(-time.Hour))
+			c.instance("i-temp", []byte{}, now)
+			c.current("i-temp")
+		},
+		"source with empty file": func(c *cloudTree) {
+			c.instance("i-source", []byte{}, now.Add(-time.Hour))
+			c.instance("i-temp", []byte{}, now)
+			c.current("i-temp")
+		},
+	} {
+		c := newCloudTree(t)
+		build(c)
+		if got, err := c.run(); err != nil || got != "" {
+			t.Errorf("%s: got %q err=%v, want empty output and success", name, got, err)
+		}
+	}
+}
+
+// The command must never read the current instance's file: that is the bug.
+func TestAMIUserDataCommand_DoesNotReadTheCurrentInstancesFile(t *testing.T) {
+	if strings.Contains(amiUserDataCommand, "/var/lib/cloud/instance/user-data") {
+		t.Errorf("the script reads the current instance's user-data, which is always the temporary instance's own:\n%s", amiUserDataCommand)
+	}
+	if !strings.Contains(amiUserDataCommand, "/var/lib/cloud/instances") {
+		t.Error("the script must look in /var/lib/cloud/instances")
+	}
+}
+
+// ExtractCloudInitFromAMI sends that script, and returns what it printed.
+func TestExtractCloudInitFromAMI_SendsTheSourceInstanceScript(t *testing.T) {
+	ec2Client := extractionFake(egressAll())
+	ssmClient := okSSM()
+	got, err := ExtractCloudInitFromAMI(context.Background(), ec2Client, ssmClient, "ami-1", "", testPollInterval, testPollInterval)
+	if err != nil || got != "#cloud-config" {
+		t.Fatalf("got %q err=%v", got, err)
+	}
+	if !commandSent(ssmClient.sentCommands, "/var/lib/cloud/instances") || commandSent(ssmClient.sentCommands, "cat /var/lib/cloud/instance/user-data.txt") {
+		t.Errorf("sent %v, want the instances/ script and not a read of the current instance", ssmClient.sentCommands)
 	}
 }

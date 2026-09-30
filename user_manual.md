@@ -500,8 +500,11 @@ cloud-init, below, which is refused unless you ask for it.)
   `~/.clasm` (see "Configuration"). clasm checks the group first and refuses
   at once, exit 2, if it has no outbound rule for port 443. If an instance was
   launched with no user-data, or an AMI's source had none, a note goes to
-  standard error, stdout is empty and the exit status is 0. While it waits,
-  a redirected stderr gets one plain progress line every 30 seconds.
+  standard error, stdout is empty and the exit status is 0. For an AMI the
+  result is the user-data of the instance the image was taken from (the most
+  recent one recorded on it), decompressed if it was stored gzipped, as clasm's
+  own launch templates do. While it waits, a redirected stderr gets one plain
+  progress line every 30 seconds.
 
 #### Creating a launch template and launching from it
 

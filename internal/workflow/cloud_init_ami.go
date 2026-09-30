@@ -52,10 +52,31 @@ func launchDisposableInstance(ctx context.Context, client awsclient.EC2API, imag
 	return aws.ToString(out.Instances[0].InstanceId), nil
 }
 
+// amiUserDataCommand prints the user-data of the instance the AMI was taken from.
+// It is plain POSIX sh -- SSM's AWS-RunShellScript runs commands under /bin/sh.
+//
+// Not /var/lib/cloud/instance/user-data.txt: on boot cloud-init points
+// /var/lib/cloud/instance at the NEW instance's directory, so that file is the
+// temporary instance's own user-data, which is empty (confirmed on a real
+// AMI-launched instance, 2026-09-30). The AMI's source is the most recently
+// modified directory under instances/ other than the current one. Its file is
+// the raw user-data as given, which for clasm-made templates is gzip (first
+// bytes 1f 8b), so it is decompressed when it is. Finding nothing -- no other
+// instance directory, no file, an empty file -- prints nothing and succeeds; the
+// caller reports "no user-data found". An older ancestor's user-data is never
+// substituted for a source that had none.
+const amiUserDataCommand = `cur=$(basename "$(readlink /var/lib/cloud/instance)")
+src=$(ls -1t /var/lib/cloud/instances | grep -v -x "$cur" | head -n 1)
+f=/var/lib/cloud/instances/$src/user-data.txt
+if [ -n "$src" ] && [ -s "$f" ]; then
+  if [ "$(od -An -tx1 -N2 "$f" | tr -d ' \n')" = 1f8b ]; then gzip -dc "$f"; else cat "$f"; fi
+fi
+exit 0`
+
 // ExtractCloudInitFromAMI launches a temporary, disposable instance from
 // imageID, waits for it to reach running and for SSM to report Online
-// (both bounded by timeout), reads /var/lib/cloud/instance/user-data.txt
-// via SSM, and always terminates the temporary instance afterward --
+// (both bounded by timeout), reads the source instance's user-data
+// (amiUserDataCommand) via SSM, and always terminates the temporary instance afterward --
 // including when SSM never comes online or the command fails. Cleanup
 // runs via defer against a cleanup-scoped context, decoupled from ctx,
 // so it isn't skipped by an early return or by ctx itself being
@@ -90,7 +111,7 @@ func ExtractCloudInitFromAMI(ctx context.Context, ec2Client awsclient.EC2API, ss
 		return "", fmt.Errorf("SSM never came online on temporary instance %s; it was launched into %s, whose outbound rules must allow HTTPS to the SSM endpoints", instanceID, describeExtractionGroup(securityGroupID))
 	}
 
-	stdout, status, err := RunShellCommand(ctx, ssmClient, instanceID, "cat /var/lib/cloud/instance/user-data.txt", timeout, pollInterval)
+	stdout, status, err := RunShellCommand(ctx, ssmClient, instanceID, amiUserDataCommand, timeout, pollInterval)
 	if err != nil {
 		return "", err
 	}
