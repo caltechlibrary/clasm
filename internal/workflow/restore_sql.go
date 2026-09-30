@@ -212,8 +212,16 @@ func buildRestoreSQLCommands(containerName, dbName, dbUser, sqlFilePath string) 
 		shellQuote(containerName), shellQuote(dbUser), shellQuote("DROP DATABASE IF EXISTS "+quotedDB))
 	createCmd = fmt.Sprintf("{ docker exec %s psql --username=%s --dbname postgres -c %s; } 2>&1",
 		shellQuote(containerName), shellQuote(dbUser), shellQuote("CREATE DATABASE "+quotedDB))
-	loadCmd = fmt.Sprintf("{ docker exec -i %s psql --username=%s %s < %s; } 2>&1",
-		shellQuote(containerName), shellQuote(dbUser), shellQuote(dbName), shellQuote(sqlFilePath))
+	// The load session alone runs with synchronous_commit=off (DR-0182): a
+	// --column-inserts dump is one autocommitted INSERT per row, so with the
+	// default every row waits for an fsync -- measured 2026-09-30 at about
+	// 10 MB/min on an instance that was 86% idle, five hours for production's
+	// 3.3 GB. PGOPTIONS is read by libpq, so it affects only this psql session;
+	// no server-wide or role-wide setting is touched. Not --single-transaction:
+	// one harmless error in a dump (an ownership statement for a missing role)
+	// would then fail the whole load, where today it is tolerated.
+	loadCmd = fmt.Sprintf("{ docker exec -i -e %s %s psql --username=%s %s < %s; } 2>&1",
+		shellQuote("PGOPTIONS=-c synchronous_commit=off"), shellQuote(containerName), shellQuote(dbUser), shellQuote(dbName), shellQuote(sqlFilePath))
 	return dropCmd, createCmd, loadCmd
 }
 
