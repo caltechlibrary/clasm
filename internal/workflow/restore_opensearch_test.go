@@ -615,12 +615,15 @@ func TestRestoreOpenSearchSnapshot_OwnerUIDMismatchStopsBeforeAnythingIsDestroye
 	}
 }
 
-// The full order of a restore that has to delete conflicting indices:
-// the owner is known before the deletion, and the directory is ensured
-// after the deletion but strictly before the sync, then chowned, then
-// registered. The lookup happens once -- moved to the top, not duplicated
-// beside the chown.
-func TestRestoreOpenSearchSnapshot_OwnerLookupBeforeDeletionEnsureBeforeSync(t *testing.T) {
+// The full order of a restore that has to delete conflicting indices: the
+// owner is known first, then the directory is ensured, the snapshot synced,
+// chowned and registered, and only then are the conflicting indices deleted,
+// immediately before the _restore that replaces them. The deletion used to
+// come right after the index-prefix prompt, before the source was even
+// chosen, so a mistyped source destroyed the live indices and then found
+// nothing to restore (found live 2026-09-30; DR-0175 decision 2). The lookup
+// happens once -- at the top, not duplicated beside the chown.
+func TestRestoreOpenSearchSnapshot_DeletionComesAfterSyncAndRegisterBeforeRestore(t *testing.T) {
 	inst := inventory.Instance{InstanceID: "i-1", Name: "caltechdata", Region: "us-east-1"}
 	input := "\n" + "i-1\n" + "/opt/rdm_opensearch_backups\n" + "my-bucket\n" + "caltechdata\n" + "\n"
 	term, le, buf := newPipeEditor(input)
@@ -646,8 +649,9 @@ func TestRestoreOpenSearchSnapshot_OwnerLookupBeforeDeletionEnsureBeforeSync(t *
 	if del < 0 {
 		t.Fatalf("fixture should have deleted a conflicting index; sent: %v", sent)
 	}
-	if !(lookup < del && del < ensure && ensure < sync && sync < chown && chown < register) {
-		t.Errorf("want lookup < delete < ensure < sync < chown < register, got %d %d %d %d %d %d; sent: %v", lookup, del, ensure, sync, chown, register, sent)
+	restore := commandIndex(t, sent, "/_restore")
+	if !(lookup < ensure && ensure < sync && sync < chown && chown < register && register < del && del < restore) {
+		t.Errorf("want lookup < ensure < sync < chown < register < delete < restore, got %d %d %d %d %d %d %d; sent: %v", lookup, ensure, sync, chown, register, del, restore, sent)
 	}
 	if n := countCommandsContaining(sent, "id -u"); n != 1 {
 		t.Errorf("the owner was looked up %d times, want exactly 1", n)

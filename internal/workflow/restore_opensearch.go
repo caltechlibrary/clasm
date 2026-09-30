@@ -426,6 +426,62 @@ func VerifyRestoredIndices(ctx context.Context, client awsclient.SSMAPI, instanc
 	return parseRestoredIndices(stdout)
 }
 
+// snapshotIndexList reads the index names from a `GET _snapshot/<repo>/<name>`
+// response ({"snapshots":[{"indices":[...],...}]}). known is false when the
+// response is not that shape, so an unrecognised answer is never read as
+// "the snapshot is empty".
+func snapshotIndexList(stdout string) (indices []string, known bool) {
+	var resp struct {
+		Snapshots []struct {
+			Indices []string `json:"indices"`
+		} `json:"snapshots"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(stdout)), &resp) != nil || len(resp.Snapshots) == 0 {
+		return nil, false
+	}
+	return resp.Snapshots[0].Indices, true
+}
+
+// CheckSnapshotHoldsMatchingIndices asks the registered repository what
+// snapshotName holds and stops, before anything is deleted, if none of its
+// indices match patterns -- the guard against an index prefix that matches
+// live indices on the target but nothing in the snapshot (a cross-instance
+// restore with the wrong prefix), which would otherwise delete first and
+// restore nothing. A response it cannot read does not block: the check exists
+// to refuse a positively empty match, and RestoreSnapshot still stops on an
+// empty result afterwards.
+func CheckSnapshotHoldsMatchingIndices(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName, indexPrefix string, patterns []string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildSnapshotStateCommand(repo, snapshotName), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("listing the indices in snapshot %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+	}
+	held, known := snapshotIndexList(stdout)
+	if !known {
+		return nil
+	}
+	for _, name := range held {
+		if matchesAnyPattern(name, patterns) {
+			return nil
+		}
+	}
+	sort.Strings(held)
+	return fmt.Errorf("snapshot %q holds no indices matching the index prefix %q, so nothing was deleted or restored. It holds: %s. The index prefix is the name the indices carry inside the snapshot (e.g. caltechauthors), not the source instance name used as the S3 prefix (e.g. caltechauthors-v13)", snapshotName, indexPrefix, summarizeNames(held, 8))
+}
+
+// summarizeNames joins up to limit names, noting how many were left out.
+func summarizeNames(names []string, limit int) string {
+	if len(names) == 0 {
+		return "no indices"
+	}
+	if len(names) <= limit {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(names[:limit], ", "), len(names)-limit)
+}
+
 // pickSnapshotPrefix lets the operator pick one of prefixes (already
 // sorted most-recent-first by the caller) -- same shape as pickS3Object.
 func pickSnapshotPrefix(w io.Writer, title, description string, prefixes []SnapshotPrefixInfo, input io.Reader, output io.Writer) (SnapshotPrefixInfo, error) {
@@ -465,14 +521,19 @@ func RestoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 // Step order applies Restore SQL Backup's own step-order lesson (PLAN.md
 // Phase 20.50, DECISIONS.md, "Restore SQL Backup: resolve the Postgres
 // target before any S3 prompt, not after") from the start, rather than
-// needing a second live-testing round to rediscover it: detecting
-// conflicting indices only needs the target's own index prefix
-// (Project/Name tag), not any bucket/source-name/snapshot choice, so it
-// runs immediately after the AWS-CLI preflight -- before any S3 prompt,
-// and before syncing a potentially multi-gigabyte snapshot down. See
-// DECISIONS.md, "Restore OpenSearch: detect and resolve conflicting
-// indices before any S3 activity, applying the SQL restore lesson from
-// the start."
+// needing a second live-testing round to rediscover it: *detecting*
+// conflicting indices, and taking the operator's type-to-confirm, only needs
+// the target's own index prefix (Project/Name tag), not any bucket/
+// source-name/snapshot choice, so both run immediately after the AWS-CLI
+// preflight -- before any S3 prompt, and before syncing a potentially
+// multi-gigabyte snapshot down. See DECISIONS.md, "Restore OpenSearch:
+// detect and resolve conflicting indices before any S3 activity, applying
+// the SQL restore lesson from the start."
+//
+// *Deleting* them is a different matter and comes late: only once the
+// snapshot is chosen, downloaded, registered and confirmed to hold matching
+// indices, immediately before the restore that replaces them (DR-0175
+// decision 2). The early placement was a real defect, found live 2026-09-30.
 func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, openSearchBackupDirRules []config.BackupDirectoryRule, input io.Reader, output io.Writer) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
@@ -534,9 +595,8 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 			fmt.Fprintln(w, "Cancelled.")
 			return nil
 		}
-		if err := DeleteConflictingIndices(ctx, ssmClient, inst.InstanceID, existing, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
-			return err
-		}
+		// Confirmed, not yet deleted: see the deletion just before
+		// RestoreSnapshot below.
 	}
 
 	dirPromptOpts := []ui.PromptOption{ui.WithValidator(requireNonEmpty)}
@@ -609,6 +669,22 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return err
 	}
 	if err := RegisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+
+	// The conflicting indices are deleted here, and nowhere earlier: the
+	// snapshot is chosen, downloaded, owned by the service user and
+	// registered, and (just below) confirmed to hold something that will
+	// replace them. Deleting right after the index-prefix prompt, as this
+	// once did, meant a mistyped source destroyed the live indices and then
+	// found nothing to restore (found live 2026-09-30 on
+	// caltechauthors-test-v13; DR-0175 decision 2 -- never destroy the current
+	// state before a verified replacement exists). The operator's
+	// confirmation was taken earlier because it only needs the target.
+	if err := CheckSnapshotHoldsMatchingIndices(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snap.Name, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+		return err
+	}
+	if err := DeleteConflictingIndices(ctx, ssmClient, inst.InstanceID, existing, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
