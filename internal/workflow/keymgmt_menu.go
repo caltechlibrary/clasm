@@ -32,8 +32,11 @@ type KeyMgmtActions struct {
 // keyMgmtItem pairs a Key Management menu label with the KeyMgmtActions
 // field it dispatches to.
 type keyMgmtItem struct {
-	label  string
-	action func(KeyMgmtActions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment (DR-0177); empty means it has
+	// no CLI form yet.
+	cliSlug string
+	action  func(KeyMgmtActions, context.Context) error
 }
 
 // keyMgmtMenuItems is DESIGN.md's Key Management menu, in order. "Show
@@ -49,10 +52,10 @@ type keyMgmtItem struct {
 // a second way to do the same thing (matching s3MenuItems' own drop of
 // "Back to domain picker" in Phase 20.7).
 var keyMgmtMenuItems = []keyMgmtItem{
-	{"Show Key Pairs", func(a KeyMgmtActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
-	{"Create Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.CreateKeyPair(ctx) }},
-	{"Import Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.ImportKeyPair(ctx) }},
-	{"Delete Key Pair", func(a KeyMgmtActions, ctx context.Context) error { return a.DeleteKeyPair(ctx) }},
+	{label: "Show Key Pairs", cliSlug: ShowKeyPairsCLISlug, action: func(a KeyMgmtActions, ctx context.Context) error { return a.ShowResourceLists(ctx) }},
+	{label: "Create Key Pair", action: func(a KeyMgmtActions, ctx context.Context) error { return a.CreateKeyPair(ctx) }},
+	{label: "Import Key Pair", action: func(a KeyMgmtActions, ctx context.Context) error { return a.ImportKeyPair(ctx) }},
+	{label: "Delete Key Pair", action: func(a KeyMgmtActions, ctx context.Context) error { return a.DeleteKeyPair(ctx) }},
 }
 
 // pickKeyMgmtItem runs the Key Management menu's huh.Select and returns
@@ -131,4 +134,35 @@ func runKeyMgmtMenu(ctx context.Context, w io.Writer, actions KeyMgmtActions, me
 			pauseForAcknowledgment(menuInput, menuOutput)
 		}
 	}
+}
+
+// KeyManagementDomainCLISlug is the Key Management domain's cliSlug.
+const KeyManagementDomainCLISlug = "key-management"
+
+// ShowKeyPairsCLISlug is "Show Key Pairs"'s cliSlug (DR-0177's mechanical rule).
+const ShowKeyPairsCLISlug = "show-key-pairs"
+
+func keyMgmtItemBySlug(slug string) (keyMgmtItem, bool) {
+	for _, item := range keyMgmtMenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return keyMgmtItem{}, false
+}
+
+// RunKeyMgmtMenuFromSlug runs slug's leaf once, then falls into the Key
+// Management menu, as RunMainMenuFromSlug does for Compute. ok is false, and
+// nothing runs, for an unregistered slug.
+func RunKeyMgmtMenuFromSlug(ctx context.Context, w io.Writer, actions KeyMgmtActions, slug string) (ok bool, err error) {
+	return runKeyMgmtMenuFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+func runKeyMgmtMenuFromSlug(ctx context.Context, w io.Writer, actions KeyMgmtActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := keyMgmtItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	return true, runLeafThenMenu(ctx, w, func(ctx context.Context) error { return item.action(actions, ctx) }, actions.Refresh,
+		func() error { return runKeyMgmtMenu(ctx, w, actions, menuInput, menuOutput) }, menuInput, menuOutput)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
@@ -159,4 +160,104 @@ func writeRecords(w io.Writer, recs []any, format Format) error {
 		return nil
 	}
 	return fmt.Errorf("unknown output format %q", format)
+}
+
+type keyPairJSON struct {
+	KeyName     string            `json:"key_name"`
+	KeyPairID   string            `json:"key_pair_id"`
+	Fingerprint string            `json:"fingerprint"`
+	KeyType     string            `json:"key_type"`
+	Region      string            `json:"region"`
+	Tags        map[string]string `json:"tags"`
+}
+
+type iamRoleJSON struct {
+	Name       string            `json:"name"`
+	CreateDate string            `json:"create_date"`
+	Origin     string            `json:"origin"`
+	DLDOwned   bool              `json:"dld_owned"`
+	SSMCapable bool              `json:"ssm_capable"`
+	Tags       map[string]string `json:"tags"`
+}
+
+type iamInstanceProfileJSON struct {
+	Name       string            `json:"name"`
+	CreateDate string            `json:"create_date"`
+	Origin     string            `json:"origin"`
+	DLDOwned   bool              `json:"dld_owned"`
+	RoleNames  []string          `json:"role_names"`
+	Tags       map[string]string `json:"tags"`
+}
+
+type iamPolicyJSON struct {
+	Name       string            `json:"name"`
+	ARN        string            `json:"arn"`
+	CreateDate string            `json:"create_date"`
+	Origin     string            `json:"origin"`
+	DLDOwned   bool              `json:"dld_owned"`
+	Tags       map[string]string `json:"tags"`
+}
+
+// FormatTimeJSON renders a time as RFC 3339 in UTC, whatever zone AWS returned.
+func FormatTimeJSON(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// WriteKeyPairs writes key pairs in format.
+func WriteKeyPairs(w io.Writer, keyPairs []inventory.KeyPair, format Format) error {
+	if format == FormatText {
+		cfg := keyPairListViewConfig(keyPairs)
+		return writeText(w, cfg.Header, cfg.Rows)
+	}
+	recs := make([]any, len(keyPairs))
+	for i, k := range keyPairs {
+		recs[i] = keyPairJSON{k.KeyName, k.KeyPairID, k.KeyFingerprint, k.KeyType, k.Region, nonNilTags(k.Tags)}
+	}
+	return writeRecords(w, recs, format)
+}
+
+// WriteIAMRoles writes role rows in format.
+func WriteIAMRoles(w io.Writer, rows []IAMRoleRow, format Format) error {
+	if format == FormatText {
+		cfg := iamRoleListViewConfig(rows)
+		return writeText(w, cfg.Header, cfg.Rows)
+	}
+	recs := make([]any, len(rows))
+	for i, r := range rows {
+		recs[i] = iamRoleJSON{r.Name, FormatTimeJSON(r.CreateDate), r.Origin, r.DLDOwned, r.SSMCapable, nonNilTags(r.Tags)}
+	}
+	return writeRecords(w, recs, format)
+}
+
+// WriteIAMInstanceProfiles writes instance profile summaries in format.
+func WriteIAMInstanceProfiles(w io.Writer, summaries []inventory.IAMInstanceProfileSummary, format Format) error {
+	if format == FormatText {
+		cfg := iamInstanceProfileListViewConfig(summaries)
+		return writeText(w, cfg.Header, cfg.Rows)
+	}
+	recs := make([]any, len(summaries))
+	for i, p := range summaries {
+		roles := p.RoleNames
+		if roles == nil {
+			roles = []string{}
+		}
+		recs[i] = iamInstanceProfileJSON{p.Name, FormatTimeJSON(p.CreateDate), p.Origin, p.DLDOwned, roles, nonNilTags(p.Tags)}
+	}
+	return writeRecords(w, recs, format)
+}
+
+// WriteIAMPolicies writes customer-managed policy summaries in format.
+func WriteIAMPolicies(w io.Writer, summaries []inventory.IAMPolicySummary, format Format) error {
+	if format == FormatText {
+		cfg := iamPolicyListViewConfig(summaries)
+		return writeText(w, cfg.Header, cfg.Rows)
+	}
+	recs := make([]any, len(summaries))
+	for i, p := range summaries {
+		recs[i] = iamPolicyJSON{p.Name, p.ARN, FormatTimeJSON(p.CreateDate), p.Origin, p.DLDOwned, nonNilTags(p.Tags)}
+	}
+	return writeRecords(w, recs, format)
 }

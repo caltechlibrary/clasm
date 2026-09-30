@@ -119,7 +119,7 @@ func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
 }
 
 func TestClassifyCLIArgs_PathUnderADomainWithNoLeafFormsIsAUsageError(t *testing.T) {
-	for _, args := range [][]string{{"iam", "show-roles"}, {"iam", "show-roles", "extra"}, {"s3", "show-buckets"}} {
+	for _, args := range [][]string{{"s3", "show-buckets"}, {"tag-management", "show-all-tags", "extra"}, {"configuration", "edit-regions"}} {
 		mode, _, _, _, err := classifyCLIArgs(args)
 		if mode != cliModeNone {
 			t.Errorf("%v: mode = %q, want %q", args, mode, cliModeNone)
@@ -347,5 +347,86 @@ func TestRunCLILeaf_ExportCloudInitAMIWithoutConsentExitsTwo(t *testing.T) {
 	code := runCLILeaf(context.Background(), &out, &eout, "show-export-cloud-init-for-an-instance-or-ami", []string{"ami-1"}, computeEnv())
 	if code != 2 || !strings.Contains(eout.String(), "-launch-temporary-instance") {
 		t.Errorf("code=%d err=%q", code, eout.String())
+	}
+}
+
+// Key Management and IAM read-only leaves (DR-0177).
+func TestClassifyCLIArgs_KeyManagementAndIAMLeaves(t *testing.T) {
+	for _, tc := range [][]string{{"key-management", "show-key-pairs"}, {"iam", "show-roles"}, {"iam", "show-instance-profile-detail"}} {
+		mode, domainSlug, leafSlug, _, err := classifyCLIArgs(tc)
+		if err != nil || mode != cliModeLeaf || domainSlug != tc[0] || leafSlug != tc[1] {
+			t.Errorf("%v: mode=%q domain=%q leaf=%q err=%v", tc, mode, domainSlug, leafSlug, err)
+		}
+	}
+	for _, tc := range [][]string{{"iam", "delete-role"}, {"iam", "show-key-pairs"}, {"key-management", "show-roles"}, {"key-management", "create-key-pair"}} {
+		if _, _, _, _, err := classifyCLIArgs(tc); err == nil {
+			t.Errorf("%v: want a usage error", tc)
+		}
+	}
+}
+
+func TestRunCLILeaf_ShowKeyPairs(t *testing.T) {
+	env := cliEnv{keyPairs: []inventory.KeyPair{{KeyName: "caltechauthors", KeyPairID: "key-1", Region: "us-west-2"}}}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-key-pairs", []string{"-json"}, env); code != 0 || !strings.Contains(out.String(), `"key_name": "caltechauthors"`) || eout.Len() != 0 {
+		t.Errorf("-json: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-key-pairs", []string{"-jsonl"}, env); code != 0 || strings.Count(out.String(), "\n") != 1 {
+		t.Errorf("-jsonl: code=%d out=%q", code, out.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-key-pairs", []string{"--help"}, env); code != 0 || !strings.Contains(out.String(), "-jsonl") {
+		t.Errorf("--help: code=%d out=%q", code, out.String())
+	}
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-key-pairs", []string{"-json", "stray"}, env); code != 2 {
+		t.Errorf("stray word: code=%d", code)
+	}
+}
+
+// IAM forms: usage errors never reach AWS (nil iamClient would panic).
+func TestRunCLILeaf_IAMUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T) {
+	for _, tc := range []struct {
+		leaf string
+		args []string
+		want string
+	}{
+		{"show-roles", []string{"-json", "-text"}, "usage: clasm iam show-roles"},
+		{"show-roles", []string{"-json", "stray"}, "usage: clasm iam show-roles"},
+		{"show-instance-profiles", []string{"-yaml"}, "usage: clasm iam show-instance-profiles"},
+		{"show-policies", []string{"-json", "stray"}, "usage: clasm iam show-policies"},
+		{"show-role-detail", []string{"-json"}, "usage: clasm iam show-role-detail"},
+		{"show-role-detail", []string{"a", "b"}, "usage: clasm iam show-role-detail"},
+		{"show-role-detail", []string{"-jsonl", "a"}, "usage: clasm iam show-role-detail"},
+		{"show-instance-profile-detail", []string{"a", "b"}, "usage: clasm iam show-instance-profile-detail"},
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, tc.args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), tc.want) {
+			t.Errorf("%s %v: code=%d out=%q err=%q", tc.leaf, tc.args, code, out.String(), eout.String())
+		}
+	}
+	for _, leaf := range []string{"show-roles", "show-instance-profiles", "show-policies", "show-role-detail", "show-instance-profile-detail"} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "-json") || eout.Len() != 0 {
+			t.Errorf("%s --help: code=%d out=%q err=%q", leaf, code, out.String(), eout.String())
+		}
+	}
+}
+
+// Each domain loads only the data its leaves read: IAM must not wait on (or
+// fail because of) the EC2 listings.
+func TestRefreshForCLIDomain_LoadsOnlyWhatTheDomainReads(t *testing.T) {
+	for domain, want := range map[string]string{
+		"compute": "ec2", "rdm-backup-and-restore": "ec2", "key-management": "keys", "iam": "",
+	} {
+		var called []string
+		ec2 := func(context.Context) error { called = append(called, "ec2"); return nil }
+		keys := func(context.Context) error { called = append(called, "keys"); return nil }
+		if err := refreshForCLIDomain(context.Background(), domain, ec2, keys); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(called, ","); got != want {
+			t.Errorf("%s loaded %q, want %q", domain, got, want)
+		}
 	}
 }

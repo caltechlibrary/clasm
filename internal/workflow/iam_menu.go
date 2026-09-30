@@ -59,8 +59,11 @@ type IAMActions struct {
 // iamMenuItem pairs an IAM menu label with the IAMActions field it
 // dispatches to.
 type iamMenuItem struct {
-	label  string
-	action func(IAMActions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment (DR-0177); empty means it has
+	// no CLI form yet.
+	cliSlug string
+	action  func(IAMActions, context.Context) error
 }
 
 // iamMenuItems is DESIGN.md's IAM domain menu, in order. Attach/Detach
@@ -76,17 +79,17 @@ type iamMenuItem struct {
 // picker" entry -- DECISIONS.md, "TUI keybinding conventions": 'q' is
 // the universal back key everywhere.
 var iamMenuItems = []iamMenuItem{
-	{"Show Roles", func(a IAMActions, ctx context.Context) error { return a.ShowRoles(ctx) }},
-	{"Show Instance Profiles", func(a IAMActions, ctx context.Context) error { return a.ShowInstanceProfiles(ctx) }},
-	{"Show Policies", func(a IAMActions, ctx context.Context) error { return a.ShowPolicies(ctx) }},
-	{"Show Role Detail", func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
-	{"Show Instance Profile Detail", func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
-	{"Create Role from Template", func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
-	{"Attach Policy to Role", func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
-	{"Detach Policy from Role", func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
-	{"Remove Role from Instance Profile", func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},
-	{"Delete Instance Profile", func(a IAMActions, ctx context.Context) error { return a.DeleteInstanceProfile(ctx) }},
-	{"Delete Role", func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
+	{label: "Show Roles", cliSlug: ShowRolesCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ShowRoles(ctx) }},
+	{label: "Show Instance Profiles", cliSlug: ShowInstanceProfilesCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ShowInstanceProfiles(ctx) }},
+	{label: "Show Policies", cliSlug: ShowPoliciesCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ShowPolicies(ctx) }},
+	{label: "Show Role Detail", cliSlug: ShowRoleDetailCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
+	{label: "Show Instance Profile Detail", cliSlug: ShowInstanceProfileDetailCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
+	{label: "Create Role from Template", action: func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
+	{label: "Attach Policy to Role", action: func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
+	{label: "Detach Policy from Role", action: func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
+	{label: "Remove Role from Instance Profile", action: func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},
+	{label: "Delete Instance Profile", action: func(a IAMActions, ctx context.Context) error { return a.DeleteInstanceProfile(ctx) }},
+	{label: "Delete Role", action: func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
 }
 
 // pickIAMItem runs the IAM domain menu's huh.Select and returns the
@@ -155,4 +158,41 @@ func runIAMMenu(ctx context.Context, w io.Writer, actions IAMActions, menuInput 
 		// redraw.
 		pauseForAcknowledgment(menuInput, menuOutput)
 	}
+}
+
+// IAMDomainCLISlug is the IAM domain's cliSlug.
+const IAMDomainCLISlug = "iam"
+
+// The IAM read-only leaves' cliSlug values (DR-0177's mechanical rule).
+const (
+	ShowRolesCLISlug                 = "show-roles"
+	ShowInstanceProfilesCLISlug      = "show-instance-profiles"
+	ShowPoliciesCLISlug              = "show-policies"
+	ShowRoleDetailCLISlug            = "show-role-detail"
+	ShowInstanceProfileDetailCLISlug = "show-instance-profile-detail"
+)
+
+func iamItemBySlug(slug string) (iamMenuItem, bool) {
+	for _, item := range iamMenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return iamMenuItem{}, false
+}
+
+// RunIAMMenuFromSlug runs slug's leaf once, then falls into the IAM menu. The
+// IAM domain has no Refresh: its listings are fetched when shown. ok is false,
+// and nothing runs, for an unregistered slug.
+func RunIAMMenuFromSlug(ctx context.Context, w io.Writer, actions IAMActions, slug string) (ok bool, err error) {
+	return runIAMMenuFromSlug(ctx, w, actions, slug, nil, nil)
+}
+
+func runIAMMenuFromSlug(ctx context.Context, w io.Writer, actions IAMActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := iamItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	return true, runLeafThenMenu(ctx, w, func(ctx context.Context) error { return item.action(actions, ctx) }, nil,
+		func() error { return runIAMMenu(ctx, w, actions, menuInput, menuOutput) }, menuInput, menuOutput)
 }

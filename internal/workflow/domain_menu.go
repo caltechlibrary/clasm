@@ -319,10 +319,10 @@ const RDMBackupRestoreDomainCLISlug = "rdm-backup-and-restore"
 
 var domainItems = []domainItem{
 	{label: "Compute (EC2 & AMI)", cliSlug: ComputeDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.Compute(ctx) }},
-	{label: "Key Management", cliSlug: "key-management", action: func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
+	{label: "Key Management", cliSlug: KeyManagementDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.KeyManagement(ctx) }},
 	{label: "S3 (Buckets & Static Websites)", cliSlug: "s3", action: func(a DomainActions, ctx context.Context) error { return a.S3(ctx) }},
 	{label: "Tag Management", cliSlug: "tag-management", action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
-	{label: "IAM", cliSlug: "iam", action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
+	{label: "IAM", cliSlug: IAMDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
 	{label: "RDM Backup & Restore", cliSlug: RDMBackupRestoreDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
 	{label: "Configuration", cliSlug: "configuration", action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }

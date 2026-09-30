@@ -405,12 +405,13 @@ spaces becomes one hyphen (so "Resize instance's root volume" is
 `s3`, `tag-management`, `iam`, `rdm-backup-and-restore` and
 `configuration`.
 
-Two domains have actions with the full non-interactive form today:
+Four domains have actions with the full non-interactive form today:
 **RDM Backup & Restore** (`rdm-backup-and-restore`, below) and the
-read-only "Show" actions of **Compute** (`compute`, see "Read-only
-Compute forms"). A path *under* any other domain (`clasm iam show-roles`)
-is a usage error saying that domain has no CLI sub-commands yet. An
-action slug is valid only under its own domain.
+read-only "Show" actions of **Compute** (`compute`), **Key Management**
+(`key-management`) and **IAM** (`iam`), described under "Read-only
+forms". A path *under* any other domain (`clasm s3 show-buckets`) is a
+usage error saying that domain has no CLI sub-commands yet. An action
+slug is valid only under its own domain.
 
 The RDM actions:
 
@@ -446,7 +447,12 @@ confirmation prompt is skipped. After a successful *interactive* run of
 either action, clasm prints the exact non-interactive command that
 reproduces it, ready to copy into a script or crontab entry.
 
-### Read-only Compute forms
+### Read-only forms
+
+The read-only actions of Compute, Key Management and IAM share one set of
+output options, described after the three domains.
+
+#### Compute
 
 The seven "Show" actions of the Compute domain have command-line forms.
 They change nothing, ask nothing and need no confirmation; the only AWS
@@ -477,7 +483,32 @@ cloud-init, below, which is refused unless you ask for it.)
   add `-launch-temporary-instance`. If an instance was launched with no
   user-data, a note goes to standard error and the exit status is 0.
 
-**Output formats.** Every form takes one of:
+#### Key Management and IAM
+
+`key-management show-key-pairs`
+: the key pair listing (name, ID, fingerprint, type, region, tags). Only
+  public information is listed; no private key is ever printed.
+
+`iam show-roles`, `iam show-instance-profiles`, `iam show-policies`
+: the IAM listings, including each item's `Origin` tag value and whether
+  it is DLD-owned. Policies are the customer-managed ones. `show-roles` also
+  reports whether each role is SSM-capable, which costs a few calls per role,
+  so on an account with over a hundred roles it takes about twenty seconds,
+  as the interactive view does.
+
+`iam show-role-detail <role-name>`, `iam show-instance-profile-detail <instance-profile-name>`
+: the detail view for one role or instance profile. IAM names are exact, so
+  the argument is looked up directly (no Name-tag or ID matching); a name
+  that does not exist is a usage error (exit 2). In `-json` a role's trust
+  policy is embedded as a JSON document, not as an escaped string. Reading
+  an attached or inline policy's *document* is interactive only for now.
+
+Timestamps in JSON are RFC 3339 in UTC (`2026-07-23T17:30:00Z`). In the
+text view they keep the screen's `2026-07-23 17:30` layout.
+
+#### Output formats
+
+Every read-only form takes one of:
 
 | Option | Output |
 |---|---|

@@ -52,7 +52,11 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 		{"compute", "archive-sql-backups-to-s3", false}, // an RDM slug, not Compute's
 		{"rdm-backup-and-restore", "archive-sql-backups-to-s3", true},
 		{"rdm-backup-and-restore", "show-instances", false}, // a Compute slug, not RDM's
-		{"iam", "show-roles", false},                        // no leaf forms yet
+		{"iam", "show-roles", true},
+		{"iam", "delete-role", false}, // no form yet
+		{"key-management", "show-key-pairs", true},
+		{"key-management", "show-roles", false}, // IAM's slug, not Key Management's
+		{"s3", "show-buckets", false},           // no leaf forms yet
 		{"no-such-domain", "show-instances", false},
 	} {
 		if got := LeafCLISlugExists(tc.domain, tc.leaf); got != tc.want {
@@ -64,7 +68,8 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 func TestDomainHasLeafCLIForms(t *testing.T) {
 	for domain, want := range map[string]bool{
 		"compute": true, "rdm-backup-and-restore": true,
-		"iam": false, "s3": false, "key-management": false, "tag-management": false, "configuration": false,
+		"iam": true, "key-management": true,
+		"s3": false, "tag-management": false, "configuration": false,
 	} {
 		if got := DomainHasLeafCLIForms(domain); got != want {
 			t.Errorf("DomainHasLeafCLIForms(%q) = %t, want %t", domain, got, want)
@@ -115,5 +120,72 @@ func TestRunMainMenuFromSlug_ExitSignalEndsTheRunWithoutTheMenu(t *testing.T) {
 	}
 	if refreshCalls != 0 || !strings.Contains(buf.String(), "Exiting") {
 		t.Errorf("an exit signal must not refresh or continue; refreshCalls=%d output=%q", refreshCalls, buf.String())
+	}
+}
+
+// Key Management's one read-only leaf and IAM's five get slugs; every mutating
+// and destructive leaf stays "" until its own form is built.
+func TestKeyMgmtAndIAMMenuItems_CLISlugs(t *testing.T) {
+	wantKey := map[string]string{
+		"Show Key Pairs": "show-key-pairs", "Create Key Pair": "", "Import Key Pair": "", "Delete Key Pair": "",
+	}
+	for _, item := range keyMgmtMenuItems {
+		if want, ok := wantKey[item.label]; !ok || item.cliSlug != want {
+			t.Errorf("keyMgmtMenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, want, ok)
+		}
+	}
+	wantIAM := map[string]string{
+		"Show Roles": "show-roles", "Show Instance Profiles": "show-instance-profiles", "Show Policies": "show-policies",
+		"Show Role Detail": "show-role-detail", "Show Instance Profile Detail": "show-instance-profile-detail",
+		"Create Role from Template": "", "Attach Policy to Role": "", "Detach Policy from Role": "",
+		"Remove Role from Instance Profile": "", "Delete Instance Profile": "", "Delete Role": "",
+	}
+	for _, item := range iamMenuItems {
+		if want, ok := wantIAM[item.label]; !ok || item.cliSlug != want {
+			t.Errorf("iamMenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, want, ok)
+		}
+	}
+}
+
+func TestRunKeyMgmtMenuFromSlug(t *testing.T) {
+	term, buf := newTermOnly()
+	var refreshCalls int
+	if ok, err := runKeyMgmtMenuFromSlug(context.Background(), term, testKeyMgmtActions(&refreshCalls), "no-such-leaf", nil, nil); ok || err != nil || buf.Len() != 0 {
+		t.Errorf("unknown slug: ok=%t err=%v out=%q", ok, err, buf.String())
+	}
+
+	var showCalls, createCalls int
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := testKeyMgmtActions(&refreshCalls)
+	actions.ShowResourceLists = countingAction(&showCalls)
+	actions.CreateKeyPair = cancelingAction(&createCalls, cancel)
+	// A pause after the deep-linked leaf; "2" is Create Key Pair; a pause after it.
+	ok, err := runKeyMgmtMenuFromSlug(ctx, term, actions, "show-key-pairs", newHuhAccessibleInput("\n2\n\n"), buf)
+	if !ok || err != nil || showCalls != 1 || createCalls != 1 {
+		t.Errorf("ok=%t err=%v show=%d create=%d, want the leaf once then the menu", ok, err, showCalls, createCalls)
+	}
+}
+
+func TestRunIAMMenuFromSlug(t *testing.T) {
+	term, buf := newTermOnly()
+	if ok, err := runIAMMenuFromSlug(context.Background(), term, testIAMActions(), "no-such-leaf", nil, nil); ok || err != nil || buf.Len() != 0 {
+		t.Errorf("unknown slug: ok=%t err=%v out=%q", ok, err, buf.String())
+	}
+
+	var rolesCalls, profilesCalls int
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := testIAMActions()
+	actions.ShowRoles = countingAction(&rolesCalls)
+	actions.ShowInstanceProfiles = cancelingAction(&profilesCalls, cancel)
+	ok, err := runIAMMenuFromSlug(ctx, term, actions, "show-roles", newHuhAccessibleInput("\n2\n\n"), buf)
+	if !ok || err != nil || rolesCalls != 1 || profilesCalls != 1 {
+		t.Errorf("ok=%t err=%v roles=%d profiles=%d, want the leaf once then the menu", ok, err, rolesCalls, profilesCalls)
+	}
+
+	// An exit signal from the deep-linked leaf ends the run without the menu.
+	actions.ShowRoles = failingAction(huh.ErrUserAborted)
+	term2, buf2 := newTermOnly()
+	if ok, err := runIAMMenuFromSlug(context.Background(), term2, actions, "show-roles", nil, nil); !ok || err != nil || !strings.Contains(buf2.String(), "Exiting") {
+		t.Errorf("exit signal: ok=%t err=%v out=%q", ok, err, buf2.String())
 	}
 }

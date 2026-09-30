@@ -661,17 +661,22 @@ func main() {
 			os.Exit(1)
 		}
 	case cliModeLeaf:
-		// Same refresh domains.RDMBackupRestore's own closure runs on
-		// entry (DESIGN.md, "Navigation: Domain Picker") -- the
-		// deep-linked leaf picks from state.instances too.
-		if err := refresh(ctx); err != nil {
+		// Same data each domain's own closure loads on entry (DESIGN.md,
+		// "Navigation: Domain Picker") -- the deep-linked leaf reads the same
+		// state. IAM fetches what it shows and loads nothing up front.
+		if err := refreshForCLIDomain(ctx, cliDomainSlug, refresh, refreshKeyMgmt); err != nil {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
 		var leafErr error
-		if cliDomainSlug == workflow.ComputeDomainCLISlug {
+		switch cliDomainSlug {
+		case workflow.ComputeDomainCLISlug:
 			_, leafErr = workflow.RunMainMenuFromSlug(ctx, out, actions, cliLeafSlug)
-		} else {
+		case workflow.KeyManagementDomainCLISlug:
+			_, leafErr = workflow.RunKeyMgmtMenuFromSlug(ctx, out, keyMgmtActions, cliLeafSlug)
+		case workflow.IAMDomainCLISlug:
+			_, leafErr = workflow.RunIAMMenuFromSlug(ctx, out, iamActions, cliLeafSlug)
+		default:
 			_, leafErr = workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug)
 		}
 		if leafErr != nil {
@@ -679,13 +684,14 @@ func main() {
 			os.Exit(1)
 		}
 	case cliModeRun:
-		if err := refresh(ctx); err != nil {
+		if err := refreshForCLIDomain(ctx, cliDomainSlug, refresh, refreshKeyMgmt); err != nil {
 			fmt.Fprintf(eout, "%v\n", err)
 			os.Exit(1)
 		}
 		os.Exit(runCLILeaf(ctx, out, eout, cliLeafSlug, cliLeafArgs, cliEnv{
 			ssmClients: ssmClients, ec2Clients: ec2Clients, s3Client: s3Client, newS3Client: newS3Client,
 			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
+			keyPairs: keyMgmtState.keyPairs, iamClient: iamClient, originTag: cfg.OriginTag,
 			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
 		}))
 	}

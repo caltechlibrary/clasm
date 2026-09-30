@@ -28,6 +28,7 @@ func iamRoleRows(ctx context.Context, client awsclient.IAMAPI, summaries []inven
 			Origin:     s.Origin,
 			DLDOwned:   s.DLDOwned,
 			SSMCapable: capable,
+			Tags:       s.Tags,
 		}
 	}
 	return rows, nil

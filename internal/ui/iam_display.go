@@ -36,6 +36,8 @@ type IAMRoleRow struct {
 	Origin     string
 	DLDOwned   bool
 	SSMCapable bool
+	// Tags is the role's full tag set, for the non-interactive JSON form.
+	Tags map[string]string
 }
 
 // iamRoleListViewConfig builds a tui.ListViewConfig from rows -- see

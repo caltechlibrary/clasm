@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
@@ -122,5 +123,80 @@ func TestWriteImagesAndTemplates_JSONFields(t *testing.T) {
 func TestWriteListings_UnknownFormatIsAnError(t *testing.T) {
 	if err := WriteInstances(&bytes.Buffer{}, nil, Format("xml")); err == nil {
 		t.Error("want an error for an unknown format")
+	}
+}
+
+func TestWriteKeyPairs(t *testing.T) {
+	kps := []inventory.KeyPair{{KeyName: "caltechauthors", KeyPairID: "key-0abc", KeyFingerprint: "aa:bb", KeyType: "rsa", Region: "us-west-2", Tags: map[string]string{"Owner": "dld"}}, {KeyName: "bare", Region: "us-east-1"}}
+	var b bytes.Buffer
+	if err := WriteKeyPairs(&b, kps, FormatText); err != nil || !strings.HasPrefix(b.String(), "KEY NAME") || !strings.Contains(b.String(), "caltechauthors") {
+		t.Errorf("text: %q err=%v", b.String(), err)
+	}
+	b.Reset()
+	if err := WriteKeyPairs(&b, kps, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(b.Bytes(), &got); err != nil || len(got) != 2 {
+		t.Fatalf("%v\n%s", err, b.String())
+	}
+	if got[0]["key_name"] != "caltechauthors" || got[0]["key_pair_id"] != "key-0abc" || got[0]["fingerprint"] != "aa:bb" || got[0]["key_type"] != "rsa" {
+		t.Errorf("got %v", got[0])
+	}
+	if tags, ok := got[1]["tags"].(map[string]any); !ok || len(tags) != 0 {
+		t.Errorf("untagged wants {}, got %v", got[1]["tags"])
+	}
+}
+
+func TestWriteIAMListings_JSONFieldsAndTimes(t *testing.T) {
+	created := time.Date(2026, 7, 23, 10, 30, 0, 0, time.FixedZone("PDT", -7*3600))
+	var b bytes.Buffer
+	roles := []IAMRoleRow{{Name: "rdm-backups", CreateDate: created, Origin: "dld", DLDOwned: true, SSMCapable: true, Tags: map[string]string{"origin": "dld"}}}
+	if err := WriteIAMRoles(&b, roles, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var gr []map[string]any
+	if err := json.Unmarshal(b.Bytes(), &gr); err != nil {
+		t.Fatal(err)
+	}
+	// RFC 3339 in UTC, whatever zone AWS handed back.
+	if gr[0]["name"] != "rdm-backups" || gr[0]["create_date"] != "2026-07-23T17:30:00Z" || gr[0]["dld_owned"] != true || gr[0]["ssm_capable"] != true || gr[0]["origin"] != "dld" {
+		t.Errorf("role JSON: %v", gr[0])
+	}
+	b.Reset()
+	profiles := []inventory.IAMInstanceProfileSummary{{Name: "p", CreateDate: created, Origin: "dld", DLDOwned: true, RoleNames: []string{"r1"}}}
+	if err := WriteIAMInstanceProfiles(&b, profiles, FormatJSONL); err != nil {
+		t.Fatal(err)
+	}
+	var gp map[string]any
+	if err := json.Unmarshal(b.Bytes(), &gp); err != nil || gp["name"] != "p" || len(gp["role_names"].([]any)) != 1 {
+		t.Errorf("profile JSONL: %v err=%v", gp, err)
+	}
+	b.Reset()
+	policies := []inventory.IAMPolicySummary{{Name: "pol", ARN: "arn:aws:iam::1:policy/pol", CreateDate: created}}
+	if err := WriteIAMPolicies(&b, policies, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var gl []map[string]any
+	if err := json.Unmarshal(b.Bytes(), &gl); err != nil || gl[0]["arn"] != "arn:aws:iam::1:policy/pol" {
+		t.Errorf("policy JSON: %v err=%v", gl, err)
+	}
+}
+
+func TestWriteIAMListings_TextAndEmpty(t *testing.T) {
+	for name, write := range map[string]func(*bytes.Buffer, Format) error{
+		"ROLE NAME":    func(b *bytes.Buffer, f Format) error { return WriteIAMRoles(b, nil, f) },
+		"PROFILE NAME": func(b *bytes.Buffer, f Format) error { return WriteIAMInstanceProfiles(b, nil, f) },
+		"POLICY NAME":  func(b *bytes.Buffer, f Format) error { return WriteIAMPolicies(b, nil, f) },
+		"KEY NAME":     func(b *bytes.Buffer, f Format) error { return WriteKeyPairs(b, nil, f) },
+	} {
+		var b bytes.Buffer
+		if err := write(&b, FormatText); err != nil || !strings.HasPrefix(b.String(), name) || strings.Contains(b.String(), "\x1b") {
+			t.Errorf("%s text: %q err=%v", name, b.String(), err)
+		}
+		b.Reset()
+		if err := write(&b, FormatJSON); err != nil || strings.TrimSpace(b.String()) != "[]" {
+			t.Errorf("%s empty json: %q err=%v", name, b.String(), err)
+		}
 	}
 }

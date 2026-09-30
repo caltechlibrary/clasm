@@ -77,6 +77,20 @@ func classifyCLIArgs(args []string) (mode, domainSlug, leafSlug string, leafArgs
 	return cliModeRun, domainSlug, leafSlug, leafArgs, nil
 }
 
+// refreshForCLIDomain loads the data domainSlug's leaves read, the same load the
+// interactive path does on entering that domain. Compute and RDM Backup &
+// Restore read the EC2 listings; Key Management reads key pairs; IAM loads
+// nothing up front, so a script using it never waits on the EC2 listings.
+func refreshForCLIDomain(ctx context.Context, domainSlug string, refresh, refreshKeyMgmt func(context.Context) error) error {
+	switch domainSlug {
+	case workflow.KeyManagementDomainCLISlug:
+		return refreshKeyMgmt(ctx)
+	case workflow.IAMDomainCLISlug:
+		return nil
+	}
+	return refresh(ctx)
+}
+
 // cliEnv is everything a CLI leaf may need, gathered once by main: the AWS
 // clients, the listings refresh() has just loaded, and the Postgres rules.
 // A leaf takes only the fields it uses, so a test fills in only those.
@@ -88,6 +102,9 @@ type cliEnv struct {
 	instances            []inventory.Instance
 	images               []inventory.Image
 	launchTemplates      []inventory.LaunchTemplate
+	keyPairs             []inventory.KeyPair
+	iamClient            awsclient.IAMAPI
+	originTag            config.OriginTagConfig
 	rdmPostgresRules     []config.RDMPostgresRule
 	saveRDMPostgresRules func([]config.RDMPostgresRule) error
 }
@@ -175,6 +192,9 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 
 	default:
 		if code, handled := runComputeLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
+			return code
+		}
+		if code, handled := runKeyMgmtIAMLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
 			return code
 		}
 		// Unreachable: classifyCLIArgs already validated leafSlug

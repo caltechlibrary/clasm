@@ -312,6 +312,12 @@ func LeafCLISlugExists(domainSlug, leafSlug string) bool {
 		return found
 	case RDMBackupRestoreDomainCLISlug:
 		return RDMLeafCLISlugExists(leafSlug)
+	case KeyManagementDomainCLISlug:
+		_, found := keyMgmtItemBySlug(leafSlug)
+		return found
+	case IAMDomainCLISlug:
+		_, found := iamItemBySlug(leafSlug)
+		return found
 	}
 	return false
 }
@@ -319,5 +325,33 @@ func LeafCLISlugExists(domainSlug, leafSlug string) bool {
 // DomainHasLeafCLIForms reports whether any leaf under domainSlug has a CLI
 // form yet; a path under a domain that has none is refused as a usage error.
 func DomainHasLeafCLIForms(domainSlug string) bool {
-	return domainSlug == ComputeDomainCLISlug || domainSlug == RDMBackupRestoreDomainCLISlug
+	switch domainSlug {
+	case ComputeDomainCLISlug, RDMBackupRestoreDomainCLISlug, KeyManagementDomainCLISlug, IAMDomainCLISlug:
+		return true
+	}
+	return false
+}
+
+// runLeafThenMenu is the deep-link shared by the newer domains: run the leaf
+// once as one iteration of the domain's own loop would (print and pause on
+// error, pause and refresh on success), then fall into that domain's menu. An
+// exit signal from the leaf ends the run without the menu. refresh may be nil.
+func runLeafThenMenu(ctx context.Context, w io.Writer, leaf, refresh func(context.Context) error, menu func() error, menuInput io.Reader, menuOutput io.Writer) error {
+	if err := leaf(ctx); err != nil {
+		if isExitSignal(err) {
+			printExiting(w)
+			return nil
+		}
+		fmt.Fprintf(w, "Error: %s\n", formatError(err))
+		pauseForAcknowledgment(menuInput, menuOutput)
+		return menu()
+	}
+	pauseForAcknowledgment(menuInput, menuOutput)
+	if refresh != nil {
+		if err := refresh(ctx); err != nil {
+			fmt.Fprintf(w, "Error refreshing: %s\n", formatError(err))
+			pauseForAcknowledgment(menuInput, menuOutput)
+		}
+	}
+	return menu()
 }
