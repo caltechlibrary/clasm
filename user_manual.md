@@ -331,7 +331,8 @@ Choosing Configuration presents:
 3. Edit backup directory rules
 4. Edit RDM Postgres config
 5. Edit Origin tag config
-6. Save
+6. Edit cloud-init extraction security groups
+7. Save
 
 Edits happen against an in-memory working copy -- nothing is written to
 `~/.clasm` until you explicitly choose **Save**; quitting with unsaved
@@ -345,8 +346,11 @@ same domain's SQL workflows use; those workflows also discover this
 information live and offer to record what they find here, so it is
 rarely edited by hand. **Edit Origin tag config** sets the tag
 key and which value means "DLD-owned" for the IAM domain's read-only
-guard (see IAM, above). See `DESIGN.md`, "Configure clasm
-Domain."
+guard (see IAM, above). **Edit cloud-init extraction security groups**
+picks, region by region, the security group for the temporary instance that
+reads an AMI's cloud-init: it lists that region's groups, marks each as allowing
+outbound HTTPS or not, and refuses one that does not. See `DESIGN.md`,
+"Configure clasm Domain."
 
 ## Command-line Options
 
@@ -496,8 +500,8 @@ cloud-init, below, which is refused unless you ask for it.)
   launching a temporary, billable instance, so clasm refuses unless you
   add `-launch-temporary-instance`. That instance needs a security group
   that allows outbound HTTPS, or its SSM agent cannot register: name one with
-  `-security-group`, or set `cloud_init_extraction_security_group` in
-  `~/.clasm` (see "Configuration"). clasm checks the group first and refuses
+  `-security-group`, or set the AMI's region in
+  `cloud_init_extraction_security_groups` in `~/.clasm` (see "Configuration"). clasm checks the group first and refuses
   at once, exit 2, if it has no outbound rule for port 443. If an instance was
   launched with no user-data, or an AMI's source had none, a note goes to
   standard error, stdout is empty and the exit status is 0. For an AMI the
@@ -718,7 +722,8 @@ rdm_postgres_config:
 origin_tag:
   key: "Origin"
   dld_value: ""
-cloud_init_extraction_security_group: sg-ada165d0
+cloud_init_extraction_security_groups:
+  us-west-2: sg-ada165d0
 ~~~
 
 `regions` narrows or changes which regions every listing and picker
@@ -737,15 +742,16 @@ discovered live and saved back here, or edited by hand. `origin_tag`
 names the tag the IAM domain treats as its DLD-ownership convention --
 `key` defaults to `"Origin"`, `dld_value` defaults to empty (meaning no
 value is recognized as DLD-owned yet, until your group settles on one).
-`cloud_init_extraction_security_group` is the ID of an existing security group
-for the temporary instance that reads an AMI's cloud-init (Show/export
-cloud-init, AMI branch). It **must allow outbound HTTPS**: the instance's SSM
-agent has to reach the SSM endpoints to register, and in an account whose VPC
-default security group has no outbound rules the extraction would otherwise
-time out. Left unset, the default group is used, and clasm refuses up front
-(rather than after three minutes and a billable launch) if it finds that group
-has no outbound rule for port 443. Edit it by hand for now; the Configure
-clasm menu does not offer it yet.
+`cloud_init_extraction_security_groups` maps a region to the ID of an existing
+security group for the temporary instance that reads an AMI's cloud-init (Show/export
+cloud-init, AMI branch); a security group belongs to one region, hence the map.
+It **must allow outbound HTTPS**: the instance's SSM agent has to reach the SSM
+endpoints to register, and in an account whose VPC default security group has no
+outbound rules the extraction would otherwise time out. A region with no entry
+uses its default group, and clasm refuses up front (rather than after three
+minutes and a billable launch) if it finds that group has no outbound rule for
+port 443. Set it from Configure clasm, "Edit cloud-init extraction security
+groups", or by hand.
 See `DESIGN.md`, "Configuration" for the full schema and
 validation behavior.
 

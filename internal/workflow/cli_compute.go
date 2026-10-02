@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -335,7 +336,7 @@ func RunExportCloudInitCLI(ctx context.Context, w, eout io.Writer, ec2Clients ma
 			return err
 		}
 		stop := startProgressTicker(eout, "extracting cloud-init from a temporary instance")
-		data, err = ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, opts.SecurityGroup, DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
+		data, err = ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, cmp.Or(opts.SecurityGroup, opts.ConfiguredSecurityGroups[img.Region]), DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
 		stop()
 		if err != nil {
 			return err

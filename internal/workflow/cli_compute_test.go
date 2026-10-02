@@ -287,6 +287,32 @@ func amiExportEnv(stdout string, defaultEgress []types.IpPermission) (map[string
 	return map[string]awsclient.EC2API{"us-west-2": ec2Client}, map[string]awsclient.SSMAPI{"us-west-2": ssm}, ec2Client
 }
 
+func TestRunExportCloudInitCLI_AMIUsesTheConfiguredGroupForItsRegion(t *testing.T) {
+	ec2s, ssms, ec2Client := amiExportEnv("#cloud-config\nx: 1\n", nil)
+	var out, eout bytes.Buffer
+	opts := ComputeOptions{Format: ui.FormatText, LaunchTemporaryInstance: true,
+		ConfiguredSecurityGroups: map[string]string{"us-west-2": "sg-open", "us-west-1": "sg-other"}}
+	if err := RunExportCloudInitCLI(context.Background(), &out, &eout, ec2s, ssms, cliInstances(), cliImages(), "ami-abc123", "", opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := ec2Client.lastRunInstancesInput.SecurityGroupIds; len(got) != 1 || got[0] != "sg-open" {
+		t.Errorf("SecurityGroupIds = %v, want [sg-open] (the AMI's region)", got)
+	}
+}
+
+func TestRunExportCloudInitCLI_FlagBeatsTheConfiguredGroup(t *testing.T) {
+	ec2s, ssms, ec2Client := amiExportEnv("#cloud-config\nx: 1\n", nil)
+	var out, eout bytes.Buffer
+	opts := ComputeOptions{Format: ui.FormatText, LaunchTemporaryInstance: true, SecurityGroup: "sg-open",
+		ConfiguredSecurityGroups: map[string]string{"us-west-2": "sg-configured"}}
+	if err := RunExportCloudInitCLI(context.Background(), &out, &eout, ec2s, ssms, cliInstances(), cliImages(), "ami-abc123", "", opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := ec2Client.lastRunInstancesInput.SecurityGroupIds; len(got) != 1 || got[0] != "sg-open" {
+		t.Errorf("SecurityGroupIds = %v, want [sg-open]", got)
+	}
+}
+
 func TestRunExportCloudInitCLI_AMIUsesTheGivenSecurityGroup(t *testing.T) {
 	ec2s, ssms, ec2Client := amiExportEnv("#cloud-config\nx: 1\n", nil)
 	var out, eout bytes.Buffer

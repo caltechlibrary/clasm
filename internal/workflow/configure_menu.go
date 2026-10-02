@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 )
 
@@ -26,6 +27,10 @@ type ConfigureActions struct {
 	// editors, ahead of the more general Origin tag config.
 	EditRDMPostgresConfig func(ctx context.Context) error
 	EditOriginTag         func(ctx context.Context) error
+	// EditExtractionGroups edits cloud_init_extraction_security_groups, the
+	// per-region security group for the temporary instance that reads an
+	// AMI's cloud-init.
+	EditExtractionGroups func(ctx context.Context) error
 	// Save persists the working copy to disk (config.Save) and clears the
 	// unsaved-changes flag on success.
 	Save func(ctx context.Context) error
@@ -59,6 +64,7 @@ var configureMenuItems = []configureItem{
 	{"Edit backup directory rules", func(a ConfigureActions, ctx context.Context) error { return a.EditBackupDirectoryRules(ctx) }},
 	{"Edit RDM Postgres config", func(a ConfigureActions, ctx context.Context) error { return a.EditRDMPostgresConfig(ctx) }},
 	{"Edit Origin tag config", func(a ConfigureActions, ctx context.Context) error { return a.EditOriginTag(ctx) }},
+	{"Edit cloud-init extraction security groups", func(a ConfigureActions, ctx context.Context) error { return a.EditExtractionGroups(ctx) }},
 	{"Save", func(a ConfigureActions, ctx context.Context) error { return a.Save(ctx) }},
 }
 
@@ -91,7 +97,7 @@ func pickConfigureItem(w io.Writer, input io.Reader, output io.Writer) (configur
 // loop (DESIGN.md, "Configure clasm Domain"): load configPath into an
 // in-memory working copy, let the operator view/edit it, and persist
 // only when Save is explicitly chosen.
-func RunConfigureMenu(ctx context.Context, w io.Writer, configPath string) error {
+func RunConfigureMenu(ctx context.Context, w io.Writer, configPath string, ec2Clients map[string]awsclient.EC2API) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -126,6 +132,13 @@ func RunConfigureMenu(ctx context.Context, w io.Writer, configPath string) error
 		},
 		EditOriginTag: func(ctx context.Context) error {
 			changed, err := editOriginTag(w, &cfg, nil, nil)
+			if changed {
+				dirty = true
+			}
+			return err
+		},
+		EditExtractionGroups: func(ctx context.Context) error {
+			changed, err := editExtractionSecurityGroups(ctx, w, &cfg, ec2Clients, nil, nil)
 			if changed {
 				dirty = true
 			}

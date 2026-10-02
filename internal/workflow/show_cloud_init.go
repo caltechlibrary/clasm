@@ -16,8 +16,8 @@ import (
 // manual comparison against a local clone of
 // caltechlibrary/cloud-init-examples. Takes per-region client maps and
 // resolves the ones matching the picked instance/AMI's region.
-func ShowCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image, extractionSecurityGroup string) error {
-	return showCloudInit(ctx, w, ec2Clients, ssmClients, instances, images, extractionSecurityGroup, nil, nil)
+func ShowCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image, extractionGroups map[string]string) error {
+	return showCloudInit(ctx, w, ec2Clients, ssmClients, instances, images, extractionGroups, nil, nil)
 }
 
 // showCloudInit is ShowCloudInit's testable core: kindInput/kindOutput
@@ -26,7 +26,7 @@ func ShowCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awscl
 // punch list) and are supplied by tests to drive it through its
 // accessible-mode pipe path instead (DECISIONS.md, "huh fields are
 // pipe-testable...").
-func showCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image, extractionSecurityGroup string, kindInput io.Reader, kindOutput io.Writer) error {
+func showCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, instances []inventory.Instance, images []inventory.Image, extractionGroups map[string]string, kindInput io.Reader, kindOutput io.Writer) error {
 	kind, err := pickString(w, "Show/export cloud-init for", "An instance's cloud-init is free to read; an AMI's requires launching a temporary billable instance to extract it.", hintCancel, []string{"Instance", "AMI"}, kindInput, kindOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
@@ -53,7 +53,7 @@ func showCloudInit(ctx context.Context, w io.Writer, ec2Clients map[string]awscl
 		if err != nil {
 			return cancelledIsNil(w, err)
 		}
-		return showCloudInitForAMI(ctx, w, ec2Clients, ssmClients, img, extractionSecurityGroup, kindInput, kindOutput)
+		return showCloudInitForAMI(ctx, w, ec2Clients, ssmClients, img, extractionGroups, kindInput, kindOutput)
 	}
 	return nil
 }
@@ -82,7 +82,7 @@ func showCloudInitForInstance(ctx context.Context, w io.Writer, ec2Clients map[s
 // showCloudInitForAMI is showCloudInit's testable core for the "AMI"
 // branch, once an AMI is resolved -- same limitation as
 // showCloudInitForInstance above.
-func showCloudInitForAMI(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, img inventory.Image, extractionSecurityGroup string, input io.Reader, output io.Writer) error {
+func showCloudInitForAMI(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, ssmClients map[string]awsclient.SSMAPI, img inventory.Image, extractionGroups map[string]string, input io.Reader, output io.Writer) error {
 	ec2Client, ssmClient, err := resolveEC2AndSSM(ec2Clients, ssmClients, img.Region)
 	if err != nil {
 		return err
@@ -96,7 +96,7 @@ func showCloudInitForAMI(ctx context.Context, w io.Writer, ec2Clients map[string
 		return nil
 	}
 	stopTicker := startProgressTicker(w, "extracting cloud-init from a temporary instance")
-	data, err := ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, extractionSecurityGroup, DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
+	data, err := ExtractCloudInitFromAMI(ctx, ec2Client, ssmClient, img.ImageID, extractionGroups[img.Region], DefaultCloudInitExtractionTimeout, DefaultSSMPollInterval)
 	stopTicker()
 	if err != nil {
 		return err

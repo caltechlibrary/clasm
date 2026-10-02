@@ -130,7 +130,7 @@ func describeExtractionGroup(securityGroupID string) string {
 }
 
 // extractionGroupAdvice is the fix, repeated wherever the group is at fault.
-const extractionGroupAdvice = "name an existing group that allows outbound HTTPS: set cloud_init_extraction_security_group in ~/.clasm, or pass -security-group <sg-id>"
+const extractionGroupAdvice = "name an existing group that allows outbound HTTPS: set this region's cloud_init_extraction_security_groups entry in ~/.clasm, or pass -security-group <sg-id>"
 
 // checkExtractionSecurityGroup refuses, as a *UsageError, a group that would
 // leave the disposable instance unable to reach the SSM endpoints: one with no

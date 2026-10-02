@@ -32,8 +32,12 @@ type ComputeOptions struct {
 	// consent to the billable temporary instance an AMI's cloud-init needs.
 	LaunchTemporaryInstance bool
 	// SecurityGroup (-security-group) is an existing group for an AMI's temporary
-	// instance; "" means the configured one, else the VPC default.
+	// instance; "" means the configured one for the AMI's region, else the VPC
+	// default.
 	SecurityGroup string
+	// ConfiguredSecurityGroups is the config's per-region extraction groups
+	// (cloud_init_extraction_security_groups), used when SecurityGroup is "".
+	ConfiguredSecurityGroups map[string]string
 }
 
 // ParseComputeArgs parses a read-only Compute leaf's options with a FlagSet of
@@ -103,7 +107,7 @@ func computeHelp(usage string, allow ComputeAllow) string {
 	}
 	if allow&ComputeAllowLaunch != 0 {
 		b.WriteString("  -launch-temporary-instance\n      Required for an AMI: its cloud-init can only be read by launching a\n      temporary billable instance. Not needed for an instance.\n")
-		b.WriteString("  -security-group <sg-id>\n      An existing security group for that temporary instance. It must allow\n      outbound HTTPS, or the instance's SSM agent cannot register. Default: the\n      cloud_init_extraction_security_group setting in ~/.clasm, else the VPC default.\n")
+		b.WriteString("  -security-group <sg-id>\n      An existing security group for that temporary instance. It must allow\n      outbound HTTPS, or the instance's SSM agent cannot register. Default: the\n      cloud_init_extraction_security_groups entry for the AMI's region in ~/.clasm,\n      else the VPC default.\n")
 	}
 	b.WriteString("  -h, --help\n      Show this help.\n")
 	return b.String()

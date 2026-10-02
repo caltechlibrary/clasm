@@ -15,6 +15,7 @@ func testConfigureActions(dirty *bool, refreshCalls *int) ConfigureActions {
 		EditBackupDirectoryRules: noop,
 		EditRDMPostgresConfig:    noop,
 		EditOriginTag:            noop,
+		EditExtractionGroups:     noop,
 		Save:                     noop,
 		Refresh:                  countingAction(refreshCalls),
 		Dirty:                    func() bool { return *dirty },
@@ -66,7 +67,7 @@ func TestRunConfigureMenu_SaveDispatchesToItsOwnAction(t *testing.T) {
 	actions := testConfigureActions(&dirty, &refreshCalls)
 	actions.Save = cancelingAction(&saveCalls, cancel)
 
-	err := runConfigureMenu(ctx, term, actions, newHuhAccessibleInput("6\n"), buf) // Save
+	err := runConfigureMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Save
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -144,5 +145,23 @@ func TestRunConfigureMenu_PausesForAcknowledgmentAfterASuccessfulAction(t *testi
 	}
 	if !strings.Contains(buf.String(), "Press Enter to continue") {
 		t.Errorf("expected a pause-for-acknowledgment prompt, got:\n%s", buf.String())
+	}
+}
+
+func TestRunConfigureMenu_EditExtractionGroupsDispatchesToItsOwnAction(t *testing.T) {
+	var dirty bool
+	var refreshCalls, editCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testConfigureActions(&dirty, &refreshCalls)
+	actions.EditExtractionGroups = cancelingAction(&editCalls, cancel)
+
+	err := runConfigureMenu(ctx, term, actions, newHuhAccessibleInput("6\n"), buf) // Edit cloud-init extraction security groups
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if editCalls != 1 {
+		t.Errorf("editCalls = %d, want 1", editCalls)
 	}
 }

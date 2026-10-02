@@ -372,7 +372,7 @@ func main() {
 			return workflow.RemoveAMI(ctx, out, ec2Clients, state.images, state.instances)
 		},
 		ShowCloudInit: func(ctx context.Context) error {
-			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images, cfg.CloudInitExtractionSecurityGroup)
+			return workflow.ShowCloudInit(ctx, out, ec2Clients, ssmClients, state.instances, state.images, cfg.CloudInitExtractionSecurityGroups)
 		},
 		ShowLaunchTemplate: func(ctx context.Context) error {
 			return workflow.ShowLaunchTemplate(ctx, out, ec2Clients, state.launchTemplates)
@@ -616,7 +616,7 @@ func main() {
 			return workflow.RunIAMMenu(ctx, out, iamActions)
 		},
 		Configuration: func(ctx context.Context) error {
-			menuErr := workflow.RunConfigureMenu(ctx, out, configPath)
+			menuErr := workflow.RunConfigureMenu(ctx, out, configPath, ec2Clients)
 			// RunConfigureMenu loads its own separate, independent copy of
 			// configPath (config.Load, keyed only by the path -- see its
 			// own doc comment), edits it, and Save writes that copy to
@@ -714,7 +714,7 @@ func main() {
 			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
 			keyPairs: keyMgmtState.keyPairs, buckets: s3State.buckets, iamClient: iamClient, originTag: cfg.OriginTag,
 			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
-			cloudInitExtractionSG: cfg.CloudInitExtractionSecurityGroup,
+			cloudInitExtractionSGs: cfg.CloudInitExtractionSecurityGroups,
 		}
 		if cliDomainSlug == workflow.TagManagementDomainCLISlug {
 			// Tag Management loads its own five lists independently of Compute,

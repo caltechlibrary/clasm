@@ -1,8 +1,15 @@
 package workflow
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 
 	"github.com/caltechlibrary/clasm/internal/config"
 )
@@ -284,5 +291,117 @@ func TestWarnIfDirtyOnQuit_SilentWhenClean(t *testing.T) {
 	warnIfDirtyOnQuit(buf, false)
 	if buf.String() != "" {
 		t.Errorf("expected no output when there are no unsaved changes, got:\n%s", buf.String())
+	}
+}
+
+// extractionGroupsFake is a region holding one group that allows outbound HTTPS
+// (sg-open) and one that does not (sg-closed).
+func extractionGroupsFake() *fakeEC2Client {
+	return &fakeEC2Client{securityGroups: []ec2types.SecurityGroup{
+		{GroupId: aws.String("sg-open"), GroupName: aws.String("ssm-egress"), VpcId: aws.String("vpc-1"),
+			IpPermissionsEgress: []ec2types.IpPermission{{IpProtocol: aws.String("-1")}}},
+		{GroupId: aws.String("sg-closed"), GroupName: aws.String("no-egress"), VpcId: aws.String("vpc-1")},
+	}}
+}
+
+func editExtractionGroups(t *testing.T, cfg *config.Config, clients map[string]awsclient.EC2API, script string) (bool, string) {
+	t.Helper()
+	_, input, buf := newPipeEditor(script)
+	changed, err := editExtractionSecurityGroups(context.Background(), buf, cfg, clients, input, buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return changed, buf.String()
+}
+
+func TestEditExtractionSecurityGroups_SetsAGroupForARegion(t *testing.T) {
+	cfg := config.Config{Regions: []string{"us-west-1", "us-west-2"}}
+	clients := map[string]awsclient.EC2API{"us-west-1": extractionGroupsFake(), "us-west-2": extractionGroupsFake()}
+	// region 2 (us-west-2), group 1 (sg-open), then Done (the third region-menu entry)
+	changed, out := editExtractionGroups(t, &cfg, clients, "2\n1\n3\n")
+	if !changed {
+		t.Error("expected changed = true")
+	}
+	if got := cfg.CloudInitExtractionSecurityGroups; len(got) != 1 || got["us-west-2"] != "sg-open" {
+		t.Errorf("groups = %v, want only us-west-2 -> sg-open", got)
+	}
+	// Each group is marked, so the operator can see which would work.
+	for _, want := range []string{"sg-open", "sg-closed", "outbound HTTPS: yes", "outbound HTTPS: NO"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("listing missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEditExtractionSecurityGroups_RefusesAGroupWithoutOutboundHTTPS(t *testing.T) {
+	cfg := config.Config{Regions: []string{"us-west-2"}}
+	clients := map[string]awsclient.EC2API{"us-west-2": extractionGroupsFake()}
+	changed, out := editExtractionGroups(t, &cfg, clients, "1\n2\n2\n") // region 1, sg-closed, Done
+	if changed || len(cfg.CloudInitExtractionSecurityGroups) != 0 {
+		t.Errorf("a group with no outbound 443 must not be saved: changed=%v groups=%v", changed, cfg.CloudInitExtractionSecurityGroups)
+	}
+	if !strings.Contains(out, "no outbound rule allowing HTTPS") {
+		t.Errorf("expected the reason, got:\n%s", out)
+	}
+}
+
+func TestEditExtractionSecurityGroups_ClearsARegion(t *testing.T) {
+	cfg := config.Config{Regions: []string{"us-west-2"}, CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-open", "us-west-1": "sg-keep"}}
+	clients := map[string]awsclient.EC2API{"us-west-2": extractionGroupsFake()}
+	// region 1, then the entry after the two groups: clear; then Done
+	changed, _ := editExtractionGroups(t, &cfg, clients, "1\n3\n2\n")
+	if !changed {
+		t.Error("expected changed = true")
+	}
+	if got := cfg.CloudInitExtractionSecurityGroups; len(got) != 1 || got["us-west-1"] != "sg-keep" {
+		t.Errorf("groups = %v, want only the other region's entry kept", got)
+	}
+}
+
+func TestEditExtractionSecurityGroups_BackLeavesItUnchanged(t *testing.T) {
+	cfg := config.Config{Regions: []string{"us-west-2"}, CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-open"}}
+	clients := map[string]awsclient.EC2API{"us-west-2": extractionGroupsFake()}
+	changed, _ := editExtractionGroups(t, &cfg, clients, "1\n4\n2\n") // region 1, Back, Done
+	if changed || cfg.CloudInitExtractionSecurityGroups["us-west-2"] != "sg-open" {
+		t.Errorf("Back must change nothing: changed=%v groups=%v", changed, cfg.CloudInitExtractionSecurityGroups)
+	}
+}
+
+func TestEditExtractionSecurityGroups_ShowsTheCurrentValuePerRegion(t *testing.T) {
+	cfg := config.Config{Regions: []string{"us-west-1", "us-west-2"}, CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-open"}}
+	clients := map[string]awsclient.EC2API{"us-west-1": extractionGroupsFake(), "us-west-2": extractionGroupsFake()}
+	_, out := editExtractionGroups(t, &cfg, clients, "3\n")
+	for _, want := range []string{"us-west-2: sg-open", "us-west-1: (none -- the VPC default)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEditExtractionSecurityGroups_ALookupFailureIsReportedNotFatal(t *testing.T) {
+	cfg := config.Config{Regions: []string{"us-west-2"}}
+	broken := extractionGroupsFake()
+	broken.describeSecurityGroupsErr = errors.New("UnauthorizedOperation")
+	changed, out := editExtractionGroups(t, &cfg, map[string]awsclient.EC2API{"us-west-2": broken}, "1\n2\n") // region 1, Done
+	if changed || !strings.Contains(out, "UnauthorizedOperation") {
+		t.Errorf("want the error shown and nothing changed: changed=%v\n%s", changed, out)
+	}
+}
+
+func TestEditExtractionSecurityGroups_NoUsableRegions(t *testing.T) {
+	cfg := config.Config{Regions: []string{"eu-west-1"}}
+	changed, out := editExtractionGroups(t, &cfg, map[string]awsclient.EC2API{"us-west-2": extractionGroupsFake()}, "")
+	if changed || !strings.Contains(out, "No configured region") {
+		t.Errorf("want a no-regions message: changed=%v\n%s", changed, out)
+	}
+}
+
+func TestDisplayConfig_ShowsExtractionSecurityGroups(t *testing.T) {
+	var buf strings.Builder
+	displayConfig(&buf, config.Config{Regions: []string{"us-west-1", "us-west-2"}, CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-open"}})
+	for _, want := range []string{"us-west-2: sg-open", "us-west-1: (none"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("Show current config missing %q:\n%s", want, buf.String())
+		}
 	}
 }

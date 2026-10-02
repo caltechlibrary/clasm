@@ -1,11 +1,16 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -18,6 +23,7 @@ func displayConfig(w io.Writer, cfg config.Config) {
 	displayRegionsList(w, cfg.Regions)
 	displayBackupDirectoryRulesList(w, cfg.BackupDirectories)
 	displayRDMPostgresRulesList(w, cfg.RDMPostgresConfig)
+	displayExtractionGroups(w, cfg)
 	fmt.Fprintf(w, "Origin tag key:             %s\n", cfg.OriginTag.Key)
 	fmt.Fprintf(w, "Origin tag DLD-owned value: %s\n", displayOrNone(cfg.OriginTag.DLDValue))
 }
@@ -345,5 +351,142 @@ func editOriginTag(w io.Writer, cfg *config.Config, input io.Reader, output io.W
 func warnIfDirtyOnQuit(w io.Writer, dirty bool) {
 	if dirty {
 		fmt.Fprintln(w, "Unsaved changes will be discarded.")
+	}
+}
+
+// displayExtractionGroups prints, for each configured region, the security group
+// the disposable instance that reads an AMI's cloud-init is launched into.
+func displayExtractionGroups(w io.Writer, cfg config.Config) {
+	fmt.Fprintln(w, "Cloud-init extraction security groups:")
+	for _, region := range cfg.Regions {
+		fmt.Fprintf(w, "  %s\n", extractionGroupLine(cfg, region))
+	}
+}
+
+func extractionGroupLine(cfg config.Config, region string) string {
+	if id := cfg.ExtractionSecurityGroupFor(region); id != "" {
+		return region + ": " + id
+	}
+	return region + ": (none -- the VPC default)"
+}
+
+// extractionGroupCandidate is one security group offered by the editor, with
+// whether it would let the disposable instance's SSM agent reach AWS.
+type extractionGroupCandidate struct {
+	ID, Name, VPC string
+	HTTPS         bool
+}
+
+func (c extractionGroupCandidate) label() string {
+	https := "NO"
+	if c.HTTPS {
+		https = "yes"
+	}
+	return fmt.Sprintf("%s  %s  %s  outbound HTTPS: %s", c.ID, c.Name, c.VPC, https)
+}
+
+func listExtractionCandidates(ctx context.Context, client awsclient.EC2API) ([]extractionGroupCandidate, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{})
+	if err != nil {
+		return nil, err
+	}
+	groups := make([]extractionGroupCandidate, 0, len(out.SecurityGroups))
+	for _, g := range out.SecurityGroups {
+		groups = append(groups, extractionGroupCandidate{
+			ID: aws.ToString(g.GroupId), Name: aws.ToString(g.GroupName), VPC: aws.ToString(g.VpcId), HTTPS: allowsHTTPSEgress(g),
+		})
+	}
+	return groups, nil
+}
+
+// editExtractionSecurityGroups edits cfg.CloudInitExtractionSecurityGroups one
+// region at a time: lists that region's security groups, marks each as allowing
+// outbound HTTPS or not, and saves the one picked -- refusing, through
+// checkExtractionSecurityGroup, any group that would leave the disposable
+// instance unable to reach SSM. Clearing a region returns it to the VPC
+// default. Only configured regions with an AWS client are offered, since a
+// group can only be listed and checked through that region's client.
+func editExtractionSecurityGroups(ctx context.Context, w io.Writer, cfg *config.Config, ec2Clients map[string]awsclient.EC2API, input io.Reader, output io.Writer) (bool, error) {
+	var regions []string
+	for _, r := range cfg.Regions {
+		if ec2Clients[r] != nil {
+			regions = append(regions, r)
+		}
+	}
+	if len(regions) == 0 {
+		fmt.Fprintln(w, "No configured region has an AWS client, so there is nothing to list. Region changes take effect the next time clasm is launched.")
+		return false, nil
+	}
+
+	const done = ""
+	changed := false
+	for {
+		displayExtractionGroups(w, *cfg)
+		choices := append(slices.Clone(regions), done)
+		region, err := pickComparable(w, "Edit cloud-init extraction security groups",
+			"The security group for the temporary instance that reads an AMI's cloud-init, per region. It must allow outbound HTTPS. A region with none uses the VPC default.",
+			hintGoBack, choices, func(r string) string {
+				if r == done {
+					return "Done"
+				}
+				return extractionGroupLine(*cfg, r)
+			}, input, output)
+		if err != nil {
+			return changed, cancelledIsNil(w, err)
+		}
+		if region == done {
+			return changed, nil
+		}
+
+		client := ec2Clients[region]
+		groups, err := listExtractionCandidates(ctx, client)
+		if err != nil {
+			fmt.Fprintf(w, "Could not list security groups in %s: %s\n", region, formatError(err))
+			continue
+		}
+
+		// Indexes into groups, then two more entries: clear, back.
+		clearIdx, backIdx := len(groups), len(groups)+1
+		idxs := make([]int, backIdx+1)
+		for i := range idxs {
+			idxs[i] = i
+		}
+		pick, err := pickComparable(w, "Security group for "+region, "Groups marked NO cannot be used: the temporary instance could not reach SSM.",
+			hintGoBack, idxs, func(i int) string {
+				switch i {
+				case clearIdx:
+					return "Clear this region's setting (use the VPC default)"
+				case backIdx:
+					return "Back"
+				}
+				return groups[i].label()
+			}, input, output)
+		if err != nil {
+			return changed, cancelledIsNil(w, err)
+		}
+
+		switch pick {
+		case backIdx:
+		case clearIdx:
+			if _, ok := cfg.CloudInitExtractionSecurityGroups[region]; ok {
+				delete(cfg.CloudInitExtractionSecurityGroups, region)
+				changed = true
+			}
+		default:
+			id := groups[pick].ID
+			if err := checkExtractionSecurityGroup(ctx, client, id); err != nil {
+				fmt.Fprintf(w, "Not saved: %s\n", formatError(err))
+				continue
+			}
+			if cfg.CloudInitExtractionSecurityGroups == nil {
+				cfg.CloudInitExtractionSecurityGroups = map[string]string{}
+			}
+			if cfg.CloudInitExtractionSecurityGroups[region] != id {
+				cfg.CloudInitExtractionSecurityGroups[region] = id
+				changed = true
+			}
+		}
 	}
 }

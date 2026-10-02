@@ -103,11 +103,11 @@ type cliEnv struct {
 	buckets         []inventory.Bucket
 	iamClient       awsclient.IAMAPI
 	originTag       config.OriginTagConfig
-	// cloudInitExtractionSG is the configured security group for an AMI's
-	// temporary instance (cloud_init_extraction_security_group).
-	cloudInitExtractionSG string
-	rdmPostgresRules      []config.RDMPostgresRule
-	saveRDMPostgresRules  func([]config.RDMPostgresRule) error
+	// cloudInitExtractionSGs maps a region to the configured security group for an AMI's
+	// temporary instance (cloud_init_extraction_security_groups).
+	cloudInitExtractionSGs map[string]string
+	rdmPostgresRules       []config.RDMPostgresRule
+	saveRDMPostgresRules   func([]config.RDMPostgresRule) error
 }
 
 // runCLILeaf resolves leafSlug's positional leafArgs and runs that

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -213,7 +214,7 @@ func TestSave_RoundTripsThroughLoad(t *testing.T) {
 		BackupDirectories: []BackupDirectoryRule{{Pattern: "rdm-*", Directory: "/opt/rdm_sql_backups"}},
 		OriginTag:         OriginTagConfig{Key: "Origin", DLDValue: "DLD"},
 
-		CloudInitExtractionSecurityGroup: "sg-0123456789abcdef0",
+		CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-0123456789abcdef0", "us-west-1": "sg-0fedcba9876543210"},
 	}
 
 	if err := Save(path, cfg); err != nil {
@@ -233,8 +234,23 @@ func TestSave_RoundTripsThroughLoad(t *testing.T) {
 	if got.OriginTag != cfg.OriginTag {
 		t.Errorf("OriginTag = %v, want %v", got.OriginTag, cfg.OriginTag)
 	}
-	if got.CloudInitExtractionSecurityGroup != "sg-0123456789abcdef0" {
-		t.Errorf("CloudInitExtractionSecurityGroup = %q, want it round-tripped", got.CloudInitExtractionSecurityGroup)
+	if !maps.Equal(got.CloudInitExtractionSecurityGroups, cfg.CloudInitExtractionSecurityGroups) {
+		t.Errorf("CloudInitExtractionSecurityGroups = %v, want it round-tripped", got.CloudInitExtractionSecurityGroups)
+	}
+}
+
+func TestExtractionSecurityGroupFor(t *testing.T) {
+	cfg := Config{CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-aaa"}}
+	if got := cfg.ExtractionSecurityGroupFor("us-west-2"); got != "sg-aaa" {
+		t.Errorf("configured region = %q, want sg-aaa", got)
+	}
+	// Security group IDs belong to one region, so another region must not
+	// inherit this one's.
+	if got := cfg.ExtractionSecurityGroupFor("us-west-1"); got != "" {
+		t.Errorf("unconfigured region = %q, want empty (the VPC default)", got)
+	}
+	if got := (Config{}).ExtractionSecurityGroupFor("us-west-2"); got != "" {
+		t.Errorf("nil map = %q, want empty", got)
 	}
 }
 

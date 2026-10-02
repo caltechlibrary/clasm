@@ -86,9 +86,7 @@ func runComputeLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, l
 		if len(words) == 2 {
 			file = words[1]
 		}
-		if opts.SecurityGroup == "" {
-			opts.SecurityGroup = env.cloudInitExtractionSG
-		}
+		opts.ConfiguredSecurityGroups = env.cloudInitExtractionSGs
 		return reportCLIError(out, eout, workflow.RunExportCloudInitCLI(ctx, out, eout, env.ec2Clients, env.ssmClients, env.instances, env.images, words[0], file, opts)), true
 	}
 	return 0, false
