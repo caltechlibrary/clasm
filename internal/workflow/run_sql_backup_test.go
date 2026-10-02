@@ -15,7 +15,7 @@ import (
 
 // sqlBackupFake builds a fakeSSMClient that distinguishes the commands
 // runSQLBackup sends in sequence (docker check, docker ps
-// discovery, owner lookup, ensure-directory, pg_dump, chown) by substring, so each can report its own
+// discovery, owner lookup, create-directory-if-missing, pg_dump, hand-over of the dump) by substring, so each can report its own
 // stdout/status independently.
 func sqlBackupFake(discoveryStdout string, dumpStatus types.CommandInvocationStatus) *fakeSSMClient {
 	return &fakeSSMClient{
@@ -27,7 +27,7 @@ func sqlBackupFake(discoveryStdout string, dumpStatus types.CommandInvocationSta
 			{substring: "id -u", stdout: "1000 1001\n", status: types.CommandInvocationStatusSuccess}, // ubuntu on the current images
 			{substring: "install -d", stdout: "", status: types.CommandInvocationStatusSuccess},
 			{substring: "pg_dump", stdout: "", status: dumpStatus},
-			{substring: "chown -R", stdout: "", status: types.CommandInvocationStatusSuccess},
+			{substring: "chmod 0664", stdout: "", status: types.CommandInvocationStatusSuccess},
 		},
 	}
 }
@@ -50,7 +50,7 @@ func TestRunSQLBackup_HappyPathDumpsAndReturnsWithNoFurtherPrompt(t *testing.T) 
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ssmClient.sendCommandCalls() != 6 {
-		t.Errorf("sendCommandCalls = %d, want 6 (CLI check, docker ps, owner lookup, ensure directory, pg_dump, chown)", ssmClient.sendCommandCalls())
+		t.Errorf("sendCommandCalls = %d, want 6 (CLI check, docker ps, owner lookup, create directory if missing, pg_dump, hand over the dump)", ssmClient.sendCommandCalls())
 	}
 }
 
@@ -242,8 +242,8 @@ func TestBuildSQLDumpCommand_NoPipeAvoidsExitStatusMasking(t *testing.T) {
 
 const (
 	sqlDir            = "/opt/rdm_sql_backups"
-	sqlEnsureExact    = "install -d -o 1000 -g 1001 -m 0750 '/opt/rdm_sql_backups'"
-	sqlChownExact     = "chown -R 1000:1001 '/opt/rdm_sql_backups'"
+	sqlEnsureExact    = "[ -d '/opt/rdm_sql_backups' ] || install -d -o 1000 -g 'www-data' -m 0770 '/opt/rdm_sql_backups'"
+	sqlChownExact     = "chmod 0664 '/opt/rdm_sql_backups/caltechauthors-db-1-caltechauthors-"
 	sqlOwnerLookupFrg = "id -u"
 	sqlDumpFrg        = "pg_dump"
 )
@@ -256,14 +256,14 @@ func runSQLBackupWith(t *testing.T, ssmClient *fakeSSMClient) (string, error) {
 	return buf.String(), err
 }
 
-// The directory is made and owned before the dump, and the dump is owned
-// after it. Ensure-before-dump so the dump never lands in a directory that
-// is missing or root-owned; chown-after-dump so the new file -- root-owned,
-// because SSM runs as root, and therefore unwritable by the cron script's
-// same-day redirect -- and any older root-owned dumps end up the service
-// user's. asserts on the commands actually sent, not on the absence of
-// errors: the fake answers an unscripted command with a default success.
-func TestRunSQLBackup_EnsuresBeforeDumpAndChownsAfter(t *testing.T) {
+// A missing directory is made before the dump, and the new dump is handed
+// over after it. Create-before-dump so the dump never lands nowhere; hand-over
+// after, so the new file -- root-owned, because SSM runs as root, and therefore
+// unwritable by the cron script's same-day redirect -- is the service user's,
+// in the directory's own group, group-writable. It asserts on the commands
+// actually sent, not on the absence of errors: the fake answers an unscripted
+// command with a default success.
+func TestRunSQLBackup_CreatesBeforeDumpAndHandsOverAfter(t *testing.T) {
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
 	if _, err := runSQLBackupWith(t, ssmClient); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -278,13 +278,13 @@ func TestRunSQLBackup_EnsuresBeforeDumpAndChownsAfter(t *testing.T) {
 	}
 }
 
-// A dump that fails leaves the tree exactly as it was: nothing is chowned.
-func TestRunSQLBackup_FailedDumpChownsNothing(t *testing.T) {
+// A dump that fails leaves the tree exactly as it was: nothing is handed over.
+func TestRunSQLBackup_FailedDumpHandsOverNothing(t *testing.T) {
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusFailed)
 	if _, err := runSQLBackupWith(t, ssmClient); err == nil {
 		t.Fatal("expected a dump-failure error")
 	}
-	if commandSent(ssmClient.sentCommands, "chown -R") {
+	if commandSent(ssmClient.sentCommands, "chmod 0664") {
 		t.Errorf("a chown was sent after a failed dump; sent: %v", ssmClient.sentCommands)
 	}
 }
@@ -298,7 +298,7 @@ func TestRunSQLBackup_FailedEnsureAbortsBeforeDump(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), sqlDir) {
 		t.Fatalf("expected an error naming the directory, got: %v", err)
 	}
-	if commandSent(ssmClient.sentCommands, sqlDumpFrg) || commandSent(ssmClient.sentCommands, "chown -R") {
+	if commandSent(ssmClient.sentCommands, sqlDumpFrg) || commandSent(ssmClient.sentCommands, "chmod 0664") {
 		t.Errorf("dump or chown sent after a failed ensure; sent: %v", ssmClient.sentCommands)
 	}
 }
@@ -310,7 +310,7 @@ func TestRunSQLBackup_FailedOwnerLookupAbortsBeforeAnyWrite(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no such user") {
 		t.Fatalf("expected the lookup failure, got: %v", err)
 	}
-	for _, f := range []string{"install -d", sqlDumpFrg, "chown -R"} {
+	for _, f := range []string{"install -d", sqlDumpFrg, "chmod 0664"} {
 		if commandSent(ssmClient.sentCommands, f) {
 			t.Errorf("%q sent after a failed owner lookup; sent: %v", f, ssmClient.sentCommands)
 		}
@@ -321,7 +321,7 @@ func TestRunSQLBackup_FailedOwnerLookupAbortsBeforeAnyWrite(t *testing.T) {
 // must not report success.
 func TestRunSQLBackup_FailedChownIsNotReportedAsSuccess(t *testing.T) {
 	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
-	setResponseStatus(ssmClient, "chown -R", types.CommandInvocationStatusFailed, "chown: Operation not permitted")
+	setResponseStatus(ssmClient, "chmod 0664", types.CommandInvocationStatusFailed, "chown: Operation not permitted")
 	out, err := runSQLBackupWith(t, ssmClient)
 	if err == nil || !strings.Contains(err.Error(), sqlDir) {
 		t.Fatalf("expected an error naming the directory, got: %v", err)
@@ -340,10 +340,10 @@ func TestRunSQLBackup_ServiceUserNeedNotBeUID1000(t *testing.T) {
 	if _, err := runSQLBackupWith(t, ssmClient); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "install -d -o 1234 -g 1235 -m 0750 '/opt/rdm_sql_backups'"; !commandSent(ssmClient.sentCommands, want) {
+	if want := "install -d -o 1234 -g 'www-data' -m 0770 '/opt/rdm_sql_backups'"; !commandSent(ssmClient.sentCommands, want) {
 		t.Errorf("expected %q; sent: %v", want, ssmClient.sentCommands)
 	}
-	if want := "chown -R 1234:1235 '/opt/rdm_sql_backups'"; !commandSent(ssmClient.sentCommands, want) {
+	if want := "chown 1234:"; !commandSent(ssmClient.sentCommands, want) {
 		t.Errorf("expected %q; sent: %v", want, ssmClient.sentCommands)
 	}
 }
@@ -358,4 +358,26 @@ func setResponseStatus(f *fakeSSMClient, substring string, status types.CommandI
 		}
 	}
 	panic("no scripted response matching " + substring)
+}
+
+// DR-0176 decisions 2-4 were wrong for the SQL directory, and the consequence
+// DR-0176 itself recorded ("existing production instances have their SQL
+// directory changed from root to ubuntu") is what stopped caltechauthors-v13's
+// dumps on 2026-09-30: the cron that writes them runs as rsdoiel, through the
+// www-data group, so a directory re-owned to ubuntu:ubuntu 0750 locked it
+// out. Pin the rule that replaced them: no run ever rewrites an existing
+// directory's owner or mode, and nothing is chowned recursively.
+func TestRunSQLBackup_NeverRewritesAnExistingDirectoryOrChownsRecursively(t *testing.T) {
+	ssmClient := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusSuccess)
+	if _, err := runSQLBackupWith(t, ssmClient); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, sent := range ssmClient.sentCommands {
+		if strings.Contains(sent, "chown -R") || strings.Contains(sent, "chmod -R") {
+			t.Errorf("a recursive ownership change was sent: %q", sent)
+		}
+		if strings.Contains(sent, "install -d") && !strings.HasPrefix(sent, "[ -d ") {
+			t.Errorf("install -d must be guarded by a directory-exists test, got: %q", sent)
+		}
+	}
 }

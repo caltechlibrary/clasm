@@ -77,6 +77,71 @@ func checkBackupDirectory(dir, instanceID string) error {
 	return nil
 }
 
+// buildCreateDirIfMissingCommand builds the command that creates dir with the
+// given owner, group and mode if -- and only if -- it does not exist. An
+// existing directory is not touched at all: not its owner, not its group, not
+// its mode. That is the difference from buildEnsureDirCommand, which repairs.
+//
+// The SQL backup directory is created, never repaired, because what already
+// exists there is the site's own arrangement and clasm cannot see who relies
+// on it. The cron that writes the dumps runs as whichever account the site
+// chose -- rsdoiel, through the www-data group, on caltechauthors-v13 and
+// new-data -- so re-owning the directory to ubuntu:ubuntu 0750 locked that
+// account out and stopped caltechauthors-v13's dumps (2026-09-30; DR-0183).
+// group is a name, not a number, because www-data's gid is not clasm's to know.
+func buildCreateDirIfMissingCommand(dir string, uid int, group, mode string) string {
+	q := shellQuote(dir)
+	return fmt.Sprintf("[ -d %s ] || install -d -o %d -g %s -m %s %s", q, uid, shellQuote(group), mode, q)
+}
+
+// CreateBackupDirectoryIfMissing runs buildCreateDirIfMissingCommand via SSM, as
+// its own step, with the same refusals EnsureBackupDirectory makes (the
+// filesystem root, a relative path) before anything is sent.
+func CreateBackupDirectoryIfMissing(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, uid int, group, mode string, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, instanceID); err != nil {
+		return err
+	}
+	if !ensureDirModePattern.MatchString(mode) {
+		return fmt.Errorf("refusing to set mode %q on %q: want three or four octal digits", mode, dir)
+	}
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildCreateDirIfMissingCommand(dir, uid, group, mode), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("creating the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	}
+	return nil
+}
+
+// buildHandOverDumpCommand builds the command that makes one new dump usable by
+// the account that writes the next one: owned by the service user, in the
+// directory's own group, group-writable (0664, the mode the cron script's dumps
+// have). SSM runs as root, so a dump clasm makes is otherwise root-owned and the
+// cron script's same-day redirect onto it is refused. It names the one file and
+// recurses into nothing: the directory, and every dump already in it, are left
+// exactly as they were. The group is read from the directory at run time, so
+// whatever group the site chose for it is the group the dump gets.
+func buildHandOverDumpCommand(dir, dumpFile string, uid int) string {
+	return fmt.Sprintf("set -e; chown %d:\"$(stat -c %%g %s)\" %s; chmod 0664 %s",
+		uid, shellQuote(dir), shellQuote(dumpFile), shellQuote(dumpFile))
+}
+
+// HandOverDump runs buildHandOverDumpCommand via SSM, as its own step.
+func HandOverDump(ctx context.Context, client awsclient.SSMAPI, instanceID, dir, dumpFile string, uid int, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, instanceID); err != nil {
+		return err
+	}
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildHandOverDumpCommand(dir, dumpFile, uid), timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError(fmt.Sprintf("handing the new dump in %q over to the service user on %s failed", dir, instanceID), status, stdout)
+	}
+	return nil
+}
+
 // ChownBackupDirectory hands everything under dir to owner via SSM
 // (`chown -R`), as its own step. Unlike EnsureBackupDirectory this *does*
 // recurse, and it is only called where a decision says so: after a dump, so

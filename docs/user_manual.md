@@ -298,13 +298,13 @@ up `ubuntu`'s uid and gid on the instance each time. You do not create or
 
 | Directory | Owner and mode | What clasm does |
 |---|---|---|
-| SQL backups (e.g. `/opt/rdm_sql_backups`) | `ubuntu:ubuntu`, `0750` | **Generate SQL Backup** creates or repairs the directory before the dump, then hands the directory and its dumps to `ubuntu` after a successful dump. A failed dump changes no ownership. |
+| SQL backups (e.g. `/opt/rdm_sql_backups`) | created as `ubuntu:www-data`, `0770`; an existing directory is **left as it is** | **Generate SQL Backup** creates the directory only if it is missing, and never changes an existing one's owner, group or mode. After a successful dump it hands that one new dump to `ubuntu`, in the directory's own group, mode `0664`, so the cron script's same-day overwrite works. A failed dump changes no ownership. |
 | OpenSearch backups (e.g. `/opt/rdm_opensearch_backups`) | `ubuntu:ubuntu`, `0775` | **Archive** and **Restore OpenSearch Snapshot** create or repair the directory before using it. **Restore** also hands everything it synced down to `ubuntu`. |
 
 Creating or repairing a directory never deletes anything and never
-recurses into what is already there; the two workflows that do change
-ownership below the top level are Generate SQL Backup (after its dump)
-and Restore OpenSearch Snapshot (after its sync).
+recurses into what is already there. The one workflow that changes
+ownership below the top level is Restore OpenSearch Snapshot (after its
+sync); Generate SQL Backup changes only the dump it just made.
 
 **OpenSearch needs one extra condition.** The search container writes to
 its snapshot repository as uid 1000, so `ubuntu` must also be uid 1000 on
@@ -317,10 +317,12 @@ a container writes into the SQL directory.
 clasm refuses to set ownership on `/` or on a relative path, since these
 steps run as root on a directory you type.
 
-An existing SQL backup directory that was `root:www-data 0770` becomes
-`ubuntu:ubuntu 0750` at the next Generate SQL Backup on that instance,
-and its existing dumps become `ubuntu`'s. See `DESIGN.md`, "One Service
-Owner for Everything clasm Writes on an RDM Host".
+An existing SQL backup directory keeps whatever owner, group and mode it
+has. That matters because the cron that writes the nightly dumps on an
+RDM host is the site's own: on caltechauthors-v13 and new-data it runs
+as `rsdoiel`, through the `www-data` group, so a directory re-owned to
+`ubuntu:ubuntu 0750` locks it out. An earlier clasm did exactly that, and
+caltechauthors-v13's dumps stopped on 2026-09-30 (DR-0183).
 
 ## Configuration Menu
 

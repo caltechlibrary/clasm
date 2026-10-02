@@ -97,8 +97,8 @@ func TestRunSQLBackupAuto_FailuresAreErrorsAndAbortEarly(t *testing.T) {
 	}
 
 	failedDump := sqlBackupFake("postgres:14.13\tcaltechauthors-db-1\n", types.CommandInvocationStatusFailed)
-	if err := RunSQLBackupAuto(context.Background(), &bytes.Buffer{}, failedDump, inst, p, nil, nil); err == nil || commandSent(failedDump.sentCommands, "chown -R") {
-		t.Errorf("failed dump: err=%v, sent %v; want an error and no chown", err, failedDump.sentCommands)
+	if err := RunSQLBackupAuto(context.Background(), &bytes.Buffer{}, failedDump, inst, p, nil, nil); err == nil || commandSent(failedDump.sentCommands, "chmod 0664") {
+		t.Errorf("failed dump: err=%v, sent %v; want an error and no hand-over", err, failedDump.sentCommands)
 	}
 }
 
