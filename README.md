@@ -48,5 +48,4 @@ Note on verification: verified against real AWS -- the incomplete-argument usage
 - [Getting Help, Reporting bugs](https://github.com/caltechlibrary/clasm/issues)
 
 - [Installation](INSTALL.md)
-- [About](about.md)
 

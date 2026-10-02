@@ -90,5 +90,5 @@ installed there -- not on the machine running `clasm`:
 - **CMTools** >= 0.0.46 -- regenerates `version.go`, `about.md`,
   `CITATION.cff`, and the installer scripts from `codemeta.json`
 - **GNU Make** >= 3.8 -- runs the Makefile targets above
-- **Pandoc** >= 3.9 -- builds this repo's static documentation site
-  (`make website`)
+- **Pandoc** >= 3.9 -- builds the man page (`make man`) and, through the
+  shared `caltechlibrary/workflows` scripts, the documentation site

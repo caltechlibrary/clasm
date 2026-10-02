@@ -1,0 +1,49 @@
+name: Docs
+
+# Builds the documentation site from docs/ and publishes it to GitHub Pages.
+#
+# Replaces static.yml, which uploaded the entire repository as the site, and
+# the local website.mak/page.tmpl build, which committed generated HTML next to
+# its Markdown (workspace DR-0010). The build lives in caltechlibrary/workflows,
+# so a fix there reaches this site on the next run with nothing written back
+# into this repository.
+#
+# GitHub Actions is a convenience here, never a requirement: `make`, `make
+# release` and release.bash do not use it. To render the site on a machine
+# without GitHub, run the shell scripts of caltechlibrary/workflows (bin/*.sh)
+# against docs/ and the files listed below.
+#
+# The repository needs Settings -> Pages -> Source set to "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  docs:
+    uses: caltechlibrary/workflows/.github/workflows/docs-pandoc.yml@v1
+    with:
+      docs-dir: docs
+
+      # Markdown kept at the repository root because that is where it belongs
+      # there, but still published; README.md becomes the site's index. Listed
+      # one per line rather than as a *.md glob so a file that should not be
+      # public is never swept in by accident.
+      extra-sources: |
+        README.md
+        INSTALL.md
+        TODO.md
+
+      # Files the pages reference, which static.yml only served because it
+      # uploaded everything.
+      include: |
+        LICENSE
+        installer.sh
+        installer.ps1
