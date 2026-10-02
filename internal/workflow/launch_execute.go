@@ -203,14 +203,7 @@ func runLaunch(ctx context.Context, w io.Writer, ec2Client awsclient.EC2API, ssm
 		if err != nil {
 			return err
 		}
-		switch {
-		case result.Skipped:
-			fmt.Fprintln(w, "SSM never came online; skipping the cloud-init completion check.")
-		case result.Status == "done":
-			fmt.Fprintln(w, "cloud-init completed successfully.")
-		default:
-			fmt.Fprintln(w, "cloud-init reported an error -- check the instance before using it.")
-		}
+		reportCloudInit(w, result)
 	}
 
 	displayConnectionInfo(ctx, w, ec2Client, instanceID, inst)
