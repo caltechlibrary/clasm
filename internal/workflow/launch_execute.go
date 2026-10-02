@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -275,6 +276,37 @@ func displayConnectionInfo(ctx context.Context, w io.Writer, client awsclient.EC
 			fmt.Fprintf(w, "  ssh -i <path to your %q private key> %s@%s\n", keyName, user, aws.ToString(inst.PublicIpAddress))
 		}
 	}
+	// Session Manager needs neither a public address nor a key pair, so it is
+	// offered whether or not ssh is. It needs the AWS CLI's session-manager-plugin.
+	fmt.Fprintf(w, "  %s\n", ssmStartSessionCommand(instanceID, regionOfInstance(inst)))
+}
+
+// ssmStartSessionCommand is the `aws ssm start-session` command that opens a
+// shell on instanceID; region "" leaves --region off, for the CLI's default.
+func ssmStartSessionCommand(instanceID, region string) string {
+	cmd := "aws ssm start-session --target " + instanceID
+	if region != "" {
+		cmd += " --region " + region
+	}
+	return cmd
+}
+
+// standardAZ matches an ordinary Availability Zone name (us-west-2b): the region
+// followed by one letter.
+var standardAZ = regexp.MustCompile(`^([a-z]{2}(?:-[a-z]+)+-\d)[a-z]$`)
+
+// regionOfInstance derives inst's region from its Availability Zone (us-west-2b
+// is in us-west-2), or "" when it has none or the name is not a standard AZ -- a
+// Local Zone's (us-west-2-lax-1a) is not the region plus a letter, and a wrong
+// --region would be worse than none.
+func regionOfInstance(inst types.Instance) string {
+	if inst.Placement == nil {
+		return ""
+	}
+	if m := standardAZ.FindStringSubmatch(aws.ToString(inst.Placement.AvailabilityZone)); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 func displayOrNone(s string) string {

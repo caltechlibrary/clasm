@@ -1072,7 +1072,66 @@ func TestDisplayConnectionInfo_NoPublicIPOmitsSSHLineEntirely(t *testing.T) {
 
 	var buf bytes.Buffer
 	displayConnectionInfo(context.Background(), &buf, fake, "i-1", inst)
-	if strings.Contains(buf.String(), "ssh") {
+	if strings.Contains(buf.String(), "ssh -i") {
 		t.Errorf("expected no ssh line without a public IP, got:\n%s", buf.String())
+	}
+}
+
+func TestDisplayConnectionInfo_ShowsSSMSessionCommandBesideSSH(t *testing.T) {
+	fake := &fakeEC2Client{}
+	inst := types.Instance{
+		PublicIpAddress: aws.String("1.2.3.4"),
+		KeyName:         aws.String("my-key"),
+		ImageId:         aws.String("ami-1"),
+		Placement:       &types.Placement{AvailabilityZone: aws.String("us-west-2b")},
+	}
+	var buf bytes.Buffer
+	displayConnectionInfo(context.Background(), &buf, fake, "i-1", inst)
+	out := buf.String()
+	want := "aws ssm start-session --target i-1 --region us-west-2"
+	if !strings.Contains(out, want) {
+		t.Fatalf("expected %q in output, got:\n%s", want, out)
+	}
+	if strings.Index(out, "ssh -i") > strings.Index(out, want) {
+		t.Errorf("expected the SSM command after the ssh example, got:\n%s", out)
+	}
+}
+
+// SSM needs no public address, so the instance with none (the one case ssh
+// cannot help with) is where the command matters most.
+func TestDisplayConnectionInfo_SSMSessionCommandShownWithoutAPublicIP(t *testing.T) {
+	fake := &fakeEC2Client{}
+	inst := types.Instance{
+		PrivateIpAddress: aws.String("10.0.0.1"),
+		Placement:        &types.Placement{AvailabilityZone: aws.String("us-west-1a")},
+	}
+	var buf bytes.Buffer
+	displayConnectionInfo(context.Background(), &buf, fake, "i-9", inst)
+	if !strings.Contains(buf.String(), "aws ssm start-session --target i-9 --region us-west-1") {
+		t.Errorf("expected the SSM command without a public IP, got:\n%s", buf.String())
+	}
+}
+
+func TestDisplayConnectionInfo_SSMSessionCommandOmitsRegionWhenUnknown(t *testing.T) {
+	var buf bytes.Buffer
+	displayConnectionInfo(context.Background(), &buf, &fakeEC2Client{}, "i-1", types.Instance{})
+	out := buf.String()
+	if !strings.Contains(out, "aws ssm start-session --target i-1") || strings.Contains(out, "--region") {
+		t.Errorf("expected the command with no --region, got:\n%s", out)
+	}
+}
+
+func TestRegionOfInstance(t *testing.T) {
+	for az, want := range map[string]string{
+		"us-west-2b":       "us-west-2",
+		"us-west-1a":       "us-west-1",
+		"eu-central-1c":    "eu-central-1",
+		"us-gov-west-1a":   "us-gov-west-1",
+		"us-west-2-lax-1a": "", // a Local Zone: not the region plus a letter
+		"":                 "",
+	} {
+		if got := regionOfInstance(types.Instance{Placement: &types.Placement{AvailabilityZone: aws.String(az)}}); got != want {
+			t.Errorf("regionOfInstance(%q) = %q, want %q", az, got, want)
+		}
 	}
 }
