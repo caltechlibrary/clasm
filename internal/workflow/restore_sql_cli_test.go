@@ -121,6 +121,8 @@ func TestRestoreSQLCLI_DryRunChangesNothingAndPrintsARealPlan(t *testing.T) {
 		"caltechdata/b-2026-09-02.sql.gz", "3.0 MiB", "s3://my-bucket/",
 		`database "caltechdata"`, "caltechdata-db-1", "replace",
 		"Nothing was changed", "--confirm caltechdata",
+		// the two scratch files are removed after a verified restore (item 1), so the plan says so
+		remoteRestoreDownloadPath, remoteRestoreSQLPath, "once the table count",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the plan should mention %q, got:\n%s", want, out)

@@ -115,6 +115,7 @@ func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclie
 		replace,
 		"download and decompress the backup on the instance first; nothing is dropped until that has succeeded",
 		"load it, then count the tables in the restored database",
+		fmt.Sprintf("once the table count is verified, remove the scratch files %s and %s from the instance; a failed restore keeps them", remoteRestoreDownloadPath, remoteRestoreSQLPath),
 	}
 	decision, err := gate.Decide(w, input, output)
 	if err != nil {
