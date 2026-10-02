@@ -144,3 +144,21 @@ func TestRunSQLBackup_NoReportWhenDockerCheckFails(t *testing.T) {
 		t.Errorf("reported %d times, want 0", n)
 	}
 }
+
+// The help said the form "makes the directory and its dumps belong to the
+// service user", which DR-0183 made false. It must say what the form does now.
+func TestGenerateSQLBackupHelp_DescribesTheDR0183Behaviour(t *testing.T) {
+	_, _, err := ParseSQLBackupArgs([]string{"--help"}, sqlBackupInstances())
+	var help *HelpRequested
+	if !errors.As(err, &help) {
+		t.Fatalf("want a help request, got: %v", err)
+	}
+	for _, want := range []string{"left exactly as it is", "only the dump", "0664"} {
+		if !strings.Contains(help.Usage, want) {
+			t.Errorf("help should say %q:\n%s", want, help.Usage)
+		}
+	}
+	if strings.Contains(help.Usage, "directory and its dumps belong") {
+		t.Errorf("help still describes the pre-DR-0183 behaviour:\n%s", help.Usage)
+	}
+}

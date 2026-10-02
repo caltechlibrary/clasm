@@ -43,9 +43,11 @@ func ParseSQLBackupArgs(args []string, instances []inventory.Instance) (inventor
 const generateSQLBackupHelp = `
 
 Writes a gzipped pg_dump of the instance's RDM database into <directory> on the
-instance, named <container>-<database>-<date>.sql.gz, and makes the directory
-and its dumps belong to the service user. It runs without a confirmation
-prompt. A second run on the same day replaces that day's dump, exactly as the
+instance, named <container>-<database>-<date>.sql.gz. A directory that does not
+exist is created (ubuntu:www-data, 0770); an existing one is left exactly as it is.
+The new dump, and only the dump, is handed to the service user in the directory's
+own group, mode 0664, so the instance's own cron can replace it. It runs without
+a confirmation prompt. A second run on the same day replaces that day's dump, exactly as the
 instance's own backup script does.
 
 Options:
