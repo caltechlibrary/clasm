@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
@@ -102,9 +103,7 @@ func TestRunCLILeaf_UnknownSlugIsAnInternalErrorNotAPanic(t *testing.T) {
 
 // 2026-09-30: every domain has a slug, so `clasm <domain>` deep-links into any
 // of them, not only RDM Backup & Restore (which is all the manual could have
-// been describing truthfully before). Domains other than RDM still have no
-// leaf-level CLI forms, so a path *under* one is a clear usage error, not a
-// silent fall-through to some other domain's leaf registry.
+// been describing truthfully before).
 func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
 	for _, slug := range []string{"compute", "key-management", "s3", "tag-management", "iam", "configuration", "rdm-backup-and-restore"} {
 		mode, domainSlug, leafSlug, leafArgs, err := classifyCLIArgs([]string{slug})
@@ -118,14 +117,17 @@ func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
 	}
 }
 
-func TestClassifyCLIArgs_PathUnderADomainWithNoLeafFormsIsAUsageError(t *testing.T) {
-	for _, args := range [][]string{{"configuration", "edit-regions"}, {"configuration", "show-config", "extra"}} {
+// Every domain now has at least one leaf form, so "no CLI sub-commands yet" is
+// no longer reachable through the real registry; a path to a leaf without a form
+// (Configuration's editors stay interactive-only) is an unknown command.
+func TestClassifyCLIArgs_LeafWithoutAFormIsAUsageError(t *testing.T) {
+	for _, args := range [][]string{{"configuration", "edit-regions"}, {"configuration", "show-config", "extra"}, {"configuration", "save"}} {
 		mode, _, _, _, err := classifyCLIArgs(args)
 		if mode != cliModeNone {
 			t.Errorf("%v: mode = %q, want %q", args, mode, cliModeNone)
 		}
-		if err == nil || !strings.Contains(err.Error(), args[0]) || !strings.Contains(err.Error(), "no CLI sub-commands yet") {
-			t.Errorf("%v: expected a usage error saying %q has no CLI sub-commands yet, got: %v", args, args[0], err)
+		if err == nil || !strings.Contains(err.Error(), "unknown command") || !strings.Contains(err.Error(), args[0]) {
+			t.Errorf("%v: expected an unknown-command usage error naming %q, got: %v", args, args[0], err)
 		}
 	}
 }
@@ -597,5 +599,34 @@ func TestRunCLILeaf_CreateLaunchTemplateFromCloudInitYAML(t *testing.T) {
 	eout.Reset()
 	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "--security-group") || !strings.Contains(out.String(), "never creates") || eout.Len() != 0 {
 		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+func TestClassifyCLIArgs_ConfigurationShowCurrentConfig(t *testing.T) {
+	mode, domainSlug, leafSlug, _, err := classifyCLIArgs([]string{"configuration", "show-current-config"})
+	if err != nil || mode != cliModeLeaf || domainSlug != "configuration" || leafSlug != "show-current-config" {
+		t.Errorf("mode=%q domain=%q leaf=%q err=%v", mode, domainSlug, leafSlug, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"configuration", "edit-regions"}); err == nil {
+		t.Error("an editor has no CLI form: want a usage error")
+	}
+}
+
+func TestRunCLILeaf_ShowCurrentConfig(t *testing.T) {
+	env := cliEnv{config: config.Config{Regions: []string{"us-west-2"}, CloudInitExtractionSecurityGroups: map[string]string{"us-west-2": "sg-open"}}}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-current-config", []string{"-json"}, env); code != 0 || !strings.Contains(out.String(), `"us-west-2": "sg-open"`) || eout.Len() != 0 {
+		t.Errorf("-json: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-current-config", []string{"-text"}, env); code != 0 || !strings.Contains(out.String(), "us-west-2: sg-open") {
+		t.Errorf("-text: code=%d out=%q", code, out.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-current-config", []string{"--help"}, env); code != 0 || !strings.Contains(out.String(), "usage: clasm configuration show-current-config") {
+		t.Errorf("--help: code=%d out=%q", code, out.String())
+	}
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-current-config", []string{"-json", "stray"}, env); code != 2 {
+		t.Errorf("a stray word: code=%d, want 2", code)
 	}
 }

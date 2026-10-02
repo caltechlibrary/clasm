@@ -324,7 +324,7 @@ var domainItems = []domainItem{
 	{label: "Tag Management", cliSlug: TagManagementDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
 	{label: "IAM", cliSlug: IAMDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
 	{label: "RDM Backup & Restore", cliSlug: RDMBackupRestoreDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
-	{label: "Configuration", cliSlug: "configuration", action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
+	{label: "Configuration", cliSlug: ConfigurationDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }
 
 // pickDomainItem runs the domain picker's huh.Select and returns the

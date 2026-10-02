@@ -76,8 +76,8 @@ func (c Config) ExtractionSecurityGroupFor(region string) string {
 // Domain") -- neither the tag key nor which value means "DLD-owned" is
 // hardcoded, since this team's actual vocabulary isn't decided yet.
 type OriginTagConfig struct {
-	Key      string `yaml:"key"`
-	DLDValue string `yaml:"dld_value"`
+	Key      string `yaml:"key" json:"key"`
+	DLDValue string `yaml:"dld_value" json:"dld_value"`
 }
 
 // BackupDirectoryRule maps a glob-style pattern (path.Match syntax: *,
@@ -88,8 +88,8 @@ type OriginTagConfig struct {
 // directories, and typing the right path from memory every run invites
 // mistakes.
 type BackupDirectoryRule struct {
-	Pattern   string `yaml:"pattern"`
-	Directory string `yaml:"directory"`
+	Pattern   string `yaml:"pattern" json:"pattern"`
+	Directory string `yaml:"directory" json:"directory"`
 }
 
 // BackupDirectoryFor returns the Directory of the first rule in rules
@@ -120,10 +120,10 @@ func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string
 // RDMPostgresConfigFor never invents a default for it, unlike DBName/
 // DBUser, which fall back to the instance's own Name tag.
 type RDMPostgresRule struct {
-	Pattern       string `yaml:"pattern"`
-	ContainerName string `yaml:"container_name"`
-	DBName        string `yaml:"db_name"`
-	DBUser        string `yaml:"db_user"`
+	Pattern       string `yaml:"pattern" json:"pattern"`
+	ContainerName string `yaml:"container_name" json:"container_name"`
+	DBName        string `yaml:"db_name" json:"db_name"`
+	DBUser        string `yaml:"db_user" json:"db_user"`
 }
 
 // RDMPostgresConfigFor returns the resolved (containerName, dbName,

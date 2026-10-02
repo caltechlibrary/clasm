@@ -602,6 +602,17 @@ text view they keep the screen's `2026-07-23 17:30` layout.
   (one `GetBucketTagging` call per bucket: about twenty seconds for 78
   buckets); IAM roles take under ten.
 
+#### Configuration
+
+`configuration show-current-config`
+: the settings in `~/.clasm`: regions, backup directory rules, RDM Postgres
+  rules, the Origin tag, and the per-region cloud-init extraction security
+  groups. `-text` is the interactive "Show current config" screen; `-json` is
+  one object with every setting, including `opensearch_backup_directories`,
+  which the screen omits. It reads only the file: no AWS call is made. The
+  editors and Save stay interactive, since a scripted edit would race any other
+  run reading the file.
+
 #### Output formats
 
 Every read-only form takes one of:

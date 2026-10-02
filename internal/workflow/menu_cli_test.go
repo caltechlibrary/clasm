@@ -63,7 +63,8 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 		{"s3", "delete-bucket", false}, // no form yet
 		{"tag-management", "show-all-tags", true},
 		{"tag-management", "manage-tags", false},
-		{"configuration", "edit-regions", false}, // no leaf forms yet
+		{"configuration", "show-current-config", true},
+		{"configuration", "edit-regions", false}, // an interactive editor; no form
 		{"no-such-domain", "show-instances", false},
 	} {
 		if got := LeafCLISlugExists(tc.domain, tc.leaf); got != tc.want {
@@ -76,7 +77,7 @@ func TestDomainHasLeafCLIForms(t *testing.T) {
 	for domain, want := range map[string]bool{
 		"compute": true, "rdm-backup-and-restore": true,
 		"iam": true, "key-management": true,
-		"s3": true, "tag-management": true, "configuration": false,
+		"s3": true, "tag-management": true, "configuration": true,
 	} {
 		if got := DomainHasLeafCLIForms(domain); got != want {
 			t.Errorf("DomainHasLeafCLIForms(%q) = %t, want %t", domain, got, want)
@@ -246,5 +247,39 @@ func TestRunTagMgmtMenuFromSlug(t *testing.T) {
 	ok, err := runTagMgmtMenuFromSlug(ctx, term, actions, "show-all-tags", newHuhAccessibleInput("\n2\n\n"), buf)
 	if !ok || err != nil || showCalls != 1 || manageCalls != 1 {
 		t.Errorf("ok=%t err=%v show=%d manage=%d", ok, err, showCalls, manageCalls)
+	}
+}
+
+// Configuration's one read-only leaf; the editors and Save stay interactive-only.
+func TestConfigureMenuItems_CLISlugs(t *testing.T) {
+	want := map[string]string{
+		"Show current config": "show-current-config", "Edit regions": "", "Edit backup directory rules": "",
+		"Edit RDM Postgres config": "", "Edit Origin tag config": "",
+		"Edit cloud-init extraction security groups": "", "Save": "",
+	}
+	for _, item := range configureMenuItems {
+		if w, ok := want[item.label]; !ok || item.cliSlug != w {
+			t.Errorf("configureMenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, w, ok)
+		}
+	}
+}
+
+func TestRunConfigureMenuFromSlug(t *testing.T) {
+	term, buf := newTermOnly()
+	var dirty bool
+	var refreshCalls int
+	if ok, err := runConfigureMenuFromSlug(context.Background(), term, testConfigureActions(&dirty, &refreshCalls), "no-such-leaf", nil, nil); ok || err != nil || buf.Len() != 0 {
+		t.Errorf("unknown slug: ok=%t err=%v out=%q", ok, err, buf.String())
+	}
+
+	var showCalls, regionsCalls int
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := testConfigureActions(&dirty, &refreshCalls)
+	actions.ShowCurrentConfig = countingAction(&showCalls)
+	actions.EditRegions = cancelingAction(&regionsCalls, cancel)
+	// A pause after the deep-linked leaf; "2" is Edit regions; a pause after it.
+	ok, err := runConfigureMenuFromSlug(ctx, term, actions, "show-current-config", newHuhAccessibleInput("\n2\n\n"), buf)
+	if !ok || err != nil || showCalls != 1 || regionsCalls != 1 {
+		t.Errorf("ok=%t err=%v show=%d regions=%d, want the leaf once then the menu", ok, err, showCalls, regionsCalls)
 	}
 }

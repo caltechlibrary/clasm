@@ -697,6 +697,8 @@ func main() {
 			_, leafErr = workflow.RunS3MenuFromSlug(ctx, out, s3Actions, cliLeafSlug)
 		case workflow.TagManagementDomainCLISlug:
 			_, leafErr = workflow.RunTagMgmtMenuFromSlug(ctx, out, tagMgmtActions, cliLeafSlug)
+		case workflow.ConfigurationDomainCLISlug:
+			_, leafErr = workflow.RunConfigureMenuFromSlug(ctx, out, configPath, ec2Clients, cliLeafSlug)
 		default:
 			_, leafErr = workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug)
 		}
@@ -714,7 +716,7 @@ func main() {
 			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
 			keyPairs: keyMgmtState.keyPairs, buckets: s3State.buckets, iamClient: iamClient, originTag: cfg.OriginTag,
 			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
-			cloudInitExtractionSGs: cfg.CloudInitExtractionSecurityGroups,
+			cloudInitExtractionSGs: cfg.CloudInitExtractionSecurityGroups, config: cfg,
 		}
 		if cliDomainSlug == workflow.TagManagementDomainCLISlug {
 			// Tag Management loads its own five lists independently of Compute,

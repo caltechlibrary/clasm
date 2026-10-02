@@ -102,7 +102,9 @@ type cliEnv struct {
 	keyPairs        []inventory.KeyPair
 	buckets         []inventory.Bucket
 	iamClient       awsclient.IAMAPI
-	originTag       config.OriginTagConfig
+	// config is the configuration main loaded, for the Configuration forms.
+	config    config.Config
+	originTag config.OriginTagConfig
 	// cloudInitExtractionSGs maps a region to the configured security group for an AMI's
 	// temporary instance (cloud_init_extraction_security_groups).
 	cloudInitExtractionSGs map[string]string
@@ -211,6 +213,9 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 			return code
 		}
 		if code, handled := runKeyMgmtIAMLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
+			return code
+		}
+		if code, handled := runConfigurationLeaf(out, eout, leafSlug, leafArgs, env); handled {
 			return code
 		}
 		if code, handled := runS3TagLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {

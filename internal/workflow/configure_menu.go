@@ -51,21 +51,25 @@ type ConfigureActions struct {
 // configureItem pairs a Configuration menu label with the
 // ConfigureActions field it dispatches to.
 type configureItem struct {
-	label  string
-	action func(ConfigureActions, context.Context) error
+	label string
+	// cliSlug is this leaf's stable CLI path segment (DR-0177); empty means it has
+	// no CLI form. Only Show current config does: the editors and Save are
+	// interactive-only.
+	cliSlug string
+	action  func(ConfigureActions, context.Context) error
 }
 
 // configureMenuItems is DESIGN.md's Configure clasm menu, in order. No
 // "Back to domain picker" entry -- DECISIONS.md, "TUI keybinding
 // conventions": 'q' is the universal back key everywhere.
 var configureMenuItems = []configureItem{
-	{"Show current config", func(a ConfigureActions, ctx context.Context) error { return a.ShowCurrentConfig(ctx) }},
-	{"Edit regions", func(a ConfigureActions, ctx context.Context) error { return a.EditRegions(ctx) }},
-	{"Edit backup directory rules", func(a ConfigureActions, ctx context.Context) error { return a.EditBackupDirectoryRules(ctx) }},
-	{"Edit RDM Postgres config", func(a ConfigureActions, ctx context.Context) error { return a.EditRDMPostgresConfig(ctx) }},
-	{"Edit Origin tag config", func(a ConfigureActions, ctx context.Context) error { return a.EditOriginTag(ctx) }},
-	{"Edit cloud-init extraction security groups", func(a ConfigureActions, ctx context.Context) error { return a.EditExtractionGroups(ctx) }},
-	{"Save", func(a ConfigureActions, ctx context.Context) error { return a.Save(ctx) }},
+	{"Show current config", ShowCurrentConfigCLISlug, func(a ConfigureActions, ctx context.Context) error { return a.ShowCurrentConfig(ctx) }},
+	{"Edit regions", "", func(a ConfigureActions, ctx context.Context) error { return a.EditRegions(ctx) }},
+	{"Edit backup directory rules", "", func(a ConfigureActions, ctx context.Context) error { return a.EditBackupDirectoryRules(ctx) }},
+	{"Edit RDM Postgres config", "", func(a ConfigureActions, ctx context.Context) error { return a.EditRDMPostgresConfig(ctx) }},
+	{"Edit Origin tag config", "", func(a ConfigureActions, ctx context.Context) error { return a.EditOriginTag(ctx) }},
+	{"Edit cloud-init extraction security groups", "", func(a ConfigureActions, ctx context.Context) error { return a.EditExtractionGroups(ctx) }},
+	{"Save", "", func(a ConfigureActions, ctx context.Context) error { return a.Save(ctx) }},
 }
 
 // pickConfigureItem runs the Configuration menu's huh.Select and returns
@@ -98,6 +102,22 @@ func pickConfigureItem(w io.Writer, input io.Reader, output io.Writer) (configur
 // in-memory working copy, let the operator view/edit it, and persist
 // only when Save is explicitly chosen.
 func RunConfigureMenu(ctx context.Context, w io.Writer, configPath string, ec2Clients map[string]awsclient.EC2API) error {
+	return runConfigure(ctx, w, configPath, ec2Clients, "")
+}
+
+// RunConfigureMenuFromSlug is RunConfigureMenu with slug's leaf run once first
+// (`clasm configuration show-current-config`), as the other domains' FromSlug
+// deep-links do. ok is false, and nothing runs, for an unregistered slug.
+func RunConfigureMenuFromSlug(ctx context.Context, w io.Writer, configPath string, ec2Clients map[string]awsclient.EC2API, slug string) (ok bool, err error) {
+	if _, found := configureItemBySlug(slug); !found {
+		return false, nil
+	}
+	return true, runConfigure(ctx, w, configPath, ec2Clients, slug)
+}
+
+// runConfigure builds the working copy and its actions, then runs the menu,
+// preceded by startSlug's leaf when that is not "".
+func runConfigure(ctx context.Context, w io.Writer, configPath string, ec2Clients map[string]awsclient.EC2API, startSlug string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -155,7 +175,29 @@ func RunConfigureMenu(ctx context.Context, w io.Writer, configPath string, ec2Cl
 		Refresh: func(ctx context.Context) error { return nil },
 		Dirty:   func() bool { return dirty },
 	}
+	if startSlug != "" {
+		_, err := runConfigureMenuFromSlug(ctx, w, actions, startSlug, nil, nil)
+		return err
+	}
 	return runConfigureMenu(ctx, w, actions, nil, nil)
+}
+
+func configureItemBySlug(slug string) (configureItem, bool) {
+	for _, item := range configureMenuItems {
+		if item.cliSlug != "" && item.cliSlug == slug {
+			return item, true
+		}
+	}
+	return configureItem{}, false
+}
+
+func runConfigureMenuFromSlug(ctx context.Context, w io.Writer, actions ConfigureActions, slug string, menuInput io.Reader, menuOutput io.Writer) (ok bool, err error) {
+	item, found := configureItemBySlug(slug)
+	if !found {
+		return false, nil
+	}
+	return true, runLeafThenMenu(ctx, w, func(ctx context.Context) error { return item.action(actions, ctx) }, actions.Refresh,
+		func() error { return runConfigureMenu(ctx, w, actions, menuInput, menuOutput) }, menuInput, menuOutput)
 }
 
 // runConfigureMenu is RunConfigureMenu's testable core, same shape as
