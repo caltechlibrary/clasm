@@ -448,3 +448,76 @@ func oneSQLBackupObject(sourceName string) []s3types.Object {
 	key := sourceName + "/" + sourceName + "-db-1-" + sourceName + "-2026-08-18.sql.gz"
 	return []s3types.Object{{Key: aws.String(key), Size: aws.Int64(1024), LastModified: aws.Time(time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC))}}
 }
+
+// cleanupFake is restoreSQLFake with the scratch-file removal given its own
+// response, so a test can fail that one step without touching the others.
+func cleanupFake(loadStatus, cleanupStatus types.CommandInvocationStatus) *fakeSSMClient {
+	f := restoreSQLFake("", "", types.CommandInvocationStatusSuccess, loadStatus)
+	f.responses = append([]ssmCommandResponse{
+		{substring: "rm -f", stdout: "rm: cannot remove: Permission denied", status: cleanupStatus},
+	}, f.responses...)
+	return f
+}
+
+func cleanupRun() sqlRestoreRun {
+	return sqlRestoreRun{
+		inst:          inventory.Instance{InstanceID: "i-1", Name: "caltechauthors", Region: "us-east-1"},
+		containerName: "db-1", dbName: "caltechauthors", dbUser: "postgres", bucket: "my-bucket",
+		object: S3Object{Key: "caltechauthors/2026-09-30.sql.gz"},
+	}
+}
+
+func indexOfCommand(sent []string, substr string) int {
+	for i, s := range sent {
+		if strings.Contains(s, substr) {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestExecuteSQLRestore_RemovesScratchFilesAfterVerifiedRestore(t *testing.T) {
+	ssmClient := cleanupFake(types.CommandInvocationStatusSuccess, types.CommandInvocationStatusSuccess)
+	var out strings.Builder
+	if err := executeSQLRestore(context.Background(), &out, ssmClient, cleanupRun()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rm := indexOfCommand(ssmClient.sentCommands, "rm -f")
+	count := indexOfCommand(ssmClient.sentCommands, "information_schema.tables")
+	if rm < 0 {
+		t.Fatalf("expected a scratch-file removal step, sent: %v", ssmClient.sentCommands)
+	}
+	if count < 0 || rm < count {
+		t.Errorf("removal must come after the table-count verification (count at %d, rm at %d)", count, rm)
+	}
+	want := "rm -f '" + remoteRestoreDownloadPath + "' '" + remoteRestoreSQLPath + "'"
+	if got := ssmClient.sentCommands[rm]; got != want {
+		t.Errorf("removal command = %q, want exactly %q", got, want)
+	}
+	if !strings.Contains(out.String(), remoteRestoreDownloadPath) || !strings.Contains(out.String(), remoteRestoreSQLPath) {
+		t.Errorf("output should say which scratch files were removed, got:\n%s", out.String())
+	}
+}
+
+func TestExecuteSQLRestore_FailedLoadKeepsScratchFiles(t *testing.T) {
+	ssmClient := cleanupFake(types.CommandInvocationStatusFailed, types.CommandInvocationStatusSuccess)
+	if err := executeSQLRestore(context.Background(), &strings.Builder{}, ssmClient, cleanupRun()); err == nil {
+		t.Fatal("expected the load failure to be returned")
+	}
+	if i := indexOfCommand(ssmClient.sentCommands, "rm -f"); i >= 0 {
+		t.Errorf("a failed restore must keep its scratch files, but sent: %q", ssmClient.sentCommands[i])
+	}
+}
+
+func TestExecuteSQLRestore_CleanupFailureIsAWarningNotARestoreFailure(t *testing.T) {
+	ssmClient := cleanupFake(types.CommandInvocationStatusSuccess, types.CommandInvocationStatusFailed)
+	var out strings.Builder
+	if err := executeSQLRestore(context.Background(), &out, ssmClient, cleanupRun()); err != nil {
+		t.Fatalf("the database is restored; a cleanup failure must not fail the restore, got: %v", err)
+	}
+	for _, want := range []string{"Restored", "could not remove", remoteRestoreDownloadPath, remoteRestoreSQLPath, "Permission denied"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}

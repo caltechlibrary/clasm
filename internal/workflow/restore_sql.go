@@ -422,6 +422,32 @@ func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSM
 	}
 
 	fmt.Fprintf(w, "\nRestored %q from s3://%s/%s into database %q on %s -- %d table(s) present.\n", object.Key, bucket, object.Key, dbName, inst.InstanceID, tableCount)
+
+	// The table count is the proof the replacement is in place, so only now
+	// is there nothing left to keep. A failed run returns above and leaves
+	// both files where they are. The database is restored either way, so a
+	// removal failure is reported but does not turn the restore into one.
+	if err := removeRestoreScratchFiles(ctx, ssmClient, inst.InstanceID, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
+		fmt.Fprintf(w, "Warning: the restore succeeded, but clasm could not remove its scratch files %s and %s on %s: %v\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, inst.InstanceID, err)
+		return nil
+	}
+	fmt.Fprintf(w, "Removed the scratch files %s and %s from %s.\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, inst.InstanceID)
+	return nil
+}
+
+// removeRestoreScratchFiles deletes exactly the two fixed scratch paths a
+// restore uses, as a step of its own so a failure is attributed to cleanup and
+// not to the restore. `rm -f` makes the non-gzip case, where the .sql file was
+// never written, succeed.
+func removeRestoreScratchFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) error {
+	cmd := fmt.Sprintf("rm -f %s %s", shellQuote(remoteRestoreDownloadPath), shellQuote(remoteRestoreSQLPath))
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, cmd, timeout, pollInterval)
+	if err != nil {
+		return err
+	}
+	if status != ssmtypes.CommandInvocationStatusSuccess {
+		return curlFailureError("removing the scratch files failed", status, stdout)
+	}
 	return nil
 }
 
