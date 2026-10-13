@@ -154,7 +154,10 @@ func main() {
 			fmt.Fprintf(eout, "creating EC2 client for %s: %v\n", region, err)
 			os.Exit(1)
 		}
-		ec2Clients[region] = awsclient.WrapEC2(ec2Client, dl, region)
+		// Everything clasm creates in EC2 carries the Origin tag too (DR-0190); read from cfg
+		// at each create, like the IAM client's.
+		ec2Clients[region] = awsclient.TagEC2Creations(awsclient.WrapEC2(ec2Client, dl, region),
+			func() (string, string) { return cfg.OriginTag.Key, cfg.OriginTag.DLDValue })
 
 		ssmClient, err := awsclient.NewSSMClient(ctx, region)
 		if err != nil {
@@ -415,7 +418,7 @@ func main() {
 
 	s3Actions := workflow.S3Actions{
 		CreateBucket: func(ctx context.Context) error {
-			return workflow.CreateBucket(ctx, out, newS3Client, cfg.Regions)
+			return workflow.CreateBucket(ctx, out, newS3Client, cfg.Regions, cfg.OriginTag)
 		},
 		ConfigureWebsite: func(ctx context.Context) error {
 			return workflow.ConfigureBucketWebsite(ctx, out, newS3Client, s3State.buckets)

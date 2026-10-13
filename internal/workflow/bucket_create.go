@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
@@ -55,8 +56,8 @@ func validateBucketName(name string) error {
 // newS3Client builds a client scoped to the chosen region -- unlike
 // Backup Archive & Trim, there's no existing bucket to discover a region
 // from via BucketRegion, since this bucket doesn't exist yet.
-func CreateBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string) error {
-	return createBucket(ctx, w, newS3Client, regions, nil, nil)
+func CreateBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string, originTag config.OriginTagConfig) error {
+	return createBucket(ctx, w, newS3Client, regions, originTag, nil, nil)
 }
 
 // createBucket is CreateBucket's testable core: menuInput/menuOutput are
@@ -65,7 +66,7 @@ func CreateBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context
 // list) and are supplied by tests to drive them through their
 // accessible-mode pipe path instead. Both huh.Selects share one reader/
 // writer pair, read in sequence one line at a time.
-func createBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string, menuInput io.Reader, menuOutput io.Writer) error {
+func createBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), regions []string, originTag config.OriginTagConfig, menuInput io.Reader, menuOutput io.Writer) error {
 	name, err := ui.Prompt("Bucket name", ui.WithValidator(validateBucketName), ui.WithIO(menuInput, menuOutput))
 	if err != nil {
 		return err
@@ -111,9 +112,15 @@ func createBucket(ctx context.Context, w io.Writer, newS3Client func(ctx context
 		return fmt.Errorf("blocking public access on bucket %s: %w", name, err)
 	}
 
+	// PutBucketTagging replaces the whole tag set, so the Origin tag (DR-0190) is merged
+	// into the one set written here rather than added by a client wrapper.
+	tagSet := []types.Tag{{Key: aws.String("Purpose"), Value: aws.String(purpose)}}
+	if originTag.Key != "" && originTag.DLDValue != "" {
+		tagSet = append(tagSet, types.Tag{Key: aws.String(originTag.Key), Value: aws.String(originTag.DLDValue)})
+	}
 	if _, err := client.PutBucketTagging(ctx, &s3.PutBucketTaggingInput{
 		Bucket:  aws.String(name),
-		Tagging: &types.Tagging{TagSet: []types.Tag{{Key: aws.String("Purpose"), Value: aws.String(purpose)}}},
+		Tagging: &types.Tagging{TagSet: tagSet},
 	}); err != nil {
 		return fmt.Errorf("tagging bucket %s: %w", name, err)
 	}

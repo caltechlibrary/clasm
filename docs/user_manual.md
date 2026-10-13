@@ -897,6 +897,21 @@ discovered live and saved back here, or edited by hand. `origin_tag`
 names the tag the IAM domain treats as its DLD-ownership convention --
 `key` defaults to `"Origin"`, `dld_value` defaults to empty (meaning no
 value is recognized as DLD-owned yet, until your group settles on one).
+
+**clasm tags what it creates with this tag** (DR-0189, DR-0190), the same key
+and value everywhere, read at each create. IAM roles, policies and instance
+profiles; EC2 instances **and their volumes and network interfaces**, launch
+templates (the template, and what it launches), AMIs **and their snapshots**,
+key pairs (created or imported), and the temporary instance that reads an AMI's
+cloud-init; and S3 buckets (next to `Purpose`). Nothing is added when the key or
+the value is empty, and a tag the request already carries keeps its own value.
+Not tagged: S3 objects (the archives are identified by bucket and prefix);
+an instance launched **from a launch template** (it has the tag only if the
+template does, which templates made by clasm from now on do); new versions of a
+template (they inherit the source version's tags); and anything that already
+existed, which stays untagged until you tag it in Tag Management. Only the IAM
+domain reads the tag today, to decide what is DLD-owned; EC2 and S3 listings
+still show everything.
 `cloud_init_extraction_security_groups` maps a region to the ID of an existing
 security group for the temporary instance that reads an AMI's cloud-init (Show/export
 cloud-init, AMI branch); a security group belongs to one region, hence the map.

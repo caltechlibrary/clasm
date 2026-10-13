@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
 )
 
 // The bucket-name prompt and the region/purpose pickers all now share
@@ -27,7 +28,7 @@ func TestCreateBucket_InvalidNameNeverCallsAWS(t *testing.T) {
 	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	err := createBucket(context.Background(), &buf, newClient, []string{"us-west-2"}, newHuhAccessibleInput(input), &buf)
+	err := createBucket(context.Background(), &buf, newClient, []string{"us-west-2"}, config.OriginTagConfig{}, newHuhAccessibleInput(input), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestCreateBucket_SuccessPath(t *testing.T) {
 	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	err := createBucket(context.Background(), &buf, newClient, []string{"us-east-1", "us-west-2"}, newHuhAccessibleInput(input), &buf)
+	err := createBucket(context.Background(), &buf, newClient, []string{"us-east-1", "us-west-2"}, config.OriginTagConfig{}, newHuhAccessibleInput(input), &buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestCreateBucket_UsEast1OmitsLocationConstraint(t *testing.T) {
 	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := createBucket(context.Background(), &buf, newClient, []string{"us-east-1"}, newHuhAccessibleInput(input), &buf); err != nil {
+	if err := createBucket(context.Background(), &buf, newClient, []string{"us-east-1"}, config.OriginTagConfig{}, newHuhAccessibleInput(input), &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg := fake.createBucketCalls[0].CreateBucketConfiguration; cfg != nil {
@@ -99,7 +100,7 @@ func TestCreateBucket_NonDefaultRegionSetsLocationConstraint(t *testing.T) {
 	var buf bytes.Buffer
 	newClient := func(ctx context.Context, region string) (awsclient.S3API, error) { return fake, nil }
 
-	if err := createBucket(context.Background(), &buf, newClient, []string{"us-west-2"}, newHuhAccessibleInput(input), &buf); err != nil {
+	if err := createBucket(context.Background(), &buf, newClient, []string{"us-west-2"}, config.OriginTagConfig{}, newHuhAccessibleInput(input), &buf); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	cfg := fake.createBucketCalls[0].CreateBucketConfiguration
