@@ -20,6 +20,7 @@ func testIAMActions() IAMActions {
 		ViewRoleDetail:                noop,
 		ViewInstanceProfileDetail:     noop,
 		CreateRoleFromTemplate:        noop,
+		CreateInstanceProfile:         noop,
 		DeleteRole:                    noop,
 		AttachPolicyToRole:            noop,
 		DetachPolicyFromRole:          noop,
@@ -227,7 +228,7 @@ func TestRunIAMMenu_DispatchesToDeleteRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.DeleteRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Delete Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("12\n"), buf) // Delete Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestRunIAMMenu_DispatchesToAttachPolicyToRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.AttachPolicyToRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Attach Policy to Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("8\n"), buf) // Attach Policy to Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestRunIAMMenu_DispatchesToDetachPolicyFromRole(t *testing.T) {
 	actions := testIAMActions()
 	actions.DetachPolicyFromRole = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("8\n"), buf) // Detach Policy from Role
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Detach Policy from Role
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -271,8 +272,8 @@ func TestRunIAMMenu_DispatchesToDetachPolicyFromRole(t *testing.T) {
 }
 
 func TestIAMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(iamMenuItems) != 11 {
-		t.Fatalf("len(iamMenuItems) = %d, want 11 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
+	if len(iamMenuItems) != 12 {
+		t.Fatalf("len(iamMenuItems) = %d, want 12 (no \"Back to domain picker\" -- 'q' is the only way back)", len(iamMenuItems))
 	}
 	for _, item := range iamMenuItems {
 		if item.action == nil {
@@ -295,7 +296,7 @@ func TestRunIAMMenu_DispatchesToRemoveRoleFromInstanceProfile(t *testing.T) {
 	actions := testIAMActions()
 	actions.RemoveRoleFromInstanceProfile = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("9\n"), buf) // Remove Role from Instance Profile
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("10\n"), buf) // Remove Role from Instance Profile
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -312,7 +313,24 @@ func TestRunIAMMenu_DispatchesToDeleteInstanceProfile(t *testing.T) {
 	actions := testIAMActions()
 	actions.DeleteInstanceProfile = cancelingAction(&calls, cancel)
 
-	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("10\n"), buf) // Delete Instance Profile
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("11\n"), buf) // Delete Instance Profile
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRunIAMMenu_DispatchesToCreateInstanceProfile(t *testing.T) {
+	var calls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testIAMActions()
+	actions.CreateInstanceProfile = cancelingAction(&calls, cancel)
+
+	err := runIAMMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Create Instance Profile, right after Create Role from Template
 	if err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}

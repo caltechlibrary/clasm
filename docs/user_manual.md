@@ -208,11 +208,12 @@ Attach/Detach -> Delete:
 4. Show Role Detail
 5. Show Instance Profile Detail
 6. Create Role from Template
-7. Attach Policy to Role
-8. Detach Policy from Role
-9. Remove Role from Instance Profile
-10. Delete Instance Profile
-11. Delete Role
+7. Create Instance Profile
+8. Attach Policy to Role
+9. Detach Policy from Role
+10. Remove Role from Instance Profile
+11. Delete Instance Profile
+12. Delete Role
 
 Every role/instance profile/policy row shows its `Origin` tag's literal
 value, or "(unset)" if never set -- a config-driven convention (see
@@ -235,7 +236,9 @@ instance's name), and an explicit `Deny` of every write and delete on
 those buckets, so a policy attached later cannot reopen them (DR-0184).
 This is the only IAM action that creates new permissions from
 scratch, and it's deliberately template-only, not free-form policy
-authoring. **Attach/Detach Policy to/from Role**, **Remove Role from
+authoring. **Create Instance Profile** wraps a role in an instance
+profile (named after the role by default, tagged DLD-owned) so it can be put
+on an instance. **Attach/Detach Policy to/from Role**, **Remove Role from
 Instance Profile**, **Delete Instance Profile**, and **Delete Role** are
 all scoped to DLD-owned roles and instance profiles only. **Remove Role
 from Instance Profile** picks a role, then which of the instance
@@ -642,6 +645,31 @@ confirmation, so they can run from a script.
   a role or profile that is not DLD-owned, a role that is still a member of an
   instance profile, and a profile that still contains a role (remove it first
   in the IAM menu). A name that does not exist is a usage error.
+
+`iam create-instance-profile [-text|-json] <instance-profile-name> <role-name>`
+: the non-interactive form of **Create Instance Profile** (DR-0188), the menu
+  item that makes an instance profile from a role: the role template creates a
+  role, but an instance needs a *profile*, which `compute
+  associate-replace-iam-instance-profile` then puts on it. The role must exist
+  (a usage error, exit 2, if not); a profile name already in use is an AWS error
+  (exit 1). The profile is **tagged DLD-owned** with the configured `Origin`
+  tag, so `iam delete-instance-profile` can remove it later; profiles made by
+  the pick-or-create step of a launch are untagged and clasm will not delete
+  them until they are tagged in Tag Management. No confirmation: it creates and
+  destroys nothing. Prints the profile and role (or, with `-json`,
+  `{instance_profile_name, instance_profile_arn, role_name}`).
+
+`iam remove-role-from-instance-profile [--confirm <profile-name>] <role-name> <profile-name>`
+: the non-interactive form of **Remove Role from Instance Profile** (DR-0188),
+  on the same gate as the delete forms: a dry run by default, `--confirm
+  <profile-name>` to run (the **profile's** name, not the role's). Removing a
+  role from a profile an instance uses cuts that instance's permissions at once
+  -- SSM management included, if that role grants it -- so the plan says so; it
+  can be undone by adding the role back. Both the role and the profile must be
+  DLD-owned, and the role must currently be in the profile; refusals are exit 1,
+  also in a dry run. It is the step that lets `iam delete-role` and `iam
+  delete-instance-profile` proceed, since each refuses while the other still
+  holds the role.
 
 Timestamps in JSON are RFC 3339 in UTC (`2026-07-23T17:30:00Z`). In the
 text view they keep the screen's `2026-07-23 17:30` layout.

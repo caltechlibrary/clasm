@@ -36,6 +36,9 @@ type IAMActions struct {
 	// new resources, reversing the 2026-07-02 "never creates a role"
 	// scope deliberately and only through curated templates.
 	CreateRoleFromTemplate func(ctx context.Context) error
+	// CreateInstanceProfile makes an instance profile from a role (DR-0188):
+	// the template creates a role but an instance needs a profile.
+	CreateInstanceProfile func(ctx context.Context) error
 	// DeleteRole/AttachPolicyToRole/DetachPolicyFromRole are Phase
 	// 20.40's CRUD-completion actions (DECISIONS.md, "IAM Profile & Role
 	// Management: support CRUD for DLD-owned roles"): every one of them
@@ -85,9 +88,10 @@ var iamMenuItems = []iamMenuItem{
 	{label: "Show Role Detail", cliSlug: ShowRoleDetailCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
 	{label: "Show Instance Profile Detail", cliSlug: ShowInstanceProfileDetailCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
 	{label: "Create Role from Template", cliSlug: CreateRoleFromTemplateCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
+	{label: "Create Instance Profile", cliSlug: CreateInstanceProfileCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.CreateInstanceProfile(ctx) }},
 	{label: "Attach Policy to Role", action: func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
 	{label: "Detach Policy from Role", action: func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
-	{label: "Remove Role from Instance Profile", action: func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},
+	{label: "Remove Role from Instance Profile", cliSlug: RemoveRoleFromInstanceProfileCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},
 	{label: "Delete Instance Profile", cliSlug: DeleteInstanceProfileCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.DeleteInstanceProfile(ctx) }},
 	{label: "Delete Role", cliSlug: DeleteRoleCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
 }

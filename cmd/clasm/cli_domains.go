@@ -52,6 +52,18 @@ func runKeyMgmtIAMLeaf(ctx context.Context, out, eout io.Writer, leafSlug string
 			return reportCLIError(out, eout, err), true
 		}
 		return reportCLIError(out, eout, workflow.RunCreateRoleFromTemplateCLI(ctx, out, env.iamClient, env.originTag, env.accountID, env.region, opts)), true
+	case workflow.CreateInstanceProfileCLISlug:
+		profile, role, format, err := workflow.ParseCreateInstanceProfileArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunCreateInstanceProfileCLI(ctx, out, env.iamClient, env.originTag, profile, role, format)), true
+	case workflow.RemoveRoleFromInstanceProfileCLISlug:
+		role, profile, opts, err := workflow.ParseRemoveRoleFromInstanceProfileArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunRemoveRoleFromInstanceProfileCLI(ctx, out, env.iamClient, env.originTag, role, profile, opts.Confirms, ui.StdinIsTerminal(), nil, nil)), true
 	case workflow.DeleteRoleCLISlug:
 		name, opts, err := workflow.ParseDeleteIAMRoleArgs(leafArgs)
 		if err != nil {

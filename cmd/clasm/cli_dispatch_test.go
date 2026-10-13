@@ -811,3 +811,42 @@ func TestRunCLILeaf_RestoreOpenSearchRefusesAnExtraConfirm(t *testing.T) {
 		t.Errorf("want exit 2, got %d:\n%s", code, eout.String())
 	}
 }
+
+// create-instance-profile and remove-role-from-instance-profile (DR-0188). Usage
+// errors, --help and a --confirm mismatch never reach AWS (a nil iamClient would panic).
+func TestClassifyCLIArgs_InstanceProfileLeaves(t *testing.T) {
+	for _, leaf := range []string{"create-instance-profile", "remove-role-from-instance-profile"} {
+		mode, _, got, _, err := classifyCLIArgs([]string{"iam", leaf})
+		if err != nil || mode != cliModeLeaf || got != leaf {
+			t.Errorf("%s: a bare slug must deep-link: mode=%q leaf=%q err=%v", leaf, mode, got, err)
+		}
+		mode, _, _, args, err := classifyCLIArgs([]string{"iam", leaf, "a", "b"})
+		if err != nil || mode != cliModeRun || len(args) != 2 {
+			t.Errorf("%s: two words must be a run: mode=%q args=%v err=%v", leaf, mode, args, err)
+		}
+	}
+}
+
+func TestRunCLILeaf_InstanceProfileLeavesRefuseBeforeAnyAWSCall(t *testing.T) {
+	for _, tc := range []struct {
+		leaf, usage string
+		args        []string
+	}{
+		{"create-instance-profile", "usage: clasm iam create-instance-profile", []string{}},
+		{"create-instance-profile", "usage: clasm iam create-instance-profile", []string{"p"}},
+		{"create-instance-profile", "usage: clasm iam create-instance-profile", []string{"-jsonl", "p", "r"}},
+		{"remove-role-from-instance-profile", "usage: clasm iam remove-role-from-instance-profile", []string{"r"}},
+		{"remove-role-from-instance-profile", "does not match the target IAM instance profile", []string{"--confirm", "r", "r", "p"}},
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, tc.args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), tc.usage) {
+			t.Errorf("%s %v: code=%d out=%q err=%q", tc.leaf, tc.args, code, out.String(), eout.String())
+		}
+	}
+	for leaf, want := range map[string]string{"create-instance-profile": "DLD-owned", "remove-role-from-instance-profile": "--confirm <profile-name>"} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), want) || eout.Len() != 0 {
+			t.Errorf("%s --help: code=%d out=%q err=%q", leaf, code, out.String(), eout.String())
+		}
+	}
+}
