@@ -224,10 +224,16 @@ recorded. **Show Role Detail**/**Show Instance Profile Detail** show
 trust policy, attached/inline policies (with on-demand document
 viewing), tags, whether the role/profile is SSM-capable, and (for roles)
 which instance profiles reference it. **Create Role from Template**
-offers five curated, parametrized templates (Static Website, RDM
+offers six curated, parametrized templates (Static Website, RDM
 Repository Instance, Bridge Service, Patron-Facing Service, Data
-Processing) -- you supply plain resource names/IDs and clasm constructs
-the ARNs; this is the only IAM action that creates new permissions from
+Processing, RDM Restore Source (read-only)) -- you supply plain
+resource names/IDs and clasm constructs the ARNs. **RDM Restore Source
+(read-only)** is the role for a test instance that restores from
+production's backups: SSM plus `ListBucket`/`GetObject` on one or two
+backup buckets (optionally only under one key prefix, the source
+instance's name), and an explicit `Deny` of every write and delete on
+those buckets, so a policy attached later cannot reopen them (DR-0184).
+This is the only IAM action that creates new permissions from
 scratch, and it's deliberately template-only, not free-form policy
 authoring. **Attach/Detach Policy to/from Role**, **Remove Role from
 Instance Profile**, **Delete Instance Profile**, and **Delete Role** are

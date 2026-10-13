@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
@@ -39,13 +40,18 @@ func trustPolicyDocument(principal TrustPrincipal) string {
 }
 
 // policyStatement is one statement in a policyDocument -- deliberately
-// minimal (Effect/Action/Resource only), matching the curated
-// templates' own scope: no Condition blocks, no NotAction/NotResource,
-// nothing beyond what the five templates below actually need.
+// minimal (Effect/Action/Resource, plus an optional Condition since
+// DR-0184), matching the curated templates' own scope: no
+// NotAction/NotResource, nothing beyond what the templates below
+// actually need.
 type policyStatement struct {
 	Effect   string   `json:"Effect"`
 	Action   []string `json:"Action"`
 	Resource []string `json:"Resource"`
+	// Condition is optional (DR-0184) and omitted from the JSON when
+	// unset, so every template that does not use it produces the same
+	// document as before. Shape: operator -> key -> values.
+	Condition map[string]map[string][]string `json:"Condition,omitempty"`
 }
 
 // policyDocument is a minimal IAM policy document.
@@ -184,6 +190,49 @@ func rdmRepositoryStatements(p map[string]string) []policyStatement {
 	}
 }
 
+// rdmRestoreWriteActions are denied outright on a restore-source role's
+// buckets (DR-0184): every way to overwrite, delete or re-permission a
+// backup, so a policy attached to the role later cannot reopen writes.
+var rdmRestoreWriteActions = []string{
+	"s3:PutObject", "s3:PutObjectAcl", "s3:PutObjectTagging",
+	"s3:DeleteObject", "s3:DeleteObjectVersion", "s3:AbortMultipartUpload",
+	"s3:RestoreObject", "s3:PutBucketPolicy", "s3:DeleteBucket",
+}
+
+// rdmRestoreSourceStatements: read-only access to one or two backup
+// buckets, optionally limited to one key prefix (the source instance's
+// name), plus an unconditional explicit Deny of every write action on
+// those buckets (DR-0184). The restores only download (aws s3 cp /
+// aws s3 sync), so ListBucket and GetObject are all the instance needs.
+func rdmRestoreSourceStatements(p map[string]string) []policyStatement {
+	var buckets []string
+	for _, key := range []string{"backup_bucket_arn", "second_bucket_arn"} {
+		if b := p[key]; b != "" {
+			buckets = append(buckets, b)
+		}
+	}
+	prefix := strings.Trim(p["key_prefix"], "/")
+
+	list := policyStatement{Effect: "Allow", Action: []string{"s3:ListBucket"}, Resource: buckets}
+	var objects, denied []string
+	for _, b := range buckets {
+		if prefix == "" {
+			objects = append(objects, b+"/*")
+		} else {
+			objects = append(objects, b+"/"+prefix+"/*")
+		}
+		denied = append(denied, b, b+"/*")
+	}
+	if prefix != "" {
+		list.Condition = map[string]map[string][]string{"StringLike": {"s3:prefix": {prefix, prefix + "/*"}}}
+	}
+	return []policyStatement{
+		list,
+		{Effect: "Allow", Action: []string{"s3:GetObject"}, Resource: objects},
+		{Effect: "Deny", Action: rdmRestoreWriteActions, Resource: denied},
+	}
+}
+
 // bridgeServiceStatements: CloudWatch Logs only -- the thinnest
 // template, flagged Thin in DESIGN.md as "too varied across actual
 // services to template further."
@@ -218,7 +267,7 @@ func dataProcessingStatements(p map[string]string) []policyStatement {
 }
 
 // iamRoleTemplates is DESIGN.md's five curated templates, in the same
-// order as its draft table. All flagged as needing review before
+// order as its draft table, plus the DR-0184 restore-source template. All flagged as needing review before
 // implementation -- Static Website and RDM Repository Instance are more
 // fully scoped; Bridge Service, Patron-Facing Service, and Data
 // Processing are Thin starting points, drafted from the motivating use
@@ -269,6 +318,17 @@ var iamRoleTemplates = []IAMRoleTemplate{
 			{Key: "data_bucket_arn", Prompt: "S3 data bucket name this role reads/writes (just the name)", Required: true, BuildARN: s3BucketArn},
 		},
 		BuildPolicy: dataProcessingStatements,
+	},
+	{
+		// Appended last so the other templates keep their menu numbers.
+		Label:             "RDM Restore Source (read-only)",
+		ManagedPolicyARNs: []string{ssmManagedInstanceCorePolicyArn},
+		Params: []IAMRoleTemplateParam{
+			{Key: "backup_bucket_arn", Prompt: "Backup bucket name this role reads (just the name, e.g. the SQL backup bucket)", Required: true, BuildARN: s3BucketArn},
+			{Key: "second_bucket_arn", Prompt: "Second backup bucket name (optional, e.g. the OpenSearch backup bucket; leave blank to skip)", Required: false, BuildARN: s3BucketArn},
+			{Key: "key_prefix", Prompt: "Key prefix to limit reads to (optional, the source instance's name, e.g. caltechauthors-v13; blank = whole bucket)", Required: false},
+		},
+		BuildPolicy: rdmRestoreSourceStatements,
 	},
 }
 
