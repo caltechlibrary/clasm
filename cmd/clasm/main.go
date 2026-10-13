@@ -200,6 +200,9 @@ func main() {
 		os.Exit(1)
 	}
 	iamClient = awsclient.WrapIAM(iamClient, dl, cfg.Regions[0])
+	// Everything clasm creates in IAM carries the Origin tag (DR-0189); read from cfg at
+	// each create, since Configure can edit it while clasm runs.
+	iamClient = awsclient.TagIAMCreations(iamClient, func() (string, string) { return cfg.OriginTag.Key, cfg.OriginTag.DLDValue })
 	account, err := awsclient.CheckCredentials(ctx, stsClient)
 	if err != nil {
 		fmt.Fprintf(eout, "%v\n", err)

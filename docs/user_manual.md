@@ -653,9 +653,11 @@ confirmation, so they can run from a script.
   associate-replace-iam-instance-profile` then puts on it. The role must exist
   (a usage error, exit 2, if not); a profile name already in use is an AWS error
   (exit 1). The profile is **tagged DLD-owned** with the configured `Origin`
-  tag, so `iam delete-instance-profile` can remove it later; profiles made by
-  the pick-or-create step of a launch are untagged and clasm will not delete
-  them until they are tagged in Tag Management. No confirmation: it creates and
+  tag, so `iam delete-instance-profile` can remove it later. Every IAM
+  role, policy and instance profile clasm creates is tagged this way, including
+  the profile made by the pick-or-create step of a launch (DR-0189); profiles
+  created by an earlier clasm are untagged, and clasm will not delete them until
+  they are tagged in Tag Management. No confirmation: it creates and
   destroys nothing. Prints the profile and role (or, with `-json`,
   `{instance_profile_name, instance_profile_arn, role_name}`).
 

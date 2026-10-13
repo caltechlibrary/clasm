@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 
+	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 	"github.com/caltechlibrary/clasm/internal/ui"
@@ -317,5 +318,44 @@ func TestCreateIAMInstanceProfileConfirmed_DecliningCreatesNothing(t *testing.T)
 	}
 	if fake.lastCreateInstanceProfileInput != nil || !strings.Contains(buf.String(), "Cancelled") {
 		t.Errorf("declining must create nothing and say so:\n%s", buf.String())
+	}
+}
+
+// The pick-or-create step of a launch (and of Associate/replace) made untagged profiles,
+// which clasm then could not delete (DR-0189). With the IAM client wrapped as main wraps
+// it, that path is tagged too -- without the wrapper it still is not, which is why
+// main must wrap.
+func TestTheLaunchFlowsProfileCreationIsTaggedOnceTheClientIsWrapped(t *testing.T) {
+	origin := func() (string, string) { return "origin", "dld" }
+
+	bare := &fakeIAMClient{}
+	term, in, buf := newPipeEditor("\n") // accept the default profile name
+	if _, _, err := createInstanceProfileForRole(context.Background(), term, bare, RoleInfo{Name: "ec2-test-restore-role"}, in, buf); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	if len(bare.lastCreateInstanceProfileInput.Tags) != 0 {
+		t.Fatalf("the interactive creation itself adds no tag, the wrapper does: %+v", bare.lastCreateInstanceProfileInput.Tags)
+	}
+
+	inner := &fakeIAMClient{}
+	term, in, buf = newPipeEditor("\n")
+	if _, _, err := createInstanceProfileForRole(context.Background(), term, awsclient.TagIAMCreations(inner, origin), RoleInfo{Name: "ec2-test-restore-role"}, in, buf); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	tags := inner.lastCreateInstanceProfileInput.Tags
+	if len(tags) != 1 || aws.ToString(tags[0].Key) != "origin" || aws.ToString(tags[0].Value) != "dld" {
+		t.Errorf("the profile made by the launch flow must be tagged DLD-owned: %+v", tags)
+	}
+}
+
+// An explicit tag from a form is not doubled by the wrapper.
+func TestTheFormsTagAndTheWrapperDoNotDoubleUp(t *testing.T) {
+	inner := roleExistsFake()
+	client := awsclient.TagIAMCreations(inner, func() (string, string) { return "origin", "dld" })
+	if err := RunCreateInstanceProfileCLI(context.Background(), &bytes.Buffer{}, client, deleteOrigin, "restore-profile", "ec2-test-restore-role", ui.FormatText); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inner.lastCreateInstanceProfileInput.Tags); n != 1 {
+		t.Errorf("want exactly one origin tag, got %d: %+v", n, inner.lastCreateInstanceProfileInput.Tags)
 	}
 }
