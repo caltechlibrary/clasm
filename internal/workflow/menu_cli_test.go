@@ -56,7 +56,8 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 		{"rdm-backup-and-restore", "archive-sql-backups-to-s3", true},
 		{"rdm-backup-and-restore", "show-instances", false}, // a Compute slug, not RDM's
 		{"iam", "show-roles", true},
-		{"iam", "delete-role", false}, // no form yet
+		{"iam", "delete-role", true},
+		{"iam", "attach-policy-to-role", false}, // no form yet
 		{"key-management", "show-key-pairs", true},
 		{"key-management", "show-roles", false}, // IAM's slug, not Key Management's
 		{"s3", "show-buckets", true},
@@ -132,7 +133,7 @@ func TestRunMainMenuFromSlug_ExitSignalEndsTheRunWithoutTheMenu(t *testing.T) {
 }
 
 // Key Management's one read-only leaf and IAM's five get slugs, plus IAM's
-// create-role-from-template (DR-0186); every other mutating and destructive
+// create-role-from-template, delete-role and delete-instance-profile (DR-0186); every other mutating and destructive
 // leaf stays "" until its own form is built.
 func TestKeyMgmtAndIAMMenuItems_CLISlugs(t *testing.T) {
 	wantKey := map[string]string{
@@ -147,7 +148,7 @@ func TestKeyMgmtAndIAMMenuItems_CLISlugs(t *testing.T) {
 		"Show Roles": "show-roles", "Show Instance Profiles": "show-instance-profiles", "Show Policies": "show-policies",
 		"Show Role Detail": "show-role-detail", "Show Instance Profile Detail": "show-instance-profile-detail",
 		"Create Role from Template": "create-role-from-template", "Attach Policy to Role": "", "Detach Policy from Role": "",
-		"Remove Role from Instance Profile": "", "Delete Instance Profile": "", "Delete Role": "",
+		"Remove Role from Instance Profile": "", "Delete Instance Profile": "delete-instance-profile", "Delete Role": "delete-role",
 	}
 	for _, item := range iamMenuItems {
 		if want, ok := wantIAM[item.label]; !ok || item.cliSlug != want {

@@ -68,6 +68,11 @@ type Gate struct {
 	// Target is the instance the action would change. --confirm and the
 	// prompt both accept its exact instance ID or its exact Name tag.
 	Target inventory.Instance
+	// Name and Kind replace Target for a target that is not an instance (an IAM
+	// role or instance profile, DR-0186): Name is the one identifier --confirm
+	// and the prompt accept, Kind says what it is ("IAM role") in the plan
+	// header and the mismatch message. Leave both empty for an instance.
+	Name, Kind string
 	// Confirm is the value of --confirm, "" if it was not given.
 	Confirm string
 	// Interactive reports whether a terminal is attached. False means a
@@ -84,6 +89,9 @@ type Gate struct {
 // accepted is what --confirm and the prompt must equal: the instance ID or the
 // Name tag, exactly. An empty Name is not accepted.
 func (g Gate) accepted() []string {
+	if g.Name != "" {
+		return []string{g.Name}
+	}
 	var out []string
 	for _, v := range []string{g.Target.InstanceID, g.Target.Name} {
 		if v != "" {
@@ -96,6 +104,9 @@ func (g Gate) accepted() []string {
 // applyHint is the flag a dry run tells the operator to add: the Name when
 // there is one, since it reads better in a crontab, otherwise the ID.
 func (g Gate) applyHint() string {
+	if g.Name != "" {
+		return "--confirm " + g.Name
+	}
 	if g.Target.Name != "" {
 		return "--confirm " + g.Target.Name
 	}
@@ -109,6 +120,9 @@ func (g Gate) applyHint() string {
 func (g Gate) CheckConfirm() error {
 	if g.Confirm == "" || slices.Contains(g.accepted(), g.Confirm) {
 		return nil
+	}
+	if g.Name != "" {
+		return &UsageError{Msg: fmt.Sprintf("--confirm %q does not match the target %s: want its name (%s), exactly", g.Confirm, g.Kind, g.Name)}
 	}
 	name := g.Target.Name
 	if name == "" {
@@ -161,7 +175,11 @@ func (g Gate) Decide(w io.Writer, input io.Reader, output io.Writer) (GateDecisi
 }
 
 func (g Gate) printPlan(w io.Writer) {
-	fmt.Fprintf(w, "Plan for %s:\n", strings.Join(g.accepted(), " / "))
+	if g.Name != "" {
+		fmt.Fprintf(w, "Plan for %s %s:\n", g.Kind, g.Name)
+	} else {
+		fmt.Fprintf(w, "Plan for %s:\n", strings.Join(g.accepted(), " / "))
+	}
 	for _, line := range g.Plan {
 		fmt.Fprintf(w, "  - %s\n", line)
 	}
@@ -187,24 +205,36 @@ type DestructiveOptions struct {
 // the leaf's to check: options with no positional words parse fine, so a leaf
 // given only options is still a run.
 func ParseDestructiveArgs(leaf, usage string, args []string) (DestructiveOptions, []string, error) {
+	return parseDestructiveArgs(leaf, usage, "instance-id-or-name",
+		"The value must equal the target instance's ID or Name tag.", args)
+}
+
+// ParseDestructiveNamedArgs is ParseDestructiveArgs for a leaf whose target is
+// identified by a name alone (an IAM role or instance profile): what is the
+// placeholder in --confirm's help, "role-name" for example.
+func ParseDestructiveNamedArgs(leaf, usage, what string, args []string) (DestructiveOptions, []string, error) {
+	return parseDestructiveArgs(leaf, usage, what, "The value must equal the target's name, exactly.", args)
+}
+
+func parseDestructiveArgs(leaf, usage, what, rule string, args []string) (DestructiveOptions, []string, error) {
 	fs := flag.NewFlagSet(leaf, flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // the errors below carry the usage; nothing prints twice
 	confirm := fs.String("confirm", "", "")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return DestructiveOptions{}, nil, &HelpRequested{Usage: destructiveHelp(usage)}
+			return DestructiveOptions{}, nil, &HelpRequested{Usage: destructiveHelp(usage, what, rule)}
 		}
 		return DestructiveOptions{}, nil, &UsageError{Msg: fmt.Sprintf("%s: %v\n%s", leaf, err, usage)}
 	}
 	return DestructiveOptions{Confirm: *confirm}, fs.Args(), nil
 }
 
-func destructiveHelp(usage string) string {
+func destructiveHelp(usage, what, rule string) string {
 	var b bytes.Buffer
 	b.WriteString(usage)
 	b.WriteString("\n\nOptions:\n")
-	b.WriteString("  --confirm <instance-id-or-name>\n")
-	b.WriteString("      Run without prompting. The value must equal the target instance's ID or Name tag.\n")
+	b.WriteString("  --confirm <" + what + ">\n")
+	b.WriteString("      Run without prompting. " + rule + "\n")
 	b.WriteString("      Without it, a terminal is asked to confirm; with no terminal the plan is printed and\n")
 	b.WriteString("      nothing is changed (exit 0).\n")
 	b.WriteString("  -h, --help\n      Show this help.\n")

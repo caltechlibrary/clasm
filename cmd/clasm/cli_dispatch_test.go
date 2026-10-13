@@ -364,7 +364,7 @@ func TestClassifyCLIArgs_KeyManagementAndIAMLeaves(t *testing.T) {
 			t.Errorf("%v: mode=%q domain=%q leaf=%q err=%v", tc, mode, domainSlug, leafSlug, err)
 		}
 	}
-	for _, tc := range [][]string{{"iam", "delete-role"}, {"iam", "show-key-pairs"}, {"key-management", "show-roles"}, {"key-management", "create-key-pair"}} {
+	for _, tc := range [][]string{{"iam", "attach-policy-to-role"}, {"iam", "show-key-pairs"}, {"key-management", "show-roles"}, {"key-management", "create-key-pair"}} {
 		if _, _, _, _, err := classifyCLIArgs(tc); err == nil {
 			t.Errorf("%v: want a usage error", tc)
 		}
@@ -701,5 +701,46 @@ func TestRunCLILeaf_CreateRoleFromTemplateUsesTheAccountAndRegion(t *testing.T) 
 	}
 	if !strings.Contains(rec.policyDoc, "arn:aws:logs:us-west-2:123456789012:log-group:/bridge/app") {
 		t.Errorf("policy = %s", rec.policyDoc)
+	}
+}
+
+// delete-role and delete-instance-profile (DR-0186) are destructive forms on
+// DR-0180's gate. Usage errors, --help and a --confirm mismatch never reach AWS
+// (a nil iamClient would panic).
+func TestClassifyCLIArgs_IAMDeleteLeaves(t *testing.T) {
+	for _, leaf := range []string{"delete-role", "delete-instance-profile"} {
+		mode, _, got, _, err := classifyCLIArgs([]string{"iam", leaf})
+		if err != nil || mode != cliModeLeaf || got != leaf {
+			t.Errorf("%s: a bare slug must deep-link: mode=%q leaf=%q err=%v", leaf, mode, got, err)
+		}
+		mode, _, _, args, err := classifyCLIArgs([]string{"iam", leaf, "--confirm", "x", "x"})
+		if err != nil || mode != cliModeRun || len(args) != 3 {
+			t.Errorf("%s: options and a name must be a run: mode=%q args=%v err=%v", leaf, mode, args, err)
+		}
+	}
+}
+
+func TestRunCLILeaf_IAMDeleteLeavesRefuseBeforeAnyAWSCall(t *testing.T) {
+	for _, tc := range []struct {
+		leaf, usage string
+		args        []string
+	}{
+		{"delete-role", "usage: clasm iam delete-role", []string{}},
+		{"delete-role", "usage: clasm iam delete-role", []string{"a", "b"}},
+		{"delete-role", "usage: clasm iam delete-role", []string{"--nope", "a"}},
+		{"delete-role", "does not match the target IAM role", []string{"--confirm", "other", "ec2-test-restore-role"}},
+		{"delete-instance-profile", "usage: clasm iam delete-instance-profile", []string{}},
+		{"delete-instance-profile", "does not match the target IAM instance profile", []string{"--confirm", "other", "restore-profile"}},
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, tc.leaf, tc.args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), tc.usage) {
+			t.Errorf("%s %v: code=%d out=%q err=%q", tc.leaf, tc.args, code, out.String(), eout.String())
+		}
+	}
+	for leaf, want := range map[string]string{"delete-role": "--confirm <role-name>", "delete-instance-profile": "--confirm <profile-name>"} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), want) || eout.Len() != 0 {
+			t.Errorf("%s --help: code=%d out=%q err=%q", leaf, code, out.String(), eout.String())
+		}
 	}
 }

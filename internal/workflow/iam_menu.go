@@ -88,8 +88,8 @@ var iamMenuItems = []iamMenuItem{
 	{label: "Attach Policy to Role", action: func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
 	{label: "Detach Policy from Role", action: func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
 	{label: "Remove Role from Instance Profile", action: func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},
-	{label: "Delete Instance Profile", action: func(a IAMActions, ctx context.Context) error { return a.DeleteInstanceProfile(ctx) }},
-	{label: "Delete Role", action: func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
+	{label: "Delete Instance Profile", cliSlug: DeleteInstanceProfileCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.DeleteInstanceProfile(ctx) }},
+	{label: "Delete Role", cliSlug: DeleteRoleCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.DeleteRole(ctx) }},
 }
 
 // pickIAMItem runs the IAM domain menu's huh.Select and returns the

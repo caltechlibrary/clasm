@@ -611,6 +611,22 @@ confirmation, so they can run from a script.
   policy (or, with `-json`, `{role_name, role_arn, template,
   managed_policies, policy_name, policy_arn}`).
 
+`iam delete-role [--confirm <role-name>] <role-name>`, `iam delete-instance-profile [--confirm <profile-name>] <profile-name>`
+: the non-interactive forms of **Delete Role** and **Delete Instance Profile**
+  (DR-0186), on the same gate as the Restore forms (DR-0180). With no
+  `--confirm` and no terminal the plan is printed, nothing is changed, and
+  the exit status is 0; with a terminal the plan is followed by the
+  type-to-confirm prompt (type the name); `--confirm <name>` runs without a
+  prompt. Here the value is the role's or profile's own **name**, exactly, and
+  a mismatch is a usage error (exit 2) before any AWS call. The plan for
+  `delete-role` lists each inline policy to delete, each managed policy to
+  detach, the role, and, when the role has a `<role>-policy` it was created
+  with, that policy ("if nothing else uses it", checked at delete time).
+  Refusals that confirming cannot fix are errors (exit 1), also in a dry run:
+  a role or profile that is not DLD-owned, a role that is still a member of an
+  instance profile, and a profile that still contains a role (remove it first
+  in the IAM menu). A name that does not exist is a usage error.
+
 Timestamps in JSON are RFC 3339 in UTC (`2026-07-23T17:30:00Z`). In the
 text view they keep the screen's `2026-07-23 17:30` layout.
 

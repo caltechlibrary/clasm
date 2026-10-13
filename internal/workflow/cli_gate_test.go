@@ -304,3 +304,79 @@ func TestCLIExitCode(t *testing.T) {
 		t.Errorf("a wrapped help request -> %d, want 0", got)
 	}
 }
+
+// The gate also guards targets that are not instances (DR-0186): an IAM role or
+// instance profile is identified by its name alone, and --confirm, the prompt
+// and the "re-run with" hint all use that name.
+func namedGate(confirm string, interactive bool) Gate {
+	return Gate{
+		Name: "ec2-test-restore-role", Kind: "IAM role", Confirm: confirm, Interactive: interactive,
+		Summary: "delete role ec2-test-restore-role",
+		Plan:    []string{"detach policy ec2-test-restore-role-policy", "delete role ec2-test-restore-role"},
+	}
+}
+
+func TestGate_NamedTargetConfirmProceedsOnTheNameOnly(t *testing.T) {
+	var out bytes.Buffer
+	got, err := namedGate("ec2-test-restore-role", false).Decide(&out, failingReader{t}, &out)
+	if err != nil || got != GateProceed {
+		t.Fatalf("got %v, %v; want GateProceed, nil", got, err)
+	}
+	if !strings.Contains(out.String(), "delete role ec2-test-restore-role") {
+		t.Errorf("a confirmed run prints the summary line, got %q", out.String())
+	}
+}
+
+func TestGate_NamedTargetMismatchIsAUsageErrorNamingTheKind(t *testing.T) {
+	var out bytes.Buffer
+	got, err := namedGate("another-role", false).Decide(&out, failingReader{t}, &out)
+	var ue *UsageError
+	if !errors.As(err, &ue) || got != GateDeclined {
+		t.Fatalf("got %v, %v; want GateDeclined and a *UsageError", got, err)
+	}
+	if !strings.Contains(ue.Msg, "IAM role") || !strings.Contains(ue.Msg, "ec2-test-restore-role") || strings.Contains(ue.Msg, "instance") {
+		t.Errorf("the message should name the kind and the name, not an instance: %q", ue.Msg)
+	}
+	if out.Len() != 0 {
+		t.Errorf("nothing may be printed before a mismatch is refused, got %q", out.String())
+	}
+}
+
+func TestGate_NamedTargetNoTerminalPrintsThePlanAndTheNameHint(t *testing.T) {
+	var out bytes.Buffer
+	got, err := namedGate("", false).Decide(&out, failingReader{t}, &out)
+	if err != nil || got != GateDeclined {
+		t.Fatalf("got %v, %v; want GateDeclined, nil", got, err)
+	}
+	for _, want := range []string{"Plan for IAM role ec2-test-restore-role", "detach policy", "Nothing was changed", "--confirm ec2-test-restore-role"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestGate_NamedTargetTerminalPromptAcceptsTheName(t *testing.T) {
+	w, in, buf := newPipeEditor("ec2-test-restore-role\n")
+	if got, err := namedGate("", true).Decide(w, in, buf); err != nil || got != GateProceed {
+		t.Fatalf("got %v, %v; want GateProceed, nil\n%s", got, err, buf.String())
+	}
+	w, in, buf = newPipeEditor("wrong\n")
+	if got, err := namedGate("", true).Decide(w, in, buf); err != nil || got != GateDeclined || !strings.Contains(buf.String(), "Cancelled") {
+		t.Fatalf("a wrong answer must decline: got %v, %v\n%s", got, err, buf.String())
+	}
+}
+
+func TestParseDestructiveNamedArgs_HelpDescribesTheNameNotAnInstance(t *testing.T) {
+	_, _, err := ParseDestructiveNamedArgs("delete-role", "usage: x", "role name", []string{"--help"})
+	var h *HelpRequested
+	if !errors.As(err, &h) {
+		t.Fatalf("want *HelpRequested, got %v", err)
+	}
+	if !strings.Contains(h.Usage, "--confirm <role name>") || strings.Contains(h.Usage, "instance") {
+		t.Errorf("help = %q", h.Usage)
+	}
+	opts, words, err := ParseDestructiveNamedArgs("delete-role", "usage: x", "role name", []string{"--confirm", "r", "r"})
+	if err != nil || opts.Confirm != "r" || len(words) != 1 {
+		t.Errorf("got %+v %v %v", opts, words, err)
+	}
+}
