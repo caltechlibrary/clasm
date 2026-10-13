@@ -131,8 +131,9 @@ func TestRunMainMenuFromSlug_ExitSignalEndsTheRunWithoutTheMenu(t *testing.T) {
 	}
 }
 
-// Key Management's one read-only leaf and IAM's five get slugs; every mutating
-// and destructive leaf stays "" until its own form is built.
+// Key Management's one read-only leaf and IAM's five get slugs, plus IAM's
+// create-role-from-template (DR-0186); every other mutating and destructive
+// leaf stays "" until its own form is built.
 func TestKeyMgmtAndIAMMenuItems_CLISlugs(t *testing.T) {
 	wantKey := map[string]string{
 		"Show Key Pairs": "show-key-pairs", "Create Key Pair": "", "Import Key Pair": "", "Delete Key Pair": "",
@@ -145,7 +146,7 @@ func TestKeyMgmtAndIAMMenuItems_CLISlugs(t *testing.T) {
 	wantIAM := map[string]string{
 		"Show Roles": "show-roles", "Show Instance Profiles": "show-instance-profiles", "Show Policies": "show-policies",
 		"Show Role Detail": "show-role-detail", "Show Instance Profile Detail": "show-instance-profile-detail",
-		"Create Role from Template": "", "Attach Policy to Role": "", "Detach Policy from Role": "",
+		"Create Role from Template": "create-role-from-template", "Attach Policy to Role": "", "Detach Policy from Role": "",
 		"Remove Role from Instance Profile": "", "Delete Instance Profile": "", "Delete Role": "",
 	}
 	for _, item := range iamMenuItems {

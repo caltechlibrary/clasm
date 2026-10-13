@@ -586,6 +586,31 @@ confirmation, so they can run from a script.
   policy is embedded as a JSON document, not as an escaped string. Reading
   an attached or inline policy's *document* is interactive only for now.
 
+`iam create-role-from-template [-text|-json] [--<parameter> <value>...] <template> <role-name>`
+: the non-interactive form of **Create Role from Template** (DR-0186). The
+  two words are the template and the new role's name; each template
+  parameter is a named option, given as a plain name or ID as the prompts
+  take them. `--help` lists the templates with their parameters. Template
+  words and options:
+
+  | Template | Parameters |
+  |---|---|
+  | `static-website-s3-cloudfront` | `--bucket` (required), `--distribution` |
+  | `rdm-repository-instance` | `--backup-bucket` (required) |
+  | `bridge-service` | `--log-group` (required) |
+  | `patron-facing-service` | `--log-group` (required), `--secret`, `--bucket` |
+  | `data-processing` | `--log-group`, `--data-bucket` (both required) |
+  | `rdm-restore-source-read-only` | `--backup-bucket` (required), `--second-bucket`, `--key-prefix` |
+
+  An unknown template, a missing required option, an option that belongs
+  to another template, or a blank role name is a usage error (exit 2) before
+  AWS is touched. It asks no confirmation, like the other creating forms,
+  and creates the role, attaches the template's managed policy, then creates
+  and attaches `<role-name>-policy`, tagged DLD-owned as the menu does. A
+  role name already in use is an AWS error (exit 1). Prints the role and
+  policy (or, with `-json`, `{role_name, role_arn, template,
+  managed_policies, policy_name, policy_arn}`).
+
 Timestamps in JSON are RFC 3339 in UTC (`2026-07-23T17:30:00Z`). In the
 text view they keep the screen's `2026-07-23 17:30` layout.
 

@@ -84,7 +84,7 @@ var iamMenuItems = []iamMenuItem{
 	{label: "Show Policies", cliSlug: ShowPoliciesCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ShowPolicies(ctx) }},
 	{label: "Show Role Detail", cliSlug: ShowRoleDetailCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ViewRoleDetail(ctx) }},
 	{label: "Show Instance Profile Detail", cliSlug: ShowInstanceProfileDetailCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.ViewInstanceProfileDetail(ctx) }},
-	{label: "Create Role from Template", action: func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
+	{label: "Create Role from Template", cliSlug: CreateRoleFromTemplateCLISlug, action: func(a IAMActions, ctx context.Context) error { return a.CreateRoleFromTemplate(ctx) }},
 	{label: "Attach Policy to Role", action: func(a IAMActions, ctx context.Context) error { return a.AttachPolicyToRole(ctx) }},
 	{label: "Detach Policy from Role", action: func(a IAMActions, ctx context.Context) error { return a.DetachPolicyFromRole(ctx) }},
 	{label: "Remove Role from Instance Profile", action: func(a IAMActions, ctx context.Context) error { return a.RemoveRoleFromInstanceProfile(ctx) }},

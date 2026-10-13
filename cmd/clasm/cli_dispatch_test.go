@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -628,5 +632,74 @@ func TestRunCLILeaf_ShowCurrentConfig(t *testing.T) {
 	}
 	if code := runCLILeaf(context.Background(), &out, &eout, "show-current-config", []string{"-json", "stray"}, env); code != 2 {
 		t.Errorf("a stray word: code=%d, want 2", code)
+	}
+}
+
+// create-role-from-template (DR-0186): the first mutating IAM form. A bare slug
+// deep-links into the TUI template flow; options or words after it are a run.
+func TestClassifyCLIArgs_CreateRoleFromTemplate(t *testing.T) {
+	mode, domainSlug, leafSlug, leafArgs, err := classifyCLIArgs([]string{"iam", "create-role-from-template"})
+	if err != nil || mode != cliModeLeaf || domainSlug != "iam" || leafSlug != "create-role-from-template" || leafArgs != nil {
+		t.Errorf("a bare slug must deep-link: mode=%q domain=%q leaf=%q args=%v err=%v", mode, domainSlug, leafSlug, leafArgs, err)
+	}
+	mode, _, _, leafArgs, err = classifyCLIArgs([]string{"iam", "create-role-from-template", "--backup-bucket", "b", "rdm-restore-source-read-only", "r"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 4 {
+		t.Errorf("options and words must be a run: mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"compute", "create-role-from-template"}); err == nil {
+		t.Errorf("the leaf under the wrong domain must be a usage error")
+	}
+}
+
+// Usage errors and --help never reach AWS (a nil iamClient would panic).
+func TestRunCLILeaf_CreateRoleFromTemplateUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T) {
+	for _, args := range [][]string{
+		{"-json"},
+		{"no-such-template", "r"},
+		{"rdm-restore-source-read-only", "r"}, // required --backup-bucket missing
+		{"--backup-bucket", "b", "--distribution", "E1", "rdm-restore-source-read-only", "r"},
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, "create-role-from-template", args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm iam create-role-from-template") {
+			t.Errorf("%v: code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "create-role-from-template", []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "rdm-restore-source-read-only") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+// recordingIAM stands in for the IAM client: it records the policy document the
+// creating form sends and fails any other call it was not meant to make.
+type recordingIAM struct {
+	awsclient.IAMAPI
+	policyDoc string
+}
+
+func (r *recordingIAM) CreateRole(_ context.Context, p *iam.CreateRoleInput, _ ...func(*iam.Options)) (*iam.CreateRoleOutput, error) {
+	return &iam.CreateRoleOutput{Role: &iamtypes.Role{RoleName: p.RoleName, Arn: aws.String("arn:aws:iam::1:role/" + aws.ToString(p.RoleName))}}, nil
+}
+
+func (r *recordingIAM) CreatePolicy(_ context.Context, p *iam.CreatePolicyInput, _ ...func(*iam.Options)) (*iam.CreatePolicyOutput, error) {
+	r.policyDoc = aws.ToString(p.PolicyDocument)
+	return &iam.CreatePolicyOutput{Policy: &iamtypes.Policy{Arn: aws.String("arn:aws:iam::1:policy/x")}}, nil
+}
+
+func (r *recordingIAM) AttachRolePolicy(context.Context, *iam.AttachRolePolicyInput, ...func(*iam.Options)) (*iam.AttachRolePolicyOutput, error) {
+	return &iam.AttachRolePolicyOutput{}, nil
+}
+
+// The form builds ARNs from the account and region main resolved.
+func TestRunCLILeaf_CreateRoleFromTemplateUsesTheAccountAndRegion(t *testing.T) {
+	rec := &recordingIAM{}
+	env := cliEnv{iamClient: rec, accountID: "123456789012", region: "us-west-2"}
+	var out, eout bytes.Buffer
+	args := []string{"--log-group", "/bridge/app", "bridge-service", "ec2-bridge"}
+	if code := runCLILeaf(context.Background(), &out, &eout, "create-role-from-template", args, env); code != 0 || !strings.Contains(out.String(), "Created role ec2-bridge") {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	if !strings.Contains(rec.policyDoc, "arn:aws:logs:us-west-2:123456789012:log-group:/bridge/app") {
+		t.Errorf("policy = %s", rec.policyDoc)
 	}
 }

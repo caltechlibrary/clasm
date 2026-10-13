@@ -714,7 +714,7 @@ func main() {
 		env := cliEnv{
 			ssmClients: ssmClients, ec2Clients: ec2Clients, s3Client: s3Client, newS3Client: newS3Client,
 			instances: state.instances, images: state.images, launchTemplates: state.launchTemplates,
-			keyPairs: keyMgmtState.keyPairs, buckets: s3State.buckets, iamClient: iamClient, originTag: cfg.OriginTag,
+			keyPairs: keyMgmtState.keyPairs, buckets: s3State.buckets, iamClient: iamClient, originTag: cfg.OriginTag, accountID: account, region: cfg.Regions[0],
 			rdmPostgresRules: cfg.RDMPostgresConfig, saveRDMPostgresRules: saveRDMPostgresRules,
 			cloudInitExtractionSGs: cfg.CloudInitExtractionSecurityGroups, config: cfg,
 		}

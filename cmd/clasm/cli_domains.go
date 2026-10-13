@@ -46,6 +46,12 @@ func runKeyMgmtIAMLeaf(ctx context.Context, out, eout io.Writer, leafSlug string
 			return reportCLIError(out, eout, err), true
 		}
 		return reportCLIError(out, eout, workflow.RunShowIAMRoleDetailCLI(ctx, out, env.iamClient, words[0], opts.Format)), true
+	case workflow.CreateRoleFromTemplateCLISlug:
+		opts, err := workflow.ParseCreateRoleFromTemplateArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunCreateRoleFromTemplateCLI(ctx, out, env.iamClient, env.originTag, env.accountID, env.region, opts)), true
 	case workflow.ShowInstanceProfileDetailCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showInstanceProfileDetailUsage, workflow.ComputeAllowNone, leafArgs, 1, 1)
 		if err != nil {

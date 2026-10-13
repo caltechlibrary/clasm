@@ -102,6 +102,8 @@ type cliEnv struct {
 	keyPairs        []inventory.KeyPair
 	buckets         []inventory.Bucket
 	iamClient       awsclient.IAMAPI
+	// accountID and region build the ARNs the IAM creating forms need.
+	accountID, region string
 	// config is the configuration main loaded, for the Configuration forms.
 	config    config.Config
 	originTag config.OriginTagConfig

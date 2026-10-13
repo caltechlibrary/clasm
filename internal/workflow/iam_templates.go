@@ -414,9 +414,9 @@ func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclien
 		params[p.Key] = val
 	}
 
-	statements := tmpl.BuildPolicy(params)
-	policyDoc, err := marshalPolicyDocument(statements)
-	if err != nil {
+	// Marshalled here as well so a policy that cannot be built is reported
+	// before the confirmation prompt, not after it.
+	if _, err := marshalPolicyDocument(tmpl.BuildPolicy(params)); err != nil {
 		return err
 	}
 
@@ -427,6 +427,36 @@ func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclien
 	if !ok {
 		fmt.Fprintln(w, "Cancelled.")
 		return nil
+	}
+
+	created, err := createRoleFromTemplateParams(ctx, client, originTag, tmpl, roleName, params)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Created role %s (%s)\n", created.RoleName, created.RoleARN)
+	return nil
+}
+
+// createdIAMRole is what createRoleFromTemplateParams made, for the caller to
+// report.
+type createdIAMRole struct {
+	RoleName        string
+	RoleARN         string
+	ManagedPolicies []string // ARNs attached as the template's managed policies
+	PolicyName      string   // the custom policy, "" when the template has none
+	PolicyARN       string
+}
+
+// createRoleFromTemplateParams creates the role, attaches the template's managed
+// policies, then creates and attaches its custom policy. params already holds
+// each template parameter in its final form (an ARN where the parameter builds
+// one). It is the one creation path, shared by the menu flow and the CLI form, so
+// the two cannot drift. A failure stops everything after the failed step.
+func createRoleFromTemplateParams(ctx context.Context, client awsclient.IAMAPI, originTag config.OriginTagConfig, tmpl IAMRoleTemplate, roleName string, params map[string]string) (createdIAMRole, error) {
+	statements := tmpl.BuildPolicy(params)
+	policyDoc, err := marshalPolicyDocument(statements)
+	if err != nil {
+		return createdIAMRole{}, err
 	}
 
 	var tags []iamtypes.Tag
@@ -440,13 +470,15 @@ func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclien
 		Tags:                     tags,
 	})
 	if err != nil {
-		return fmt.Errorf("creating role: %w", err)
+		return createdIAMRole{}, fmt.Errorf("creating role: %w", err)
 	}
+	created := createdIAMRole{RoleName: roleName, RoleARN: aws.ToString(roleOut.Role.Arn)}
 
 	for _, arn := range tmpl.ManagedPolicyARNs {
 		if _, err := client.AttachRolePolicy(ctx, &iam.AttachRolePolicyInput{RoleName: aws.String(roleName), PolicyArn: aws.String(arn)}); err != nil {
-			return fmt.Errorf("attaching managed policy %s: %w", arn, err)
+			return created, fmt.Errorf("attaching managed policy %s: %w", arn, err)
 		}
+		created.ManagedPolicies = append(created.ManagedPolicies, arn)
 	}
 
 	if len(statements) > 0 {
@@ -456,13 +488,12 @@ func createIAMRoleFromTemplate(ctx context.Context, w io.Writer, client awsclien
 			Tags:           tags,
 		})
 		if err != nil {
-			return fmt.Errorf("creating policy: %w", err)
+			return created, fmt.Errorf("creating policy: %w", err)
 		}
 		if _, err := client.AttachRolePolicy(ctx, &iam.AttachRolePolicyInput{RoleName: aws.String(roleName), PolicyArn: policyOut.Policy.Arn}); err != nil {
-			return fmt.Errorf("attaching custom policy: %w", err)
+			return created, fmt.Errorf("attaching custom policy: %w", err)
 		}
+		created.PolicyName, created.PolicyARN = roleName+"-policy", aws.ToString(policyOut.Policy.Arn)
 	}
-
-	fmt.Fprintf(w, "Created role %s (%s)\n", roleName, aws.ToString(roleOut.Role.Arn))
-	return nil
+	return created, nil
 }
