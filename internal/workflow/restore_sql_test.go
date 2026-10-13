@@ -264,11 +264,21 @@ func TestCountRestoredTables_SSMFailure(t *testing.T) {
 // restoreSQLFake builds a fakeSSMClient that distinguishes
 // restoreSQLBackup's sequence of remote commands by substring, mirroring
 // sqlBackupFake's own shape (run_sql_backup_test.go).
+// noLocationGuard are guard clients for a test that is not about the guard: the
+// instance has no profile, and the restores it runs name no file locations.
+func noLocationGuard() RestoreGuardClients {
+	fx := newWriteFixture(nil)
+	return RestoreGuardClients{EC2: map[string]awsclient.EC2API{"us-east-1": fx.ec2}, IAM: fx.iam}
+}
+
 func restoreSQLFake(discoveryStdout, detectStdout string, downloadStatus, loadStatus types.CommandInvocationStatus) *fakeSSMClient {
 	return &fakeSSMClient{
 		commandID:   "cmd-1",
 		finalStatus: types.CommandInvocationStatusSuccess,
 		responses: []ssmCommandResponse{
+			// The file-location guard's scans (restore_location.go) match "aws s3 cp"
+			// too, so they come first: a backup with no file locations.
+			{substring: "files_location", stdout: "clasm-scan-rc=0\n", status: types.CommandInvocationStatusSuccess},
 			{substring: "command -v aws", stdout: "/usr/bin/aws", status: types.CommandInvocationStatusSuccess},
 			{substring: "docker ps", stdout: discoveryStdout, status: types.CommandInvocationStatusSuccess},
 			{substring: "pg_database", stdout: detectStdout, status: types.CommandInvocationStatusSuccess},
@@ -289,7 +299,7 @@ func TestRestoreSQLBackup_NoBackupsFoundUnderPrefix(t *testing.T) {
 	s3Client := &fakeS3Client{}
 
 	// An empty source is an error, not a quiet success: nothing was restored.
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if err == nil || !strings.Contains(err.Error(), "no SQL backups found") {
 		t.Fatalf("expected a no-backups error, got: %v", err)
 	}
@@ -302,7 +312,7 @@ func TestRestoreSQLBackup_HappyPathNoExistingData(t *testing.T) {
 	ssmClient := restoreSQLFake("postgres:14.13\tcaltechauthors-db-1\n", "", types.CommandInvocationStatusSuccess, types.CommandInvocationStatusSuccess)
 	s3Client := &fakeS3Client{allObjects: oneSQLBackupObject("caltechauthors")}
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,7 +328,7 @@ func TestRestoreSQLBackup_ExistingDataRequiresConfirmDestructive_DeclinedCancels
 	ssmClient := restoreSQLFake("postgres:14.13\tcaltechauthors-db-1\n", "1\n", types.CommandInvocationStatusSuccess, types.CommandInvocationStatusSuccess)
 	s3Client := &fakeS3Client{allObjects: oneSQLBackupObject("caltechauthors")}
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -326,7 +336,7 @@ func TestRestoreSQLBackup_ExistingDataRequiresConfirmDestructive_DeclinedCancels
 		t.Errorf("expected a cancellation message, got:\n%s", buf.String())
 	}
 	for _, sent := range ssmClient.sentCommands {
-		if strings.Contains(sent, "aws s3 cp") {
+		if strings.Contains(sent, remoteRestoreDownloadPath) {
 			t.Errorf("did not expect a download attempt after a declined confirmation, sent commands: %v", ssmClient.sentCommands)
 		}
 	}
@@ -339,7 +349,7 @@ func TestRestoreSQLBackup_ExistingDataConfirmedProceeds(t *testing.T) {
 	ssmClient := restoreSQLFake("postgres:14.13\tcaltechauthors-db-1\n", "1\n", types.CommandInvocationStatusSuccess, types.CommandInvocationStatusSuccess)
 	s3Client := &fakeS3Client{allObjects: oneSQLBackupObject("caltechauthors")}
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -355,7 +365,7 @@ func TestRestoreSQLBackup_DownloadFailureAbortsBeforeLoad(t *testing.T) {
 	ssmClient := restoreSQLFake("postgres:14.13\tcaltechauthors-db-1\n", "", types.CommandInvocationStatusFailed, types.CommandInvocationStatusSuccess)
 	s3Client := &fakeS3Client{allObjects: oneSQLBackupObject("caltechauthors")}
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if err == nil {
 		t.Fatal("expected a download-failure error")
 	}
@@ -380,7 +390,7 @@ func TestRestoreSQLBackup_DiscoveryFailureAbortsBeforeAnyS3Activity(t *testing.T
 	ssmClient := restoreSQLFake("", "", types.CommandInvocationStatusSuccess, types.CommandInvocationStatusSuccess)
 	s3Client := &fakeS3Client{}
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if err == nil {
 		t.Fatal("expected a discovery-failure error")
 	}
@@ -400,7 +410,7 @@ func TestRestoreSQLBackup_SavesRDMPostgresRulesWhenChanged(t *testing.T) {
 	var savedRules []config.RDMPostgresRule
 	saveFn := func(rules []config.RDMPostgresRule) error { savedRules = rules; return nil }
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, existing, saveFn, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), existing, saveFn, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -420,7 +430,7 @@ func TestRestoreSQLBackup_DoesNotSaveRDMPostgresRulesWhenUnchanged(t *testing.T)
 	saveCalls := 0
 	saveFn := func(rules []config.RDMPostgresRule) error { saveCalls++; return nil }
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, existing, saveFn, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), existing, saveFn, le, buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -435,7 +445,7 @@ func TestRestoreSQLBackup_CLIUnavailableAbortsBeforeAnyPrompt(t *testing.T) {
 	ssmClient := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, sendCommandErr: errUnavailable}
 	s3Client := &fakeS3Client{}
 
-	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, nil, nil, le, buf)
+	err := restoreSQLBackup(context.Background(), term, map[string]awsclient.SSMAPI{"us-east-1": ssmClient}, s3Client, sameS3Client(s3Client), inst, noLocationGuard(), nil, nil, le, buf)
 	if !errors.Is(err, errUnavailable) {
 		t.Fatalf("expected errUnavailable to propagate, got: %v", err)
 	}

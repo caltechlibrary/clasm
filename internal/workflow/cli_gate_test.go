@@ -19,10 +19,19 @@ import (
 
 var gateTarget = inventory.Instance{InstanceID: "i-0abc123", Name: "caltechauthors-test-v13"}
 
+// confirmsOf turns the single --confirm value most tests give into the gate's
+// list; "" means the flag was not given.
+func confirmsOf(confirm string) []string {
+	if confirm == "" {
+		return nil
+	}
+	return []string{confirm}
+}
+
 func testGate(confirm string, interactive bool) Gate {
 	return Gate{
 		Target:      gateTarget,
-		Confirm:     confirm,
+		Confirms:    confirmsOf(confirm),
 		Interactive: interactive,
 		Summary:     "restore snapshot rdm-1 onto caltechauthors-test-v13",
 		Plan: []string{
@@ -214,15 +223,15 @@ func TestParseDestructiveArgs_ConfirmSpellings(t *testing.T) {
 			t.Errorf("%v: unexpected error: %v", args, err)
 			continue
 		}
-		if opts.Confirm != "i-1" || fmt.Sprint(pos) != "[a b]" {
-			t.Errorf("%v: got confirm=%q positional=%v; want i-1, [a b]", args, opts.Confirm, pos)
+		if fmt.Sprint(opts.Confirms) != "[i-1]" || fmt.Sprint(pos) != "[a b]" {
+			t.Errorf("%v: got confirm=%v positional=%v; want [i-1], [a b]", args, opts.Confirms, pos)
 		}
 	}
 }
 
 func TestParseDestructiveArgs_NoOptionsLeavesEveryWordPositional(t *testing.T) {
 	opts, pos, err := ParseDestructiveArgs("restore-x", gateTestUsage, []string{"a", "b", "c"})
-	if err != nil || opts.Confirm != "" || fmt.Sprint(pos) != "[a b c]" {
+	if err != nil || len(opts.Confirms) != 0 || fmt.Sprint(pos) != "[a b c]" {
 		t.Fatalf("got %+v %v %v", opts, pos, err)
 	}
 }
@@ -231,7 +240,7 @@ func TestParseDestructiveArgs_NoOptionsLeavesEveryWordPositional(t *testing.T) {
 // words must parse, leaving arity to the leaf.
 func TestParseDestructiveArgs_OptionsOnlyIsAValidParse(t *testing.T) {
 	opts, pos, err := ParseDestructiveArgs("restore-x", gateTestUsage, []string{"--confirm", "i-1"})
-	if err != nil || opts.Confirm != "i-1" || len(pos) != 0 {
+	if err != nil || fmt.Sprint(opts.Confirms) != "[i-1]" || len(pos) != 0 {
 		t.Fatalf("got %+v %v %v", opts, pos, err)
 	}
 }
@@ -244,8 +253,8 @@ func TestParseDestructiveArgs_OptionsAfterAPositionalWordAreNotOptions(t *testin
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opts.Confirm != "" || fmt.Sprint(pos) != "[a --confirm i-1]" {
-		t.Errorf("got confirm=%q positional=%v", opts.Confirm, pos)
+	if len(opts.Confirms) != 0 || fmt.Sprint(pos) != "[a --confirm i-1]" {
+		t.Errorf("got confirm=%v positional=%v", opts.Confirms, pos)
 	}
 }
 
@@ -310,7 +319,7 @@ func TestCLIExitCode(t *testing.T) {
 // and the "re-run with" hint all use that name.
 func namedGate(confirm string, interactive bool) Gate {
 	return Gate{
-		Name: "ec2-test-restore-role", Kind: "IAM role", Confirm: confirm, Interactive: interactive,
+		Name: "ec2-test-restore-role", Kind: "IAM role", Confirms: confirmsOf(confirm), Interactive: interactive,
 		Summary: "delete role ec2-test-restore-role",
 		Plan:    []string{"detach policy ec2-test-restore-role-policy", "delete role ec2-test-restore-role"},
 	}
@@ -376,7 +385,176 @@ func TestParseDestructiveNamedArgs_HelpDescribesTheNameNotAnInstance(t *testing.
 		t.Errorf("help = %q", h.Usage)
 	}
 	opts, words, err := ParseDestructiveNamedArgs("delete-role", "usage: x", "role name", []string{"--confirm", "r", "r"})
-	if err != nil || opts.Confirm != "r" || len(words) != 1 {
+	if err != nil || fmt.Sprint(opts.Confirms) != "[r]" || len(words) != 1 {
 		t.Errorf("got %+v %v %v", opts, words, err)
+	}
+}
+
+// --confirm is repeatable (DR-0187). A form with a second kind of thing to confirm
+// -- the writable buckets of Restore SQL's location guard -- sets AllowExtras and
+// Required: the first value names the target as always, and each Required name
+// needs a --confirm of its own. Without AllowExtras any value but the target is
+// the old mismatch usage error.
+
+func bucketGate(confirms []string, interactive bool, required ...string) Gate {
+	g := testGate("", interactive)
+	g.Confirms, g.AllowExtras, g.Required = confirms, true, required
+	return g
+}
+
+func TestGate_WithoutAllowExtrasAnExtraValueIsAMismatch(t *testing.T) {
+	g := testGate("", false)
+	g.Confirms = []string{"i-0abc123", "some-bucket"}
+	var out bytes.Buffer
+	got, err := g.Decide(&out, failingReader{t}, &out)
+	var ue *UsageError
+	if !errors.As(err, &ue) || got != GateDeclined || !strings.Contains(ue.Msg, `"some-bucket"`) {
+		t.Fatalf("got %v, %v; want a mismatch usage error naming the extra value", got, err)
+	}
+	if g.CheckConfirm() == nil {
+		t.Errorf("CheckConfirm must refuse an extra value too, so a form fails before any AWS call")
+	}
+}
+
+func TestGate_RepeatedConfirmNamingTheTargetTwiceIsFine(t *testing.T) {
+	g := testGate("", false)
+	g.Confirms = []string{"i-0abc123", "caltechauthors-test-v13"} // the ID and the name: both name the target
+	var out bytes.Buffer
+	if got, err := g.Decide(&out, failingReader{t}, &out); err != nil || got != GateProceed {
+		t.Fatalf("got %v, %v; want GateProceed, nil", got, err)
+	}
+}
+
+func TestGate_ConfirmsWithoutTheTargetAreAUsageErrorBeforeAnyCall(t *testing.T) {
+	g := bucketGate([]string{"bucket-a"}, false, "bucket-a")
+	err := g.CheckConfirm()
+	var ue *UsageError
+	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, "i-0abc123") {
+		t.Fatalf("want a usage error naming the target's ID, got %v", err)
+	}
+}
+
+func TestGate_AllWritableBucketsConfirmedProceeds(t *testing.T) {
+	var out bytes.Buffer
+	g := bucketGate([]string{"i-0abc123", "bucket-a", "bucket-b"}, false, "bucket-a", "bucket-b")
+	if got, err := g.Decide(&out, failingReader{t}, &out); err != nil || got != GateProceed {
+		t.Fatalf("got %v, %v; want GateProceed, nil", got, err)
+	}
+	for _, want := range []string{"--confirm i-0abc123", "--confirm bucket-a", "--confirm bucket-b"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("a confirmed run's log line should show every confirm, missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// The refusal: the target is confirmed but a writable bucket is not. Exit 1 (the
+// state forbids it, not a mistyped command), the plan is printed first, nothing
+// is changed, and the message names what to add.
+func TestGate_UnconfirmedWritableBucketRefusesWithExitOne(t *testing.T) {
+	var out bytes.Buffer
+	g := bucketGate([]string{"i-0abc123", "bucket-a"}, false, "bucket-a", "bucket-b")
+	got, err := g.Decide(&out, failingReader{t}, &out)
+	if err == nil || got != GateDeclined || CLIExitCode(err) != 1 {
+		t.Fatalf("got %v, %v (exit %d); want GateDeclined and an exit-1 error", got, err, CLIExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "bucket-b") || !strings.Contains(err.Error(), "--confirm bucket-b") || strings.Contains(err.Error(), "--confirm bucket-a") {
+		t.Errorf("the error should name only the unconfirmed bucket and the flag to add: %v", err)
+	}
+	if !strings.Contains(out.String(), "Plan for") {
+		t.Errorf("the plan is printed before the refusal:\n%s", out.String())
+	}
+}
+
+func TestGate_ValueThatIsNeitherTheTargetNorAWritableBucketIsAUsageError(t *testing.T) {
+	var out bytes.Buffer
+	g := bucketGate([]string{"i-0abc123", "typo-bucket"}, false, "bucket-a")
+	_, err := g.Decide(&out, failingReader{t}, &out)
+	var ue *UsageError
+	if !errors.As(err, &ue) || CLIExitCode(err) != 2 || !strings.Contains(ue.Msg, `"typo-bucket"`) || !strings.Contains(ue.Msg, "bucket-a") {
+		t.Fatalf("want a usage error naming the stray value and the writable buckets, got %v", err)
+	}
+	// The command line is wrong, so that wins over a missing confirm.
+	g = bucketGate([]string{"i-0abc123", "typo-bucket"}, false, "bucket-a", "bucket-b")
+	if _, err = g.Decide(&out, failingReader{t}, &out); CLIExitCode(err) != 2 {
+		t.Errorf("a stray value is exit 2 even when a bucket is also unconfirmed, got %d", CLIExitCode(err))
+	}
+}
+
+func TestGate_AnExtraValueWhenNothingIsWritableIsAUsageError(t *testing.T) {
+	var out bytes.Buffer
+	g := bucketGate([]string{"i-0abc123", "bucket-a"}, false) // nothing flagged
+	_, err := g.Decide(&out, failingReader{t}, &out)
+	var ue *UsageError
+	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, "no bucket") {
+		t.Fatalf("want a usage error saying no bucket needs confirming, got %v", err)
+	}
+}
+
+func TestGate_NoConfirmDryRunHintListsTheTargetAndEveryWritableBucket(t *testing.T) {
+	var out bytes.Buffer
+	g := bucketGate(nil, false, "bucket-a", "bucket-b")
+	got, err := g.Decide(&out, failingReader{t}, &out)
+	if err != nil || got != GateDeclined || CLIExitCode(err) != 0 {
+		t.Fatalf("a dry run is exit 0, got %v, %v", got, err)
+	}
+	if !strings.Contains(out.String(), "--confirm caltechauthors-test-v13 --confirm bucket-a --confirm bucket-b") {
+		t.Errorf("the hint should give the whole command to apply:\n%s", out.String())
+	}
+}
+
+func TestGate_TerminalAsksForTheTargetThenEachWritableBucket(t *testing.T) {
+	w, in, buf := newPipeEditor("i-0abc123\nbucket-a\n")
+	if got, err := bucketGate(nil, true, "bucket-a").Decide(w, in, buf); err != nil || got != GateProceed {
+		t.Fatalf("got %v, %v; want GateProceed, nil\n%s", got, err, buf.String())
+	}
+	w, in, buf = newPipeEditor("i-0abc123\nwrong\n")
+	if got, err := bucketGate(nil, true, "bucket-a").Decide(w, in, buf); err != nil || got != GateDeclined || !strings.Contains(buf.String(), "Cancelled") {
+		t.Fatalf("a wrong bucket answer must decline: got %v, %v\n%s", got, err, buf.String())
+	}
+}
+
+// With --confirm given the terminal is not asked, so a missing bucket confirm is a
+// refusal, not a prompt: a command that names its confirmations is a script.
+func TestGate_ConfirmGivenNeverPromptsForABucket(t *testing.T) {
+	var out bytes.Buffer
+	_, err := bucketGate([]string{"i-0abc123"}, true, "bucket-a").Decide(&out, failingReader{t}, &out)
+	if err == nil || CLIExitCode(err) != 1 {
+		t.Fatalf("want an exit-1 refusal, got %v", err)
+	}
+}
+
+func TestParseDestructiveArgs_ConfirmIsRepeatable(t *testing.T) {
+	opts, words, err := ParseDestructiveArgs("restore-sql", "usage: x", []string{"--confirm", "a", "--confirm", "b", "w"})
+	if err != nil || strings.Join(opts.Confirms, ",") != "a,b" || len(words) != 1 {
+		t.Fatalf("got %+v %v %v", opts, words, err)
+	}
+	opts, _, err = ParseDestructiveArgs("restore-sql", "usage: x", []string{"w"})
+	if err != nil || len(opts.Confirms) != 0 {
+		t.Fatalf("no flag, no confirms: got %+v %v", opts, err)
+	}
+	if _, _, err = ParseDestructiveArgs("restore-sql", "usage: x", []string{"--confirm"}); err == nil {
+		t.Errorf("--confirm needs a value")
+	}
+}
+
+func TestParseDestructiveBucketArgs_HelpExplainsTheBucketConfirm(t *testing.T) {
+	_, _, err := ParseDestructiveBucketArgs("restore-sql", "usage: x", []string{"--help"})
+	var h *HelpRequested
+	if !errors.As(err, &h) || !strings.Contains(h.Usage, "once per bucket") || !strings.Contains(h.Usage, "write") {
+		t.Fatalf("help should explain the bucket confirm: %v", err)
+	}
+	_, _, err = ParseDestructiveArgs("restore-os", "usage: x", []string{"--help"})
+	if !errors.As(err, &h) || strings.Contains(h.Usage, "once per bucket") {
+		t.Errorf("the plain help must not mention buckets: %v", err)
+	}
+}
+
+// An empty --confirm value (an unset shell variable, say) is a usage error, not a
+// silent dry run: a script that meant to confirm must not quietly not.
+func TestParseDestructiveArgs_AnEmptyConfirmValueIsAUsageError(t *testing.T) {
+	_, _, err := ParseDestructiveArgs("restore-x", "usage: x", []string{"--confirm", "", "a"})
+	var ue *UsageError
+	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, "needs a value") {
+		t.Fatalf("want a usage error, got %v", err)
 	}
 }

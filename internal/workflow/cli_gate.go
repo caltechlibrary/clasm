@@ -73,8 +73,19 @@ type Gate struct {
 	// and the prompt accept, Kind says what it is ("IAM role") in the plan
 	// header and the mismatch message. Leave both empty for an instance.
 	Name, Kind string
-	// Confirm is the value of --confirm, "" if it was not given.
-	Confirm string
+	// Confirms are the values of --confirm, in order; none if the flag was not
+	// given. The flag is repeatable (DR-0187): one value names the target, and a
+	// form with AllowExtras takes one more per Required name.
+	Confirms []string
+	// AllowExtras lets Confirms hold values other than the target's, which must
+	// then each be in Required. Without it any such value is the usual mismatch
+	// usage error. Restore SQL sets it for its writable-bucket guard.
+	AllowExtras bool
+	// Required are the names, besides the target, that each need a --confirm of
+	// their own before the action may run -- the buckets a restored database's
+	// file locations name that this instance can write to (DR-0187). Only read
+	// when AllowExtras is set.
+	Required []string
 	// Interactive reports whether a terminal is attached. False means a
 	// script: the gate never waits for input.
 	Interactive bool
@@ -101,28 +112,35 @@ func (g Gate) accepted() []string {
 	return out
 }
 
-// applyHint is the flag a dry run tells the operator to add: the Name when
-// there is one, since it reads better in a crontab, otherwise the ID.
-func (g Gate) applyHint() string {
-	if g.Name != "" {
-		return "--confirm " + g.Name
+// targetFlag is how the target is named in a --confirm: the Name when there is
+// one, since it reads better in a crontab, otherwise the ID.
+func (g Gate) targetFlag() string {
+	switch {
+	case g.Name != "":
+		return g.Name
+	case g.Target.Name != "":
+		return g.Target.Name
 	}
-	if g.Target.Name != "" {
-		return "--confirm " + g.Target.Name
-	}
-	return "--confirm " + g.Target.InstanceID
+	return g.Target.InstanceID
 }
 
-// CheckConfirm reports whether --confirm, when given, names the target: nil if
-// it was not given or equals the instance ID or Name tag exactly, else a
-// *UsageError. A form calls it as soon as its arguments are resolved, so a typo
-// fails before any AWS call, not after the read-only calls that build the plan.
-func (g Gate) CheckConfirm() error {
-	if g.Confirm == "" || slices.Contains(g.accepted(), g.Confirm) {
-		return nil
+// applyHint is the flags a dry run tells the operator to add: one --confirm for
+// the target and, when buckets need confirming, one for each.
+func (g Gate) applyHint() string {
+	flags := []string{"--confirm " + g.targetFlag()}
+	if g.AllowExtras {
+		for _, b := range g.Required {
+			flags = append(flags, "--confirm "+b)
+		}
 	}
+	return strings.Join(flags, " ")
+}
+
+// mismatchError is the usage error for a --confirm value that does not name the
+// target.
+func (g Gate) mismatchError(value string) error {
 	if g.Name != "" {
-		return &UsageError{Msg: fmt.Sprintf("--confirm %q does not match the target %s: want its name (%s), exactly", g.Confirm, g.Kind, g.Name)}
+		return &UsageError{Msg: fmt.Sprintf("--confirm %q does not match the target %s: want its name (%s), exactly", value, g.Kind, g.Name)}
 	}
 	name := g.Target.Name
 	if name == "" {
@@ -130,7 +148,72 @@ func (g Gate) CheckConfirm() error {
 	}
 	return &UsageError{Msg: fmt.Sprintf(
 		"--confirm %q does not match the target instance: want its instance ID (%s) or its Name tag (%s), exactly",
-		g.Confirm, g.Target.InstanceID, name)}
+		value, g.Target.InstanceID, name)}
+}
+
+// extraConfirms are the --confirm values that are not the target's.
+func (g Gate) extraConfirms() []string {
+	var extras []string
+	for _, c := range g.Confirms {
+		if !slices.Contains(g.accepted(), c) {
+			extras = append(extras, c)
+		}
+	}
+	return extras
+}
+
+// CheckConfirm reports whether the --confirm values, when given, name the target:
+// nil if none was given or each equals the instance ID or Name tag exactly -- or,
+// with AllowExtras, if at least one does and the rest are left for Decide to match
+// against Required -- else a *UsageError. A form calls it as soon as its arguments
+// are resolved, so a typo fails before any AWS call, not after the read-only calls
+// that build the plan.
+func (g Gate) CheckConfirm() error {
+	if len(g.Confirms) == 0 {
+		return nil
+	}
+	extras := g.extraConfirms()
+	if !g.AllowExtras {
+		if len(extras) > 0 {
+			return g.mismatchError(extras[0])
+		}
+		return nil
+	}
+	if len(extras) == len(g.Confirms) {
+		return g.mismatchError(g.Confirms[0])
+	}
+	return nil
+}
+
+// confirmedLine is the one line a confirmed run logs of its confirmations.
+func (g Gate) confirmedLine() string {
+	flags := make([]string, len(g.Confirms))
+	for i, c := range g.Confirms {
+		flags[i] = "--confirm " + c
+	}
+	return strings.Join(flags, " ")
+}
+
+// checkExtras matches the extra --confirm values against Required: a value that
+// is not a Required name is a *UsageError (the command line is wrong), and a
+// Required name with no value is a refusal -- an ordinary error, exit 1, because
+// the state forbids the action, not a mistyped command.
+func (g Gate) checkExtras() (missing []string, err error) {
+	for _, e := range g.extraConfirms() {
+		if slices.Contains(g.Required, e) {
+			continue
+		}
+		if len(g.Required) == 0 {
+			return nil, &UsageError{Msg: fmt.Sprintf("--confirm %q is not the target, and no bucket needs confirming for this restore", e)}
+		}
+		return nil, &UsageError{Msg: fmt.Sprintf("--confirm %q names neither the target nor a bucket this instance can write to (%s)", e, strings.Join(g.Required, ", "))}
+	}
+	for _, r := range g.Required {
+		if !slices.Contains(g.Confirms, r) {
+			missing = append(missing, r)
+		}
+	}
+	return missing, nil
 }
 
 // Decide applies the gate (DR-0180):
@@ -149,11 +232,27 @@ func (g Gate) CheckConfirm() error {
 // input and output drive the prompt through huh's accessible-mode pipe path in
 // tests and are nil in production.
 func (g Gate) Decide(w io.Writer, input io.Reader, output io.Writer) (GateDecision, error) {
-	if g.Confirm != "" {
+	if len(g.Confirms) > 0 {
 		if err := g.CheckConfirm(); err != nil {
 			return GateDeclined, err
 		}
-		fmt.Fprintf(w, "Confirmed (--confirm %s): %s\n", g.Confirm, g.Summary)
+		var missing []string
+		if g.AllowExtras {
+			var err error
+			if missing, err = g.checkExtras(); err != nil {
+				return GateDeclined, err
+			}
+		}
+		if len(missing) > 0 {
+			g.printPlan(w)
+			flags := make([]string, len(missing))
+			for i, m := range missing {
+				flags[i] = "--confirm " + m
+			}
+			return GateDeclined, fmt.Errorf("refused: this instance can write to %s, so each needs its own confirmation; nothing was changed. To go ahead add %s",
+				strings.Join(missing, ", "), strings.Join(flags, " "))
+		}
+		fmt.Fprintf(w, "Confirmed (%s): %s\n", g.confirmedLine(), g.Summary)
 		return GateProceed, nil
 	}
 
@@ -171,6 +270,19 @@ func (g Gate) Decide(w io.Writer, input io.Reader, output io.Writer) (GateDecisi
 		fmt.Fprintln(w, "Cancelled.")
 		return GateDeclined, nil
 	}
+	if g.AllowExtras {
+		for _, bucket := range g.Required {
+			fmt.Fprintf(w, "\nThis instance can write to bucket %s. Type its name to confirm.\n", bucket)
+			ok, err := ConfirmDestructive([]string{bucket}, WithConfirmIO(input, output))
+			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+				return GateDeclined, err
+			}
+			if err != nil || !ok {
+				fmt.Fprintln(w, "Cancelled.")
+				return GateDeclined, nil
+			}
+		}
+	}
 	return GateProceed, nil
 }
 
@@ -187,8 +299,9 @@ func (g Gate) printPlan(w io.Writer) {
 
 // DestructiveOptions holds the options every destructive leaf shares.
 type DestructiveOptions struct {
-	// Confirm is --confirm's value: the target's instance ID or Name tag, or "".
-	Confirm string
+	// Confirms are --confirm's values, in order: the target's instance ID or Name
+	// tag, and for a form with a bucket guard one more per writable bucket.
+	Confirms []string
 }
 
 // ParseDestructiveArgs parses a destructive leaf's options with a flag.FlagSet
@@ -216,17 +329,34 @@ func ParseDestructiveNamedArgs(leaf, usage, what string, args []string) (Destruc
 	return parseDestructiveArgs(leaf, usage, what, "The value must equal the target's name, exactly.", args)
 }
 
+// ParseDestructiveBucketArgs is ParseDestructiveArgs for a leaf with the
+// writable-bucket guard (DR-0187): --confirm is repeated, and the help says what
+// each extra value is for.
+func ParseDestructiveBucketArgs(leaf, usage string, args []string) (DestructiveOptions, []string, error) {
+	return parseDestructiveArgs(leaf, usage, "instance-id-or-name",
+		"The value must equal the target instance's ID or Name tag.\n"+
+			"      Repeat it once per bucket named by a restored file location that this instance can write to:\n"+
+			"      the restore refuses until each such bucket is named.", args)
+}
+
 func parseDestructiveArgs(leaf, usage, what, rule string, args []string) (DestructiveOptions, []string, error) {
 	fs := flag.NewFlagSet(leaf, flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // the errors below carry the usage; nothing prints twice
-	confirm := fs.String("confirm", "", "")
+	var confirms []string
+	fs.Func("confirm", "", func(v string) error {
+		if v == "" {
+			return errors.New("--confirm needs a value")
+		}
+		confirms = append(confirms, v)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return DestructiveOptions{}, nil, &HelpRequested{Usage: destructiveHelp(usage, what, rule)}
 		}
 		return DestructiveOptions{}, nil, &UsageError{Msg: fmt.Sprintf("%s: %v\n%s", leaf, err, usage)}
 	}
-	return DestructiveOptions{Confirm: *confirm}, fs.Args(), nil
+	return DestructiveOptions{Confirms: confirms}, fs.Args(), nil
 }
 
 func destructiveHelp(usage, what, rule string) string {

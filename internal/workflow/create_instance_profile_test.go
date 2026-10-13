@@ -75,6 +75,20 @@ type fakeIAMClient struct {
 	untagPolicyErr                error
 	lastUntagPolicyInput          *iam.UntagPolicyInput
 
+	// The restore guard's lookups (restore_write_access.go). simulateDecisions
+	// maps principal ARN + "|" + resource ARN to the decision for every
+	// action; simulateActionDecisions overrides per action; anything absent is
+	// implicitDeny. accessKeyUsers maps an access key ID to its user name ("" =
+	// never used), userArns a user name to its ARN.
+	simulateDecisions       map[string]iamtypes.PolicyEvaluationDecisionType
+	simulateActionDecisions map[string]iamtypes.PolicyEvaluationDecisionType
+	simulateErr             error
+	lastSimulateInput       *iam.SimulatePrincipalPolicyInput
+	accessKeyUsers          map[string]string
+	getAccessKeyLastUsedErr error
+	userArns                map[string]string
+	getUserErr              error
+
 	lastCreateInstanceProfileInput    *iam.CreateInstanceProfileInput
 	lastAddRoleToInstanceProfileInput *iam.AddRoleToInstanceProfileInput
 
@@ -786,4 +800,38 @@ func TestCreateInstanceProfileInteractive_PropagatesSSMCheckError(t *testing.T) 
 	if _, _, err := createInstanceProfileInteractive(context.Background(), term, fake, le, buf); err == nil {
 		t.Fatal("expected an error")
 	}
+}
+
+func (f *fakeIAMClient) SimulatePrincipalPolicy(ctx context.Context, params *iam.SimulatePrincipalPolicyInput, optFns ...func(*iam.Options)) (*iam.SimulatePrincipalPolicyOutput, error) {
+	f.lastSimulateInput = params
+	if f.simulateErr != nil {
+		return nil, f.simulateErr
+	}
+	var results []iamtypes.EvaluationResult
+	for _, action := range params.ActionNames {
+		decision := iamtypes.PolicyEvaluationDecisionTypeImplicitDeny
+		if d, ok := f.simulateDecisions[aws.ToString(params.PolicySourceArn)+"|"+params.ResourceArns[0]]; ok {
+			decision = d
+		}
+		if d, ok := f.simulateActionDecisions[action]; ok {
+			decision = d
+		}
+		results = append(results, iamtypes.EvaluationResult{EvalActionName: aws.String(action), EvalDecision: decision})
+	}
+	return &iam.SimulatePrincipalPolicyOutput{EvaluationResults: results}, nil
+}
+
+func (f *fakeIAMClient) GetAccessKeyLastUsed(ctx context.Context, params *iam.GetAccessKeyLastUsedInput, optFns ...func(*iam.Options)) (*iam.GetAccessKeyLastUsedOutput, error) {
+	if f.getAccessKeyLastUsedErr != nil {
+		return nil, f.getAccessKeyLastUsedErr
+	}
+	return &iam.GetAccessKeyLastUsedOutput{UserName: aws.String(f.accessKeyUsers[aws.ToString(params.AccessKeyId)])}, nil
+}
+
+func (f *fakeIAMClient) GetUser(ctx context.Context, params *iam.GetUserInput, optFns ...func(*iam.Options)) (*iam.GetUserOutput, error) {
+	if f.getUserErr != nil {
+		return nil, f.getUserErr
+	}
+	name := aws.ToString(params.UserName)
+	return &iam.GetUserOutput{User: &iamtypes.User{UserName: aws.String(name), Arn: aws.String(f.userArns[name])}}, nil
 }

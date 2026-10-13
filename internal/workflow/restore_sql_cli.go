@@ -32,14 +32,14 @@ type RestoreSQLParams struct {
 }
 
 const restoreSQLUsage = "usage: " + RestoreSQLBackupCLISlug +
-	" [--confirm <instance-id-or-name>] <instance> <bucket> <source> <backup-key-or-name-or-latest>"
+	" [--confirm <instance-id-or-name>] [--confirm <bucket>]... <instance> <bucket> <source> <backup-key-or-name-or-latest>"
 
 // ParseSQLRestoreArgs parses the form's options and four positional arguments.
 // Every problem is a *UsageError (exit 2) raised before AWS is touched; --help is
 // a *HelpRequested. The instance is matched by Name tag first, then by ID.
 func ParseSQLRestoreArgs(args []string, instances []inventory.Instance) (inventory.Instance, RestoreSQLParams, DestructiveOptions, error) {
 	const leaf = RestoreSQLBackupCLISlug
-	opts, pos, err := ParseDestructiveArgs(leaf, restoreSQLUsage, args)
+	opts, pos, err := ParseDestructiveBucketArgs(leaf, restoreSQLUsage, args)
 	if err != nil {
 		return inventory.Instance{}, RestoreSQLParams{}, DestructiveOptions{}, err
 	}
@@ -72,9 +72,12 @@ func ParseSQLRestoreArgs(args []string, instances []inventory.Instance) (invento
 // anything. The Postgres settings are saved to ~/.clasm only after the gate says
 // proceed, so a dry run writes nothing anywhere, and the discovery's own "saved"
 // message is not shown.
-func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, rules []config.RDMPostgresRule, saveRules func([]config.RDMPostgresRule) error, p RestoreSQLParams, confirm string, interactive bool, input io.Reader, output io.Writer) error {
-	gate := Gate{Target: inst, Confirm: confirm, Interactive: interactive}
+func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, guard RestoreGuardClients, rules []config.RDMPostgresRule, saveRules func([]config.RDMPostgresRule) error, p RestoreSQLParams, confirms []string, interactive bool, input io.Reader, output io.Writer) error {
+	gate := Gate{Target: inst, Confirms: confirms, Interactive: interactive, AllowExtras: true}
 	if err := gate.CheckConfirm(); err != nil {
+		return err
+	}
+	if err := guard.check(); err != nil {
 		return err
 	}
 
@@ -101,6 +104,14 @@ func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclie
 		return err
 	}
 
+	// The file-location guard (DR-0187). A stream through the instance, so a dry
+	// run can show it too and writes nothing; a writable bucket must be confirmed,
+	// and the downloaded file is re-read against this report before the drop.
+	report, err := inspectRestoreLocations(ctx, guard, ssmClient, inst, p.Bucket, object.Key)
+	if err != nil {
+		return err
+	}
+
 	replace := fmt.Sprintf("no existing database %q in Postgres container %s (nothing to replace); it is created and loaded", dbName, containerName)
 	action := fmt.Sprintf("create database %q", dbName)
 	if exists {
@@ -117,6 +128,8 @@ func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclie
 		"load it, then count the tables in the restored database",
 		fmt.Sprintf("once the table count is verified, remove the scratch files %s and %s from the instance; a failed restore keeps them", remoteRestoreDownloadPath, remoteRestoreSQLPath),
 	}
+	gate.Plan = append(gate.Plan, report.PlanLines()...)
+	gate.Required = report.Writable()
 	decision, err := gate.Decide(w, input, output)
 	if err != nil {
 		return err
@@ -131,7 +144,7 @@ func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclie
 		}
 	}
 	return executeSQLRestore(ctx, w, ssmClient, sqlRestoreRun{
-		inst: inst, containerName: containerName, dbName: dbName, dbUser: dbUser, bucket: p.Bucket, object: object,
+		inst: inst, containerName: containerName, dbName: dbName, dbUser: dbUser, bucket: p.Bucket, object: object, locations: &report,
 	})
 }
 

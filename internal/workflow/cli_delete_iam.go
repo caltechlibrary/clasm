@@ -55,8 +55,8 @@ func ParseDeleteIAMInstanceProfileArgs(args []string) (string, DestructiveOption
 // match is a usage error before any AWS call; everything before the gate is
 // read-only. interactive says a terminal is attached (input and output drive its
 // prompt in tests and are nil in production).
-func RunDeleteIAMRoleCLI(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, name, confirm string, interactive bool, input io.Reader, output io.Writer) error {
-	gate := Gate{Name: name, Kind: "IAM role", Confirm: confirm, Interactive: interactive, Summary: "delete role " + name}
+func RunDeleteIAMRoleCLI(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, name string, confirms []string, interactive bool, input io.Reader, output io.Writer) error {
+	gate := Gate{Name: name, Kind: "IAM role", Confirms: confirms, Interactive: interactive, Summary: "delete role " + name}
 	if err := gate.CheckConfirm(); err != nil {
 		return err
 	}
@@ -101,8 +101,8 @@ func RunDeleteIAMRoleCLI(ctx context.Context, w io.Writer, client awsclient.IAMA
 // the same gate and the same order as RunDeleteIAMRoleCLI. A profile that still
 // holds a role is refused here, in the dry run too, instead of leaving AWS to
 // fail the delete.
-func RunDeleteIAMInstanceProfileCLI(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, name, confirm string, interactive bool, input io.Reader, output io.Writer) error {
-	gate := Gate{Name: name, Kind: "IAM instance profile", Confirm: confirm, Interactive: interactive, Summary: "delete instance profile " + name}
+func RunDeleteIAMInstanceProfileCLI(ctx context.Context, w io.Writer, client awsclient.IAMAPI, originTag config.OriginTagConfig, name string, confirms []string, interactive bool, input io.Reader, output io.Writer) error {
+	gate := Gate{Name: name, Kind: "IAM instance profile", Confirms: confirms, Interactive: interactive, Summary: "delete instance profile " + name}
 	if err := gate.CheckConfirm(); err != nil {
 		return err
 	}

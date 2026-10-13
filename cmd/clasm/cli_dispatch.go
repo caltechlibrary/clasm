@@ -184,14 +184,14 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		if err != nil {
 			return reportCLIError(out, eout, err)
 		}
-		if err := (workflow.Gate{Target: inst, Confirm: opts.Confirm}).CheckConfirm(); err != nil {
+		if err := (workflow.Gate{Target: inst, Confirms: opts.Confirms}).CheckConfirm(); err != nil {
 			return reportCLIError(out, eout, err) // a typo fails before any AWS call
 		}
 		ssmClient, bucketClient, err := preflightForArchive(ctx, eout, ssmClients, s3Client, newS3Client, inst, params.Bucket)
 		if err != nil {
 			return 1
 		}
-		err = workflow.RunRestoreOpenSearchSnapshotAuto(ctx, out, ssmClient, bucketClient, inst, params, opts.Confirm, ui.StdinIsTerminal(), nil, nil)
+		err = workflow.RunRestoreOpenSearchSnapshotAuto(ctx, out, ssmClient, bucketClient, inst, params, opts.Confirms, ui.StdinIsTerminal(), nil, nil)
 		return reportCLIError(out, eout, err)
 
 	case workflow.RestoreSQLBackupCLISlug:
@@ -200,14 +200,16 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		if err != nil {
 			return reportCLIError(out, eout, err)
 		}
-		if err := (workflow.Gate{Target: inst, Confirm: opts.Confirm}).CheckConfirm(); err != nil {
+		// AllowExtras: a --confirm may also name a writable bucket (DR-0187), which
+		// only the guard's scan can tell, so only the target is checked here.
+		if err := (workflow.Gate{Target: inst, Confirms: opts.Confirms, AllowExtras: true}).CheckConfirm(); err != nil {
 			return reportCLIError(out, eout, err) // a typo fails before any AWS call
 		}
 		ssmClient, bucketClient, err := preflightForArchive(ctx, eout, ssmClients, s3Client, newS3Client, inst, params.Bucket)
 		if err != nil {
 			return 1
 		}
-		err = workflow.RunRestoreSQLBackupAuto(ctx, out, ssmClient, bucketClient, inst, rdmPostgresRules, saveRDMPostgresRules, params, opts.Confirm, ui.StdinIsTerminal(), nil, nil)
+		err = workflow.RunRestoreSQLBackupAuto(ctx, out, ssmClient, bucketClient, inst, workflow.RestoreGuardClients{EC2: env.ec2Clients, IAM: env.iamClient}, rdmPostgresRules, saveRDMPostgresRules, params, opts.Confirms, ui.StdinIsTerminal(), nil, nil)
 		return reportCLIError(out, eout, err)
 
 	default:

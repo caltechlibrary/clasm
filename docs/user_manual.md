@@ -724,10 +724,10 @@ destructive commands just run): **a run is a dry run unless you confirm it.**
   the usual mistake. `<snapshot-name-or-latest>` is an exact snapshot name or
   the word `latest`.
 
-`restore-sql-backup-from-s3 [--confirm <instance-id-or-name>] <instance> <bucket> <source> <backup-key-or-name-or-latest>`
+`restore-sql-backup-from-s3 [--confirm <instance-id-or-name>] [--confirm <bucket>]... <instance> <bucket> <source> <backup-key-or-name-or-latest>`
 : the non-interactive form of **Restore SQL Backup from S3**. The backup is a
   full S3 key, a file name, or `latest` (the most recently modified object under
-  `<source>/`).
+  `<source>/`). `--confirm` may be repeated, for the file-location guard below.
 
 What happens depends on how you run it:
 
@@ -746,6 +746,55 @@ run is a real preview. One check cannot run in a dry run: for the OpenSearch
 form, confirming that the snapshot holds indices matching the prefix needs the
 snapshot downloaded and registered, so it runs in a confirmed run, before
 anything is deleted.
+
+##### Restore SQL's file-location guard
+
+A restored RDM database carries its **file locations** -- for CaltechAUTHORS,
+`s3://caltechauthors`, the content bucket. An instance that can write to that
+bucket would write to production's content after the restore, so Restore SQL
+checks first (DR-0187). The check is the same in the menu flow and the
+command-line form.
+
+1. **Read the locations.** The backup is a `pg_dump --column-inserts` file, so
+   each file location is one `INSERT INTO public.files_location` line. The
+   dry run streams the backup from S3 through the instance (`aws s3 cp - |
+   gunzip | grep`), writing nothing to its disk; a multi-gigabyte backup takes
+   a minute or more. A row clasm cannot read, or a scan that does not finish, is
+   an error and nothing is changed: the guard never passes on what it could not
+   read. After a confirmed run downloads the backup, the downloaded file is read
+   again before anything is dropped, and a bucket the first scan did not see
+   stops the restore.
+2. **Judge each S3 bucket.** For every bucket the locations name, clasm asks
+   IAM's policy simulator (`iam:SimulatePrincipalPolicy`) whether either of the
+   instance's two ways of writing may do `s3:PutObject` or `s3:DeleteObject` on
+   it: the **role of its instance profile**, and the **access key in
+   `/Sites/.env`** (`INVENIO_S3_ACCESS_KEY_ID`, the key RDM's app uses; the
+   user that owns it is found with `iam:GetAccessKeyLastUsed`). Only the key ID,
+   never the secret, is read, and only its last four characters are printed.
+   A non-S3 location (a local path) is listed and not checked.
+3. **Anything that cannot be told is treated as writable**, with the reason
+   printed: the instance has a key whose owner cannot be found, the simulator is
+   refused (you need `iam:SimulatePrincipalPolicy`, `iam:GetAccessKeyLastUsed`
+   and `iam:GetUser`), `/Sites/.env` cannot be read. The simulator reads identity
+   policies and permission boundaries only; **a bucket policy that grants a
+   write is not seen.**
+
+The plan lists each bucket as `read-only` or `WRITABLE`, with how. **An instance
+that can write to none of them -- the read-only restore role, no key -- is never
+blocked.** For a writable bucket:
+
+- **Command line, `--confirm`:** name the instance and also each writable
+  bucket, `--confirm <instance> --confirm <bucket>`. The target confirmed but a
+  writable bucket not is a refusal (exit 1): the plan and the flag to add are
+  printed, and nothing is downloaded or dropped. No `--confirm` at all is still
+  a dry run (exit 0), and it ends with the full command to apply. A `--confirm`
+  value that is neither the instance nor a writable bucket is a usage error
+  (exit 2); `--confirm` for a bucket with no `--confirm` for the instance is
+  also exit 2.
+- **Command line, from a terminal, no `--confirm`:** after the instance prompt,
+  type each writable bucket's name.
+- **Menu:** a warning names each writable bucket and how it is writable, then
+  asks `Restore anyway?`; continuing is the confirmation.
 
 Options come **before** the positional arguments (`clasm ... <leaf> --confirm
 <name> <instance> ...`); an option after a positional word is treated as a

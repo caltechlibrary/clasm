@@ -780,3 +780,34 @@ func TestRunCLILeaf_AssociateInstanceProfileUsageErrorsExitTwoBeforeAnyAWSCall(t
 		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
 	}
 }
+
+// Restore SQL's --confirm is repeatable (DR-0187): a bucket value beside the
+// instance's passes the early check, which cannot yet know which buckets are
+// writable. A bucket value without the instance's is still exit 2 before any call.
+func TestRunCLILeaf_RestoreSQLBucketConfirmPassesTheEarlyCheckButNeedsTheInstance(t *testing.T) {
+	insts := []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-east-1"}}
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3",
+		[]string{"--confirm", "box", "--confirm", "caltechauthors", "box", "b", "s", "latest"}, cliEnv{instances: insts})
+	if strings.Contains(eout.String(), "does not match") || code == 2 {
+		t.Errorf("a bucket confirm beside the instance must pass the early check, got %d:\n%s", code, eout.String())
+	}
+	eout.Reset()
+	code = runCLILeaf(context.Background(), &out, &eout, "restore-sql-backup-from-s3",
+		[]string{"--confirm", "caltechauthors", "box", "b", "s", "latest"}, cliEnv{instances: insts})
+	if code != 2 || !strings.Contains(eout.String(), "does not match") {
+		t.Errorf("a bucket confirm alone must be exit 2, got %d:\n%s", code, eout.String())
+	}
+}
+
+// The OpenSearch restore has no bucket guard: any --confirm value but its target is
+// still a mismatch.
+func TestRunCLILeaf_RestoreOpenSearchRefusesAnExtraConfirm(t *testing.T) {
+	insts := []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-east-1"}}
+	var eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &bytes.Buffer{}, &eout, "restore-opensearch-snapshot-from-s3",
+		[]string{"--confirm", "box", "--confirm", "some-bucket", "box", "b", "s", "latest", "x", "y"}, cliEnv{instances: insts})
+	if code != 2 {
+		t.Errorf("want exit 2, got %d:\n%s", code, eout.String())
+	}
+}

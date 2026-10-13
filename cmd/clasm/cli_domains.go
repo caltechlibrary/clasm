@@ -57,13 +57,13 @@ func runKeyMgmtIAMLeaf(ctx context.Context, out, eout io.Writer, leafSlug string
 		if err != nil {
 			return reportCLIError(out, eout, err), true
 		}
-		return reportCLIError(out, eout, workflow.RunDeleteIAMRoleCLI(ctx, out, env.iamClient, env.originTag, name, opts.Confirm, ui.StdinIsTerminal(), nil, nil)), true
+		return reportCLIError(out, eout, workflow.RunDeleteIAMRoleCLI(ctx, out, env.iamClient, env.originTag, name, opts.Confirms, ui.StdinIsTerminal(), nil, nil)), true
 	case workflow.DeleteInstanceProfileCLISlug:
 		name, opts, err := workflow.ParseDeleteIAMInstanceProfileArgs(leafArgs)
 		if err != nil {
 			return reportCLIError(out, eout, err), true
 		}
-		return reportCLIError(out, eout, workflow.RunDeleteIAMInstanceProfileCLI(ctx, out, env.iamClient, env.originTag, name, opts.Confirm, ui.StdinIsTerminal(), nil, nil)), true
+		return reportCLIError(out, eout, workflow.RunDeleteIAMInstanceProfileCLI(ctx, out, env.iamClient, env.originTag, name, opts.Confirms, ui.StdinIsTerminal(), nil, nil)), true
 	case workflow.ShowInstanceProfileDetailCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showInstanceProfileDetailUsage, workflow.ComputeAllowNone, leafArgs, 1, 1)
 		if err != nil {

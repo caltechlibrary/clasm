@@ -79,6 +79,12 @@ type IAMAPI interface {
 	// discovery view already made and discarded, mirroring GetRole's
 	// role in the Role detail view.
 	GetInstanceProfile(ctx context.Context, params *iam.GetInstanceProfileInput, optFns ...func(*iam.Options)) (*iam.GetInstanceProfileOutput, error)
+	// SimulatePrincipalPolicy, GetAccessKeyLastUsed and GetUser support the
+	// restore's file-location guard (DR-0187): whether a role, or the user
+	// who owns an access key, may write to a bucket. All three are read-only.
+	SimulatePrincipalPolicy(ctx context.Context, params *iam.SimulatePrincipalPolicyInput, optFns ...func(*iam.Options)) (*iam.SimulatePrincipalPolicyOutput, error)
+	GetAccessKeyLastUsed(ctx context.Context, params *iam.GetAccessKeyLastUsedInput, optFns ...func(*iam.Options)) (*iam.GetAccessKeyLastUsedOutput, error)
+	GetUser(ctx context.Context, params *iam.GetUserInput, optFns ...func(*iam.Options)) (*iam.GetUserOutput, error)
 	// CreateRole/CreatePolicy/AttachRolePolicy support Phase 20.39's
 	// curated per-use-case role/policy creation templates -- reversing
 	// the 2026-07-02 "never creates a role, only attaches an existing

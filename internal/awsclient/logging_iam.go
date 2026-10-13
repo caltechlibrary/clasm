@@ -149,6 +149,24 @@ func (w *loggingIAMClient) GetInstanceProfile(ctx context.Context, params *iam.G
 	})
 }
 
+func (w *loggingIAMClient) SimulatePrincipalPolicy(ctx context.Context, params *iam.SimulatePrincipalPolicyInput, optFns ...func(*iam.Options)) (*iam.SimulatePrincipalPolicyOutput, error) {
+	return logAWSCall(w.dl, "IAM.SimulatePrincipalPolicy", w.region, params, func() (*iam.SimulatePrincipalPolicyOutput, error) {
+		return w.inner.SimulatePrincipalPolicy(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) GetAccessKeyLastUsed(ctx context.Context, params *iam.GetAccessKeyLastUsedInput, optFns ...func(*iam.Options)) (*iam.GetAccessKeyLastUsedOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetAccessKeyLastUsed", w.region, params, func() (*iam.GetAccessKeyLastUsedOutput, error) {
+		return w.inner.GetAccessKeyLastUsed(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingIAMClient) GetUser(ctx context.Context, params *iam.GetUserInput, optFns ...func(*iam.Options)) (*iam.GetUserOutput, error) {
+	return logAWSCall(w.dl, "IAM.GetUser", w.region, params, func() (*iam.GetUserOutput, error) {
+		return w.inner.GetUser(ctx, params, optFns...)
+	})
+}
+
 func (w *loggingIAMClient) CreateRole(ctx context.Context, params *iam.CreateRoleInput, optFns ...func(*iam.Options)) (*iam.CreateRoleOutput, error) {
 	return logAWSCall(w.dl, "IAM.CreateRole", w.region, params, func() (*iam.CreateRoleOutput, error) {
 		return w.inner.CreateRole(ctx, params, optFns...)

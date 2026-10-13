@@ -569,7 +569,7 @@ func main() {
 			return err
 		},
 		RestoreSQL: func(ctx context.Context) error {
-			return workflow.RestoreSQLBackup(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules)
+			return workflow.RestoreSQLBackup(ctx, out, ssmClients, s3Client, newS3Client, workflow.RestoreGuardClients{EC2: ec2Clients, IAM: iamClient}, state.instances, cfg.RDMPostgresConfig, saveRDMPostgresRules)
 		},
 		RestoreOpenSearch: func(ctx context.Context) error {
 			return workflow.RestoreOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories)

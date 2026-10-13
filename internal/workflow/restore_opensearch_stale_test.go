@@ -152,7 +152,7 @@ func runConfirmedRestoreWithStaleFiles(t *testing.T, moveStdout string, moveStat
 	ssmClient.responses = append([]ssmCommandResponse{{substring: "clasm-stale-moved", stdout: moveStdout, status: moveStatus}}, ssmClient.responses...)
 	s3Client := &fakeS3Client{allObjects: snapshotObjects("caltechdata", 10, "rdm-20260819-160031")}
 	var out strings.Builder
-	err := RunRestoreOpenSearchSnapshotAuto(context.Background(), &out, ssmClient, s3Client, restoreCLIInst, restoreCLIParams(), "caltechdata", false, failingReader{t}, &out)
+	err := RunRestoreOpenSearchSnapshotAuto(context.Background(), &out, ssmClient, s3Client, restoreCLIInst, restoreCLIParams(), []string{"caltechdata"}, false, failingReader{t}, &out)
 	return ssmClient, out.String(), err
 }
 

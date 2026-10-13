@@ -49,11 +49,11 @@ func noRoleMutation(t *testing.T, f *fakeIAMClient) {
 
 func TestParseDeleteIAMRoleArgs(t *testing.T) {
 	name, opts, err := ParseDeleteIAMRoleArgs([]string{"--confirm", "r1", "r1"})
-	if err != nil || name != "r1" || opts.Confirm != "r1" {
+	if err != nil || name != "r1" || strings.Join(opts.Confirms, ",") != "r1" {
 		t.Fatalf("got %q %+v %v", name, opts, err)
 	}
 	name, opts, err = ParseDeleteIAMRoleArgs([]string{"r1"})
-	if err != nil || name != "r1" || opts.Confirm != "" {
+	if err != nil || name != "r1" || len(opts.Confirms) != 0 {
 		t.Fatalf("got %q %+v %v", name, opts, err)
 	}
 	for _, args := range [][]string{{}, {"a", "b"}, {"--nope", "a"}, {"--confirm"}, {"  "}} {
@@ -72,7 +72,7 @@ func TestParseDeleteIAMRoleArgs(t *testing.T) {
 
 func TestParseDeleteIAMInstanceProfileArgs(t *testing.T) {
 	name, opts, err := ParseDeleteIAMInstanceProfileArgs([]string{"--confirm", "p1", "p1"})
-	if err != nil || name != "p1" || opts.Confirm != "p1" {
+	if err != nil || name != "p1" || strings.Join(opts.Confirms, ",") != "p1" {
 		t.Fatalf("got %q %+v %v", name, opts, err)
 	}
 	for _, args := range [][]string{{}, {"a", "b"}, {"--nope", "a"}} {
@@ -92,7 +92,7 @@ func TestParseDeleteIAMInstanceProfileArgs(t *testing.T) {
 func TestRunDeleteIAMRoleCLI_DryRunPrintsThePlanAndChangesNothing(t *testing.T) {
 	fake := dldRoleFake()
 	var out bytes.Buffer
-	err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", "", false, failingReader{t}, &out)
+	err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf(""), false, failingReader{t}, &out)
 	if err != nil || CLIExitCode(err) != 0 {
 		t.Fatalf("a dry run is not an error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRunDeleteIAMRoleCLI_PlanOmitsTheDedicatedPolicyWhenThereIsNone(t *testi
 	fake := dldRoleFake()
 	fake.attachedPolicyArns = map[string][]string{"ec2-test-restore-role": {ssmManagedInstanceCorePolicyArn}}
 	var out bytes.Buffer
-	if err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", "", false, failingReader{t}, &out); err != nil {
+	if err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf(""), false, failingReader{t}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "if nothing else uses it") {
@@ -127,7 +127,7 @@ func TestRunDeleteIAMRoleCLI_PlanOmitsTheDedicatedPolicyWhenThereIsNone(t *testi
 func TestRunDeleteIAMRoleCLI_ConfirmDeletesTheRoleAndItsDedicatedPolicy(t *testing.T) {
 	fake := dldRoleFake()
 	var out bytes.Buffer
-	err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", "ec2-test-restore-role", false, failingReader{t}, &out)
+	err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf("ec2-test-restore-role"), false, failingReader{t}, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestRunDeleteIAMRoleCLI_ConfirmDeletesTheRoleAndItsDedicatedPolicy(t *testi
 func TestRunDeleteIAMRoleCLI_ConfirmMismatchIsAUsageErrorBeforeAnyAWSCall(t *testing.T) {
 	fake := dldRoleFake()
 	fake.getRoleErr = errors.New("an AWS call was made")
-	err := RunDeleteIAMRoleCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ec2-test-restore-role", "other-role", false, failingReader{t}, &bytes.Buffer{})
+	err := RunDeleteIAMRoleCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf("other-role"), false, failingReader{t}, &bytes.Buffer{})
 	var ue *UsageError
 	if !errors.As(err, &ue) || CLIExitCode(err) != 2 {
 		t.Fatalf("want a *UsageError, got %v", err)
@@ -158,7 +158,7 @@ func TestRunDeleteIAMRoleCLI_ConfirmMismatchIsAUsageErrorBeforeAnyAWSCall(t *tes
 func TestRunDeleteIAMRoleCLI_UnknownRoleIsAUsageError(t *testing.T) {
 	fake := dldRoleFake()
 	fake.getRoleErr = &iamtypes.NoSuchEntityException{}
-	err := RunDeleteIAMRoleCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ghost", "ghost", false, failingReader{t}, &bytes.Buffer{})
+	err := RunDeleteIAMRoleCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ghost", confirmsOf("ghost"), false, failingReader{t}, &bytes.Buffer{})
 	var ue *UsageError
 	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, `no IAM role found named "ghost"`) {
 		t.Fatalf("got %v", err)
@@ -171,7 +171,7 @@ func TestRunDeleteIAMRoleCLI_NotDLDOwnedIsRefusedEvenWithConfirm(t *testing.T) {
 	fake.getRoleOut.Role.Tags = nil
 	var out bytes.Buffer
 	for _, confirm := range []string{"", "ec2-test-restore-role"} {
-		err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirm, false, failingReader{t}, &out)
+		err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf(confirm), false, failingReader{t}, &out)
 		if !errors.Is(err, inventory.ErrNotDLDOwned) || CLIExitCode(err) != 1 {
 			t.Errorf("confirm=%q: want ErrNotDLDOwned (exit 1), got %v", confirm, err)
 		}
@@ -187,7 +187,7 @@ func TestRunDeleteIAMRoleCLI_StillInAnInstanceProfileIsRefusedEvenInADryRun(t *t
 	}}
 	var out bytes.Buffer
 	for _, confirm := range []string{"", "ec2-test-restore-role"} {
-		err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirm, false, failingReader{t}, &out)
+		err := RunDeleteIAMRoleCLI(context.Background(), &out, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf(confirm), false, failingReader{t}, &out)
 		if err == nil || CLIExitCode(err) != 1 || !strings.Contains(err.Error(), "restore-profile") || !strings.Contains(err.Error(), "remove it from each first") {
 			t.Errorf("confirm=%q: want a refusal naming the profile and the remedy, got %v", confirm, err)
 		}
@@ -198,7 +198,7 @@ func TestRunDeleteIAMRoleCLI_StillInAnInstanceProfileIsRefusedEvenInADryRun(t *t
 func TestRunDeleteIAMRoleCLI_TerminalPromptsForTheName(t *testing.T) {
 	fake := dldRoleFake()
 	w, in, buf := newPipeEditor("ec2-test-restore-role\n")
-	if err := RunDeleteIAMRoleCLI(context.Background(), w, fake, deleteOrigin, "ec2-test-restore-role", "", true, in, buf); err != nil {
+	if err := RunDeleteIAMRoleCLI(context.Background(), w, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf(""), true, in, buf); err != nil {
 		t.Fatalf("%v\n%s", err, buf.String())
 	}
 	if fake.lastDeleteRoleInput == nil {
@@ -207,7 +207,7 @@ func TestRunDeleteIAMRoleCLI_TerminalPromptsForTheName(t *testing.T) {
 
 	fake = dldRoleFake()
 	w, in, buf = newPipeEditor("nope\n")
-	if err := RunDeleteIAMRoleCLI(context.Background(), w, fake, deleteOrigin, "ec2-test-restore-role", "", true, in, buf); err != nil {
+	if err := RunDeleteIAMRoleCLI(context.Background(), w, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf(""), true, in, buf); err != nil {
 		t.Fatal(err)
 	}
 	noRoleMutation(t, fake)
@@ -217,7 +217,7 @@ func TestRunDeleteIAMRoleCLI_TerminalPromptsForTheName(t *testing.T) {
 func TestRunDeleteIAMRoleCLI_AWSFailureIsExitOne(t *testing.T) {
 	fake := dldRoleFake()
 	fake.deleteRoleErr = errors.New("DeleteConflict")
-	err := RunDeleteIAMRoleCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ec2-test-restore-role", "ec2-test-restore-role", false, failingReader{t}, &bytes.Buffer{})
+	err := RunDeleteIAMRoleCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ec2-test-restore-role", confirmsOf("ec2-test-restore-role"), false, failingReader{t}, &bytes.Buffer{})
 	if err == nil || CLIExitCode(err) != 1 || !strings.Contains(err.Error(), "DeleteConflict") {
 		t.Fatalf("got %v", err)
 	}
@@ -241,7 +241,7 @@ func dldProfileFake(roles ...string) *fakeIAMClient {
 func TestRunDeleteIAMInstanceProfileCLI_DryRunConfirmAndMismatch(t *testing.T) {
 	fake := dldProfileFake()
 	var out bytes.Buffer
-	if err := RunDeleteIAMInstanceProfileCLI(context.Background(), &out, fake, deleteOrigin, "restore-profile", "", false, failingReader{t}, &out); err != nil {
+	if err := RunDeleteIAMInstanceProfileCLI(context.Background(), &out, fake, deleteOrigin, "restore-profile", confirmsOf(""), false, failingReader{t}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.lastDeleteInstanceProfileInputs) != 0 {
@@ -254,7 +254,7 @@ func TestRunDeleteIAMInstanceProfileCLI_DryRunConfirmAndMismatch(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := RunDeleteIAMInstanceProfileCLI(context.Background(), &out, fake, deleteOrigin, "restore-profile", "restore-profile", false, failingReader{t}, &out); err != nil {
+	if err := RunDeleteIAMInstanceProfileCLI(context.Background(), &out, fake, deleteOrigin, "restore-profile", confirmsOf("restore-profile"), false, failingReader{t}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.lastDeleteInstanceProfileInputs) != 1 || aws.ToString(fake.lastDeleteInstanceProfileInputs[0].InstanceProfileName) != "restore-profile" {
@@ -266,7 +266,7 @@ func TestRunDeleteIAMInstanceProfileCLI_DryRunConfirmAndMismatch(t *testing.T) {
 
 	fake = dldProfileFake()
 	fake.getInstanceProfileErr = errors.New("an AWS call was made")
-	err := RunDeleteIAMInstanceProfileCLI(context.Background(), &out, fake, deleteOrigin, "restore-profile", "other", false, failingReader{t}, &out)
+	err := RunDeleteIAMInstanceProfileCLI(context.Background(), &out, fake, deleteOrigin, "restore-profile", confirmsOf("other"), false, failingReader{t}, &out)
 	var ue *UsageError
 	if !errors.As(err, &ue) {
 		t.Fatalf("a mismatch must be a usage error before any AWS call, got %v", err)
@@ -277,14 +277,14 @@ func TestRunDeleteIAMInstanceProfileCLI_Refusals(t *testing.T) {
 	// Not DLD-owned.
 	fake := dldProfileFake()
 	fake.getInstanceProfileOut.InstanceProfile.Tags = nil
-	err := RunDeleteIAMInstanceProfileCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "restore-profile", "restore-profile", false, failingReader{t}, &bytes.Buffer{})
+	err := RunDeleteIAMInstanceProfileCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "restore-profile", confirmsOf("restore-profile"), false, failingReader{t}, &bytes.Buffer{})
 	if !errors.Is(err, inventory.ErrNotDLDOwned) || len(fake.lastDeleteInstanceProfileInputs) != 0 {
 		t.Errorf("not DLD-owned: got %v, deletes=%d", err, len(fake.lastDeleteInstanceProfileInputs))
 	}
 	// A role is still in it: refused in a dry run too, naming the remedy.
 	fake = dldProfileFake("ec2-test-restore-role")
 	for _, confirm := range []string{"", "restore-profile"} {
-		err = RunDeleteIAMInstanceProfileCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "restore-profile", confirm, false, failingReader{t}, &bytes.Buffer{})
+		err = RunDeleteIAMInstanceProfileCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "restore-profile", confirmsOf(confirm), false, failingReader{t}, &bytes.Buffer{})
 		if err == nil || CLIExitCode(err) != 1 || !strings.Contains(err.Error(), "ec2-test-restore-role") || !strings.Contains(err.Error(), "remove") {
 			t.Errorf("confirm=%q: want a refusal naming the role, got %v", confirm, err)
 		}
@@ -295,7 +295,7 @@ func TestRunDeleteIAMInstanceProfileCLI_Refusals(t *testing.T) {
 	// Unknown.
 	fake = dldProfileFake()
 	fake.getInstanceProfileErr = &iamtypes.NoSuchEntityException{}
-	err = RunDeleteIAMInstanceProfileCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ghost", "ghost", false, failingReader{t}, &bytes.Buffer{})
+	err = RunDeleteIAMInstanceProfileCLI(context.Background(), &bytes.Buffer{}, fake, deleteOrigin, "ghost", confirmsOf("ghost"), false, failingReader{t}, &bytes.Buffer{})
 	var ue *UsageError
 	if !errors.As(err, &ue) || !strings.Contains(ue.Msg, `no IAM instance profile found named "ghost"`) {
 		t.Errorf("unknown: got %v", err)

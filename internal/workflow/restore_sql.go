@@ -278,7 +278,7 @@ func countRestoredTables(ctx context.Context, client awsclient.SSMAPI, instanceI
 // target instance, then delegate to the testable core. No recall/
 // default-cursor history, unlike Run SQL Backup/Archive SQL -- restoring
 // is a rare, deliberate action, not a routine one worth pre-positioning.
-func RestoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), instances []inventory.Instance, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
+func RestoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), guard RestoreGuardClients, instances []inventory.Instance, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
 	if len(instances) == 0 {
 		fmt.Fprintln(w, "No instances found.")
 		return nil
@@ -288,7 +288,7 @@ func RestoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
-	return restoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client, inst, rdmPostgresRules, saveRDMPostgresRules, nil, nil)
+	return restoreSQLBackup(ctx, w, ssmClients, s3Client, newS3Client, inst, guard, rdmPostgresRules, saveRDMPostgresRules, nil, nil)
 }
 
 // restoreSQLBackup is RestoreSQLBackup's testable core, once a target
@@ -307,7 +307,7 @@ func RestoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 // the same failure right before the load step (DECISIONS.md, "Restore
 // SQL Backup: resolve the Postgres target before any S3 prompt, not
 // after").
-func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error, input io.Reader, output io.Writer) error {
+func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awsclient.SSMAPI, s3Client awsclient.S3API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), inst inventory.Instance, guard RestoreGuardClients, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error, input io.Reader, output io.Writer) error {
 	ssmClient, err := resolveSSM(ssmClients, inst.Region)
 	if err != nil {
 		return err
@@ -368,6 +368,18 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 		return cancelledIsNil(w, err)
 	}
 
+	report, err := inspectRestoreLocations(ctx, guard, ssmClient, inst, bucket, object.Key)
+	if err != nil {
+		return err
+	}
+	proceed, err := report.warnAndAsk(w, input, output)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
+	}
+
 	exists, err := detectExistingSQLData(ctx, ssmClient, inst.InstanceID, containerName, dbName, dbUser, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
@@ -384,7 +396,7 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 	}
 
 	return executeSQLRestore(ctx, w, ssmClient, sqlRestoreRun{
-		inst: inst, containerName: containerName, dbName: dbName, dbUser: dbUser, bucket: bucket, object: object,
+		inst: inst, containerName: containerName, dbName: dbName, dbUser: dbUser, bucket: bucket, object: object, locations: &report,
 	})
 }
 
@@ -399,6 +411,10 @@ type sqlRestoreRun struct {
 	dbUser        string
 	bucket        string
 	object        S3Object
+	// locations is what the file-location guard judged (DR-0187); the downloaded
+	// file is re-read against it before anything is dropped. Nil only for a run
+	// that skipped the guard, which no caller does.
+	locations *restoreLocationReport
 }
 
 // executeSQLRestore runs a confirmed restore: download and decompress the backup
@@ -410,6 +426,12 @@ func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSM
 	sqlFilePath, err := downloadAndDecompressSQLBackup(ctx, ssmClient, inst.InstanceID, bucket, object.Key, DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
+	}
+
+	if r.locations != nil {
+		if err := r.locations.recheck(ctx, ssmClient, inst.InstanceID, sqlFilePath); err != nil {
+			return err
+		}
 	}
 
 	if err := runRestoreSQLCommands(ctx, ssmClient, inst.InstanceID, containerName, dbName, dbUser, sqlFilePath, DefaultSQLRestoreTimeout, DefaultSSMPollInterval); err != nil {

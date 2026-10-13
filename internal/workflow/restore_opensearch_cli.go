@@ -86,8 +86,8 @@ const maxPlanIndexNames = 5
 // existing indices, the S3 listing and the snapshot's size); then the gate
 // decides. Only a confirmed run goes on to executeOpenSearchRestore, the same
 // steps in the same order as the interactive form.
-func RunRestoreOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, p RestoreOpenSearchParams, confirm string, interactive bool, input io.Reader, output io.Writer) error {
-	gate := Gate{Target: inst, Confirm: confirm, Interactive: interactive}
+func RunRestoreOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, p RestoreOpenSearchParams, confirms []string, interactive bool, input io.Reader, output io.Writer) error {
+	gate := Gate{Target: inst, Confirms: confirms, Interactive: interactive}
 	if err := gate.CheckConfirm(); err != nil {
 		return err
 	}

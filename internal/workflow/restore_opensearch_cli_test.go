@@ -64,7 +64,7 @@ func runRestoreCLI(t *testing.T, existing string, objects []s3types.Object, p Re
 		buf = &bytes.Buffer{}
 		w, in = buf, failingReader{t}
 	}
-	err := RunRestoreOpenSearchSnapshotAuto(context.Background(), w, ssmClient, s3Client, restoreCLIInst, p, confirm, interactive, in, buf)
+	err := RunRestoreOpenSearchSnapshotAuto(context.Background(), w, ssmClient, s3Client, restoreCLIInst, p, confirmsOf(confirm), interactive, in, buf)
 	return ssmClient, s3Client, buf.String(), err
 }
 
@@ -76,8 +76,8 @@ func TestParseOpenSearchRestoreArgs_AllSixArgumentsAndConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if inst.InstanceID != "i-1" || opts.Confirm != "i-1" {
-		t.Errorf("got instance %q confirm %q", inst.InstanceID, opts.Confirm)
+	if inst.InstanceID != "i-1" || strings.Join(opts.Confirms, ",") != "i-1" {
+		t.Errorf("got instance %q confirm %q", inst.InstanceID, opts.Confirms)
 	}
 	want := RestoreOpenSearchParams{Directory: "/opt/d", Bucket: "my-bucket", Source: "src", Snapshot: "latest", IndexPrefix: "pfx"}
 	if p != want {
@@ -320,7 +320,7 @@ func TestRestoreCLI_UIDMismatchStopsBeforeAnythingElse(t *testing.T) {
 	setRestoreOwnerStdout(ssmClient, "1001 1001\n")
 	s3Client := &fakeS3Client{allObjects: snapshotObjects("caltechdata", 10, "rdm-20260819-160031")}
 	var out bytes.Buffer
-	err := RunRestoreOpenSearchSnapshotAuto(context.Background(), &out, ssmClient, s3Client, restoreCLIInst, restoreCLIParams(), "caltechdata", false, failingReader{t}, &out)
+	err := RunRestoreOpenSearchSnapshotAuto(context.Background(), &out, ssmClient, s3Client, restoreCLIInst, restoreCLIParams(), []string{"caltechdata"}, false, failingReader{t}, &out)
 	if err == nil || !strings.Contains(err.Error(), "1001") || !strings.Contains(err.Error(), "1000") {
 		t.Fatalf("want an error naming both uids, got: %v", err)
 	}

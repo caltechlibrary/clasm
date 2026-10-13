@@ -61,7 +61,7 @@ func runRestoreSQLCLI(t *testing.T, detect string, objects []s3types.Object, p R
 		buf = &bytes.Buffer{}
 		w, in = buf, failingReader{t}
 	}
-	err := RunRestoreSQLBackupAuto(context.Background(), w, ssmClient, s3Client, restoreSQLInst, nil, nil, p, confirm, interactive, in, buf)
+	err := RunRestoreSQLBackupAuto(context.Background(), w, ssmClient, s3Client, restoreSQLInst, noLocationGuard(), nil, nil, p, confirmsOf(confirm), interactive, in, buf)
 	return ssmClient, s3Client, buf.String(), err
 }
 
@@ -72,8 +72,8 @@ func TestParseSQLRestoreArgs_FourArgumentsAndConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if inst.InstanceID != "i-1" || opts.Confirm != "i-1" {
-		t.Errorf("got instance %q confirm %q", inst.InstanceID, opts.Confirm)
+	if inst.InstanceID != "i-1" || strings.Join(opts.Confirms, ",") != "i-1" {
+		t.Errorf("got instance %q confirm %q", inst.InstanceID, opts.Confirms)
 	}
 	if want := (RestoreSQLParams{Bucket: "my-bucket", Source: "src", Backup: "latest"}); p != want {
 		t.Errorf("got %+v, want %+v", p, want)
@@ -128,7 +128,7 @@ func TestRestoreSQLCLI_DryRunChangesNothingAndPrintsARealPlan(t *testing.T) {
 			t.Errorf("the plan should mention %q, got:\n%s", want, out)
 		}
 	}
-	for _, f := range []string{"aws s3 cp", "DROP DATABASE", "CREATE DATABASE", "docker exec -i"} {
+	for _, f := range []string{remoteRestoreDownloadPath, "DROP DATABASE", "CREATE DATABASE", "docker exec -i"} {
 		if commandSent(ssmClient.sentCommands, f) {
 			t.Errorf("a dry run sent a command containing %q: %v", f, ssmClient.sentCommands)
 		}
@@ -155,7 +155,7 @@ func TestRestoreSQLCLI_ConfirmDownloadsBeforeItDropsAnything(t *testing.T) {
 	sent := ssmClient.sentCommands
 	discover := commandIndex(t, sent, "docker ps")
 	detect := commandIndex(t, sent, "pg_database")
-	download := commandIndex(t, sent, "aws s3 cp")
+	download := commandIndex(t, sent, remoteRestoreDownloadPath)
 	drop := commandIndex(t, sent, "DROP DATABASE")
 	create := commandIndex(t, sent, "CREATE DATABASE")
 	load := commandIndex(t, sent, "docker exec -i")
@@ -205,7 +205,7 @@ func TestRestoreSQLCLI_TerminalWrongAnswerChangesNothing(t *testing.T) {
 	if !strings.Contains(out, "Cancelled") {
 		t.Errorf("got:\n%s", out)
 	}
-	for _, f := range []string{"aws s3 cp", "DROP DATABASE"} {
+	for _, f := range []string{remoteRestoreDownloadPath, "DROP DATABASE"} {
 		if commandSent(ssmClient.sentCommands, f) {
 			t.Errorf("%q was sent after a declined prompt", f)
 		}
