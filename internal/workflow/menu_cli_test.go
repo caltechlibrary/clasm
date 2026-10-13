@@ -9,8 +9,8 @@ import (
 )
 
 // TestMainMenuItems_CLISlugs pins which Compute leaves have a cliSlug: the seven
-// read-only "Show" leaves and the two create leaves that set up and start a launch
-// (2026-09-30) (DR-0177's mechanical rule: lowercase, hyphenate,
+// read-only "Show" leaves, the two create leaves that set up and start a launch
+// (2026-09-30) and the instance-profile swap (DR-0185) (DR-0177's mechanical rule: lowercase, hyphenate,
 // drop the slash and apostrophes). Every lifecycle leaf stays "" -- unreachable
 // from the CLI path -- until its own form is built.
 func TestMainMenuItems_CLISlugs(t *testing.T) {
@@ -24,6 +24,7 @@ func TestMainMenuItems_CLISlugs(t *testing.T) {
 		"Show/export cloud-init for an instance or AMI": "show-export-cloud-init-for-an-instance-or-ami",
 		"Create EC2 instance from launch template":      "create-ec2-instance-from-launch-template",
 		"Create launch template from cloud-init YAML":   "create-launch-template-from-cloud-init-yaml",
+		"Associate/replace IAM instance profile":        "associate-replace-iam-instance-profile",
 	}
 	seen := map[string]bool{}
 	for _, item := range mainMenuItems {

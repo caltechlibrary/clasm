@@ -566,6 +566,22 @@ confirmation, so they can run from a script.
   standard error, so standard output is the result alone. There is no
   terminate form yet; end the instance from the Compute menu.
 
+`associate-replace-iam-instance-profile [-text|-json] <instance-name-or-id> <instance-profile-name>`
+: the non-interactive form of **Associate/replace IAM instance profile**
+  (DR-0185): puts the named profile on a running instance **in place** (no
+  reboot, no relaunch), associating one if the instance has none and
+  replacing the association if it has another. **Safe to repeat:** if the
+  instance already has that profile, nothing is sent and it succeeds, so a
+  script can put the restore role on and the original back without reading
+  state first. There is no confirmation (the swap is reversible and destroys
+  nothing); the old and the new profile are printed, or in `-json`
+  `{instance_id, name, region, previous_profile, profile, action}` where
+  `action` is `associated`, `replaced` or `unchanged`. The profile must
+  already exist (a usage error, exit 2, if not) and must be SSM-capable: a
+  profile none of whose roles has `AmazonSSMManagedInstanceCore` is refused
+  with exit 1, because clasm manages instances over SSM and would lose this
+  one. (The interactive menu shows SSM capability but does not refuse.)
+
 #### Key Management and IAM
 
 `key-management show-key-pairs`

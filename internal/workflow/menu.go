@@ -143,7 +143,7 @@ var mainMenuItems = []menuItem{
 	{label: "Stop EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
 	{label: "Terminate EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
 	{label: "Resize instance's root volume", action: func(a MenuActions, ctx context.Context) error { return a.ResizeInstanceRootVolume(ctx) }},
-	{label: "Associate/replace IAM instance profile", action: func(a MenuActions, ctx context.Context) error { return a.AssociateOrReplaceInstanceProfile(ctx) }},
+	{label: "Associate/replace IAM instance profile", cliSlug: AssociateInstanceProfileCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.AssociateOrReplaceInstanceProfile(ctx) }},
 	{label: "Manage tags for an instance or AMI", action: func(a MenuActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 	// AMI lifecycle
 	{label: "Create AMI from EC2 instance (running or stopped)", action: func(a MenuActions, ctx context.Context) error { return a.CreateAMIFromInstance(ctx) }},

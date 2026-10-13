@@ -744,3 +744,39 @@ func TestRunCLILeaf_IAMDeleteLeavesRefuseBeforeAnyAWSCall(t *testing.T) {
 		}
 	}
 }
+
+// The instance-profile swap (DR-0185). Usage errors and --help never reach AWS
+// (nil clients would panic); an unknown instance is a usage error too.
+func TestClassifyCLIArgs_AssociateInstanceProfile(t *testing.T) {
+	const leaf = "associate-replace-iam-instance-profile"
+	mode, domainSlug, got, args, err := classifyCLIArgs([]string{"compute", leaf})
+	if err != nil || mode != cliModeLeaf || domainSlug != "compute" || got != leaf || args != nil {
+		t.Errorf("a bare slug must deep-link: mode=%q domain=%q leaf=%q err=%v", mode, domainSlug, got, err)
+	}
+	mode, _, _, args, err = classifyCLIArgs([]string{"compute", leaf, "box", "restore-profile"})
+	if err != nil || mode != cliModeRun || len(args) != 2 {
+		t.Errorf("two words must be a run: mode=%q args=%v err=%v", mode, args, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"iam", leaf}); err == nil {
+		t.Errorf("the leaf under the wrong domain must be a usage error")
+	}
+}
+
+func TestRunCLILeaf_AssociateInstanceProfileUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T) {
+	const leaf = "associate-replace-iam-instance-profile"
+	for _, args := range [][]string{{"-json"}, {"box"}, {"a", "b", "c"}, {"-jsonl", "a", "b"}} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm compute "+leaf) {
+			t.Errorf("%v: code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"no-such-box", "restore-profile"}, computeEnv()); code != 2 || !strings.Contains(eout.String(), "no instance found") {
+		t.Errorf("unknown instance: code=%d err=%q", code, eout.String())
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "already has") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}

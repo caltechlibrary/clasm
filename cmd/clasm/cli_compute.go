@@ -77,6 +77,12 @@ func runComputeLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, l
 			return reportCLIError(out, eout, err), true
 		}
 		return reportCLIError(out, eout, workflow.RunCreateLaunchTemplateCLI(ctx, out, env.ec2Clients, env.iamClient, env.images, opts, yamlPath)), true
+	case workflow.AssociateInstanceProfileCLISlug:
+		instance, profile, format, err := workflow.ParseAssociateInstanceProfileArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunAssociateInstanceProfileCLI(ctx, out, env.ec2Clients, env.iamClient, env.instances, instance, profile, format)), true
 	case workflow.ShowExportCloudInitCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showExportCloudInitUsage, workflow.ComputeAllowLaunch, leafArgs, 1, 2)
 		if err != nil {

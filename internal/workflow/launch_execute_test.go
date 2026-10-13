@@ -219,7 +219,10 @@ type fakeEC2Client struct {
 	// association with this ID -- empty means no current association
 	// (associateOrReplaceInstanceProfile's associate-vs-replace branch,
 	// associate_instance_profile.go).
-	currentInstanceProfileAssociationID       string
+	currentInstanceProfileAssociationID string
+	// currentInstanceProfileARN, if set, is the profile ARN the reported
+	// association carries (the CLI swap form compares it by name).
+	currentInstanceProfileARN                 string
 	describeIamInstanceProfileAssociationsErr error
 
 	lastAssociateIamInstanceProfileInput *ec2.AssociateIamInstanceProfileInput
@@ -589,7 +592,11 @@ func (f *fakeEC2Client) DescribeIamInstanceProfileAssociations(ctx context.Conte
 	}
 	return &ec2.DescribeIamInstanceProfileAssociationsOutput{
 		IamInstanceProfileAssociations: []types.IamInstanceProfileAssociation{
-			{AssociationId: aws.String(f.currentInstanceProfileAssociationID), State: types.IamInstanceProfileAssociationStateAssociated},
+			{
+				AssociationId:      aws.String(f.currentInstanceProfileAssociationID),
+				State:              types.IamInstanceProfileAssociationStateAssociated,
+				IamInstanceProfile: &types.IamInstanceProfile{Arn: aws.String(f.currentInstanceProfileARN)},
+			},
 		},
 	}, nil
 }

@@ -21,6 +21,14 @@ import (
 // (AWS allows only one active association per instance; calling
 // Associate again on an already-associated instance errors).
 func resolveCurrentInstanceProfileAssociation(ctx context.Context, client awsclient.EC2API, instanceID string) (associationID string, found bool, err error) {
+	associationID, _, found, err = describeCurrentInstanceProfileAssociation(ctx, client, instanceID)
+	return associationID, found, err
+}
+
+// describeCurrentInstanceProfileAssociation is resolveCurrentInstanceProfileAssociation
+// that also returns the associated profile's ARN, which the CLI swap form uses to
+// tell that the instance already has the profile asked for.
+func describeCurrentInstanceProfileAssociation(ctx context.Context, client awsclient.EC2API, instanceID string) (associationID, profileARN string, found bool, err error) {
 	ctx, cancel := withCallTimeout(ctx)
 	defer cancel()
 	out, err := client.DescribeIamInstanceProfileAssociations(ctx, &ec2.DescribeIamInstanceProfileAssociationsInput{
@@ -30,12 +38,16 @@ func resolveCurrentInstanceProfileAssociation(ctx context.Context, client awscli
 		},
 	})
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	if len(out.IamInstanceProfileAssociations) == 0 {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return aws.ToString(out.IamInstanceProfileAssociations[0].AssociationId), true, nil
+	assoc := out.IamInstanceProfileAssociations[0]
+	if assoc.IamInstanceProfile != nil {
+		profileARN = aws.ToString(assoc.IamInstanceProfile.Arn)
+	}
+	return aws.ToString(assoc.AssociationId), profileARN, true, nil
 }
 
 // AssociateOrReplaceInstanceProfile runs the "Associate/replace IAM
