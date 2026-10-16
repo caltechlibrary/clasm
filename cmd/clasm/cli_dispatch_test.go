@@ -935,3 +935,76 @@ func TestRunCLILeaf_ShowUntaggedTakesSeveralKinds(t *testing.T) {
 		t.Errorf("code=%d out=%q err=%q", code, out.String(), eout.String())
 	}
 }
+
+// tag-resource (DR-0192) is the command-line form of "Manage tags". Usage errors and --help
+// never reach AWS (nil clients would panic); a run tags through the real dispatch.
+type taggingEC2 struct {
+	awsclient.EC2API
+	tags    []ec2types.Tag
+	created []*ec2.CreateTagsInput
+}
+
+func (f *taggingEC2) DescribeInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{InstanceId: aws.String("i-bare"), Tags: f.tags}}}}}, nil
+}
+
+func (f *taggingEC2) CreateTags(_ context.Context, p *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+	f.created = append(f.created, p)
+	return &ec2.CreateTagsOutput{}, nil
+}
+
+func TestClassifyCLIArgs_TagResource(t *testing.T) {
+	mode, domainSlug, leafSlug, _, err := classifyCLIArgs([]string{"tag-management", "tag-resource"})
+	if err != nil || mode != cliModeLeaf || domainSlug != "tag-management" || leafSlug != "tag-resource" {
+		t.Errorf("a bare slug must deep-link into Manage tags: mode=%q domain=%q leaf=%q err=%v", mode, domainSlug, leafSlug, err)
+	}
+	mode, _, _, args, err := classifyCLIArgs([]string{"tag-management", "tag-resource", "instance", "new-data", "--tag", "origin=dld"})
+	if err != nil || mode != cliModeRun || len(args) != 4 {
+		t.Errorf("words and options must be a run: mode=%q args=%v err=%v", mode, args, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"iam", "tag-resource"}); err == nil {
+		t.Errorf("the leaf under the wrong domain must be a usage error")
+	}
+}
+
+func TestRunCLILeaf_TagResourceRefusesBadArgumentsBeforeAnyAWSCall(t *testing.T) {
+	for _, args := range [][]string{
+		{}, {"instance", "new-data"}, {"--tag", "origin", "instance", "n"}, {"--tag", "origin=dld", "no-such-kind", "n"},
+		{"--tag", "aws:x=y", "instance", "n"}, {"--tag", "Environment=prod", "instance", "n"},
+	} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, "tag-resource", args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm tag-management tag-resource") {
+			t.Errorf("%v: code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "tag-resource", []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "--replace") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+func TestRunCLILeaf_TagResourceTagsAndRefusesThroughTheDispatch(t *testing.T) {
+	fake := &taggingEC2{tags: []ec2types.Tag{{Key: aws.String("Name"), Value: aws.String("new-data")}}}
+	env := cliEnv{
+		ec2Clients: map[string]awsclient.EC2API{"us-west-2": fake},
+		instances:  []inventory.Instance{{InstanceID: "i-bare", Name: "new-data", Region: "us-west-2"}},
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "tag-resource", []string{"instance", "new-data", "--tag", "origin=dld"}, env); code != 0 ||
+		len(fake.created) != 1 || !strings.Contains(out.String(), "added origin=dld") {
+		t.Fatalf("code=%d out=%q err=%q created=%v", code, out.String(), eout.String(), fake.created)
+	}
+	fake.tags = append(fake.tags, ec2types.Tag{Key: aws.String("origin"), Value: aws.String("imss")})
+	fake.created = nil
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "tag-resource", []string{"--tag", "origin=dld", "instance", "new-data"}, env); code != 1 ||
+		len(fake.created) != 0 || !strings.Contains(eout.String(), "--replace") {
+		t.Errorf("a different value is exit 1 and changes nothing: code=%d err=%q created=%v", code, eout.String(), fake.created)
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "tag-resource", []string{"instance", "ghost", "--tag", "origin=dld"}, env); code != 2 {
+		t.Errorf("an unknown instance is exit 2: code=%d err=%q", code, eout.String())
+	}
+}

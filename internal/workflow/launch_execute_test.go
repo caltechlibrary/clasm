@@ -73,6 +73,8 @@ type fakeEC2Client struct {
 	imageNotFoundForCalls int
 
 	lastCreateTagsInput *ec2.CreateTagsInput
+	// createTagsInputs is every CreateTags call, in order (tag-resource sends one per tag).
+	createTagsInputs    []*ec2.CreateTagsInput
 	createTagsErr       error
 	lastDeleteTagsInput *ec2.DeleteTagsInput
 	deleteTagsErr       error
@@ -634,6 +636,7 @@ func (f *fakeEC2Client) CreateImage(ctx context.Context, params *ec2.CreateImage
 
 func (f *fakeEC2Client) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
 	f.lastCreateTagsInput = params
+	f.createTagsInputs = append(f.createTagsInputs, params)
 	if f.createTagsErr != nil {
 		return nil, f.createTagsErr
 	}

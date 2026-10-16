@@ -50,7 +50,9 @@ type tagMgmtItem struct {
 // do the same thing.
 var tagMgmtMenuItems = []tagMgmtItem{
 	{label: "Show all tags", cliSlug: ShowAllTagsCLISlug, action: func(a TagMgmtActions, ctx context.Context) error { return a.ShowAllTags(ctx) }},
-	{label: "Manage tags", action: func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
+	// The command-line counterpart of this interactive editor is tag-resource (DR-0192); its
+	// slug is not derived from the label, as the others are.
+	{label: "Manage tags", cliSlug: TagResourceCLISlug, action: func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
 	// Appended (DR-0192) so the first two items keep their numbers.
 	{label: "Show untagged resources", cliSlug: ShowUntaggedCLISlug, action: func(a TagMgmtActions, ctx context.Context) error { return a.ShowUntagged(ctx) }},
 }

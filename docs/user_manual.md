@@ -201,7 +201,8 @@ clasm -- distinct from Compute's own narrower "Manage tags for an
 instance or AMI," which is scoped to just those two kinds and reachable
 without leaving the Compute domain. Editing the `Origin` tag (see IAM,
 below) through this same flow is how a resource gets marked DLD-owned --
-there's no separate, dedicated action for it. See
+there's no separate, dedicated action for it. From a script, `tag-resource`
+is the same editor's command-line form. See
 `DESIGN.md`, "Tag Management Domain."
 
 ## IAM Menu
@@ -725,6 +726,37 @@ text view they keep the screen's `2026-07-23 17:30` layout.
   whole account takes a minute or two (a tag lookup per bucket and IAM
   resource); naming a kind is much quicker. The menu item of the same name
   shows the same report in the list view.
+
+`tag-management tag-resource [-text|-json] [--replace] <kind> <name-or-id> --tag key=value [--tag key=value]...`
+: add tags to **one resource** of any of the eleven kinds, from a script (DR-0192):
+  the command-line counterpart of **Manage tags**, for backfilling `Origin` on what
+  `show-untagged` lists. Options may come before or after the kind and the name.
+  `<name-or-id>` is a name or ID for instances, AMIs, launch templates, key pairs and
+  S3 buckets; an exact name for an IAM role or instance profile; a name or ARN for an
+  IAM policy (the ARN is what `show-untagged` prints); an ID for an EBS volume,
+  snapshot or network interface, which is found in whichever configured region has
+  it. A tag that is **missing is added**. A tag that already has the **same value**
+  is left alone and counts as done, so a loop over a report can be re-run. A tag that
+  already has a **different value is refused** (exit 1, the key and both values
+  named) and **nothing at all is changed**, not even the other tags, unless
+  `--replace` is given. Nothing is ever removed. Tags are compared with what AWS
+  reports at that moment, not with the listing the command started from. It asks no
+  confirmation: adding a tag is reversible in Tag Management. A resource that does
+  not exist, or a name that matches several, is a usage error (exit 2), as are a
+  malformed `--tag`, a key beginning `aws:` (reserved by AWS), a key given twice, and
+  an `Environment` value other than `production`, `development` or `test` (the
+  production warnings read it; the menu only prints a note). S3 buckets are read,
+  merged and written back, so their other tags survive. IAM roles, instance profiles
+  and policies that are not DLD-owned can still be tagged: that is how ownership is
+  recorded. The result is a line per resource (or, with `-json`, `kind`, `id`,
+  `name`, `added`, `replaced` with `from` and `to`, `unchanged` and the resulting
+  `tags`). Used with the report:
+
+  ~~~shell
+  clasm tag-management show-untagged -jsonl instance \
+    | jq -r '.id' \
+    | while read id; do clasm tag-management tag-resource instance "$id" --tag origin=dld; done
+  ~~~
 
 #### Configuration
 

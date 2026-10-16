@@ -25,6 +25,12 @@ func runS3TagLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, lea
 		return runListing(out, eout, leafSlug, showBucketsUsage, leafArgs, func(f ui.Format) error {
 			return ui.WriteBuckets(out, env.buckets, f)
 		}), true
+	case workflow.TagResourceCLISlug:
+		opts, err := workflow.ParseTagResourceArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunTagResourceCLI(ctx, out, tagSourcesOf(env), opts)), true
 	case workflow.ShowUntaggedCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showUntaggedUsage, workflow.ComputeAllowJSONL, leafArgs, 0, len(workflow.TagKindSlugs()))
 		if err != nil {
