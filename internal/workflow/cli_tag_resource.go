@@ -355,7 +355,7 @@ func RunTagResourceCLI(ctx context.Context, w io.Writer, src TagSources, opts Ta
 		}
 	}
 	if len(refused) > 0 {
-		return fmt.Errorf("%s already has a different value for %s; nothing was changed. Add --replace to change it", target.label, strings.Join(refused, "; "))
+		return fmt.Errorf("%s already has a different value (%s); nothing was changed. Add --replace to change it", target.label, strings.Join(refused, "; "))
 	}
 
 	for _, t := range opts.Tags {
