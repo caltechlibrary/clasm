@@ -1,27 +1,60 @@
-
-
 # clasm
 
 Go TUI (clasm) with scriptable command-line support for administering Caltech Library DLD's AWS EC2 instances, AMIs, launch templates, and key pairs, plus S3 buckets and backup archives, IAM roles/instance profiles/policies, and Invenio RDM's own SQL/OpenSearch backup and restore lifecycle, with cross-resource tag management and cloud-init inspection.
 
+## What it does
+
+Run `clasm` for the menu. It is organised in domains, each a menu of its own:
+
+- **Compute** -- instances, AMIs and launch templates: list and inspect, launch, start, stop, terminate, resize a root volume, create and sync launch templates, create AMIs, swap an instance's IAM instance profile, and read an instance's or an AMI's cloud-init.
+- **Key Management**, **S3** (buckets, static websites, lifecycle policies, an object browser) and **IAM** (roles, instance profiles and policies, with curated role templates, including a read-only restore role).
+- **Tag Management** -- add, update and remove tags across eleven kinds of resource, list every tag, and list what lacks the `Origin` tag.
+- **RDM Backup & Restore** -- generate, archive and restore Invenio RDM SQL dumps and OpenSearch snapshots over SSM.
+- **Configure clasm** -- regions, backup directories, the RDM Postgres rules, the Origin tag and more, kept in `~/.clasm`.
+
+Most actions also run without the menu. The command line mirrors the menu: `clasm <domain>` opens that domain's menu, `clasm <domain> <action>` opens that one action's prompts, and `clasm <domain> <action> <arguments>` runs it non-interactively and exits. Listings take `-json` and `-jsonl`:
+
+~~~shell
+clasm compute show-instances -json
+clasm tag-management show-untagged -jsonl instance ami
+~~~
+
+The command line is experimental: names and JSON keys may still change. See [docs/user_manual.md](docs/user_manual.md), "Non-interactive (CLI) Usage", for every form.
+
+## Destructive actions and safeguards
+
+Actions that destroy or replace something share one gate on the command line: a dry run by default that prints the plan and changes nothing, and `--confirm <name>` to run it. At a terminal, the same plan is followed by a type-the-name prompt.
+
+Restoring an RDM database also checks where its files live. A restored database names the S3 buckets that hold its files (CaltechAUTHORS: the content bucket), and an instance that can write to one would write to production's content. **Restore SQL Backup** reads the backup's file locations first, asks IAM's policy simulator whether the instance can write to each bucket, and refuses unless each writable one is named in a `--confirm` of its own. A read-only restore role, built with clasm, is never blocked:
+
+~~~shell
+clasm iam create-role-from-template --backup-bucket sql-backups.example.org \
+  --key-prefix source-instance rdm-restore-source-read-only restore-source-test
+clasm iam create-instance-profile restore-source-test restore-source-test
+clasm compute associate-replace-iam-instance-profile test-instance restore-source-test
+clasm rdm-backup-and-restore restore-sql-backup-from-s3 test-instance sql-backups.example.org source-instance latest
+~~~
+
+The last command is a dry run. Running it again with `--confirm test-instance` applies it.
+
+## Tagging
+
+clasm adds the `Origin` tag to everything it creates in IAM, EC2 and S3 (never to S3 objects), so that what clasm manages can be told from the rest and found in a report. The key and the DLD-owned value come from `origin_tag` in `~/.clasm`; **with no `dld_value` set, nothing is added.** To backfill what was there before:
+
+~~~shell
+clasm tag-management show-untagged -jsonl > untagged.jsonl
+clasm tag-management tag-resource instance new-data --tag origin=dld
+~~~
+
+`tag-resource` adds a missing tag, does nothing if the value is already right, and refuses a different value (changing nothing) unless `--replace` is given.
+
 ## Release Notes
 
-- version: 0.0.9
+- version: 0.0.11
 - status: active
-- released: 2026-09-24
+- released: not yet released (draft)
 
-clasm can now run two RDM backup archive actions directly from the command line, without the interactive menu: `clasm rdm-backup-and-restore archive-sql-backups-to-s3 <instance> <directory> <bucket> <trim-days-or-"">` and the equivalent for Archive OpenSearch Snapshot to S3. This is meant for a trusted, repeatable operation moved into a script or cron job -- the same preflight checks the interactive menu runs (AWS CLI availability, bucket access) still run, only the confirmation prompt is skipped, and an unrecognized domain/action name or the wrong number of arguments fails immediately with a usage error rather than hanging or guessing.
-
-The read-only Compute actions (`show-instances`, `show-instance-detail`, `show-amis`, `show-ami-detail`, `show-launch-templates`, `show-launch-template-detail` and `show-export-cloud-init-for-an-instance-or-ami`) also run from the command line, with `-json` (and `-jsonl` for the listings) for scripts: `clasm compute show-instances -json`. The read-only Key Management and IAM actions do too (`clasm key-management show-key-pairs`, `clasm iam show-roles -json`, `show-instance-profiles`, `show-policies`, `show-role-detail`, `show-instance-profile-detail`), as do `clasm s3 show-buckets` and `clasm tag-management show-all-tags <kind>`. See the user manual, "Read-only forms". Experimental, like every command term.
-
-The command line is a small domain-specific language mirroring the menu itself: `clasm <domain>` drops straight into that domain's own menu, `clasm <domain> <action>` drops straight into that one action's own prompts, and adding the action's own arguments after that runs it non-interactively instead. Backing out of either deep-link behaves exactly like normal menu navigation -- there is no dead end, and no separate command shape to learn for scripted versus interactive use.
-
-After a successful *interactive* run of either archive action, clasm now prints the exact non-interactive command that reproduces it, shell-quoted and ready to paste into a crontab entry -- the natural way to promote a run from "I did this by hand and it worked" to "this runs on a schedule now" without hand-transcribing arguments.
-
-See `user_manual.md`, "Non-interactive (CLI) Usage" for the full syntax.
-
-Note on verification: verified against real AWS -- the incomplete-argument usage error, both deep-link forms, and a full non-interactive Archive OpenSearch Snapshot to S3 run against CaltechAUTHORS production (3,196 objects, ~6.9GB synced), all confirmed live. Archive SQL Backups to S3's own non-interactive form was not separately exercised live; it shares the same code path.
-
+See `codemeta.json` (`releaseNotes`) and the GitHub release page for the notes of each version. In short, v0.0.11 adds the scriptable read-only restore role and instance-profile swap, the restore location guard with a repeatable `--confirm`, the `Origin` tag on everything clasm creates, and `show-untagged` and `tag-resource` for tagging the existing fleet.
 
 ### Authors
 
