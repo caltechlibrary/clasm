@@ -22,12 +22,11 @@ type taggingEC2Client struct {
 // so whatever launches from it is tagged), CreateImage (the image and its snapshots),
 // CreateKeyPair and ImportKeyPair.
 //
-// Two calls are deliberately left alone. A RunInstances that names a launch template is
-// passed through, because how a specification sent with it combines with the
-// template's is not known and replacing the template's own tags would be worse than
-// not adding one; templates clasm makes carry the tag in their data. And
-// CreateLaunchTemplateVersion is not touched: a version inherits its source version's
-// specification, and sending one could replace it.
+// A RunInstances that names a launch template is tagged like any other: AWS merges a
+// tag specification sent with it into the template's, dropping nothing (checked on a
+// real launch, DR-0191), so this also tags launches from templates made before the tag
+// existed. CreateLaunchTemplateVersion is deliberately left alone: a version inherits
+// its source version's specification, and sending one could replace it.
 //
 // A specification for the same resource type is merged into, its own tags kept; a tag
 // the request already names keeps its own value and is not added twice; nothing is
@@ -115,9 +114,6 @@ func (c *taggingEC2Client) withOriginInTemplate(specs []types.LaunchTemplateTagS
 }
 
 func (c *taggingEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-	if params.LaunchTemplate != nil {
-		return c.EC2API.RunInstances(ctx, params, optFns...)
-	}
 	p := *params
 	p.TagSpecifications = c.withOrigin(params.TagSpecifications, types.ResourceTypeInstance, types.ResourceTypeVolume, types.ResourceTypeNetworkInterface)
 	return c.EC2API.RunInstances(ctx, &p, optFns...)

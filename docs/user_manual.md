@@ -905,11 +905,11 @@ templates (the template, and what it launches), AMIs **and their snapshots**,
 key pairs (created or imported), and the temporary instance that reads an AMI's
 cloud-init; and S3 buckets (next to `Purpose`). Nothing is added when the key or
 the value is empty, and a tag the request already carries keeps its own value.
-Not tagged: S3 objects (the archives are identified by bucket and prefix);
-an instance launched **from a launch template** (it has the tag only if the
-template does, which templates made by clasm from now on do); new versions of a
-template (they inherit the source version's tags); and anything that already
-existed, which stays untagged until you tag it in Tag Management. Only the IAM
+Launches from a launch template are tagged too (DR-0191): AWS merges the tag
+into the template's own, dropping nothing, so this covers templates made before
+the tag existed. Not tagged: S3 objects (the archives are identified by bucket
+and prefix); new versions of a template (they inherit the source version's
+tags); and anything that already existed, which stays untagged until you tag it in Tag Management. Only the IAM
 domain reads the tag today, to decide what is DLD-owned; EC2 and S3 listings
 still show everything.
 `cloud_init_extraction_security_groups` maps a region to the ID of an existing

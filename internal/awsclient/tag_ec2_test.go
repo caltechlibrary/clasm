@@ -138,17 +138,43 @@ func TestTagEC2Creations_RunInstancesWithNoSpecificationAtAllStillGetsTheTag(t *
 	}
 }
 
-// A launch that names a template is passed through: how a specification sent here
-// combines with the template's is not known (DR-0190), and replacing the template's
-// own tags would be worse than not adding one.
-func TestTagEC2Creations_ALaunchFromATemplateIsPassedThroughUnchanged(t *testing.T) {
+// A launch that names a launch template is tagged too (DR-0191). Real AWS showed that
+// a tag specification sent with RunInstances is merged into the template's, nothing
+// dropped, so adding Origin is additive and covers launches from templates made before
+// the tag existed. The template reference itself is left as it is.
+func TestTagEC2Creations_ALaunchFromATemplateIsTaggedToo(t *testing.T) {
 	rec := &recordingEC2{}
-	in := &ec2.RunInstancesInput{LaunchTemplate: &types.LaunchTemplateSpecification{LaunchTemplateId: aws.String("lt-1")}}
+	in := &ec2.RunInstancesInput{LaunchTemplate: &types.LaunchTemplateSpecification{LaunchTemplateId: aws.String("lt-1"), Version: aws.String("$Default")}}
 	if _, err := TagEC2Creations(rec, dld).RunInstances(context.Background(), in); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.run.TagSpecifications) != 0 {
-		t.Errorf("a template launch must be left alone: %+v", rec.run.TagSpecifications)
+	for _, rt := range []types.ResourceType{types.ResourceTypeInstance, types.ResourceTypeVolume, types.ResourceTypeNetworkInterface} {
+		spec := specFor(rec.run.TagSpecifications, rt)
+		if spec == nil {
+			t.Errorf("%s: a specification must be added to a template launch", rt)
+			continue
+		}
+		wantOrigin(t, string(rt), spec.Tags)
+	}
+	if rec.run.LaunchTemplate == nil || aws.ToString(rec.run.LaunchTemplate.LaunchTemplateId) != "lt-1" || aws.ToString(rec.run.LaunchTemplate.Version) != "$Default" {
+		t.Errorf("the template reference must pass through: %+v", rec.run.LaunchTemplate)
+	}
+	if len(in.TagSpecifications) != 0 {
+		t.Errorf("the caller's request must not be modified: %+v", in.TagSpecifications)
+	}
+}
+
+func TestTagEC2Creations_ATemplateLaunchWithItsOwnOriginTagKeepsIt(t *testing.T) {
+	rec := &recordingEC2{}
+	in := &ec2.RunInstancesInput{
+		LaunchTemplate:    &types.LaunchTemplateSpecification{LaunchTemplateId: aws.String("lt-1")},
+		TagSpecifications: []types.TagSpecification{{ResourceType: types.ResourceTypeInstance, Tags: []types.Tag{tag("origin", "someone-else")}}},
+	}
+	if _, err := TagEC2Creations(rec, dld).RunInstances(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if v, n := tagValue(specFor(rec.run.TagSpecifications, types.ResourceTypeInstance).Tags, "origin"); v != "someone-else" || n != 1 {
+		t.Errorf("an explicit value wins and is not doubled")
 	}
 }
 
