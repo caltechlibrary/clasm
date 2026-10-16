@@ -109,6 +109,65 @@ func pickIAMPolicy(ctx context.Context, title, description string, policies []in
 	return policies[idx], nil
 }
 
+// volumeLabel/snapshotLabel/networkInterfaceLabel format a Picker row for the three
+// kinds with no name of their own: the ID, then what identifies the resource to the
+// person tagging it.
+func volumeLabel(v inventory.Volume) string {
+	attached := "unattached"
+	if v.AttachedTo != "" {
+		attached = "attached to " + v.AttachedTo
+	}
+	return fmt.Sprintf("%s (%d GiB %s, %s, %s, %s)", v.VolumeID, v.SizeGiB, v.VolumeType, v.State, attached, v.Region)
+}
+
+func snapshotLabel(s inventory.Snapshot) string {
+	return fmt.Sprintf("%s (%d GiB, %s, %s, %s)", s.SnapshotID, s.VolumeSizeGiB, s.Description, s.Started, s.Region)
+}
+
+func networkInterfaceLabel(n inventory.NetworkInterface) string {
+	attached := "unattached"
+	if n.AttachedTo != "" {
+		attached = "attached to " + n.AttachedTo
+	}
+	return fmt.Sprintf("%s (%s, %s, %s, %s)", n.ID, n.PrivateIP, n.Status, attached, n.Region)
+}
+
+func pickVolume(ctx context.Context, title, description string, volumes []inventory.Volume) (inventory.Volume, error) {
+	rows := make([]string, len(volumes))
+	for i, v := range volumes {
+		rows[i] = volumeLabel(v)
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{Title: title, Description: description, Rows: rows, ColorEnabled: ui.ColorEnabled()})
+	if err != nil {
+		return inventory.Volume{}, err
+	}
+	return volumes[idx], nil
+}
+
+func pickSnapshot(ctx context.Context, title, description string, snapshots []inventory.Snapshot) (inventory.Snapshot, error) {
+	rows := make([]string, len(snapshots))
+	for i, s := range snapshots {
+		rows[i] = snapshotLabel(s)
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{Title: title, Description: description, Rows: rows, ColorEnabled: ui.ColorEnabled()})
+	if err != nil {
+		return inventory.Snapshot{}, err
+	}
+	return snapshots[idx], nil
+}
+
+func pickNetworkInterface(ctx context.Context, title, description string, interfaces []inventory.NetworkInterface) (inventory.NetworkInterface, error) {
+	rows := make([]string, len(interfaces))
+	for i, n := range interfaces {
+		rows[i] = networkInterfaceLabel(n)
+	}
+	idx, err := tui.RunPicker(ctx, tui.PickerConfig{Title: title, Description: description, Rows: rows, ColorEnabled: ui.ColorEnabled()})
+	if err != nil {
+		return inventory.NetworkInterface{}, err
+	}
+	return interfaces[idx], nil
+}
+
 // tagManagementKinds is the Tag Management domain's resource-kind
 // picker, shared by ManageResourceTags and ShowAllTags (DECISIONS.md,
 // "Tag Management: a fourth domain...", "'Show all tags' is scoped to
@@ -116,7 +175,12 @@ func pickIAMPolicy(ctx context.Context, title, description string, policies []in
 // editing"). IAM Role/Instance Profile/Policy appended (PLAN.md Phase
 // 20.37) rather than interleaved, so every existing numeric-index test
 // for the first five kinds stays valid unchanged.
-var tagManagementKinds = []string{"Instance", "AMI", "Launch Template", "Key Pair", "S3 Bucket", "IAM Role", "IAM Instance Profile", "IAM Policy"}
+//
+// EBS Volume, EBS Snapshot and Network Interface (DR-0192) are appended the same way. Like
+// the IAM kinds they are fetched fresh on every dispatch rather than preloaded: a
+// fleet has far more of them than of anything else, and nothing else reads them.
+var tagManagementKinds = []string{"Instance", "AMI", "Launch Template", "Key Pair", "S3 Bucket", "IAM Role", "IAM Instance Profile", "IAM Policy",
+	"EBS Volume", "EBS Snapshot", "Network Interface"}
 
 // ManageResourceTags runs the Tag Management domain's "Manage tags"
 // workflow (DESIGN.md, "Tag Management Domain"; DECISIONS.md, "Tag
@@ -149,7 +213,7 @@ func ManageResourceTags(ctx context.Context, w io.Writer, clients map[string]aws
 // manageTagsForResource (which it dispatches into) already has full
 // coverage.
 func manageResourceTags(ctx context.Context, w io.Writer, clients map[string]awsclient.EC2API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), iamClient awsclient.IAMAPI, originTag config.OriginTagConfig, instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket, menuInput io.Reader, menuOutput io.Writer) error {
-	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance, AMI, launch template, key pair, S3 bucket, IAM role, IAM instance profile, or IAM policy.", hintCancel, tagManagementKinds, menuInput, menuOutput)
+	kind, err := pickString(w, "Manage tags on", "Add, update, or remove a tag on an EC2 instance, AMI, launch template, key pair, S3 bucket, IAM role, IAM instance profile, IAM policy, EBS volume, EBS snapshot, or network interface.", hintCancel, tagManagementKinds, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -335,6 +399,70 @@ func manageResourceTags(ctx context.Context, w io.Writer, clients map[string]aws
 		apply = func(ctx context.Context, params TagChangeParams) error {
 			return applyIAMPolicyTagChange(ctx, iamClient, params)
 		}
+	case "EBS Volume":
+		volumes, err := inventory.ListVolumes(ctx, clients)
+		if err != nil {
+			return err
+		}
+		if len(volumes) == 0 {
+			fmt.Fprintln(w, "No EBS volumes found.")
+			return nil
+		}
+		vol, err := pickVolume(ctx, "Select an EBS volume", "", volumes)
+		if err != nil {
+			return cancelledIsNil(w, err)
+		}
+		client, err := resolveEC2(clients, vol.Region)
+		if err != nil {
+			return err
+		}
+		resourceID, resourceLabel, tags = vol.VolumeID, volumeLabel(vol), vol.Tags
+		fetchTags = func(ctx context.Context) (map[string]string, error) { return fetchVolumeTags(ctx, client, resourceID) }
+		apply = func(ctx context.Context, params TagChangeParams) error { return ApplyTagChange(ctx, client, params) }
+	case "EBS Snapshot":
+		snapshots, err := inventory.ListSnapshots(ctx, clients)
+		if err != nil {
+			return err
+		}
+		if len(snapshots) == 0 {
+			fmt.Fprintln(w, "No EBS snapshots found.")
+			return nil
+		}
+		snap, err := pickSnapshot(ctx, "Select an EBS snapshot", "", snapshots)
+		if err != nil {
+			return cancelledIsNil(w, err)
+		}
+		client, err := resolveEC2(clients, snap.Region)
+		if err != nil {
+			return err
+		}
+		resourceID, resourceLabel, tags = snap.SnapshotID, snapshotLabel(snap), snap.Tags
+		fetchTags = func(ctx context.Context) (map[string]string, error) {
+			return fetchSnapshotTags(ctx, client, resourceID)
+		}
+		apply = func(ctx context.Context, params TagChangeParams) error { return ApplyTagChange(ctx, client, params) }
+	case "Network Interface":
+		interfaces, err := inventory.ListNetworkInterfaces(ctx, clients)
+		if err != nil {
+			return err
+		}
+		if len(interfaces) == 0 {
+			fmt.Fprintln(w, "No network interfaces found.")
+			return nil
+		}
+		eni, err := pickNetworkInterface(ctx, "Select a network interface", "", interfaces)
+		if err != nil {
+			return cancelledIsNil(w, err)
+		}
+		client, err := resolveEC2(clients, eni.Region)
+		if err != nil {
+			return err
+		}
+		resourceID, resourceLabel, tags = eni.ID, networkInterfaceLabel(eni), eni.Tags
+		fetchTags = func(ctx context.Context) (map[string]string, error) {
+			return fetchNetworkInterfaceTags(ctx, client, resourceID)
+		}
+		apply = func(ctx context.Context, params TagChangeParams) error { return ApplyTagChange(ctx, client, params) }
 	}
 
 	return manageTagsForResource(ctx, w, apply, resourceID, resourceLabel, tags, fetchTags, menuInput, menuOutput)
@@ -435,6 +563,30 @@ func iamPolicyTaggedResources(policies []inventory.IAMPolicySummary) []ui.Tagged
 	return rows
 }
 
+func volumeTaggedResources(volumes []inventory.Volume) []ui.TaggedResource {
+	rows := make([]ui.TaggedResource, len(volumes))
+	for i, v := range volumes {
+		rows[i] = ui.TaggedResource{ID: v.VolumeID, Label: volumeLabel(v), Tags: v.Tags}
+	}
+	return rows
+}
+
+func snapshotTaggedResources(snapshots []inventory.Snapshot) []ui.TaggedResource {
+	rows := make([]ui.TaggedResource, len(snapshots))
+	for i, s := range snapshots {
+		rows[i] = ui.TaggedResource{ID: s.SnapshotID, Label: snapshotLabel(s), Tags: s.Tags}
+	}
+	return rows
+}
+
+func networkInterfaceTaggedResources(interfaces []inventory.NetworkInterface) []ui.TaggedResource {
+	rows := make([]ui.TaggedResource, len(interfaces))
+	for i, n := range interfaces {
+		rows[i] = ui.TaggedResource{ID: n.ID, Label: networkInterfaceLabel(n), Tags: n.Tags}
+	}
+	return rows
+}
+
 // ShowAllTags runs the Tag Management domain's "Show all tags" action
 // (DESIGN.md, "Tag Management Domain"): pick a resource kind, then
 // list every resource of that kind with its full tag set in the
@@ -445,8 +597,8 @@ func iamPolicyTaggedResources(policies []inventory.IAMPolicySummary) []ui.Tagged
 // combined table across every kind (DECISIONS.md, "Tag Management: a
 // fourth domain...", rejected alternatives: no shared row shape, and
 // tag key sets vary per resource regardless).
-func ShowAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), iamClient awsclient.IAMAPI, originTag config.OriginTagConfig, instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket) error {
-	return showAllTags(ctx, w, newS3Client, iamClient, originTag, instances, images, launchTemplates, keyPairs, buckets, nil, nil)
+func ShowAllTags(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), iamClient awsclient.IAMAPI, originTag config.OriginTagConfig, instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket) error {
+	return showAllTags(ctx, w, ec2Clients, newS3Client, iamClient, originTag, instances, images, launchTemplates, keyPairs, buckets, nil, nil)
 }
 
 // showAllTags is ShowAllTags's testable core: menuInput/menuOutput are
@@ -460,14 +612,14 @@ func ShowAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.
 // Policy (Phase 20.37) fetch fresh via iamClient/originTag rather than
 // accepting a pre-fetched slice, matching ManageResourceTags' own IAM
 // cases above.
-func showAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), iamClient awsclient.IAMAPI, originTag config.OriginTagConfig, instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket, menuInput io.Reader, menuOutput io.Writer) error {
+func showAllTags(ctx context.Context, w io.Writer, ec2Clients map[string]awsclient.EC2API, newS3Client func(ctx context.Context, region string) (awsclient.S3API, error), iamClient awsclient.IAMAPI, originTag config.OriginTagConfig, instances []inventory.Instance, images []inventory.Image, launchTemplates []inventory.LaunchTemplate, keyPairs []inventory.KeyPair, buckets []inventory.Bucket, menuInput io.Reader, menuOutput io.Writer) error {
 	kind, err := pickString(w, "Show all tags for", "Lists every resource of the chosen kind with its complete tag set.", hintCancel, tagManagementKinds, menuInput, menuOutput)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
 
 	title, rows, err := taggedResourcesForKind(ctx, kind, TagSources{
-		NewS3Client: newS3Client, IAMClient: iamClient, OriginTag: originTag,
+		EC2Clients: ec2Clients, NewS3Client: newS3Client, IAMClient: iamClient, OriginTag: originTag,
 		Instances: instances, Images: images, LaunchTemplates: launchTemplates, KeyPairs: keyPairs, Buckets: buckets,
 	})
 	if err != nil {
@@ -483,6 +635,9 @@ func showAllTags(ctx context.Context, w io.Writer, newS3Client func(ctx context.
 // view or the non-interactive form: the preloaded EC2 and key pair listings,
 // the S3 bucket list (whose tags are fetched on demand) and the IAM client.
 type TagSources struct {
+	// EC2Clients, one per region, serve the kinds listed fresh each time (EBS volumes, snapshots
+	// and network interfaces).
+	EC2Clients      map[string]awsclient.EC2API
 	NewS3Client     func(ctx context.Context, region string) (awsclient.S3API, error)
 	IAMClient       awsclient.IAMAPI
 	OriginTag       config.OriginTagConfig
@@ -527,6 +682,24 @@ func taggedResourcesForKind(ctx context.Context, kind string, src TagSources) (t
 			return "", nil, err
 		}
 		return "IAM Policies -- All Tags", iamPolicyTaggedResources(policies), nil
+	case "EBS Volume":
+		volumes, err := inventory.ListVolumes(ctx, src.EC2Clients)
+		if err != nil {
+			return "", nil, err
+		}
+		return "EBS Volumes -- All Tags", volumeTaggedResources(volumes), nil
+	case "EBS Snapshot":
+		snapshots, err := inventory.ListSnapshots(ctx, src.EC2Clients)
+		if err != nil {
+			return "", nil, err
+		}
+		return "EBS Snapshots -- All Tags", snapshotTaggedResources(snapshots), nil
+	case "Network Interface":
+		interfaces, err := inventory.ListNetworkInterfaces(ctx, src.EC2Clients)
+		if err != nil {
+			return "", nil, err
+		}
+		return "Network Interfaces -- All Tags", networkInterfaceTaggedResources(interfaces), nil
 	}
 	return "", nil, nil
 }

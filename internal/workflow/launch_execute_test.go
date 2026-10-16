@@ -225,6 +225,13 @@ type fakeEC2Client struct {
 	currentInstanceProfileARN                 string
 	describeIamInstanceProfileAssociationsErr error
 
+	// The EBS snapshot and network interface listings and tag read-backs
+	// (tag_ebs_network_test.go). DescribeVolumes reuses describeVolumesOutput.
+	describeSnapshotsOutput         []types.Snapshot
+	describeSnapshotsErr            error
+	describeNetworkInterfacesOutput []types.NetworkInterface
+	describeNetworkInterfacesErr    error
+
 	lastAssociateIamInstanceProfileInput *ec2.AssociateIamInstanceProfileInput
 	associateIamInstanceProfileErr       error
 
@@ -1141,4 +1148,18 @@ func TestRegionOfInstance(t *testing.T) {
 			t.Errorf("regionOfInstance(%q) = %q, want %q", az, got, want)
 		}
 	}
+}
+
+func (f *fakeEC2Client) DescribeSnapshots(ctx context.Context, params *ec2.DescribeSnapshotsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error) {
+	if f.describeSnapshotsErr != nil {
+		return nil, f.describeSnapshotsErr
+	}
+	return &ec2.DescribeSnapshotsOutput{Snapshots: f.describeSnapshotsOutput}, nil
+}
+
+func (f *fakeEC2Client) DescribeNetworkInterfaces(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	if f.describeNetworkInterfacesErr != nil {
+		return nil, f.describeNetworkInterfacesErr
+	}
+	return &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: f.describeNetworkInterfacesOutput}, nil
 }

@@ -455,7 +455,7 @@ func main() {
 			return workflow.ManageResourceTags(ctx, out, ec2Clients, newS3Client, iamClient, cfg.OriginTag, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets)
 		},
 		ShowAllTags: func(ctx context.Context) error {
-			return workflow.ShowAllTags(ctx, out, newS3Client, iamClient, cfg.OriginTag, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets)
+			return workflow.ShowAllTags(ctx, out, ec2Clients, newS3Client, iamClient, cfg.OriginTag, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets)
 		},
 		Refresh: refreshTagMgmt,
 	}

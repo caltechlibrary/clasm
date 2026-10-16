@@ -22,6 +22,9 @@ var tagKindSlugs = map[string]string{
 	"IAM Role":             "iam-role",
 	"IAM Instance Profile": "iam-instance-profile",
 	"IAM Policy":           "iam-policy",
+	"EBS Volume":           "ebs-volume",
+	"EBS Snapshot":         "ebs-snapshot",
+	"Network Interface":    "network-interface",
 }
 
 // TagKindSlugs lists the valid kind arguments in picker order, for usage text.

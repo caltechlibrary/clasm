@@ -112,6 +112,54 @@ func fetchKeyPairTags(ctx context.Context, client awsclient.EC2API, keyPairID st
 	return tagsToMap(out.KeyPairs[0].Tags), nil
 }
 
+// fetchVolumeTags, fetchSnapshotTags and fetchNetworkInterfaceTags read the live tags of an
+// EBS volume, snapshot or network interface by ID (DR-0192); ApplyTagChange addresses
+// them by the same ID.
+func fetchVolumeTags(ctx context.Context, client awsclient.EC2API, volumeID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []string{volumeID}})
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range out.Volumes {
+		if aws.ToString(v.VolumeId) == volumeID {
+			return tagsToMap(v.Tags), nil
+		}
+	}
+	return nil, fmt.Errorf("EBS volume %s not found", volumeID)
+}
+
+func fetchSnapshotTags(ctx context.Context, client awsclient.EC2API, snapshotID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{SnapshotIds: []string{snapshotID}})
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range out.Snapshots {
+		if aws.ToString(s.SnapshotId) == snapshotID {
+			return tagsToMap(s.Tags), nil
+		}
+	}
+	return nil, fmt.Errorf("EBS snapshot %s not found", snapshotID)
+}
+
+func fetchNetworkInterfaceTags(ctx context.Context, client awsclient.EC2API, interfaceID string) (map[string]string, error) {
+	ctx, cancel := withCallTimeout(ctx)
+	defer cancel()
+	out, err := client.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{NetworkInterfaceIds: []string{interfaceID}})
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range out.NetworkInterfaces {
+		if aws.ToString(n.NetworkInterfaceId) == interfaceID {
+			return tagsToMap(n.TagSet), nil
+		}
+	}
+	return nil, fmt.Errorf("network interface %s not found", interfaceID)
+}
+
 func tagsToMap(tags []types.Tag) map[string]string {
 	m := make(map[string]string, len(tags))
 	for _, tag := range tags {

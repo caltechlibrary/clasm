@@ -153,6 +153,18 @@ func (w *loggingEC2Client) DescribeInstanceAttribute(ctx context.Context, params
 	})
 }
 
+func (w *loggingEC2Client) DescribeSnapshots(ctx context.Context, params *ec2.DescribeSnapshotsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeSnapshots", w.region, params, func() (*ec2.DescribeSnapshotsOutput, error) {
+		return w.inner.DescribeSnapshots(ctx, params, optFns...)
+	})
+}
+
+func (w *loggingEC2Client) DescribeNetworkInterfaces(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	return logAWSCall(w.dl, "EC2.DescribeNetworkInterfaces", w.region, params, func() (*ec2.DescribeNetworkInterfacesOutput, error) {
+		return w.inner.DescribeNetworkInterfaces(ctx, params, optFns...)
+	})
+}
+
 func (w *loggingEC2Client) DescribeVolumes(ctx context.Context, params *ec2.DescribeVolumesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
 	return logAWSCall(w.dl, "EC2.DescribeVolumes", w.region, params, func() (*ec2.DescribeVolumesOutput, error) {
 		return w.inner.DescribeVolumes(ctx, params, optFns...)

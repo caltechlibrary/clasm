@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 
@@ -848,5 +850,33 @@ func TestRunCLILeaf_InstanceProfileLeavesRefuseBeforeAnyAWSCall(t *testing.T) {
 		if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), want) || eout.Len() != 0 {
 			t.Errorf("%s --help: code=%d out=%q err=%q", leaf, code, out.String(), eout.String())
 		}
+	}
+}
+
+// EBS volumes, snapshots and network interfaces are Tag Management kinds (DR-0192):
+// show-all-tags accepts their slugs, lists them fresh from the regions' clients, and its
+// usage names them.
+type volumeOnlyEC2 struct {
+	awsclient.EC2API
+}
+
+func (volumeOnlyEC2) DescribeVolumes(_ context.Context, _ *ec2.DescribeVolumesInput, _ ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
+	return &ec2.DescribeVolumesOutput{Volumes: []ec2types.Volume{{
+		VolumeId: aws.String("vol-0abc"), Size: aws.Int32(250),
+		Tags: []ec2types.Tag{{Key: aws.String("origin"), Value: aws.String("dld")}},
+	}}}, nil
+}
+
+func TestRunCLILeaf_ShowAllTagsListsEBSVolumes(t *testing.T) {
+	env := cliEnv{ec2Clients: map[string]awsclient.EC2API{"us-west-2": volumeOnlyEC2{}}}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-all-tags", []string{"-json", "ebs-volume"}, env); code != 0 || !strings.Contains(out.String(), "vol-0abc") || !strings.Contains(out.String(), "dld") {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-all-tags", []string{"no-such-kind"}, env); code != 2 ||
+		!strings.Contains(eout.String(), "ebs-volume") || !strings.Contains(eout.String(), "ebs-snapshot") || !strings.Contains(eout.String(), "network-interface") {
+		t.Errorf("an unknown kind must list all eleven, code=%d err=%q", code, eout.String())
 	}
 }

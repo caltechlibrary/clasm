@@ -34,8 +34,8 @@ On startup you choose a domain to work in:
 - **S3** (Buckets & Static Websites) -- see below
 - **Tag Management** -- add/update/remove/list tags across every taggable
   resource kind (instances, AMIs, launch templates, key pairs, S3
-  buckets, IAM roles/instance profiles/policies) from one place; see
-  below
+  buckets, IAM roles/instance profiles/policies, EBS volumes and
+  snapshots, network interfaces) from one place; see below
 - **IAM** -- browse and manage IAM roles, instance profiles, and
   policies; see below
 - **RDM Backup & Restore** -- generate and archive Invenio RDM Postgres
@@ -184,8 +184,14 @@ Choosing Tag Management presents:
 2. Manage tags
 
 Both start by picking a resource **kind** -- Instance, AMI, Launch
-Template, Key Pair, S3 Bucket, IAM Role, IAM Instance Profile, or IAM
-Policy. **Show all tags** then lists every resource of that kind with
+Template, Key Pair, S3 Bucket, IAM Role, IAM Instance Profile, IAM
+Policy, EBS Volume, EBS Snapshot, or Network Interface (the last three
+added by DR-0192: they have no name of their own, so each is listed by
+its ID with what identifies it -- size and attachment, description,
+private IP -- and is read fresh from your regions every time; snapshots
+are only the ones your account owns, and network interfaces an AWS
+service manages for you, a load balancer's for example, are left out).
+**Show all tags** then lists every resource of that kind with
 its full tag map, for a quick "what's tagged and what isn't" scan.
 **Manage tags** picks one specific resource of that kind and lets you
 add, update, or remove a single tag key/value pair. This is the
@@ -689,8 +695,9 @@ text view they keep the screen's `2026-07-23 17:30` layout.
   interactive view the kind is chosen first, since covering every kind at
   once would cost a tag lookup per bucket and per IAM resource every time.
   `<kind>` is one of `instance`, `ami`, `launch-template`, `key-pair`,
-  `s3-bucket`, `iam-role`, `iam-instance-profile` or `iam-policy`; anything
-  else is a usage error that lists them. Each JSON record carries its `kind`,
+  `s3-bucket`, `iam-role`, `iam-instance-profile`, `iam-policy`,
+  `ebs-volume`, `ebs-snapshot` or `network-interface`; anything else is a
+  usage error that lists them. Each JSON record carries its `kind`,
   so `-jsonl` lines stay self-describing when several runs are concatenated.
   In the text view the tags are one `key=value, key=value` column, sorted by
   key; in JSON they are an object, `{}` when untagged. S3 is the slow kind

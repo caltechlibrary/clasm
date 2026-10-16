@@ -24,6 +24,17 @@ type fakeEC2Client struct {
 	keyPairs     []types.KeyPairInfo
 	err          error
 
+	// volumes, snapshots and networkInterfaces back the EBS and network
+	// interface listings (ebs_network_test.go); pageSize, when > 0, splits each
+	// into pages of that size, linked by NextToken, so a test can prove the
+	// listing follows them.
+	volumes                    []types.Volume
+	snapshots                  []types.Snapshot
+	networkInterfaces          []types.NetworkInterface
+	pageSize                   int
+	lastDescribeSnapshotsInput *ec2.DescribeSnapshotsInput
+	describeCalls              int
+
 	lastDescribeImagesInput *ec2.DescribeImagesInput
 
 	launchTemplates                         []types.LaunchTemplate

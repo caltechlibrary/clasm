@@ -29,7 +29,7 @@ func runS3TagLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, lea
 			return reportCLIError(out, eout, err), true
 		}
 		err = workflow.RunShowAllTagsCLI(ctx, out, workflow.TagSources{
-			NewS3Client: env.newS3Client, IAMClient: env.iamClient, OriginTag: env.originTag,
+			EC2Clients: env.ec2Clients, NewS3Client: env.newS3Client, IAMClient: env.iamClient, OriginTag: env.originTag,
 			Instances: env.instances, Images: env.images, LaunchTemplates: env.launchTemplates,
 			KeyPairs: env.keyPairs, Buckets: env.buckets,
 		}, words[0], opts.Format)
