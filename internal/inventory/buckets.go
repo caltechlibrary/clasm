@@ -22,6 +22,8 @@ type Bucket struct {
 	Region        string
 	StaticWebsite bool
 	Purpose       string // "website", "backup", "internal", or "" (untagged)
+	// Created is the creation date, YYYY-MM-DD.
+	Created string
 }
 
 // ListBuckets calls s3:ListBuckets once on client (a control-plane call,
@@ -50,13 +52,14 @@ func ListBuckets(ctx context.Context, client awsclient.S3API, newClient func(ctx
 	results := make(chan result, len(out.Buckets))
 	var wg sync.WaitGroup
 	for _, b := range out.Buckets {
-		name := aws.ToString(b.Name)
+		name, created := aws.ToString(b.Name), dateOf(b.CreationDate)
 		wg.Add(1)
-		go func(name string) {
+		go func(name, created string) {
 			defer wg.Done()
 			bucket, err := enrichBucket(ctx, client, newClient, name)
+			bucket.Created = created
 			results <- result{bucket: bucket, err: err}
-		}(name)
+		}(name, created)
 	}
 	wg.Wait()
 	close(results)

@@ -17,6 +17,8 @@ import (
 type TagMgmtActions struct {
 	ManageTags  func(ctx context.Context) error
 	ShowAllTags func(ctx context.Context) error
+	// ShowUntagged lists the resources that lack the Origin tag (DR-0192).
+	ShowUntagged func(ctx context.Context) error
 	// Refresh re-fetches instance/AMI/launch-template/key-pair data,
 	// silently -- no display. Called once after every successful
 	// dispatched action (DECISIONS.md, "Refresh data after each
@@ -49,6 +51,8 @@ type tagMgmtItem struct {
 var tagMgmtMenuItems = []tagMgmtItem{
 	{label: "Show all tags", cliSlug: ShowAllTagsCLISlug, action: func(a TagMgmtActions, ctx context.Context) error { return a.ShowAllTags(ctx) }},
 	{label: "Manage tags", action: func(a TagMgmtActions, ctx context.Context) error { return a.ManageTags(ctx) }},
+	// Appended (DR-0192) so the first two items keep their numbers.
+	{label: "Show untagged resources", cliSlug: ShowUntaggedCLISlug, action: func(a TagMgmtActions, ctx context.Context) error { return a.ShowUntagged(ctx) }},
 }
 
 // pickTagMgmtItem runs the Tag Management menu's huh.Select and returns
@@ -130,6 +134,9 @@ const TagManagementDomainCLISlug = "tag-management"
 
 // ShowAllTagsCLISlug is "Show all tags"'s cliSlug (DR-0177's mechanical rule).
 const ShowAllTagsCLISlug = "show-all-tags"
+
+// ShowUntaggedCLISlug is "Show untagged resources"'s cliSlug.
+const ShowUntaggedCLISlug = "show-untagged"
 
 func tagMgmtItemBySlug(slug string) (tagMgmtItem, bool) {
 	for _, item := range tagMgmtMenuItems {

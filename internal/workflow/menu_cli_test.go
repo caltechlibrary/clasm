@@ -213,7 +213,7 @@ func TestS3AndTagMgmtMenuItems_CLISlugs(t *testing.T) {
 			t.Errorf("s3MenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, want, ok)
 		}
 	}
-	wantTag := map[string]string{"Show all tags": "show-all-tags", "Manage tags": ""}
+	wantTag := map[string]string{"Show all tags": "show-all-tags", "Manage tags": "", "Show untagged resources": "show-untagged"}
 	for _, item := range tagMgmtMenuItems {
 		if want, ok := wantTag[item.label]; !ok || item.cliSlug != want {
 			t.Errorf("tagMgmtMenuItems[%q].cliSlug = %q, want %q (known=%t)", item.label, item.cliSlug, want, ok)

@@ -880,3 +880,58 @@ func TestRunCLILeaf_ShowAllTagsListsEBSVolumes(t *testing.T) {
 		t.Errorf("an unknown kind must list all eleven, code=%d err=%q", code, eout.String())
 	}
 }
+
+// show-untagged (DR-0192) is a Tag Management leaf: a bare slug deep-links into its
+// interactive view, kind words after it are a run, and an unknown kind is exit 2 before
+// any AWS call.
+func TestClassifyCLIArgs_ShowUntagged(t *testing.T) {
+	mode, domainSlug, leafSlug, _, err := classifyCLIArgs([]string{"tag-management", "show-untagged"})
+	if err != nil || mode != cliModeLeaf || domainSlug != "tag-management" || leafSlug != "show-untagged" {
+		t.Errorf("a bare slug must deep-link: mode=%q domain=%q leaf=%q err=%v", mode, domainSlug, leafSlug, err)
+	}
+	mode, _, _, args, err := classifyCLIArgs([]string{"tag-management", "show-untagged", "instance", "ami"})
+	if err != nil || mode != cliModeRun || len(args) != 2 {
+		t.Errorf("kind words must be a run: mode=%q args=%v err=%v", mode, args, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"iam", "show-untagged"}); err == nil {
+		t.Errorf("the leaf under the wrong domain must be a usage error")
+	}
+}
+
+func TestRunCLILeaf_ShowUntagged(t *testing.T) {
+	env := cliEnv{
+		originTag: config.OriginTagConfig{Key: "origin", DLDValue: "dld"},
+		instances: []inventory.Instance{
+			{InstanceID: "i-bare", Name: "new-data", Region: "us-west-2", Tags: map[string]string{"Name": "new-data"}},
+			{InstanceID: "i-ok", Name: "tagged", Region: "us-west-2", Tags: map[string]string{"origin": "dld"}},
+		},
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-untagged", []string{"-jsonl", "instance"}, env); code != 0 ||
+		!strings.Contains(out.String(), "i-bare") || strings.Contains(out.String(), "i-ok") || eout.Len() != 0 {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	out.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-untagged", []string{"-json", "no-such-kind"}, env); code != 2 || out.Len() != 0 ||
+		!strings.Contains(eout.String(), "no-such-kind") || !strings.Contains(eout.String(), "ebs-volume") {
+		t.Errorf("an unknown kind is exit 2 and lists the kinds: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-untagged", []string{"--help"}, env); code != 0 || !strings.Contains(out.String(), "-jsonl") || !strings.Contains(out.String(), "instance") {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+func TestRunCLILeaf_ShowUntaggedTakesSeveralKinds(t *testing.T) {
+	env := cliEnv{
+		originTag: config.OriginTagConfig{Key: "origin", DLDValue: "dld"},
+		instances: []inventory.Instance{{InstanceID: "i-bare", Name: "new-data"}},
+		images:    []inventory.Image{{ImageID: "ami-bare", Name: "old"}},
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, "show-untagged", []string{"-jsonl", "instance", "ami"}, env); code != 0 ||
+		!strings.Contains(out.String(), "i-bare") || !strings.Contains(out.String(), "ami-bare") {
+		t.Errorf("code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}

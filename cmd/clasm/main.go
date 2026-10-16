@@ -457,6 +457,13 @@ func main() {
 		ShowAllTags: func(ctx context.Context) error {
 			return workflow.ShowAllTags(ctx, out, ec2Clients, newS3Client, iamClient, cfg.OriginTag, tagMgmtState.instances, tagMgmtState.images, tagMgmtState.launchTemplates, tagMgmtState.keyPairs, tagMgmtState.buckets)
 		},
+		ShowUntagged: func(ctx context.Context) error {
+			return workflow.ShowUntagged(ctx, out, workflow.TagSources{
+				EC2Clients: ec2Clients, NewS3Client: newS3Client, IAMClient: iamClient, OriginTag: cfg.OriginTag,
+				Instances: tagMgmtState.instances, Images: tagMgmtState.images, LaunchTemplates: tagMgmtState.launchTemplates,
+				KeyPairs: tagMgmtState.keyPairs, Buckets: tagMgmtState.buckets,
+			})
+		},
 		Refresh: refreshTagMgmt,
 	}
 

@@ -12,8 +12,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/config"
 )
 
 // EBS volumes, EBS snapshots and network interfaces are Tag Management kinds
@@ -188,5 +191,68 @@ func TestEBSAndInterfaceListings_AnEmptyRegionIsNotAnError(t *testing.T) {
 	}
 	if n, err := ListNetworkInterfaces(context.Background(), clients); err != nil || len(n) != 0 {
 		t.Errorf("interfaces: %v %v", n, err)
+	}
+}
+
+// The untagged-resource report (DR-0192) shows when each resource was made, and
+// recognises IAM service-linked roles by their path. These fields come from calls
+// the listings already make.
+
+func TestInstanceFromSDK_CarriesTheLaunchDate(t *testing.T) {
+	inst := instanceFromSDK(types.Instance{
+		InstanceId: aws.String("i-1"), State: &types.InstanceState{Name: types.InstanceStateNameRunning},
+		LaunchTime: aws.Time(time.Date(2026, 5, 21, 17, 39, 24, 0, time.UTC)),
+	}, "us-west-2")
+	if inst.Created != "2026-05-21" {
+		t.Errorf("Created = %q", inst.Created)
+	}
+	if bare := instanceFromSDK(types.Instance{InstanceId: aws.String("i-2")}, "us-west-2"); bare.Created != "" {
+		t.Errorf("no launch time, no date: %q", bare.Created)
+	}
+}
+
+func TestLaunchTemplateFromSDK_CarriesTheCreationDate(t *testing.T) {
+	lt := launchTemplateFromSDK(types.LaunchTemplate{
+		LaunchTemplateId: aws.String("lt-1"), CreateTime: aws.Time(time.Date(2026, 10, 9, 1, 2, 3, 0, time.UTC)),
+	}, "us-west-2")
+	if lt.Created != "2026-10-09" {
+		t.Errorf("Created = %q", lt.Created)
+	}
+}
+
+func TestKeyPairFromSDK_CarriesTheCreationDate(t *testing.T) {
+	kp := keyPairFromSDK(types.KeyPairInfo{KeyName: aws.String("k"), CreateTime: aws.Time(time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC))}, "us-west-2")
+	if kp.Created != "2026-03-04" {
+		t.Errorf("Created = %q", kp.Created)
+	}
+}
+
+func TestListBuckets_CarriesTheCreationDate(t *testing.T) {
+	controlPlane := &fakeBucketsS3Client{
+		buckets:          []s3types.Bucket{{Name: aws.String("old-bucket"), CreationDate: aws.Time(time.Date(2020, 2, 5, 22, 28, 0, 0, time.UTC))}},
+		locationByBucket: map[string]s3types.BucketLocationConstraint{"old-bucket": "us-east-1"},
+	}
+	regionClient := &fakeBucketsS3Client{purposeByBucket: map[string]string{}}
+	got, err := ListBuckets(context.Background(), controlPlane, newBucketsClient(map[string]*fakeBucketsS3Client{"us-east-1": regionClient}))
+	if err != nil || len(got) != 1 || got[0].Created != "2020-02-05" {
+		t.Errorf("got %+v, %v", got, err)
+	}
+}
+
+func TestListIAMRoleSummaries_CarriesThePath(t *testing.T) {
+	fake := &fakeIAMClient{roles: []iamtypes.Role{
+		{RoleName: aws.String("AWSServiceRoleForSupport"), Path: aws.String("/aws-service-role/support.amazonaws.com/"), CreateDate: iamFixtureTime(t, "2026-01-01T00:00:00Z")},
+		{RoleName: aws.String("mine"), CreateDate: iamFixtureTime(t, "2026-02-01T00:00:00Z")},
+	}}
+	got, err := ListIAMRoleSummaries(context.Background(), fake, config.OriginTagConfig{Key: "origin", DLDValue: "dld"})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	paths := map[string]string{}
+	for _, r := range got {
+		paths[r.Name] = r.Path
+	}
+	if paths["AWSServiceRoleForSupport"] != "/aws-service-role/support.amazonaws.com/" || paths["mine"] != "" {
+		t.Errorf("paths = %v", paths)
 	}
 }

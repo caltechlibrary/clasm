@@ -182,6 +182,7 @@ Choosing Tag Management presents:
 
 1. Show all tags
 2. Manage tags
+3. Show untagged resources
 
 Both start by picking a resource **kind** -- Instance, AMI, Launch
 Template, Key Pair, S3 Bucket, IAM Role, IAM Instance Profile, IAM
@@ -703,6 +704,27 @@ text view they keep the screen's `2026-07-23 17:30` layout.
   key; in JSON they are an object, `{}` when untagged. S3 is the slow kind
   (one `GetBucketTagging` call per bucket: about twenty seconds for 78
   buckets); IAM roles take under ten.
+
+`tag-management show-untagged [-text|-json|-jsonl] [<kind>...]`
+: the resources that **lack the `Origin` tag** (the key in `origin_tag`), so you
+  can tag the existing fleet (DR-0192); read-only. With no kind it covers all
+  eleven (the kinds of `show-all-tags`); name some to narrow it, and only those
+  are read. A resource that has the key with a value **other than the DLD-owned
+  one** is listed after the missing ones, marked `other: <value>`, because that
+  is a decision for you, not a gap. With no DLD-owned value configured yet, any
+  present value counts as another value. Each row carries the kind, ID, name
+  (a volume, snapshot or interface has none, so its `Name` tag stands in),
+  region, creation date where AWS reports one, the origin state and the tags it
+  already has, which hint at whose it is. In `-json` and `-jsonl` the fields are
+  `kind`, `id`, `name`, `region`, `created`, `origin_status` (`missing` or
+  `other-value`), `origin_value` and `tags`, and the records stand alone; the
+  text view ends with a note on what is left out. Left out: AWS service-linked
+  IAM roles (counted in the note), AWS-managed policies, network interfaces an
+  AWS service manages for you, and snapshots and AMIs other accounts own.
+  Nothing listed is exit 0; an unknown kind is exit 2 and lists the kinds. The
+  whole account takes a minute or two (a tag lookup per bucket and IAM
+  resource); naming a kind is much quicker. The menu item of the same name
+  shows the same report in the list view.
 
 #### Configuration
 

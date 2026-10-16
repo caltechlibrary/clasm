@@ -14,9 +14,10 @@ import (
 func testTagMgmtActions(refreshCalls *int) TagMgmtActions {
 	noop := func(ctx context.Context) error { return nil }
 	return TagMgmtActions{
-		ManageTags:  noop,
-		ShowAllTags: noop,
-		Refresh:     countingAction(refreshCalls),
+		ManageTags:   noop,
+		ShowAllTags:  noop,
+		ShowUntagged: noop,
+		Refresh:      countingAction(refreshCalls),
 	}
 }
 
@@ -202,12 +203,49 @@ func TestRunTagMgmtMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestTagMgmtMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(tagMgmtMenuItems) != 2 {
-		t.Fatalf("len(tagMgmtMenuItems) = %d, want 2 (no \"Back to domain picker\" -- 'q' is the only way back)", len(tagMgmtMenuItems))
+	if len(tagMgmtMenuItems) != 3 {
+		t.Fatalf("len(tagMgmtMenuItems) = %d, want 3 (no \"Back to domain picker\" -- 'q' is the only way back)", len(tagMgmtMenuItems))
 	}
 	for _, item := range tagMgmtMenuItems {
 		if item.action == nil {
 			t.Errorf("found a nil-action item %q", item.label)
 		}
+	}
+}
+
+// Show untagged resources (DR-0192) is appended, so "Show all tags" and "Manage tags" keep
+// their numbers.
+func TestRunTagMgmtMenu_DispatchesToShowUntagged(t *testing.T) {
+	var calls, refreshCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := testTagMgmtActions(&refreshCalls)
+	actions.ShowUntagged = cancelingAction(&calls, cancel)
+	if err := runTagMgmtMenu(ctx, term, actions, newHuhAccessibleInput("3\n"), buf); err != nil {
+		t.Fatalf("expected a clean exit once ctx is cancelled, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+	if tagMgmtMenuItems[2].cliSlug != "show-untagged" || tagMgmtMenuItems[0].label != "Show all tags" || tagMgmtMenuItems[1].label != "Manage tags" {
+		t.Errorf("the first two items must not move and the new one carries the slug: %+v", tagMgmtMenuItems)
+	}
+}
+
+func TestUntaggedRowsForDisplay_OneRowPerResourceWithItsReason(t *testing.T) {
+	rows := untaggedRowsForDisplay(UntaggedReport{
+		Missing:    []UntaggedItem{{Kind: "instance", ID: "i-1", Name: "new-data", Region: "us-west-2", Created: "2026-05-21", Tags: map[string]string{"Name": "new-data"}}},
+		OtherValue: []UntaggedItem{{Kind: "ebs-volume", ID: "vol-1", OriginValue: "imss"}},
+	})
+	if len(rows) != 2 || rows[0].ID != "i-1" || rows[1].ID != "vol-1" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	for _, want := range []string{"instance", "new-data", "us-west-2", "2026-05-21", "missing"} {
+		if !strings.Contains(rows[0].Label, want) {
+			t.Errorf("label %q should mention %q", rows[0].Label, want)
+		}
+	}
+	if !strings.Contains(rows[1].Label, "other: imss") || rows[0].Tags["Name"] != "new-data" {
+		t.Errorf("rows = %+v", rows)
 	}
 }

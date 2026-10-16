@@ -25,6 +25,8 @@ type KeyPair struct {
 	// (never previously tagged/displayed by clasm), so this is the only
 	// tag data exposed on KeyPair.
 	Tags map[string]string
+	// Created is the creation date, YYYY-MM-DD.
+	Created string
 }
 
 // ListKeyPairs queries ec2:DescribeKeyPairs in each region concurrently
@@ -81,5 +83,6 @@ func keyPairFromSDK(kp types.KeyPairInfo, region string) KeyPair {
 		KeyType:        string(kp.KeyType),
 		Region:         region,
 		Tags:           tagsToMap(kp.Tags),
+		Created:        dateOf(kp.CreateTime),
 	}
 }

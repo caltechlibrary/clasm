@@ -34,6 +34,8 @@ type LaunchTemplate struct {
 	// version's TagSpecifications (tags applied to instances launched
 	// *from* the template), not the template resource itself.
 	Tags map[string]string
+	// Created is the creation date, YYYY-MM-DD.
+	Created string
 }
 
 // ListLaunchTemplates queries ec2:DescribeLaunchTemplates in each
@@ -99,6 +101,7 @@ func launchTemplateFromSDK(lt types.LaunchTemplate, region string) LaunchTemplat
 		Project:        project,
 		Environment:    environment,
 		Tags:           tagsToMap(lt.Tags),
+		Created:        dateOf(lt.CreateTime),
 	}
 }
 

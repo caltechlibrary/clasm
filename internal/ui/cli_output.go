@@ -302,3 +302,74 @@ func WriteTaggedResources(w io.Writer, kind string, resources []TaggedResource, 
 	}
 	return writeRecords(w, recs, format)
 }
+
+// UntaggedRow is one resource in the untagged-resource report (DR-0192): it lacks the
+// configured Origin tag ("missing") or has the tag with a value other than the
+// DLD-owned one ("other-value").
+type UntaggedRow struct {
+	Kind        string // the CLI kind slug
+	ID          string
+	Name        string
+	Region      string
+	Created     string
+	Status      string // "missing" or "other-value"
+	OriginValue string // the value the tag has, "" when missing
+	Tags        map[string]string
+}
+
+type untaggedJSON struct {
+	Kind        string            `json:"kind"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Region      string            `json:"region"`
+	Created     string            `json:"created"`
+	OriginState string            `json:"origin_status"`
+	OriginValue string            `json:"origin_value"`
+	Tags        map[string]string `json:"tags"`
+}
+
+// WriteUntagged writes the untagged-resource report in format. The text view ends with
+// note, which says what the report leaves out; JSON and JSON Lines are the records
+// alone, so they stay machine-readable.
+//
+// @param w {io.Writer} where to write
+// @param rows {[]UntaggedRow} the resources to report
+// @param note {string} the text view's closing line, "" for none
+// @param format {Format} text, JSON or JSON Lines
+// @returns {error} a write failure
+func WriteUntagged(w io.Writer, rows []UntaggedRow, note string, format Format) error {
+	if format != FormatText {
+		recs := make([]any, len(rows))
+		for i, r := range rows {
+			recs[i] = untaggedJSON{r.Kind, r.ID, r.Name, r.Region, r.Created, r.Status, r.OriginValue, nonNilTags(r.Tags)}
+		}
+		return writeRecords(w, recs, format)
+	}
+	if len(rows) == 0 {
+		if _, err := fmt.Fprintln(w, "Nothing is missing the Origin tag."); err != nil {
+			return err
+		}
+	} else {
+		header := fmt.Sprintf("%s %s %s %s %s %s %s",
+			padRight("KIND", 18), padRight("ID", 24), padRight("NAME", 30), padRight("REGION", 10), padRight("CREATED", 10), padRight("ORIGIN", 14), "TAGS")
+		lines := make([]string, len(rows))
+		for i, r := range rows {
+			origin := "missing"
+			if r.Status == "other-value" {
+				origin = "other: " + r.OriginValue
+			}
+			lines[i] = fmt.Sprintf("%s %s %s %s %s %s %s",
+				padRight(truncate(r.Kind, 18), 18), fmt.Sprintf("%-24s", r.ID), padRight(truncate(r.Name, 30), 30),
+				padRight(r.Region, 10), padRight(r.Created, 10), padRight(truncate(origin, 14), 14), flattenTags(r.Tags))
+		}
+		if err := writeText(w, header, lines); err != nil {
+			return err
+		}
+	}
+	if note != "" {
+		if _, err := fmt.Fprintf(w, "\n%s\n", note); err != nil {
+			return err
+		}
+	}
+	return nil
+}

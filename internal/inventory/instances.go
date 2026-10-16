@@ -36,6 +36,8 @@ type Instance struct {
 	// any -- used by Key Management's Delete Key Pair to detect dependent
 	// instances (see internal/workflow/keypair_delete.go).
 	KeyName string
+	// Created is the launch date, YYYY-MM-DD, "" if EC2 did not report one.
+	Created string
 	// Tags is the instance's full tag set (every key=value pair, not just
 	// the Name/Project/Environment convention above), decoded from the
 	// same DescribeInstances response already fetched -- no extra AWS
@@ -119,6 +121,7 @@ func instanceFromSDK(inst types.Instance, region string) Instance {
 		PrivateIP:   aws.ToString(inst.PrivateIpAddress),
 		KeyName:     aws.ToString(inst.KeyName),
 		Tags:        tagsToMap(inst.Tags),
+		Created:     dateOf(inst.LaunchTime),
 	}
 }
 

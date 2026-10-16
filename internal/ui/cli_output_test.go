@@ -262,3 +262,91 @@ func TestWriteTaggedResources(t *testing.T) {
 		t.Errorf("jsonl: %q err=%v", b.String(), err)
 	}
 }
+
+// WriteUntagged writes the untagged-resource report (DR-0192): one row per resource
+// that lacks the Origin tag or has it with another value, in text, JSON or JSON Lines.
+
+func untaggedFixture() []UntaggedRow {
+	return []UntaggedRow{
+		{Kind: "instance", ID: "i-0a", Name: "new-data", Region: "us-west-2", Created: "2026-05-21", Status: "missing",
+			Tags: map[string]string{"Name": "new-data", "project": "authors"}},
+		{Kind: "ebs-volume", ID: "vol-1", Region: "us-west-2", Created: "2026-05-21", Status: "other-value", OriginValue: "imss", Tags: nil},
+	}
+}
+
+func TestWriteUntagged_TextShowsEachResourceItsReasonAndTheNote(t *testing.T) {
+	var b bytes.Buffer
+	if err := WriteUntagged(&b, untaggedFixture(), "Not listed: AWS-managed things.", FormatText); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"KIND", "ID", "NAME", "REGION", "CREATED", "ORIGIN", "TAGS",
+		"instance", "i-0a", "new-data", "us-west-2", "2026-05-21", "missing", "Name=new-data, project=authors",
+		"ebs-volume", "vol-1", "other: imss", "Not listed: AWS-managed things."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteUntagged_TextWithNothingToReportSaysSoAndKeepsTheNote(t *testing.T) {
+	var b bytes.Buffer
+	if err := WriteUntagged(&b, nil, "Not listed: AWS-managed things.", FormatText); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "Nothing is missing the Origin tag") || !strings.Contains(b.String(), "Not listed:") {
+		t.Errorf("output = %q", b.String())
+	}
+}
+
+func TestWriteUntagged_JSONRecordsAreSelfDescribingAndTheNoteStaysOutOfThem(t *testing.T) {
+	var b bytes.Buffer
+	if err := WriteUntagged(&b, untaggedFixture(), "the note", FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "the note") {
+		t.Errorf("machine-readable output must be the records alone:\n%s", b.String())
+	}
+	var recs []map[string]any
+	if err := json.Unmarshal(b.Bytes(), &recs); err != nil || len(recs) != 2 {
+		t.Fatalf("got %v, %v", recs, err)
+	}
+	first, second := recs[0], recs[1]
+	for k, want := range map[string]any{"kind": "instance", "id": "i-0a", "name": "new-data", "region": "us-west-2", "created": "2026-05-21", "origin_status": "missing", "origin_value": ""} {
+		if first[k] != want {
+			t.Errorf("first[%s] = %v, want %v", k, first[k], want)
+		}
+	}
+	if second["origin_status"] != "other-value" || second["origin_value"] != "imss" {
+		t.Errorf("second = %v", second)
+	}
+	if tags, ok := second["tags"].(map[string]any); !ok || len(tags) != 0 {
+		t.Errorf("untagged tags must be an empty object, got %v", second["tags"])
+	}
+}
+
+func TestWriteUntagged_JSONLIsOneRecordPerLineAndEmptyJSONIsAnEmptyArray(t *testing.T) {
+	var b bytes.Buffer
+	if err := WriteUntagged(&b, untaggedFixture(), "", FormatJSONL); err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(b.String()), "\n"); len(lines) != 2 || !strings.Contains(lines[1], "vol-1") {
+		t.Errorf("jsonl = %q", b.String())
+	}
+	b.Reset()
+	if err := WriteUntagged(&b, nil, "", FormatJSON); err != nil || strings.TrimSpace(b.String()) != "[]" {
+		t.Errorf("empty JSON = %q, %v", b.String(), err)
+	}
+}
+
+// An ID is never cut: an IAM policy's ARN is what tag-resource will be given.
+func TestWriteUntagged_TextKeepsALongIDWhole(t *testing.T) {
+	const arn = "arn:aws:iam::074441911104:policy/clasm-r5-restore-source-policy"
+	var b bytes.Buffer
+	if err := WriteUntagged(&b, []UntaggedRow{{Kind: "iam-policy", ID: arn, Status: "missing"}}, "", FormatText); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), arn) {
+		t.Errorf("the whole ID must be printed:\n%s", b.String())
+	}
+}

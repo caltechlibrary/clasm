@@ -227,7 +227,9 @@ func RequireDLDOwned(tags map[string]string, originTag config.OriginTagConfig, k
 // keep this package's IAM support limited to listing/shaping AWS data
 // (matching Image/Instance's own scope), not IAM-policy interpretation.
 type IAMRoleSummary struct {
-	Name       string
+	Name string
+	// Path is the role's IAM path; AWS service-linked roles live under /aws-service-role/.
+	Path       string
 	CreateDate time.Time
 	Origin     string
 	DLDOwned   bool
@@ -270,6 +272,7 @@ func ListIAMRoleSummaries(ctx context.Context, client awsclient.IAMAPI, originTa
 		tags := tagsByIndex[i]
 		summaries = append(summaries, IAMRoleSummary{
 			Name:       aws.ToString(r.RoleName),
+			Path:       aws.ToString(r.Path),
 			CreateDate: aws.ToTime(r.CreateDate),
 			Origin:     ResolveOrigin(tags, originTag.Key),
 			DLDOwned:   IsDLDOwned(tags, originTag),
