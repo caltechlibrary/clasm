@@ -22,7 +22,9 @@ MAN_PAGES_1 = $(shell ls -1 docs/*.1.md | sed -E 's|docs/||; s/.1.md/.1/g')
 
 DOCS = $(shell ls -1 docs/*.?.md)
 
-PACKAGE = $(shell ls -1 *.go)
+# version.go is left out: it has a rule (cmt, under generate), and listing it
+# here would make every build run cmt through that rule.
+PACKAGE = $(filter-out version.go,$(shell ls -1 *.go))
 
 VERSION = $(shell grep '"version":' codemeta.json | cut -d\"  -f 4)
 
@@ -42,7 +44,17 @@ ifeq ($(OS), Windows)
 	EXT = .exe
 endif
 
-build: version.go $(PROGRAMS) man CITATION.cff installer.sh installer.ps1
+# build compiles the program and regenerates the help text and man pages. It
+# does not run cmt: version.go, CITATION.cff and the installers are generated
+# from codemeta.json by `make generate`, so the version and release hash change
+# only when that is asked for (the release target does), and `make; make
+# install` leaves the committed files alone.
+build: $(PROGRAMS) man
+
+# generate runs cmt over codemeta.json. Run it when the version, the release
+# notes or the metadata change, and before a release; a plain `make` leaves the
+# committed version.go, CITATION.cff and installers alone.
+generate: version.go CITATION.cff installer.sh installer.ps1
 
 version.go: .FORCE
 	cmt codemeta.json version.go
@@ -73,7 +85,7 @@ $(MAN_PAGES): .FORCE
 	mkdir -p man/man1
 	pandoc docs/$@.md --from markdown --to man -s >man/man1/$@
 
-CITATION.cff: codemeta.json
+CITATION.cff: .FORCE
 	cmt codemeta.json CITATION.cff
 
 installer.sh: .FORCE
@@ -186,7 +198,7 @@ distribute_docs:
 	@cp -vR man dist/
 	@for DNAME in $(DOCS); do cp -v $$DNAME dist/; done
 
-release: build installer.sh installer.ps1 save setup_dist distribute_docs dist/Linux-x86_64 dist/Linux-aarch64 dist/macOS-x86_64 dist/macOS-arm64 dist/Windows-x86_64 dist/Windows-arm64 dist/Linux-armv7l
+release: generate build save setup_dist distribute_docs dist/Linux-x86_64 dist/Linux-aarch64 dist/macOS-x86_64 dist/macOS-arm64 dist/Windows-x86_64 dist/Windows-arm64 dist/Linux-armv7l
 	@printf "\nready to run\n\n\trelease.bash\n\n"
 
 
