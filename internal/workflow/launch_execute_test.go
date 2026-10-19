@@ -28,7 +28,10 @@ type fakeEC2Client struct {
 	runInstancesErr       error
 	runInstancesID        string
 
-	describeCalls    int
+	describeCalls int
+	// initialState, if set, is the state DescribeInstances reports before the
+	// runningAfterCall / stoppedAfterCall transitions apply (default: pending).
+	initialState     types.InstanceStateName
 	runningAfterCall int // DescribeInstances reports running starting at this call number; 0 = never
 	stoppedAfterCall int // DescribeInstances reports stopped starting at this call number; 0 = never
 	describeErr      error
@@ -702,6 +705,9 @@ func (f *fakeEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		return nil, f.describeErr
 	}
 	state := types.InstanceStateNamePending
+	if f.initialState != "" {
+		state = f.initialState
+	}
 	if f.runningAfterCall > 0 && f.describeCalls >= f.runningAfterCall {
 		state = types.InstanceStateNameRunning
 	}

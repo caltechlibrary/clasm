@@ -120,6 +120,13 @@
 
 ## Someday/maybe (not on the active roadmap)
 
+- A command-line form of Terminate EC2 instance (`clasm compute terminate-ec2-instance`), the last
+  Compute power-state leaf with no CLI form (raised 2026-10-19, while adding `start-ec2-instance` and
+  `stop-ec2-instance`, which were scoped without it). It is destructive, so it needs DR-0180's
+  confirmation design (a `--confirm` that names the instance, a dry run without it) and the production
+  warning the menu already gives for an `Environment=production` instance. Throwaway instances are
+  otherwise terminated from the menu, since clasm has had no terminate form.
+
 - Container management: AWS container registry support as a top-level
   menu item, plus SSM-based interaction with Docker containers running
   inside an EC2 instance (list the Docker services on an instance;

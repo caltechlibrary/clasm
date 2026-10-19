@@ -139,7 +139,7 @@ var mainMenuItems = []menuItem{
 	{label: "Create EC2 instance from AMI", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromAMI(ctx) }},
 	{label: "Create EC2 instance from cloud-init YAML", action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromCloudInit(ctx) }},
 	{label: "Create EC2 instance from launch template", cliSlug: CreateEC2InstanceFromLaunchTemplateCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.CreateInstanceFromLaunchTemplate(ctx) }},
-	{label: "Start EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
+	{label: "Start EC2 instance", cliSlug: StartInstanceCLISlug, action: func(a MenuActions, ctx context.Context) error { return a.StartEC2Instance(ctx) }},
 	{label: "Stop EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.StopEC2Instance(ctx) }},
 	{label: "Terminate EC2 instance", action: func(a MenuActions, ctx context.Context) error { return a.TerminateEC2Instance(ctx) }},
 	{label: "Resize instance's root volume", action: func(a MenuActions, ctx context.Context) error { return a.ResizeInstanceRootVolume(ctx) }},

@@ -138,11 +138,16 @@ func waitUntilState(ctx context.Context, client awsclient.EC2API, instanceID str
 		}
 		select {
 		case <-deadline.Done():
-			return types.Instance{}, fmt.Errorf("timed out waiting for instance %s to reach %s", instanceID, want)
+			return types.Instance{}, fmt.Errorf("%w waiting for instance %s to reach %s", errWaitTimedOut, instanceID, want)
 		case <-time.After(pollInterval):
 		}
 	}
 }
+
+// errWaitTimedOut is what waitUntilState's timeout wraps, so a caller can tell
+// "gave up waiting" from a failed call; its text is the first words of the
+// message the timeout has always had.
+var errWaitTimedOut = errors.New("timed out")
 
 // isInstanceNotYetVisible reports whether err is AWS's own
 // InvalidInstanceID.NotFound -- expected for the first few seconds

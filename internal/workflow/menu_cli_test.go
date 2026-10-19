@@ -10,7 +10,7 @@ import (
 
 // TestMainMenuItems_CLISlugs pins which Compute leaves have a cliSlug: the seven
 // read-only "Show" leaves, the two create leaves that set up and start a launch
-// (2026-09-30) and the instance-profile swap (DR-0185) (DR-0177's mechanical rule: lowercase, hyphenate,
+// (2026-09-30) the instance-profile swap (DR-0185) and Start EC2 instance (DR-0194) (DR-0177's mechanical rule: lowercase, hyphenate,
 // drop the slash and apostrophes). Every lifecycle leaf stays "" -- unreachable
 // from the CLI path -- until its own form is built.
 func TestMainMenuItems_CLISlugs(t *testing.T) {
@@ -25,6 +25,7 @@ func TestMainMenuItems_CLISlugs(t *testing.T) {
 		"Create EC2 instance from launch template":      "create-ec2-instance-from-launch-template",
 		"Create launch template from cloud-init YAML":   "create-launch-template-from-cloud-init-yaml",
 		"Associate/replace IAM instance profile":        "associate-replace-iam-instance-profile",
+		"Start EC2 instance":                            "start-ec2-instance",
 	}
 	seen := map[string]bool{}
 	for _, item := range mainMenuItems {
@@ -52,7 +53,8 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 	}{
 		{"compute", "show-instances", true},
 		{"compute", "show-launch-template-detail", true},
-		{"compute", "start-ec2-instance", false},
+		{"compute", "start-ec2-instance", true},
+		{"compute", "terminate-ec2-instance", false},    // destructive, no form yet
 		{"compute", "archive-sql-backups-to-s3", false}, // an RDM slug, not Compute's
 		{"rdm-backup-and-restore", "archive-sql-backups-to-s3", true},
 		{"rdm-backup-and-restore", "show-instances", false}, // a Compute slug, not RDM's

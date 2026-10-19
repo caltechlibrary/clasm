@@ -28,6 +28,43 @@ type UsageError struct{ Msg string }
 
 func (e *UsageError) Error() string { return e.Msg }
 
+// ExitUnavailable is DR-0014's exit code for "a service the command needs cannot
+// be reached" (a network API): sysexits.h EX_UNAVAILABLE.
+//
+// @example
+//
+//	return &ExitCodeError{Code: ExitUnavailable, Err: err}
+const ExitUnavailable = 69
+
+// ExitCodeError is an error that carries its own DR-0014 exit code, for the
+// forms that classify a failure more finely than CLIExitCode's three. CLIExitCode
+// returns Code as it is, however far the error is wrapped.
+//
+// @example
+//
+//	return &ExitCodeError{Code: ExitUnavailable, Err: err}
+type ExitCodeError struct {
+	Code int
+	Err  error
+}
+
+// Error returns the wrapped error's message, so the classification never
+// changes what the operator reads.
+//
+// @returns {string} the wrapped error's message
+// @example
+//
+//	fmt.Fprintln(os.Stderr, err.Error())
+func (e *ExitCodeError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the wrapped error, so errors.Is and errors.As see through it.
+//
+// @returns {error} the wrapped error
+// @example
+//
+//	errors.Is(err, context.DeadlineExceeded)
+func (e *ExitCodeError) Unwrap() error { return e.Err }
+
 // HelpRequested is returned when a leaf was given --help. It is not a failure:
 // the CLI prints Usage and exits 0.
 type HelpRequested struct{ Usage string }
@@ -40,9 +77,12 @@ func (e *HelpRequested) Error() string { return e.Usage }
 func CLIExitCode(err error) int {
 	var help *HelpRequested
 	var usage *UsageError
+	var coded *ExitCodeError
 	switch {
 	case err == nil, errors.As(err, &help):
 		return 0
+	case errors.As(err, &coded):
+		return coded.Code
 	case errors.As(err, &usage):
 		return 2
 	default:

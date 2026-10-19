@@ -254,7 +254,7 @@ func TestClassifyCLIArgs_ComputeLeaves(t *testing.T) {
 		t.Errorf("an option alone must be a run: got mode=%q args=%v err=%v", mode, leafArgs, err)
 	}
 	for _, args := range [][]string{
-		{"compute", "start-ec2-instance"},
+		{"compute", "terminate-ec2-instance"}, // menu-only: destructive, no form yet
 		{"compute", "archive-sql-backups-to-s3"},
 		{"rdm-backup-and-restore", "show-instances"},
 	} {
@@ -779,6 +779,42 @@ func TestRunCLILeaf_AssociateInstanceProfileUsageErrorsExitTwoBeforeAnyAWSCall(t
 	out.Reset()
 	eout.Reset()
 	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "already has") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
+// Start EC2 instance's form (DR-0194). Usage errors and --help never reach AWS
+// (nil clients would panic); an unknown instance is a usage error too.
+func TestClassifyCLIArgs_StartInstance(t *testing.T) {
+	const leaf = "start-ec2-instance"
+	mode, domainSlug, got, args, err := classifyCLIArgs([]string{"compute", leaf})
+	if err != nil || mode != cliModeLeaf || domainSlug != "compute" || got != leaf || args != nil {
+		t.Errorf("a bare slug must deep-link: mode=%q domain=%q leaf=%q err=%v", mode, domainSlug, got, err)
+	}
+	mode, _, _, args, err = classifyCLIArgs([]string{"compute", leaf, "box"})
+	if err != nil || mode != cliModeRun || len(args) != 1 {
+		t.Errorf("one word must be a run: mode=%q args=%v err=%v", mode, args, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"iam", leaf}); err == nil {
+		t.Errorf("the leaf under the wrong domain must be a usage error")
+	}
+}
+
+func TestRunCLILeaf_StartInstanceUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T) {
+	const leaf = "start-ec2-instance"
+	for _, args := range [][]string{{"-json"}, {"a", "b"}, {"-jsonl", "a"}, {"-bogus", "box"}} {
+		var out, eout bytes.Buffer
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, args, cliEnv{}); code != 2 || out.Len() != 0 || !strings.Contains(eout.String(), "usage: clasm compute "+leaf) {
+			t.Errorf("%v: code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"no-such-box"}, computeEnv()); code != 2 || !strings.Contains(eout.String(), "no instance found") {
+		t.Errorf("unknown instance: code=%d err=%q", code, eout.String())
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), leaf) || eout.Len() != 0 {
 		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
 	}
 }
