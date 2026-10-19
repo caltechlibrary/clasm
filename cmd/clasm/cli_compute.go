@@ -84,17 +84,17 @@ func runComputeLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, l
 		}
 		return reportCLIError(out, eout, workflow.RunAssociateInstanceProfileCLI(ctx, out, env.ec2Clients, env.iamClient, env.instances, instance, profile, format)), true
 	case workflow.StartInstanceCLISlug:
-		instance, format, err := workflow.ParseStartInstanceArgs(leafArgs)
+		instance, format, noWait, err := workflow.ParseStartInstanceArgs(leafArgs)
 		if err != nil {
 			return reportCLIError(out, eout, err), true
 		}
-		return reportCLIError(out, eout, workflow.RunStartInstanceCLI(ctx, out, eout, env.ec2Clients, env.instances, instance, format)), true
+		return reportCLIError(out, eout, workflow.RunStartInstanceCLI(ctx, out, eout, env.ec2Clients, env.instances, instance, format, noWait)), true
 	case workflow.StopInstanceCLISlug:
-		instance, format, confirms, err := workflow.ParseStopInstanceArgs(leafArgs)
+		instance, format, noWait, confirms, err := workflow.ParseStopInstanceArgs(leafArgs)
 		if err != nil {
 			return reportCLIError(out, eout, err), true
 		}
-		return reportCLIError(out, eout, workflow.RunStopInstanceCLI(ctx, out, eout, env.ec2Clients, env.instances, instance, format, confirms, ui.StdinIsTerminal(), nil, nil)), true
+		return reportCLIError(out, eout, workflow.RunStopInstanceCLI(ctx, out, eout, env.ec2Clients, env.instances, instance, format, noWait, confirms, ui.StdinIsTerminal(), nil, nil)), true
 	case workflow.ShowExportCloudInitCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showExportCloudInitUsage, workflow.ComputeAllowLaunch, leafArgs, 1, 2)
 		if err != nil {

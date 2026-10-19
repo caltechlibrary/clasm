@@ -31,28 +31,28 @@ func powerClients(f *fakeEC2Client) map[string]awsclient.EC2API {
 
 func runStart(f *fakeEC2Client, inventoryState, arg string, format ui.Format) (out, eout string, err error) {
 	var w, e bytes.Buffer
-	err = runStartInstanceCLI(context.Background(), &w, &e, powerClients(f), powerFixture(inventoryState), arg, format,
+	err = runStartInstanceCLI(context.Background(), &w, &e, powerClients(f), powerFixture(inventoryState), arg, format, false,
 		50*time.Millisecond, time.Millisecond)
 	return w.String(), e.String(), err
 }
 
 func TestParseStartInstanceArgs(t *testing.T) {
-	inst, format, err := ParseStartInstanceArgs([]string{"box"})
+	inst, format, _, err := ParseStartInstanceArgs([]string{"box"})
 	if err != nil || inst != "box" || format != ui.FormatText {
 		t.Errorf("plain: got %q %v %v", inst, format, err)
 	}
-	inst, format, err = ParseStartInstanceArgs([]string{"-json", "i-1"})
+	inst, format, _, err = ParseStartInstanceArgs([]string{"-json", "i-1"})
 	if err != nil || inst != "i-1" || format != ui.FormatJSON {
 		t.Errorf("-json: got %q %v %v", inst, format, err)
 	}
 	for _, args := range [][]string{nil, {"a", "b"}, {""}, {"  "}, {"-bogus", "box"}, {"-text", "-json", "box"}} {
-		_, _, err := ParseStartInstanceArgs(args)
+		_, _, _, err := ParseStartInstanceArgs(args)
 		var u *UsageError
 		if !errors.As(err, &u) || CLIExitCode(err) != 2 {
 			t.Errorf("%q: want a usage error (exit 2), got %v", args, err)
 		}
 	}
-	_, _, err = ParseStartInstanceArgs([]string{"--help"})
+	_, _, _, err = ParseStartInstanceArgs([]string{"--help"})
 	var h *HelpRequested
 	if !errors.As(err, &h) || CLIExitCode(err) != 0 {
 		t.Fatalf("--help: want HelpRequested, got %v", err)
@@ -167,7 +167,7 @@ func TestStartInstanceCLI_UnknownOrAmbiguousNameIsUsageBeforeAnyCall(t *testing.
 	}
 	two := append(powerFixture("stopped"), inventory.Instance{InstanceID: "i-2", Name: "box", State: "stopped", Region: "us-west-2"})
 	var w, e bytes.Buffer
-	err = runStartInstanceCLI(context.Background(), &w, &e, powerClients(f), two, "box", ui.FormatText, time.Millisecond, time.Millisecond)
+	err = runStartInstanceCLI(context.Background(), &w, &e, powerClients(f), two, "box", ui.FormatText, false, time.Millisecond, time.Millisecond)
 	if CLIExitCode(err) != 2 {
 		t.Errorf("ambiguous name: want exit 2, got %d (%v)", CLIExitCode(err), err)
 	}

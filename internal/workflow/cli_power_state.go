@@ -38,7 +38,7 @@ const StartInstanceCLISlug = "start-ec2-instance"
 // @example
 //
 //	return &UsageError{Msg: "start-ec2-instance: missing instance\n" + StartInstanceUsage}
-const StartInstanceUsage = "usage: clasm compute " + StartInstanceCLISlug + " [-text|-json] <instance-name-or-id>"
+const StartInstanceUsage = "usage: clasm compute " + StartInstanceCLISlug + " [-text|-json] [-no-wait] <instance-name-or-id>"
 
 const startInstanceHelp = `
 
@@ -70,24 +70,25 @@ type startInstanceJSON struct {
 // @param args {[]string} the words after the leaf's slug
 // @returns {string} the instance name or ID
 // @returns {ui.Format} the output format, text unless -json was given
+// @returns {bool} whether -no-wait was given
 // @returns {error} a *UsageError for a bad command line, a *HelpRequested for --help
 // @example
 //
-//	instance, format, err := ParseStartInstanceArgs([]string{"-json", "box"})
-func ParseStartInstanceArgs(args []string) (instance string, format ui.Format, err error) {
-	opts, words, err := ParseComputeArgs(StartInstanceCLISlug, StartInstanceUsage, ComputeAllowNone, args)
+//	instance, format, noWait, err := ParseStartInstanceArgs([]string{"-json", "box"})
+func ParseStartInstanceArgs(args []string) (instance string, format ui.Format, noWait bool, err error) {
+	opts, words, err := ParseComputeArgs(StartInstanceCLISlug, StartInstanceUsage, ComputeAllowNoWait, args)
 	if err != nil {
 		var h *HelpRequested
 		if errors.As(err, &h) {
-			return "", ui.FormatText, &HelpRequested{Usage: h.Usage + startInstanceHelp}
+			return "", ui.FormatText, false, &HelpRequested{Usage: h.Usage + startInstanceHelp}
 		}
-		return "", ui.FormatText, err
+		return "", ui.FormatText, false, err
 	}
 	if len(words) != 1 || strings.TrimSpace(words[0]) == "" {
-		return "", ui.FormatText, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s",
+		return "", ui.FormatText, false, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s",
 			StartInstanceCLISlug, len(words), StartInstanceUsage)}
 	}
-	return strings.TrimSpace(words[0]), opts.Format, nil
+	return strings.TrimSpace(words[0]), opts.Format, opts.NoWait, nil
 }
 
 // RunStartInstanceCLI is `clasm compute start-ec2-instance`. It reads the
@@ -102,17 +103,18 @@ func ParseStartInstanceArgs(args []string) (instance string, format ui.Format, e
 // @param instances {[]inventory.Instance} the inventory the name or ID is resolved against
 // @param arg {string} the instance name or ID
 // @param format {ui.Format} text or JSON
+// @param noWait {bool} send the start and return without waiting for running
 // @returns {error} nil on success or when already running; a *UsageError for an unknown or ambiguous instance; otherwise an error for exit 1, or an *ExitCodeError for exit 69
 // @example
 //
-//	err := RunStartInstanceCLI(ctx, os.Stdout, os.Stderr, clients, instances, "box", ui.FormatText)
-func RunStartInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format) error {
-	return runStartInstanceCLI(ctx, w, eout, clients, instances, arg, format, DefaultLaunchTimeout, DefaultLaunchPollInterval)
+//	err := RunStartInstanceCLI(ctx, os.Stdout, os.Stderr, clients, instances, "box", ui.FormatText, false)
+func RunStartInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, noWait bool) error {
+	return runStartInstanceCLI(ctx, w, eout, clients, instances, arg, format, noWait, DefaultLaunchTimeout, DefaultLaunchPollInterval)
 }
 
 // runStartInstanceCLI is RunStartInstanceCLI with the wait's timeout and poll
 // interval as parameters, so a test need not wait minutes.
-func runStartInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, timeout, poll time.Duration) error {
+func runStartInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, noWait bool, timeout, poll time.Duration) error {
 	inst, err := resolveInstanceForCLI(arg, instances)
 	if err != nil {
 		return err
@@ -132,34 +134,62 @@ func runStartInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[str
 	case types.InstanceStateNameRunning:
 		// Nothing to send and nothing to wait for.
 	case types.InstanceStateNamePending:
-		fmt.Fprintf(eout, "%s (%s) is already starting; waiting for it to reach running...\n", inst.InstanceID, inst.Name)
+		if !noWait {
+			fmt.Fprintf(eout, "%s (%s) is already starting; waiting for it to reach running...\n", inst.InstanceID, inst.Name)
+		}
 	case types.InstanceStateNameStopped:
 		if err := StartInstance(ctx, client, inst.InstanceID); err != nil {
 			return classifyUnavailable(fmt.Errorf("starting instance %s: %w", inst.InstanceID, err))
 		}
 		changed = true
-		fmt.Fprintf(eout, "Starting %s (%s), waiting for it to reach running...\n", inst.InstanceID, inst.Name)
+		if noWait {
+			fmt.Fprintf(eout, "Starting %s (%s); not waiting.\n", inst.InstanceID, inst.Name)
+		} else {
+			fmt.Fprintf(eout, "Starting %s (%s), waiting for it to reach running...\n", inst.InstanceID, inst.Name)
+		}
 	case types.InstanceStateNameStopping:
 		return fmt.Errorf("%s (%s) is %s; it cannot be started until it has stopped: run this again in a minute", inst.InstanceID, inst.Name, previous)
 	default:
 		return fmt.Errorf("%s (%s) is %s; it cannot be started from that state", inst.InstanceID, inst.Name, previous)
 	}
 
-	final := live
+	// state is where the instance is when the form returns: with -no-wait a
+	// start AWS has just accepted is pending, whatever the check saw.
+	final, state := live, previous
 	if previous != types.InstanceStateNameRunning {
-		final, err = WaitUntilRunning(ctx, client, inst.InstanceID, timeout, poll)
-		if err != nil {
-			return waitFailure(err, inst.InstanceID, types.InstanceStateNameRunning)
+		if noWait {
+			if changed {
+				state = types.InstanceStateNamePending
+			}
+		} else {
+			final, err = WaitUntilRunning(ctx, client, inst.InstanceID, timeout, poll)
+			if err != nil {
+				return waitFailure(err, inst.InstanceID, types.InstanceStateNameRunning)
+			}
+			state = liveStateName(final)
 		}
 	}
+	up := state == types.InstanceStateNameRunning // connection details exist only for a running instance
 
 	if format != ui.FormatText {
-		return ui.WriteJSONValue(w, startInstanceJSON{
+		result := startInstanceJSON{
 			InstanceID: inst.InstanceID, Name: inst.Name, Region: inst.Region,
-			PreviousState: string(previous), State: string(liveStateName(final)), Changed: changed,
-			PublicIP: aws.ToString(final.PublicIpAddress), PrivateIP: aws.ToString(final.PrivateIpAddress),
-			SSMStartSession: ssmStartSessionCommand(inst.InstanceID, regionOfInstance(final)),
-		}, format)
+			PreviousState: string(previous), State: string(state), Changed: changed,
+		}
+		if up {
+			result.PublicIP, result.PrivateIP = aws.ToString(final.PublicIpAddress), aws.ToString(final.PrivateIpAddress)
+			result.SSMStartSession = ssmStartSessionCommand(inst.InstanceID, regionOfInstance(final))
+		}
+		return ui.WriteJSONValue(w, result, format)
+	}
+	if !up {
+		check := "Check with: clasm compute show-instance-detail " + inst.InstanceID
+		if changed {
+			fmt.Fprintf(w, "Start requested for %s (%s); it is %s. %s\n", inst.InstanceID, inst.Name, state, check)
+		} else {
+			fmt.Fprintf(w, "%s (%s) is already starting; nothing was sent. %s\n", inst.InstanceID, inst.Name, check)
+		}
+		return nil
 	}
 	if previous == types.InstanceStateNameRunning {
 		fmt.Fprintf(w, "%s (%s) is already running; nothing was changed.\n", inst.InstanceID, inst.Name)
@@ -239,7 +269,7 @@ const StopInstanceCLISlug = "stop-ec2-instance"
 // @example
 //
 //	return &UsageError{Msg: "stop-ec2-instance: missing instance\n" + StopInstanceUsage}
-const StopInstanceUsage = "usage: clasm compute " + StopInstanceCLISlug + " [-text|-json] [--confirm <instance-id-or-name>] <instance-name-or-id>"
+const StopInstanceUsage = "usage: clasm compute " + StopInstanceCLISlug + " [-text|-json] [-no-wait] [--confirm <instance-id-or-name>] <instance-name-or-id>"
 
 const stopInstanceHelp = `
 
@@ -273,25 +303,26 @@ type stopInstanceJSON struct {
 // @param args {[]string} the words after the leaf's slug
 // @returns {string} the instance name or ID
 // @returns {ui.Format} the output format, text unless -json was given
+// @returns {bool} whether -no-wait was given
 // @returns {[]string} the --confirm values, none if the flag was not given
 // @returns {error} a *UsageError for a bad command line, a *HelpRequested for --help
 // @example
 //
-//	instance, format, confirms, err := ParseStopInstanceArgs([]string{"--confirm", "box", "box"})
-func ParseStopInstanceArgs(args []string) (instance string, format ui.Format, confirms []string, err error) {
-	opts, words, err := ParseComputeArgs(StopInstanceCLISlug, StopInstanceUsage, ComputeAllowConfirm, args)
+//	instance, format, noWait, confirms, err := ParseStopInstanceArgs([]string{"--confirm", "box", "box"})
+func ParseStopInstanceArgs(args []string) (instance string, format ui.Format, noWait bool, confirms []string, err error) {
+	opts, words, err := ParseComputeArgs(StopInstanceCLISlug, StopInstanceUsage, ComputeAllowConfirm|ComputeAllowNoWait, args)
 	if err != nil {
 		var h *HelpRequested
 		if errors.As(err, &h) {
-			return "", ui.FormatText, nil, &HelpRequested{Usage: h.Usage + stopInstanceHelp}
+			return "", ui.FormatText, false, nil, &HelpRequested{Usage: h.Usage + stopInstanceHelp}
 		}
-		return "", ui.FormatText, nil, err
+		return "", ui.FormatText, false, nil, err
 	}
 	if len(words) != 1 || strings.TrimSpace(words[0]) == "" {
-		return "", ui.FormatText, nil, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s",
+		return "", ui.FormatText, false, nil, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s",
 			StopInstanceCLISlug, len(words), StopInstanceUsage)}
 	}
-	return strings.TrimSpace(words[0]), opts.Format, opts.Confirms, nil
+	return strings.TrimSpace(words[0]), opts.Format, opts.NoWait, opts.Confirms, nil
 }
 
 // RunStopInstanceCLI is `clasm compute stop-ec2-instance`. It checks --confirm
@@ -307,6 +338,7 @@ func ParseStopInstanceArgs(args []string) (instance string, format ui.Format, co
 // @param instances {[]inventory.Instance} the inventory the name or ID is resolved against
 // @param arg {string} the instance name or ID
 // @param format {ui.Format} text or JSON
+// @param noWait {bool} send the stop and return without waiting for stopped
 // @param confirms {[]string} the --confirm values
 // @param interactive {bool} whether a terminal is attached, for the gate's prompt
 // @param input {io.Reader} the prompt's input, nil in production
@@ -314,14 +346,14 @@ func ParseStopInstanceArgs(args []string) (instance string, format ui.Format, co
 // @returns {error} nil on success, when already stopped, or when the gate declined; a *UsageError for a bad instance or a --confirm that is not the target; otherwise an error for exit 1, or an *ExitCodeError for exit 69
 // @example
 //
-//	err := RunStopInstanceCLI(ctx, os.Stdout, os.Stderr, clients, instances, "box", ui.FormatText, nil, ui.StdinIsTerminal(), nil, nil)
-func RunStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, confirms []string, interactive bool, input io.Reader, output io.Writer) error {
-	return runStopInstanceCLI(ctx, w, eout, clients, instances, arg, format, confirms, interactive, input, output, DefaultLaunchTimeout, DefaultLaunchPollInterval)
+//	err := RunStopInstanceCLI(ctx, os.Stdout, os.Stderr, clients, instances, "box", ui.FormatText, false, nil, ui.StdinIsTerminal(), nil, nil)
+func RunStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, noWait bool, confirms []string, interactive bool, input io.Reader, output io.Writer) error {
+	return runStopInstanceCLI(ctx, w, eout, clients, instances, arg, format, noWait, confirms, interactive, input, output, DefaultLaunchTimeout, DefaultLaunchPollInterval)
 }
 
 // runStopInstanceCLI is RunStopInstanceCLI with the wait's timeout and poll
 // interval as parameters, so a test need not wait minutes.
-func runStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, confirms []string, interactive bool, input io.Reader, output io.Writer, timeout, poll time.Duration) error {
+func runStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[string]awsclient.EC2API, instances []inventory.Instance, arg string, format ui.Format, noWait bool, confirms []string, interactive bool, input io.Reader, output io.Writer, timeout, poll time.Duration) error {
 	inst, err := resolveInstanceForCLI(arg, instances)
 	if err != nil {
 		return err
@@ -344,7 +376,9 @@ func runStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[stri
 	switch previous {
 	case types.InstanceStateNameRunning, types.InstanceStateNameStopped:
 	case types.InstanceStateNameStopping:
-		fmt.Fprintf(eout, "%s (%s) is already stopping; waiting for it to reach stopped...\n", inst.InstanceID, inst.Name)
+		if !noWait {
+			fmt.Fprintf(eout, "%s (%s) is already stopping; waiting for it to reach stopped...\n", inst.InstanceID, inst.Name)
+		}
 	case types.InstanceStateNamePending:
 		return fmt.Errorf("%s (%s) is %s; it cannot be stopped until it is running: run this again in a minute", inst.InstanceID, inst.Name, previous)
 	default:
@@ -373,29 +407,45 @@ func runStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[stri
 				return classifyUnavailable(fmt.Errorf("stopping instance %s: %w", inst.InstanceID, err))
 			}
 			changed = true
-			fmt.Fprintf(eout, "Stopping %s (%s), waiting for it to reach stopped...\n", inst.InstanceID, inst.Name)
+			if noWait {
+				fmt.Fprintf(eout, "Stopping %s (%s); not waiting.\n", inst.InstanceID, inst.Name)
+			} else {
+				fmt.Fprintf(eout, "Stopping %s (%s), waiting for it to reach stopped...\n", inst.InstanceID, inst.Name)
+			}
 		}
 	}
 
-	final := live
+	// state is where the instance is when the form returns: with -no-wait a stop
+	// AWS has just accepted is stopping, whatever the check saw.
+	state := previous
 	if !declined && previous != types.InstanceStateNameStopped {
-		final, err = WaitUntilStopped(ctx, client, inst.InstanceID, timeout, poll)
-		if err != nil {
-			return waitFailure(err, inst.InstanceID, types.InstanceStateNameStopped)
+		if noWait {
+			state = types.InstanceStateNameStopping
+		} else {
+			final, err := WaitUntilStopped(ctx, client, inst.InstanceID, timeout, poll)
+			if err != nil {
+				return waitFailure(err, inst.InstanceID, types.InstanceStateNameStopped)
+			}
+			state = liveStateName(final)
 		}
 	}
 
 	if format != ui.FormatText {
 		return ui.WriteJSONValue(w, stopInstanceJSON{
 			InstanceID: inst.InstanceID, Name: inst.Name, Region: inst.Region,
-			PreviousState: string(previous), State: string(liveStateName(final)), Changed: changed, Declined: declined,
+			PreviousState: string(previous), State: string(state), Changed: changed, Declined: declined,
 		}, format)
 	}
+	check := "Check with: clasm compute show-instance-detail " + inst.InstanceID
 	switch {
 	case declined:
 		// The gate printed the plan and said nothing was changed.
 	case previous == types.InstanceStateNameStopped:
 		fmt.Fprintf(w, "%s (%s) is already stopped; nothing was changed.\n", inst.InstanceID, inst.Name)
+	case noWait && changed:
+		fmt.Fprintf(w, "Stop requested for %s (%s); it is %s. %s\n", inst.InstanceID, inst.Name, state, check)
+	case noWait:
+		fmt.Fprintf(w, "%s (%s) is already stopping; nothing was sent. %s\n", inst.InstanceID, inst.Name, check)
 	default:
 		fmt.Fprintf(w, "Instance %s (%s) is now stopped.\n", inst.InstanceID, inst.Name)
 	}

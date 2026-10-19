@@ -38,7 +38,7 @@ func runStop(f *fakeEC2Client, arg string, a stopArgs) (out, eout string, err er
 	if a.format == "" {
 		a.format = ui.FormatText
 	}
-	err = runStopInstanceCLI(context.Background(), &w, &e, powerClients(f), powerFixture(a.inventoryState), arg, a.format,
+	err = runStopInstanceCLI(context.Background(), &w, &e, powerClients(f), powerFixture(a.inventoryState), arg, a.format, false,
 		a.confirms, a.interactive, a.input, output, 50*time.Millisecond, time.Millisecond)
 	return w.String(), e.String(), err
 }
@@ -50,22 +50,22 @@ func runningFake(tags []types.Tag) *fakeEC2Client {
 }
 
 func TestParseStopInstanceArgs(t *testing.T) {
-	inst, format, confirms, err := ParseStopInstanceArgs([]string{"box"})
+	inst, format, _, confirms, err := ParseStopInstanceArgs([]string{"box"})
 	if err != nil || inst != "box" || format != ui.FormatText || len(confirms) != 0 {
 		t.Errorf("plain: got %q %v %v %v", inst, format, confirms, err)
 	}
-	inst, format, confirms, err = ParseStopInstanceArgs([]string{"-json", "--confirm", "box", "i-1"})
+	inst, format, _, confirms, err = ParseStopInstanceArgs([]string{"-json", "--confirm", "box", "i-1"})
 	if err != nil || inst != "i-1" || format != ui.FormatJSON || len(confirms) != 1 || confirms[0] != "box" {
 		t.Errorf("-json --confirm: got %q %v %v %v", inst, format, confirms, err)
 	}
 	for _, args := range [][]string{nil, {"a", "b"}, {""}, {"--confirm"}, {"--confirm", "", "box"}, {"-bogus", "box"}, {"-text", "-json", "box"}} {
-		_, _, _, err := ParseStopInstanceArgs(args)
+		_, _, _, _, err := ParseStopInstanceArgs(args)
 		var u *UsageError
 		if !errors.As(err, &u) || CLIExitCode(err) != 2 {
 			t.Errorf("%q: want a usage error (exit 2), got %v", args, err)
 		}
 	}
-	_, _, _, err = ParseStopInstanceArgs([]string{"--help"})
+	_, _, _, _, err = ParseStopInstanceArgs([]string{"--help"})
 	var h *HelpRequested
 	if !errors.As(err, &h) || CLIExitCode(err) != 0 {
 		t.Fatalf("--help: want HelpRequested, got %v", err)
@@ -79,7 +79,7 @@ func TestParseStopInstanceArgs(t *testing.T) {
 
 // Start is never gated, so it does not take --confirm at all.
 func TestParseStartInstanceArgs_RejectsConfirm(t *testing.T) {
-	_, _, err := ParseStartInstanceArgs([]string{"--confirm", "box", "box"})
+	_, _, _, err := ParseStartInstanceArgs([]string{"--confirm", "box", "box"})
 	if CLIExitCode(err) != 2 {
 		t.Errorf("start --confirm: want exit 2, got %d (%v)", CLIExitCode(err), err)
 	}
@@ -217,7 +217,7 @@ func TestStopInstanceCLI_GateReadsTheLiveTagNotTheInventory(t *testing.T) {
 	var w, e bytes.Buffer
 	inv := []inventory.Instance{{InstanceID: "i-1", Name: "box", State: "running", Region: "us-west-2", Environment: "test"}}
 	f := runningFake(environmentTag("production"))
-	err := runStopInstanceCLI(context.Background(), &w, &e, powerClients(f), inv, "box", ui.FormatText, nil, false, nil, nil, 50*time.Millisecond, time.Millisecond)
+	err := runStopInstanceCLI(context.Background(), &w, &e, powerClients(f), inv, "box", ui.FormatText, false, nil, false, nil, nil, 50*time.Millisecond, time.Millisecond)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestStopInstanceCLI_GateReadsTheLiveTagNotTheInventory(t *testing.T) {
 	inv[0].Environment = "production"
 	g := runningFake(environmentTag("test"))
 	w.Reset()
-	if err := runStopInstanceCLI(context.Background(), &w, &e, powerClients(g), inv, "box", ui.FormatText, nil, false, nil, nil, 50*time.Millisecond, time.Millisecond); err != nil {
+	if err := runStopInstanceCLI(context.Background(), &w, &e, powerClients(g), inv, "box", ui.FormatText, false, nil, false, nil, nil, 50*time.Millisecond, time.Millisecond); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if g.lastStopInstancesInput == nil {
