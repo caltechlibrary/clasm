@@ -819,6 +819,46 @@ func TestRunCLILeaf_StartInstanceUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T
 	}
 }
 
+// Stop EC2 instance's form (DR-0194, DR-0195): --confirm is accepted, and every
+// usage error and --help stops before AWS (nil clients would panic).
+func TestClassifyCLIArgs_StopInstance(t *testing.T) {
+	const leaf = "stop-ec2-instance"
+	mode, domainSlug, got, args, err := classifyCLIArgs([]string{"compute", leaf})
+	if err != nil || mode != cliModeLeaf || domainSlug != "compute" || got != leaf || args != nil {
+		t.Errorf("a bare slug must deep-link: mode=%q domain=%q leaf=%q err=%v", mode, domainSlug, got, err)
+	}
+	mode, _, _, args, err = classifyCLIArgs([]string{"compute", leaf, "--confirm", "box", "box"})
+	if err != nil || mode != cliModeRun || len(args) != 3 {
+		t.Errorf("options and a word must be a run: mode=%q args=%v err=%v", mode, args, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"iam", leaf}); err == nil {
+		t.Errorf("the leaf under the wrong domain must be a usage error")
+	}
+}
+
+func TestRunCLILeaf_StopInstanceUsageErrorsExitTwoBeforeAnyAWSCall(t *testing.T) {
+	const leaf = "stop-ec2-instance"
+	for _, args := range [][]string{{"-json"}, {"a", "b"}, {"--confirm"}, {"-bogus", "box"}, {"--confirm", "other", "box"}} {
+		var out, eout bytes.Buffer
+		env := cliEnv{}
+		if len(args) == 3 { // a mismatched --confirm needs the inventory to know the target
+			env = computeEnv()
+		}
+		if code := runCLILeaf(context.Background(), &out, &eout, leaf, args, env); code != 2 || out.Len() != 0 || eout.Len() == 0 {
+			t.Errorf("%v: code=%d out=%q err=%q", args, code, out.String(), eout.String())
+		}
+	}
+	var out, eout bytes.Buffer
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"no-such-box"}, computeEnv()); code != 2 || !strings.Contains(eout.String(), "no instance found") {
+		t.Errorf("unknown instance: code=%d err=%q", code, eout.String())
+	}
+	out.Reset()
+	eout.Reset()
+	if code := runCLILeaf(context.Background(), &out, &eout, leaf, []string{"--help"}, cliEnv{}); code != 0 || !strings.Contains(out.String(), "--confirm") || eout.Len() != 0 {
+		t.Errorf("--help: code=%d out=%q err=%q", code, out.String(), eout.String())
+	}
+}
+
 // Restore SQL's --confirm is repeatable (DR-0187): a bucket value beside the
 // instance's passes the early check, which cannot yet know which buckets are
 // writable. A bucket value without the instance's is still exit 2 before any call.

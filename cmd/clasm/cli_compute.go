@@ -89,6 +89,12 @@ func runComputeLeaf(ctx context.Context, out, eout io.Writer, leafSlug string, l
 			return reportCLIError(out, eout, err), true
 		}
 		return reportCLIError(out, eout, workflow.RunStartInstanceCLI(ctx, out, eout, env.ec2Clients, env.instances, instance, format)), true
+	case workflow.StopInstanceCLISlug:
+		instance, format, confirms, err := workflow.ParseStopInstanceArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err), true
+		}
+		return reportCLIError(out, eout, workflow.RunStopInstanceCLI(ctx, out, eout, env.ec2Clients, env.instances, instance, format, confirms, ui.StdinIsTerminal(), nil, nil)), true
 	case workflow.ShowExportCloudInitCLISlug:
 		opts, words, err := parseLeafWords(leafSlug, showExportCloudInitUsage, workflow.ComputeAllowLaunch, leafArgs, 1, 2)
 		if err != nil {

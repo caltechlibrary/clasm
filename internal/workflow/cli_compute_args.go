@@ -19,6 +19,7 @@ const (
 	ComputeAllowJSONL    ComputeAllow = 1 << iota // listings: one object per line
 	ComputeAllowVersions                          // launch template detail: list versions
 	ComputeAllowLaunch                            // cloud-init: permit the billable AMI extraction
+	ComputeAllowConfirm                           // stop-ec2-instance: --confirm, repeatable (DR-0195)
 )
 
 // ComputeOptions is what a read-only Compute leaf's options parse to.
@@ -38,6 +39,9 @@ type ComputeOptions struct {
 	// ConfiguredSecurityGroups is the config's per-region extraction groups
 	// (cloud_init_extraction_security_groups), used when SecurityGroup is "".
 	ConfiguredSecurityGroups map[string]string
+	// Confirms are --confirm's values, in order (ComputeAllowConfirm); none if the
+	// flag was not given. The form's Gate decides what they must equal.
+	Confirms []string
 }
 
 // ParseComputeArgs parses a read-only Compute leaf's options with a FlagSet of
@@ -52,6 +56,7 @@ func ParseComputeArgs(leaf, usage string, allow ComputeAllow, args []string) (Co
 	asJSON := fs.Bool("json", false, "")
 	var jsonl, versions, launch *bool
 	var securityGroup *string
+	var confirms []string
 	if allow&ComputeAllowJSONL != 0 {
 		jsonl = fs.Bool("jsonl", false, "")
 	}
@@ -61,6 +66,15 @@ func ParseComputeArgs(leaf, usage string, allow ComputeAllow, args []string) (Co
 	if allow&ComputeAllowLaunch != 0 {
 		launch = fs.Bool("launch-temporary-instance", false, "")
 		securityGroup = fs.String("security-group", "", "")
+	}
+	if allow&ComputeAllowConfirm != 0 {
+		fs.Func("confirm", "", func(v string) error {
+			if v == "" {
+				return errors.New("--confirm needs a value")
+			}
+			confirms = append(confirms, v)
+			return nil
+		})
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -85,6 +99,7 @@ func ParseComputeArgs(leaf, usage string, allow ComputeAllow, args []string) (Co
 	if chosen > 1 {
 		return ComputeOptions{}, nil, &UsageError{Msg: fmt.Sprintf("%s: give only one of -text, -json, -jsonl\n%s", leaf, usage)}
 	}
+	opts.Confirms = confirms
 	opts.Versions = versions != nil && *versions
 	opts.LaunchTemporaryInstance = launch != nil && *launch
 	if securityGroup != nil {
@@ -108,6 +123,9 @@ func computeHelp(usage string, allow ComputeAllow) string {
 	if allow&ComputeAllowLaunch != 0 {
 		b.WriteString("  -launch-temporary-instance\n      Required for an AMI: its cloud-init can only be read by launching a\n      temporary billable instance. Not needed for an instance.\n")
 		b.WriteString("  -security-group <sg-id>\n      An existing security group for that temporary instance. It must allow\n      outbound HTTPS, or the instance's SSM agent cannot register. Default: the\n      cloud_init_extraction_security_groups entry for the AMI's region in ~/.clasm,\n      else the VPC default.\n")
+	}
+	if allow&ComputeAllowConfirm != 0 {
+		b.WriteString("  --confirm <instance-id-or-name>\n      Required to stop an instance tagged Environment=production, and accepted for any\n      other. The value must equal the instance's ID or Name tag. Without it, a terminal\n      is asked to confirm; with no terminal the plan is printed and nothing is changed\n      (exit 0).\n")
 	}
 	b.WriteString("  -h, --help\n      Show this help.\n")
 	return b.String()
