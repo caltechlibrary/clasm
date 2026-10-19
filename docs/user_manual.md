@@ -407,7 +407,8 @@ needs a human watching it:
 - `clasm <domain> <action> <arg1> <arg2> ...>` -- runs the action
   non-interactively: no prompts, no confirmation, and a real process
   exit status (0 success, 1 the action itself failed, 2 a usage error --
-  an unrecognized domain/action name or the wrong number of arguments).
+  an unrecognized domain/action name or the wrong number of arguments; the
+  Compute power-state forms also use 69 for an AWS that cannot be reached).
   Safe to use in an unattended job: a mistyped invocation fails
   immediately with a clear message rather than hanging, waiting for
   input from a terminal that isn't there.
@@ -592,6 +593,48 @@ confirmation, so they can run from a script.
   profile none of whose roles has `AmazonSSMManagedInstanceCore` is refused
   with exit 1, because clasm manages instances over SSM and would lose this
   one. (The interactive menu shows SSM capability but does not refuse.)
+
+`start-ec2-instance [-text|-json] [-no-wait] <instance-name-or-id>`
+: the non-interactive form of **Start EC2 instance** (DR-0194). It reads the
+  instance's **live** state from AWS (the listing clasm loaded at startup may be
+  minutes old) and starts it only if it is stopped, then waits (up to five
+  minutes) for it to be running and prints how to reach it, as the menu does.
+  **Safe to repeat:** an instance that is already running sends nothing and
+  succeeds (`nothing was changed`), and one that is already starting is waited
+  out rather than sent a second start, so a script can say the state it wants
+  without reading state first. An instance that is stopping (try again in a
+  minute), shutting down or terminated cannot be started: exit 1, nothing sent.
+  There is no confirmation: starting is reversible and destroys nothing. The
+  progress line goes to standard error, so standard output is the result alone;
+  in `-json` it is `{instance_id, name, region, previous_state, state, changed,
+  public_ip, private_ip, ssm_start_session}`, where `changed` is false when
+  nothing was sent. `-no-wait` sends the start and returns at once: the state is
+  `pending`, no connection details are printed (none exist yet; the three
+  address fields are empty), and the output ends with the command that checks
+  it, `clasm compute show-instance-detail <id>`. A wait that gives up is exit 1
+  and says the same command. An unreachable AWS is exit 69. The public address
+  may differ from the last run unless the instance has an Elastic IP.
+
+`stop-ec2-instance [-text|-json] [-no-wait] [--confirm <instance-id-or-name>] <instance-name-or-id>`
+: the non-interactive form of **Stop EC2 instance** (DR-0194, DR-0195). It reads
+  the live state and stops the instance only if it is running, then waits for it
+  to be stopped. **Safe to repeat:** an instance that is already stopped sends
+  nothing and succeeds, and one already stopping is waited out. A pending,
+  shutting-down or terminated instance cannot be stopped: exit 1, nothing sent.
+  Its EBS volumes persist and it can be started again. **An instance whose live
+  `Environment` tag is exactly `production` is gated** like the destructive forms
+  below: without `--confirm` it prints the plan and changes nothing (exit 0
+  without waiting for input; at a terminal you are asked to type the instance ID
+  or Name tag), and `--confirm <instance-id-or-name>` runs it. Any other
+  instance, tagged or not, is stopped with no confirmation. `--confirm` is
+  accepted on any instance and checked against it, so a script can always pass
+  it; a value that is neither the instance's ID nor its Name tag is a usage error
+  (exit 2) before any AWS call. In `-json` the object is `{instance_id, name,
+  region, previous_state, state, changed, declined}`, where `declined` is true
+  when the production gate stopped it (the plan then goes to standard error, so
+  standard output stays one object). `-no-wait` sends the stop and returns at
+  once with state `stopping`; the gate and the state check still apply. The wait,
+  the check command and exit 69 are as for `start-ec2-instance`.
 
 #### Key Management and IAM
 

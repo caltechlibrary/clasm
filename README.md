@@ -17,6 +17,8 @@ Most actions also run without the menu. The command line mirrors the menu: `clas
 ~~~shell
 clasm compute show-instances -json
 clasm tag-management show-untagged -jsonl instance ami
+clasm compute start-ec2-instance test-instance
+clasm compute stop-ec2-instance -no-wait test-instance
 ~~~
 
 The command line is experimental: names and JSON keys may still change. See [docs/user_manual.md](docs/user_manual.md), "Non-interactive (CLI) Usage", for every form.
@@ -54,7 +56,7 @@ clasm tag-management tag-resource instance new-data --tag origin=dld
 - status: active
 - released: not yet released (draft)
 
-See `codemeta.json` (`releaseNotes`) and the GitHub release page for the notes of each version. In short, v0.0.11 adds the scriptable read-only restore role and instance-profile swap, the restore location guard with a repeatable `--confirm`, the `Origin` tag on everything clasm creates, and `show-untagged` and `tag-resource` for tagging the existing fleet.
+See `codemeta.json` (`releaseNotes`) and the GitHub release page for the notes of each version. In short, v0.0.11 adds the scriptable read-only restore role and instance-profile swap, `start-ec2-instance` and `stop-ec2-instance` (a stop of a production instance needs `--confirm`), the restore location guard with a repeatable `--confirm`, the `Origin` tag on everything clasm creates, and `show-untagged` and `tag-resource` for tagging the existing fleet.
 
 ### Authors
 
