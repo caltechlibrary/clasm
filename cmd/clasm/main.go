@@ -590,6 +590,9 @@ func main() {
 		RestoreOpenSearch: func(ctx context.Context) error {
 			return workflow.RestoreOpenSearchSnapshot(ctx, out, ssmClients, s3Client, newS3Client, state.instances, cfg.OpenSearchBackupDirectories)
 		},
+		CheckIndexHealth: func(ctx context.Context) error {
+			return workflow.RDMIndexHealth(ctx, out, ssmClients, state.instances)
+		},
 		Refresh: refresh,
 	}
 

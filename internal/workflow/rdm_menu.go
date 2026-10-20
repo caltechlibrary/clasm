@@ -25,6 +25,9 @@ type RDMBackupRestoreActions struct {
 	ArchiveOpenSearch func(ctx context.Context) error
 	RestoreSQL        func(ctx context.Context) error
 	RestoreOpenSearch func(ctx context.Context) error
+	// CheckIndexHealth is RDM Index Health (DR-0197): a read-only check that the
+	// audit log and job logs are what the admin pages need.
+	CheckIndexHealth func(ctx context.Context) error
 	// Refresh re-fetches the instance listing this domain's workflows
 	// pick from, silently -- no display. Called once after every
 	// successful dispatched action (DECISIONS.md, "Refresh data after
@@ -82,6 +85,7 @@ const (
 	// GenerateSQLBackupCLISlug is the last RDM leaf's slug, from "Generate SQL
 	// Backup" by the same rule.
 	GenerateSQLBackupCLISlug = "generate-sql-backup"
+	// RDMIndexHealthCLISlug (rdm_index_health.go) is the slug of RDM Index Health.
 )
 
 var rdmMenuItems = []rdmItem{
@@ -90,6 +94,7 @@ var rdmMenuItems = []rdmItem{
 	{label: "Archive OpenSearch Snapshot to S3", cliSlug: ArchiveOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ArchiveOpenSearch(ctx) }},
 	{label: "Restore SQL Backup from S3", cliSlug: RestoreSQLBackupCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
 	{label: "Restore OpenSearch Snapshot from S3", cliSlug: RestoreOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
+	{label: "RDM Index Health", cliSlug: RDMIndexHealthCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.CheckIndexHealth(ctx) }},
 }
 
 // pickRDMBackupRestoreItem runs the RDM Backup & Restore menu's huh.Select

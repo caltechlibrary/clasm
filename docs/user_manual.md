@@ -274,6 +274,7 @@ OpenSearch within each pair:
 3. Archive OpenSearch Snapshot to S3
 4. Restore SQL Backup from S3
 5. Restore OpenSearch Snapshot from S3
+6. RDM Index Health
 
 Every item starts by picking a target instance and runs its work on that
 instance over SSM, so the instance must be SSM-reachable and have the
@@ -302,6 +303,11 @@ any recall history of the last instance used -- restoring is a rare,
 deliberate action, and clasm deliberately does not pre-position the
 cursor on a previous target. See `DESIGN.md`, "RDM Backup &
 Restore Domain" for the full prompt sequence and the snapshot scope.
+
+**RDM Index Health** is read-only: it picks an instance, reads that
+instance's own OpenSearch through SSM, and shows whether the audit log and
+the job logs are what the RDM admin pages need. It changes nothing, so it has
+no confirmation. See "Non-interactive (CLI) Usage" below for what it checks.
 
 ### File ownership on the instance
 
@@ -476,6 +482,44 @@ clasm rdm-backup-and-restore generate-sql-backup caltechauthors-v13 /opt/rdm_sql
 clasm rdm-backup-and-restore archive-sql-backups-to-s3 \
   caltechauthors-v13 /opt/rdm_sql_backups \
   s3://sql-backups.library.caltech.edu ""
+~~~
+
+`rdm-index-health [-text|-json] [-wait <duration>] <instance>`
+: the non-interactive form of **RDM Index Health**, read-only and safe to run
+  against production. It exists because the restore defect behind caltechauthors
+  issue #185 was invisible: every layer answered HTTP 200 while the admin
+  audit-logs page silently stopped updating. The one signal that failed was
+  `_shards.failed` in the body of the page's own query, so the check runs that
+  query. It reports, and fails on:
+  - an **index template** the app would install that the instance lacks (the
+    expected names are read from the app itself, so the list matches the
+    installed RDM version; if the app's list cannot be read the report says so
+    and calls no template missing);
+  - the audit log (the alias `<prefix>auditlog`) or the job logs (the stream
+    `<prefix>job-logs`) being a **plain index** or an **orphaned `.ds-` backing
+    index** instead of a real data stream;
+  - `resource.type`, `action`, `user.id` (audit log) or `level` (job logs) mapped
+    as `text` -- `keyword` is right;
+  - the page's aggregation reporting any failed shard, or an error.
+
+  It runs on the instance through SSM against `localhost:9200`, with no
+  credentials, and every name it queries is exact -- never a wildcard -- so a
+  kept copy such as `auditlog-fix-old` cannot fail a healthy instance; indices
+  that only *look* like logs are listed as "informational" and never fail. The
+  index prefix is read from `SEARCH_INDEX_PREFIX` in the app's `invenio.cfg`
+  under `/Sites`. OpenSearch takes about three minutes to answer after a boot, so
+  the check waits up to `-wait` (default 5m; `0` checks once) before giving up.
+
+  `-json` writes one document with `healthy` and `problems`; if the check cannot
+  be made, stdout is instead `{"error":{"class","code","message"}}`, carrying the
+  exit class's name (`unavailable`, `no_input`, `data`, `internal`). **Exit status:** 0 healthy; 1 a problem was
+  found (the report is still printed); 2 usage; 65 the instance's output could
+  not be read; 66 no app (`invenio.cfg`) found on the instance; 69 the instance
+  or its OpenSearch did not answer, or wants credentials; 70 internal.
+
+~~~shell
+clasm rdm-backup-and-restore rdm-index-health caltechauthors-v13
+clasm rdm-backup-and-restore rdm-index-health -json -wait 0 caltechauthors-v13 | jq .problems
 ~~~
 
 The archive forms run every safety check the interactive menu does first

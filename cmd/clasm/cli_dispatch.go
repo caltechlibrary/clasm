@@ -212,6 +212,15 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		err = workflow.RunRestoreSQLBackupAuto(ctx, out, ssmClient, bucketClient, inst, workflow.RestoreGuardClients{EC2: env.ec2Clients, IAM: env.iamClient}, rdmPostgresRules, saveRDMPostgresRules, params, opts.Confirms, ui.StdinIsTerminal(), nil, nil)
 		return reportCLIError(out, eout, err)
 
+	case workflow.RDMIndexHealthCLISlug:
+		// Read-only (DR-0197): no confirmation. A usage error never reaches AWS.
+		arg, format, wait, err := workflow.ParseRDMIndexHealthArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err)
+		}
+		err = workflow.RunRDMIndexHealthCLI(ctx, out, ssmClients, instances, arg, format, wait, workflow.DefaultSSMPollInterval)
+		return reportCLIError(out, eout, err)
+
 	default:
 		if code, handled := runComputeLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
 			return code

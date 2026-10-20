@@ -1084,3 +1084,53 @@ func TestRunCLILeaf_TagResourceTagsAndRefusesThroughTheDispatch(t *testing.T) {
 		t.Errorf("an unknown instance is exit 2: code=%d err=%q", code, eout.String())
 	}
 }
+
+// RDM Index Health (DR-0197) is a read-only leaf: the dispatch must route it, and
+// a usage error or a help request never reaches AWS.
+func TestClassifyCLIArgs_RDMIndexHealthLeaf(t *testing.T) {
+	const leaf = "rdm-index-health"
+	mode, _, leafSlug, _, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf})
+	if err != nil || mode != cliModeLeaf || leafSlug != leaf {
+		t.Errorf("no further words must deep-link into the leaf's picker: got mode=%q leaf=%q err=%v", mode, leafSlug, err)
+	}
+	mode, _, _, leafArgs, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf, "-json", "box"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 2 {
+		t.Errorf("options and an instance must be a run: got mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+}
+
+func TestRunCLILeaf_RDMIndexHealthUsageErrorsExitTwoWithoutTouchingAWS(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no instance":    {"-json"},
+		"surplus word":   {"box", "other"},
+		"bad flag":       {"-bogus", "box"},
+		"unknown box":    {"no-such-box"},
+		"two formats":    {"-text", "-json", "box"},
+		"a bad duration": {"-wait", "soon", "box"},
+	} {
+		var out, eout bytes.Buffer
+		code := runCLILeaf(context.Background(), &out, &eout, "rdm-index-health", args, cliEnv{})
+		if code != 2 {
+			t.Errorf("%s: exit code = %d, want 2 (stderr %q)", name, code, eout.String())
+		}
+		if out.Len() != 0 {
+			t.Errorf("%s: a usage error writes nothing to stdout, got %q", name, out.String())
+		}
+		// The unhandled-slug fallback also exits 2; this must be the form's own error.
+		named := "rdm-index-health"
+		if name == "unknown box" {
+			named = "no-such-box" // the instance lookup's own message names the box
+		}
+		if strings.Contains(eout.String(), "internal error") || !strings.Contains(eout.String(), named) {
+			t.Errorf("%s: the leaf was not routed to its own parser; stderr %q", name, eout.String())
+		}
+	}
+}
+
+func TestRunCLILeaf_RDMIndexHealthHelpPrintsTheUsageAndExitsZero(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "rdm-index-health", []string{"--help"}, cliEnv{})
+	if code != 0 || eout.Len() != 0 || !strings.Contains(out.String(), "rdm-index-health") || !strings.Contains(out.String(), "Exit status") {
+		t.Errorf("want exit 0, usage and the exit status on stdout, nothing on stderr; got %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), eout.String())
+	}
+}
