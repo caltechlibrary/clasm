@@ -231,6 +231,16 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		err = workflow.RunInstallIndexTemplatesCLI(ctx, out, ssmClients, instances, arg, format, wait, workflow.DefaultSSMPollInterval)
 		return reportCLIError(out, eout, err)
 
+	case workflow.ConvertLogIndicesCLISlug:
+		// Deletes indices, after verified copies: DR-0180's gate on an instance whose live Environment
+		// tag is production, none elsewhere (DR-0198). A usage error never reaches AWS.
+		arg, format, wait, opts, err := workflow.ParseConvertLogIndicesArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err)
+		}
+		err = workflow.RunConvertLogIndicesCLI(ctx, out, eout, ssmClients, env.ec2Clients, instances, arg, opts.Confirms, format, wait, workflow.DefaultSSMPollInterval, ui.StdinIsTerminal(), nil, nil)
+		return reportCLIError(out, eout, err)
+
 	default:
 		if code, handled := runComputeLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
 			return code

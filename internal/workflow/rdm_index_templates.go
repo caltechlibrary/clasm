@@ -221,14 +221,11 @@ func buildInstallReport(sections map[string]string) (IndexTemplateInstallReport,
 //
 //	report, err := InstallRDMIndexTemplates(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
 func InstallRDMIndexTemplates(ctx context.Context, client awsclient.SSMAPI, inst inventory.Instance, wait, poll time.Duration) (IndexTemplateInstallReport, error) {
-	stdout, status, err := RunShellCommand(ctx, client, inst.InstanceID, buildInstallIndexTemplatesCommand(wait), wait+indexHealthScriptSlack, poll)
+	sections, err := runIndexScript(ctx, client, inst.InstanceID, "the index template install", buildInstallIndexTemplatesCommand(wait), wait+indexHealthScriptSlack, poll)
 	if err != nil {
-		return IndexTemplateInstallReport{}, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running the index template install on %s through SSM: %w", inst.InstanceID, err)}
+		return IndexTemplateInstallReport{}, err
 	}
-	if status != "Success" {
-		return IndexTemplateInstallReport{}, &ExitCodeError{Code: ExitInternal, Err: fmt.Errorf("the index template script failed on %s (SSM status %s): %s", inst.InstanceID, status, strings.TrimSpace(stdout))}
-	}
-	report, err := buildInstallReport(splitIndexHealthSections(stdout))
+	report, err := buildInstallReport(sections)
 	report.InstanceID, report.Instance = inst.InstanceID, inst.Name
 	return report, err
 }
@@ -304,7 +301,8 @@ instance (nothing written); 69 the instance or OpenSearch did not answer; 70 int
 //
 //	inst, format, wait, err := ParseInstallIndexTemplatesArgs([]string{"-json", "box"})
 func ParseInstallIndexTemplatesArgs(args []string) (instance string, format ui.Format, wait time.Duration, err error) {
-	return parseIndexFormArgs(InstallIndexTemplatesCLISlug, installIndexTemplatesUsage, installIndexTemplatesHelp, args)
+	instance, format, wait, _, err = parseIndexFormArgs(InstallIndexTemplatesCLISlug, installIndexTemplatesUsage, installIndexTemplatesHelp, false, args)
+	return instance, format, wait, err
 }
 
 // RunInstallIndexTemplatesCLI is `clasm rdm-backup-and-restore install-index-templates`: it

@@ -596,6 +596,9 @@ func main() {
 		InstallTemplates: func(ctx context.Context) error {
 			return workflow.InstallIndexTemplates(ctx, out, ssmClients, state.instances)
 		},
+		ConvertLogIndices: func(ctx context.Context) error {
+			return workflow.ConvertLogIndicesMenu(ctx, out, ssmClients, ec2Clients, state.instances)
+		},
 		Refresh: refresh,
 	}
 

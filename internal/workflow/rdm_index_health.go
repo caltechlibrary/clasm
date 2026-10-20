@@ -146,7 +146,7 @@ sec endpoint; echo "status=$c"
 const indexHealthBody = `agg() { curl -s -m 60 -X POST -H 'Content-Type: application/json' "$OS/$1/_search?size=0" -d "$2"; echo; }
 sec templates; get '/_index_template?filter_path=index_templates.name'
 sec data_streams; get '/_data_stream?filter_path=data_streams.name,data_streams.template,data_streams.indices.index_name'
-sec indices; get '/_cat/indices?format=json&h=index,docs.count'
+sec indices; get '/_cat/indices?format=json&h=index,docs.count&expand_wildcards=all'
 sec aliases; get '/_cat/aliases?format=json&h=alias,index'
 sec mapping_audit; get "/${P}auditlog/_mapping/field/MAPPING_AUDIT"
 sec mapping_jobs; get "/${P}job-logs/_mapping/field/MAPPING_JOBS"
@@ -594,6 +594,20 @@ func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, erro
 	return r, nil
 }
 
+// runIndexScript sends one RDM index script to an instance through SSM and splits its output into
+// sections. An instance SSM cannot reach is 69; a script that did not succeed is 70, since the
+// scripts end successfully on every known condition.
+func runIndexScript(ctx context.Context, client awsclient.SSMAPI, instanceID, what, script string, timeout, poll time.Duration) (map[string]string, error) {
+	stdout, status, err := RunShellCommand(ctx, client, instanceID, script, timeout, poll)
+	if err != nil {
+		return nil, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running %s on %s through SSM: %w", what, instanceID, err)}
+	}
+	if status != "Success" {
+		return nil, &ExitCodeError{Code: ExitInternal, Err: fmt.Errorf("%s script failed on %s (SSM status %s): %s", what, instanceID, status, strings.TrimSpace(stdout))}
+	}
+	return splitIndexHealthSections(stdout), nil
+}
+
 // CheckRDMIndexHealth runs the check on inst through one read-only SSM command and
 // returns the verdict. An unhealthy instance is a report with Healthy false and no
 // error; an error means the check could not be made, classed by DR-0014: 69 for an
@@ -610,14 +624,11 @@ func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, erro
 //
 //	report, err := CheckRDMIndexHealth(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
 func CheckRDMIndexHealth(ctx context.Context, client awsclient.SSMAPI, inst inventory.Instance, wait, poll time.Duration) (IndexHealthReport, error) {
-	stdout, status, err := RunShellCommand(ctx, client, inst.InstanceID, buildIndexHealthCommand(wait), wait+indexHealthScriptSlack, poll)
+	sections, err := runIndexScript(ctx, client, inst.InstanceID, "the index health check", buildIndexHealthCommand(wait), wait+indexHealthScriptSlack, poll)
 	if err != nil {
-		return IndexHealthReport{}, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running the index health check on %s through SSM: %w", inst.InstanceID, err)}
+		return IndexHealthReport{}, err
 	}
-	if status != "Success" {
-		return IndexHealthReport{}, &ExitCodeError{Code: ExitInternal, Err: fmt.Errorf("the index health script failed on %s (SSM status %s): %s", inst.InstanceID, status, strings.TrimSpace(stdout))}
-	}
-	report, err := buildIndexHealthReport(splitIndexHealthSections(stdout))
+	report, err := buildIndexHealthReport(sections)
 	report.InstanceID, report.Instance = inst.InstanceID, inst.Name
 	return report, err
 }
@@ -719,36 +730,46 @@ Exit status: 0 healthy; 1 a problem was found; 2 usage; 65 output not readable; 
 no app found on the instance; 69 the instance or OpenSearch did not answer; 70 internal.
 `
 
-// parseIndexFormArgs parses the options the two RDM index forms share, -text, -json and -wait,
-// and their one word, the instance name or ID. Every problem is a *UsageError (exit 2) raised
-// before AWS is touched; --help is a *HelpRequested carrying usage and help.
-func parseIndexFormArgs(leaf, usage, help string, args []string) (instance string, format ui.Format, wait time.Duration, err error) {
+// parseIndexFormArgs parses the options the RDM index forms share, -text, -json and -wait, and their
+// one word, the instance name or ID. withConfirm adds --confirm, repeatable, for a form behind the
+// DR-0180 gate; a form without a gate rejects it as an unknown option. Every problem is a *UsageError
+// (exit 2) raised before AWS is touched; --help is a *HelpRequested carrying usage and help.
+func parseIndexFormArgs(leaf, usage, help string, withConfirm bool, args []string) (instance string, format ui.Format, wait time.Duration, confirms []string, err error) {
 	fs := flag.NewFlagSet(leaf, flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // the errors below carry the usage; nothing prints twice
 	text := fs.Bool("text", false, "")
 	asJSON := fs.Bool("json", false, "")
 	waitFlag := fs.Duration("wait", DefaultIndexHealthWait, "")
+	if withConfirm {
+		fs.Func("confirm", "", func(v string) error {
+			if v == "" {
+				return errors.New("--confirm needs a value")
+			}
+			confirms = append(confirms, v)
+			return nil
+		})
+	}
 	if perr := fs.Parse(args); perr != nil {
 		if errors.Is(perr, flag.ErrHelp) {
-			return "", ui.FormatText, 0, &HelpRequested{Usage: usage + help}
+			return "", ui.FormatText, 0, nil, &HelpRequested{Usage: usage + help}
 		}
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: %v\n%s", leaf, perr, usage)}
+		return "", ui.FormatText, 0, nil, &UsageError{Msg: fmt.Sprintf("%s: %v\n%s", leaf, perr, usage)}
 	}
 	if *text && *asJSON {
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: give only one of -text, -json\n%s", leaf, usage)}
+		return "", ui.FormatText, 0, nil, &UsageError{Msg: fmt.Sprintf("%s: give only one of -text, -json\n%s", leaf, usage)}
 	}
 	if *waitFlag < 0 {
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: -wait must not be negative\n%s", leaf, usage)}
+		return "", ui.FormatText, 0, nil, &UsageError{Msg: fmt.Sprintf("%s: -wait must not be negative\n%s", leaf, usage)}
 	}
 	words := fs.Args()
 	if len(words) != 1 || strings.TrimSpace(words[0]) == "" {
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s", leaf, len(words), usage)}
+		return "", ui.FormatText, 0, nil, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s", leaf, len(words), usage)}
 	}
 	format = ui.FormatText
 	if *asJSON {
 		format = ui.FormatJSON
 	}
-	return strings.TrimSpace(words[0]), format, *waitFlag, nil
+	return strings.TrimSpace(words[0]), format, *waitFlag, confirms, nil
 }
 
 // writeIndexJSONError writes the -json error object, {"error":{"class","code","message"}},
@@ -773,7 +794,8 @@ func writeIndexJSONError(w io.Writer, format ui.Format, err error) {
 //
 //	inst, format, wait, err := ParseRDMIndexHealthArgs([]string{"-json", "box"})
 func ParseRDMIndexHealthArgs(args []string) (instance string, format ui.Format, wait time.Duration, err error) {
-	return parseIndexFormArgs(RDMIndexHealthCLISlug, rdmIndexHealthUsage, rdmIndexHealthHelp, args)
+	instance, format, wait, _, err = parseIndexFormArgs(RDMIndexHealthCLISlug, rdmIndexHealthUsage, rdmIndexHealthHelp, false, args)
+	return instance, format, wait, err
 }
 
 // RunRDMIndexHealthCLI is `clasm rdm-backup-and-restore rdm-index-health`: it

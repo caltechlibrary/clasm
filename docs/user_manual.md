@@ -276,6 +276,7 @@ OpenSearch within each pair:
 5. Restore OpenSearch Snapshot from S3
 6. RDM Index Health
 7. Install Index Templates
+8. Convert Log Indices
 
 Every item starts by picking a target instance and runs its work on that
 instance over SSM, so the instance must be SSM-reachable and have the
@@ -311,6 +312,9 @@ the job logs are what the RDM admin pages need. It changes nothing, so it has
 no confirmation. See "Non-interactive (CLI) Usage" below for what it checks.
 **Install Index Templates** is its repair for one cause of a failing check: it installs
 the index templates the instance's app would install and the instance lacks (see below).
+**Convert Log Indices** is the other half of that repair: it turns the audit log and job logs
+back into real data streams, copy first (see below). It takes the production gate described
+there.
 
 ### File ownership on the instance
 
@@ -555,6 +559,65 @@ clasm rdm-backup-and-restore rdm-index-health -json -wait 0 caltechauthors-v13 |
 ~~~shell
 clasm rdm-backup-and-restore install-index-templates caltechauthors-rsdoiel-v13b
 clasm rdm-backup-and-restore rdm-index-health caltechauthors-rsdoiel-v13b
+~~~
+
+`convert-log-indices [-text|-json] [-wait <duration>] [--confirm <instance-id-or-name>] <instance>`
+: the non-interactive form of **Convert Log Indices**. A restore that does not
+  bring the cluster's global state back leaves the audit log and the job logs as
+  an **orphaned `.ds-` backing index** (the audit log's old history) and/or a
+  **plain, dynamically mapped index** with the stream's name (what the app wrote
+  once the templates were gone). The admin pages aggregate on keyword fields, so
+  they silently stop working (caltechauthors #185). This turns them back into
+  real data streams. **Run `install-index-templates` first:** a stream needs its
+  template, and without one the form refuses and changes nothing.
+
+  The order is fixed and is the safety, rehearsed by hand on a test instance and
+  then run on CaltechAUTHORS production: (1) read-only preconditions; (2) create
+  the **copies**, `clasm-fix-auditlog-orphan`, `clasm-fix-auditlog-plain`,
+  `clasm-fix-job-logs-plain` (named outside the template's pattern, since a
+  holding index named `<prefix>auditlog*` would itself be taken for a stream),
+  and copy the originals into them, verifying the orphan's copy by count; (3) take
+  the alias off both, then delete the orphan, which has to go first because its
+  name is exactly what the stream's first backing index must be; (4) copy what the
+  app wrote in the meantime until the plain index and its copy agree (it gives up
+  after three tries, with the plain index still in place); (5) delete the plain
+  index and create the stream back to back, because from then the app's writes
+  land in the stream; (6) load the copies into the stream and verify it holds at
+  least what they hold. Long copies run as polled tasks, one SSM call each, so
+  nothing waits on one long call.
+
+  **The copies are kept, named in the output, and never deleted by clasm.** A
+  failure at any step leaves every document in the orphan, the plain index, the
+  stream or a copy, and the error names the copies; remove them yourself once the
+  pages are confirmed. The copies roughly double the space those two indices take
+  until you do. A stream already in place is a no-op (exit 0), and a state clasm
+  will not convert is **refused with the reason and nothing is changed** (exit 1):
+  no data-stream template, a copy name already taken by an earlier run, more than
+  one orphaned generation, an orphan that is not generation 000001, or a stream
+  that exists next to a plain index of its name.
+
+  **Confirmation.** On an instance whose **live** `Environment` tag is
+  `production` the run is a dry run unless confirmed (DR-0180): with
+  `--confirm <instance-id-or-name>` it runs; from a terminal it prints the plan
+  and asks you to type the instance ID or Name tag; with no terminal it prints the
+  plan, says `Nothing was changed` and exits 0. Any other instance, tagged or not,
+  runs with no confirmation; `--confirm` is accepted and checked there too, so a
+  script can pass it always. If the tag cannot be read the form fails (it never
+  assumes an instance is safe). Progress goes to stderr and the result to stdout;
+  with `-json` the plan also goes to stderr and stdout is one object whose
+  `declined` says nothing was done. OpenSearch takes about three minutes to
+  answer after a boot, so it waits up to `-wait` (default 5m; `0` checks once).
+
+  **Exit status:** 0 converted, nothing to convert, or a dry run; 1 refused, or a
+  step failed (the copies hold every document); 2 usage, including a `--confirm`
+  that is not the target; 65 output not readable; 66 no app on the instance; 69
+  the instance, OpenSearch or the tag lookup did not answer; 70 internal. Run
+  **RDM Index Health** afterwards to confirm.
+
+~~~shell
+clasm rdm-backup-and-restore install-index-templates caltechauthors-test-v13
+clasm rdm-backup-and-restore convert-log-indices caltechauthors-test-v13
+clasm rdm-backup-and-restore rdm-index-health caltechauthors-test-v13
 ~~~
 
 The archive forms run every safety check the interactive menu does first

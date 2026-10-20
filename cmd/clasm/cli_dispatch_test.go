@@ -1179,3 +1179,49 @@ func TestRunCLILeaf_InstallIndexTemplatesHelpPrintsTheUsageAndExitsZero(t *testi
 		t.Errorf("want exit 0, usage and the exit status on stdout, nothing on stderr; got %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), eout.String())
 	}
 }
+
+// Convert Log Indices (DR-0198) deletes indices behind DR-0180's production gate: the dispatch routes it,
+// and a usage error or a help request never reaches AWS.
+func TestClassifyCLIArgs_ConvertLogIndicesLeaf(t *testing.T) {
+	const leaf = "convert-log-indices"
+	mode, _, leafSlug, _, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf})
+	if err != nil || mode != cliModeLeaf || leafSlug != leaf {
+		t.Errorf("no further words must deep-link into the leaf's picker: got mode=%q leaf=%q err=%v", mode, leafSlug, err)
+	}
+	// Options alone are still a run, never a deep-link, so a script cannot fall into a prompt.
+	mode, _, _, leafArgs, err := classifyCLIArgs([]string{"rdm-backup-and-restore", leaf, "--confirm", "box"})
+	if err != nil || mode != cliModeRun || len(leafArgs) != 2 {
+		t.Errorf("options alone must be a run: got mode=%q args=%v err=%v", mode, leafArgs, err)
+	}
+}
+
+func TestRunCLILeaf_ConvertLogIndicesUsageErrorsExitTwoWithoutTouchingAWS(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args  []string
+		names string
+	}{
+		"no instance":    {[]string{"--confirm", "box"}, "convert-log-indices"},
+		"surplus word":   {[]string{"box", "other"}, "convert-log-indices"},
+		"bad flag":       {[]string{"-bogus", "box"}, "convert-log-indices"},
+		"empty confirm":  {[]string{"--confirm", "", "box"}, "convert-log-indices"},
+		"unknown box":    {[]string{"no-such-box"}, "no-such-box"},
+		"a bad duration": {[]string{"-wait", "soon", "box"}, "convert-log-indices"},
+	} {
+		var out, eout bytes.Buffer
+		code := runCLILeaf(context.Background(), &out, &eout, "convert-log-indices", tc.args, cliEnv{})
+		if code != 2 || out.Len() != 0 {
+			t.Errorf("%s: exit code = %d stdout %q, want 2 and nothing on stdout (stderr %q)", name, code, out.String(), eout.String())
+		}
+		if strings.Contains(eout.String(), "internal error") || !strings.Contains(eout.String(), tc.names) {
+			t.Errorf("%s: the leaf was not routed to its own parser; stderr %q", name, eout.String())
+		}
+	}
+}
+
+func TestRunCLILeaf_ConvertLogIndicesHelpPrintsTheUsageAndExitsZero(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "convert-log-indices", []string{"--help"}, cliEnv{})
+	if code != 0 || eout.Len() != 0 || !strings.Contains(out.String(), "convert-log-indices") || !strings.Contains(out.String(), "--confirm") || !strings.Contains(out.String(), "Exit status") {
+		t.Errorf("want exit 0, usage and the exit status on stdout, nothing on stderr; got %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), eout.String())
+	}
+}

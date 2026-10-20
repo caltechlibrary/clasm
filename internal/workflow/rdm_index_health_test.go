@@ -755,3 +755,14 @@ func TestIndexHealth_AFailedTemplateListIsNotReadAsAnExpectedList(t *testing.T) 
 		t.Errorf("the status line decides whether the list is trusted; known=%v missing=%v", r.ExpectedKnown, r.MissingTemplates)
 	}
 }
+
+func TestIndexListingsIncludeHiddenIndices(t *testing.T) {
+	// A data stream's backing indices are hidden, and an orphaned one keeps the setting. Without
+	// expand_wildcards=all the listing omits exactly the index both the health check and the
+	// conversion are looking for.
+	for name, cmd := range map[string]string{"health": buildIndexHealthCommand(0), "conversion": buildConversionDiscoveryCommand(0)} {
+		if !strings.Contains(cmd, "_cat/indices?format=json&h=index,docs.count&expand_wildcards=all") {
+			t.Errorf("%s: the index listing must include hidden indices", name)
+		}
+	}
+}

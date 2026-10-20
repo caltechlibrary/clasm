@@ -31,6 +31,9 @@ type RDMBackupRestoreActions struct {
 	// InstallTemplates is Install Index Templates (DR-0198, DR-0199): install the index templates
 	// the RDM app would install and the instance lacks, by the app's own routine.
 	InstallTemplates func(ctx context.Context) error
+	// ConvertLogIndices is Convert Log Indices (DR-0198): convert the audit log and job logs to real
+	// data streams, copy first, behind the production gate.
+	ConvertLogIndices func(ctx context.Context) error
 	// Refresh re-fetches the instance listing this domain's workflows
 	// pick from, silently -- no display. Called once after every
 	// successful dispatched action (DECISIONS.md, "Refresh data after
@@ -99,6 +102,7 @@ var rdmMenuItems = []rdmItem{
 	{label: "Restore OpenSearch Snapshot from S3", cliSlug: RestoreOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
 	{label: "RDM Index Health", cliSlug: RDMIndexHealthCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.CheckIndexHealth(ctx) }},
 	{label: "Install Index Templates", cliSlug: InstallIndexTemplatesCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.InstallTemplates(ctx) }},
+	{label: "Convert Log Indices", cliSlug: ConvertLogIndicesCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.ConvertLogIndices(ctx) }},
 }
 
 // pickRDMBackupRestoreItem runs the RDM Backup & Restore menu's huh.Select

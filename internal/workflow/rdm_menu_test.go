@@ -21,6 +21,7 @@ func testRDMBackupRestoreActions(refreshCalls *int) RDMBackupRestoreActions {
 		RestoreOpenSearch: noop,
 		CheckIndexHealth:  noop,
 		InstallTemplates:  noop,
+		ConvertLogIndices: noop,
 		Refresh:           countingAction(refreshCalls),
 	}
 }
@@ -73,6 +74,23 @@ func TestRunRDMBackupRestoreMenu_InstallTemplatesDispatchesToItsOwnAction(t *tes
 	}
 	if installCalls != 1 {
 		t.Errorf("installCalls = %d, want 1", installCalls)
+	}
+}
+
+func TestRunRDMBackupRestoreMenu_ConvertLogIndicesDispatchesToItsOwnAction(t *testing.T) {
+	var refreshCalls, convertCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testRDMBackupRestoreActions(&refreshCalls)
+	actions.ConvertLogIndices = cancelingAction(&convertCalls, cancel)
+
+	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("8\n"), buf) // Convert Log Indices
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if convertCalls != 1 {
+		t.Errorf("convertCalls = %d, want 1", convertCalls)
 	}
 }
 
@@ -292,8 +310,8 @@ func TestRunRDMBackupRestoreMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestRDMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(rdmMenuItems) != 7 {
-		t.Fatalf("len(rdmMenuItems) = %d, want 7 (no \"Back to domain picker\" -- 'q' is the only way back)", len(rdmMenuItems))
+	if len(rdmMenuItems) != 8 {
+		t.Fatalf("len(rdmMenuItems) = %d, want 8 (no \"Back to domain picker\" -- 'q' is the only way back)", len(rdmMenuItems))
 	}
 	for _, item := range rdmMenuItems {
 		if item.action == nil {
@@ -314,6 +332,7 @@ func TestRDMMenuItems_Order(t *testing.T) {
 		"Restore OpenSearch Snapshot from S3",
 		"RDM Index Health",
 		"Install Index Templates",
+		"Convert Log Indices",
 	}
 	for i, label := range want {
 		if rdmMenuItems[i].label != label {
@@ -336,6 +355,7 @@ func TestRDMMenuItems_CLISlugs(t *testing.T) {
 		"Restore OpenSearch Snapshot from S3":               "restore-opensearch-snapshot-from-s3",
 		"RDM Index Health":                                  "rdm-index-health",
 		"Install Index Templates":                           "install-index-templates",
+		"Convert Log Indices":                               "convert-log-indices",
 	}
 	for _, item := range rdmMenuItems {
 		wantSlug, ok := want[item.label]
