@@ -20,6 +20,7 @@ func testRDMBackupRestoreActions(refreshCalls *int) RDMBackupRestoreActions {
 		RestoreSQL:        noop,
 		RestoreOpenSearch: noop,
 		CheckIndexHealth:  noop,
+		InstallTemplates:  noop,
 		Refresh:           countingAction(refreshCalls),
 	}
 }
@@ -55,6 +56,23 @@ func TestRunRDMBackupRestoreMenu_IndexHealthDispatchesToItsOwnAction(t *testing.
 	}
 	if healthCalls != 1 {
 		t.Errorf("healthCalls = %d, want 1", healthCalls)
+	}
+}
+
+func TestRunRDMBackupRestoreMenu_InstallTemplatesDispatchesToItsOwnAction(t *testing.T) {
+	var refreshCalls, installCalls int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	actions := testRDMBackupRestoreActions(&refreshCalls)
+	actions.InstallTemplates = cancelingAction(&installCalls, cancel)
+
+	err := runRDMBackupRestoreMenu(ctx, term, actions, newHuhAccessibleInput("7\n"), buf) // Install Index Templates
+	if err != nil {
+		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
+	}
+	if installCalls != 1 {
+		t.Errorf("installCalls = %d, want 1", installCalls)
 	}
 }
 
@@ -274,8 +292,8 @@ func TestRunRDMBackupRestoreMenu_CleanExitOnEOF(t *testing.T) {
 }
 
 func TestRDMMenuItems_NoBackToDomainPickerEntry(t *testing.T) {
-	if len(rdmMenuItems) != 6 {
-		t.Fatalf("len(rdmMenuItems) = %d, want 6 (no \"Back to domain picker\" -- 'q' is the only way back)", len(rdmMenuItems))
+	if len(rdmMenuItems) != 7 {
+		t.Fatalf("len(rdmMenuItems) = %d, want 7 (no \"Back to domain picker\" -- 'q' is the only way back)", len(rdmMenuItems))
 	}
 	for _, item := range rdmMenuItems {
 		if item.action == nil {
@@ -295,6 +313,7 @@ func TestRDMMenuItems_Order(t *testing.T) {
 		"Restore SQL Backup from S3",
 		"Restore OpenSearch Snapshot from S3",
 		"RDM Index Health",
+		"Install Index Templates",
 	}
 	for i, label := range want {
 		if rdmMenuItems[i].label != label {
@@ -316,6 +335,7 @@ func TestRDMMenuItems_CLISlugs(t *testing.T) {
 		"Restore SQL Backup from S3":                        "restore-sql-backup-from-s3",
 		"Restore OpenSearch Snapshot from S3":               "restore-opensearch-snapshot-from-s3",
 		"RDM Index Health":                                  "rdm-index-health",
+		"Install Index Templates":                           "install-index-templates",
 	}
 	for _, item := range rdmMenuItems {
 		wantSlug, ok := want[item.label]

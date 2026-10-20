@@ -28,6 +28,9 @@ type RDMBackupRestoreActions struct {
 	// CheckIndexHealth is RDM Index Health (DR-0197): a read-only check that the
 	// audit log and job logs are what the admin pages need.
 	CheckIndexHealth func(ctx context.Context) error
+	// InstallTemplates is Install Index Templates (DR-0198, DR-0199): install the index templates
+	// the RDM app would install and the instance lacks, by the app's own routine.
+	InstallTemplates func(ctx context.Context) error
 	// Refresh re-fetches the instance listing this domain's workflows
 	// pick from, silently -- no display. Called once after every
 	// successful dispatched action (DECISIONS.md, "Refresh data after
@@ -95,6 +98,7 @@ var rdmMenuItems = []rdmItem{
 	{label: "Restore SQL Backup from S3", cliSlug: RestoreSQLBackupCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreSQL(ctx) }},
 	{label: "Restore OpenSearch Snapshot from S3", cliSlug: RestoreOpenSearchSnapshotCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.RestoreOpenSearch(ctx) }},
 	{label: "RDM Index Health", cliSlug: RDMIndexHealthCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.CheckIndexHealth(ctx) }},
+	{label: "Install Index Templates", cliSlug: InstallIndexTemplatesCLISlug, action: func(a RDMBackupRestoreActions, ctx context.Context) error { return a.InstallTemplates(ctx) }},
 }
 
 // pickRDMBackupRestoreItem runs the RDM Backup & Restore menu's huh.Select

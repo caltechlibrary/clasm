@@ -580,6 +580,10 @@ func TestParseRDMIndexHealthArgs_UsageErrors(t *testing.T) {
 	}
 }
 
+func healthInstances() []inventory.Instance {
+	return []inventory.Instance{{InstanceID: "i-1", Name: "box", Region: "us-west-2"}}
+}
+
 func healthClients(ssm awsclient.SSMAPI) map[string]awsclient.SSMAPI {
 	return map[string]awsclient.SSMAPI{"us-west-2": ssm}
 }

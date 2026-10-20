@@ -275,6 +275,7 @@ OpenSearch within each pair:
 4. Restore SQL Backup from S3
 5. Restore OpenSearch Snapshot from S3
 6. RDM Index Health
+7. Install Index Templates
 
 Every item starts by picking a target instance and runs its work on that
 instance over SSM, so the instance must be SSM-reachable and have the
@@ -308,6 +309,8 @@ Restore Domain" for the full prompt sequence and the snapshot scope.
 instance's own OpenSearch through SSM, and shows whether the audit log and
 the job logs are what the RDM admin pages need. It changes nothing, so it has
 no confirmation. See "Non-interactive (CLI) Usage" below for what it checks.
+**Install Index Templates** is its repair for one cause of a failing check: it installs
+the index templates the instance's app would install and the instance lacks (see below).
 
 ### File ownership on the instance
 
@@ -520,6 +523,38 @@ clasm rdm-backup-and-restore archive-sql-backups-to-s3 \
 ~~~shell
 clasm rdm-backup-and-restore rdm-index-health caltechauthors-v13
 clasm rdm-backup-and-restore rdm-index-health -json -wait 0 caltechauthors-v13 | jq .problems
+~~~
+
+`install-index-templates [-text|-json] [-wait <duration>] <instance>`
+: the non-interactive form of **Install Index Templates**. A restore that does
+  not bring the cluster's global state back (`include_global_state:false`, which
+  clasm's restore uses) drops **every** index template; without them the app's
+  first write creates plain, dynamically mapped indices, and the admin audit-logs
+  page silently stops updating (caltechauthors #185). This puts the templates back
+  by running **the app's own routine** as the service user on the instance, so
+  they match the installed RDM version and the instance's `SEARCH_INDEX_PREFIX`;
+  clasm carries no template of its own, which would go stale. It covers **every**
+  template the app would install, not only the log ones, and only the **missing**
+  ones: an existing template is never overwritten, so a run with nothing missing
+  says so, changes nothing and exits 0, and a second run is a no-op. It touches no
+  index and has no confirmation gate, because installing a template is additive
+  and undone by deleting it. It needs `uv` at `/home/ubuntu/.local/bin/uv` and the
+  app's `.env` on the instance, found by convention; an instance laid out
+  otherwise stops with exit 66 before writing anything. The output names what was
+  installed, what was already present, and any template the routine could not
+  install (those are exit 1, after the others have been installed and shown).
+  `-json` writes one document; a run that could not be made writes
+  `{"error":{"class","code","message"}}`. OpenSearch takes about three minutes to
+  answer after a boot, so it waits up to `-wait` (default 5m; `0` checks once).
+  **Exit status:** 0 done, or nothing to do; 1 a template failed to install, or one
+  reported installed is not there; 2 usage; 65 output not readable; 66 no app, `uv`
+  or `.env`; 69 the instance or OpenSearch did not answer; 70 internal (the app's
+  routine crashed or listed nothing, or it tried to overwrite a template). Run
+  **RDM Index Health** afterwards to confirm.
+
+~~~shell
+clasm rdm-backup-and-restore install-index-templates caltechauthors-rsdoiel-v13b
+clasm rdm-backup-and-restore rdm-index-health caltechauthors-rsdoiel-v13b
 ~~~
 
 The archive forms run every safety check the interactive menu does first

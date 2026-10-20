@@ -221,6 +221,16 @@ func runCLILeaf(ctx context.Context, out, eout io.Writer, leafSlug string, leafA
 		err = workflow.RunRDMIndexHealthCLI(ctx, out, ssmClients, instances, arg, format, wait, workflow.DefaultSSMPollInterval)
 		return reportCLIError(out, eout, err)
 
+	case workflow.InstallIndexTemplatesCLISlug:
+		// Additive and undoable, so no confirmation gate (DR-0198, DR-0199). A usage error
+		// never reaches AWS.
+		arg, format, wait, err := workflow.ParseInstallIndexTemplatesArgs(leafArgs)
+		if err != nil {
+			return reportCLIError(out, eout, err)
+		}
+		err = workflow.RunInstallIndexTemplatesCLI(ctx, out, ssmClients, instances, arg, format, wait, workflow.DefaultSSMPollInterval)
+		return reportCLIError(out, eout, err)
+
 	default:
 		if code, handled := runComputeLeaf(ctx, out, eout, leafSlug, leafArgs, env); handled {
 			return code

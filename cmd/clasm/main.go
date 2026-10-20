@@ -593,6 +593,9 @@ func main() {
 		CheckIndexHealth: func(ctx context.Context) error {
 			return workflow.RDMIndexHealth(ctx, out, ssmClients, state.instances)
 		},
+		InstallTemplates: func(ctx context.Context) error {
+			return workflow.InstallIndexTemplates(ctx, out, ssmClients, state.instances)
+		},
 		Refresh: refresh,
 	}
 

@@ -122,13 +122,13 @@ const (
 	jobAggregationBody   = `{"aggs":{"l":{"terms":{"field":"level"}}}}`
 )
 
-// indexHealthScript is the whole check as one /bin/sh script (SSM runs it so):
-// GET requests, one read-only POST for _search, no credentials, no wildcard.
-// WAIT_SECONDS is replaced by the bounded wait; zero removes the polling.
-const indexHealthScript = `OS=http://localhost:9200
+// indexScriptPrelude is the start both RDM index scripts share, the health check and the
+// template install (rdm_index_templates.go): find the app and its SEARCH_INDEX_PREFIX, wait a
+// bounded time for OpenSearch, and stop with the status when either is missing. SSM runs it
+// under /bin/sh. WAIT_LOOP is replaced by the bounded wait; zero removes the polling.
+const indexScriptPrelude = `OS=http://localhost:9200
 sec() { echo "@@ $1"; }
 get() { curl -s -m 30 "$OS$1"; echo; }
-agg() { curl -s -m 60 -X POST -H 'Content-Type: application/json' "$OS/$1/_search?size=0" -d "$2"; echo; }
 CFG=$(find /Sites -maxdepth 2 -name invenio.cfg 2>/dev/null | sort | head -1)
 P=
 if [ -n "$CFG" ]; then
@@ -139,6 +139,11 @@ sec prefix; echo "cfg=$CFG"; echo "prefix=$P"
 WAIT_LOOP
 sec endpoint; echo "status=$c"
 [ "$c" = 200 ] || exit 0
+`
+
+// indexHealthBody is the health check after the prelude: GET requests, one read-only POST
+// for _search, no credentials, no wildcard.
+const indexHealthBody = `agg() { curl -s -m 60 -X POST -H 'Content-Type: application/json' "$OS/$1/_search?size=0" -d "$2"; echo; }
 sec templates; get '/_index_template?filter_path=index_templates.name'
 sec data_streams; get '/_data_stream?filter_path=data_streams.name,data_streams.template,data_streams.indices.index_name'
 sec indices; get '/_cat/indices?format=json&h=index,docs.count'
@@ -161,6 +166,21 @@ rm -f "$T"
 if [ -n "$LIST" ]; then echo status=ok; echo "$LIST"; else echo status=failed; fi
 `
 
+// indexScriptStart is the shared prelude with its bounded wait filled in.
+//
+// @param wait {time.Duration} how long to poll for the endpoint; zero checks once
+// @returns {string} the start of an RDM index script
+// @example
+//
+//	script := indexScriptStart(5*time.Minute) + body
+func indexScriptStart(wait time.Duration) string {
+	loop := indexHealthNoWait
+	if wait > 0 {
+		loop = strings.Replace(indexHealthWaitLoop, "WAIT_SECONDS", strconv.Itoa(int(wait.Seconds())), 1)
+	}
+	return strings.Replace(indexScriptPrelude, "WAIT_LOOP", loop, 1)
+}
+
 const indexHealthWaitLoop = `W=WAIT_SECONDS
 i=0
 while :; do
@@ -181,17 +201,12 @@ const indexHealthNoWait = `c=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$OS"
 //
 //	cmd := buildIndexHealthCommand(5 * time.Minute)
 func buildIndexHealthCommand(wait time.Duration) string {
-	loop := indexHealthNoWait
-	if wait > 0 {
-		loop = strings.Replace(indexHealthWaitLoop, "WAIT_SECONDS", strconv.Itoa(int(wait.Seconds())), 1)
-	}
 	return strings.NewReplacer(
-		"WAIT_LOOP", loop,
 		"MAPPING_AUDIT", strings.Join(auditLogFields, ","),
 		"MAPPING_JOBS", strings.Join(jobLogFields, ","),
 		"AGG_AUDIT", auditAggregationBody,
 		"AGG_JOBS", jobAggregationBody,
-	).Replace(indexHealthScript)
+	).Replace(indexScriptStart(wait) + indexHealthBody)
 }
 
 // splitIndexHealthSections splits the script's output at its "@@ name" markers.
@@ -414,27 +429,39 @@ func readMappings(section, body string, fields []string) ([]FieldMapping, error)
 	return out, nil
 }
 
-// buildIndexHealthReport turns the script's sections into the verdict. Errors
-// carry DR-0014 classes: 66 no app, 69 OpenSearch not answering, 65 unreadable.
-func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, error) {
-	r := IndexHealthReport{Templates: []string{}, MissingTemplates: []string{}, DataStreams: []string{}, Strays: []string{}, Problems: []string{}}
-
+// checkPrefixAndEndpoint reads the two sections every RDM index script starts with and
+// classifies what is wrong: 66 when no app (so no prefix) was found, 69 when OpenSearch did
+// not answer, 65 when a section is missing.
+func checkPrefixAndEndpoint(sections map[string]string) (prefix string, err error) {
 	if _, ok := sections["prefix"]; !ok {
-		return r, dataError("prefix", errors.New("missing from the script's output"))
+		return "", dataError("prefix", errors.New("missing from the script's output"))
 	}
-	r.Prefix = sectionValue(sections, "prefix", "prefix")
-	if r.Prefix == "" {
-		return r, &ExitCodeError{Code: ExitNoInput, Err: errors.New("no invenio.cfg with SEARCH_INDEX_PREFIX was found under /Sites on the instance, so there is no app to check")}
+	prefix = sectionValue(sections, "prefix", "prefix")
+	if prefix == "" {
+		return "", &ExitCodeError{Code: ExitNoInput, Err: errors.New("no invenio.cfg with SEARCH_INDEX_PREFIX was found under /Sites on the instance, so there is no app to check")}
 	}
 	if _, ok := sections["endpoint"]; !ok {
-		return r, dataError("endpoint", errors.New("missing from the script's output"))
+		return prefix, dataError("endpoint", errors.New("missing from the script's output"))
 	}
 	if status := sectionValue(sections, "endpoint", "status"); status != "200" {
 		msg := fmt.Sprintf("OpenSearch on the instance did not answer on localhost:9200 (HTTP status %s)", status)
 		if status == "401" || status == "403" {
 			msg += "; it wants credentials, and this check carries none"
 		}
-		return r, &ExitCodeError{Code: ExitUnavailable, Err: errors.New(msg)}
+		return prefix, &ExitCodeError{Code: ExitUnavailable, Err: errors.New(msg)}
+	}
+	return prefix, nil
+}
+
+// buildIndexHealthReport turns the script's sections into the verdict. Errors
+// carry DR-0014 classes: 66 no app, 69 OpenSearch not answering, 65 unreadable.
+func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, error) {
+	r := IndexHealthReport{Templates: []string{}, MissingTemplates: []string{}, DataStreams: []string{}, Strays: []string{}, Problems: []string{}}
+
+	prefix, err := checkPrefixAndEndpoint(sections)
+	r.Prefix = prefix
+	if err != nil {
+		return r, err
 	}
 
 	templates, err := decodeSection[templatesBody](sections, "templates")
@@ -692,6 +719,50 @@ Exit status: 0 healthy; 1 a problem was found; 2 usage; 65 output not readable; 
 no app found on the instance; 69 the instance or OpenSearch did not answer; 70 internal.
 `
 
+// parseIndexFormArgs parses the options the two RDM index forms share, -text, -json and -wait,
+// and their one word, the instance name or ID. Every problem is a *UsageError (exit 2) raised
+// before AWS is touched; --help is a *HelpRequested carrying usage and help.
+func parseIndexFormArgs(leaf, usage, help string, args []string) (instance string, format ui.Format, wait time.Duration, err error) {
+	fs := flag.NewFlagSet(leaf, flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // the errors below carry the usage; nothing prints twice
+	text := fs.Bool("text", false, "")
+	asJSON := fs.Bool("json", false, "")
+	waitFlag := fs.Duration("wait", DefaultIndexHealthWait, "")
+	if perr := fs.Parse(args); perr != nil {
+		if errors.Is(perr, flag.ErrHelp) {
+			return "", ui.FormatText, 0, &HelpRequested{Usage: usage + help}
+		}
+		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: %v\n%s", leaf, perr, usage)}
+	}
+	if *text && *asJSON {
+		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: give only one of -text, -json\n%s", leaf, usage)}
+	}
+	if *waitFlag < 0 {
+		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: -wait must not be negative\n%s", leaf, usage)}
+	}
+	words := fs.Args()
+	if len(words) != 1 || strings.TrimSpace(words[0]) == "" {
+		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s", leaf, len(words), usage)}
+	}
+	format = ui.FormatText
+	if *asJSON {
+		format = ui.FormatJSON
+	}
+	return strings.TrimSpace(words[0]), format, *waitFlag, nil
+}
+
+// writeIndexJSONError writes the -json error object, {"error":{"class","code","message"}},
+// so a program reads the DR-0014 class by name as well as by number. Text mode writes nothing:
+// the error goes to stderr.
+func writeIndexJSONError(w io.Writer, format ui.Format, err error) {
+	if format == ui.FormatText {
+		return
+	}
+	code := CLIExitCode(err)
+	obj := map[string]any{"error": map[string]any{"class": exitClassName(code), "code": code, "message": err.Error()}}
+	_ = ui.WriteJSONValue(w, obj, format)
+}
+
 // ParseRDMIndexHealthArgs parses rdm-index-health's options and its one word, the
 // instance name or ID. A problem is a *UsageError (exit 2), raised before AWS is
 // touched; --help is a *HelpRequested.
@@ -702,33 +773,7 @@ no app found on the instance; 69 the instance or OpenSearch did not answer; 70 i
 //
 //	inst, format, wait, err := ParseRDMIndexHealthArgs([]string{"-json", "box"})
 func ParseRDMIndexHealthArgs(args []string) (instance string, format ui.Format, wait time.Duration, err error) {
-	const leaf = RDMIndexHealthCLISlug
-	fs := flag.NewFlagSet(leaf, flag.ContinueOnError)
-	fs.SetOutput(io.Discard) // the errors below carry the usage; nothing prints twice
-	text := fs.Bool("text", false, "")
-	asJSON := fs.Bool("json", false, "")
-	waitFlag := fs.Duration("wait", DefaultIndexHealthWait, "")
-	if perr := fs.Parse(args); perr != nil {
-		if errors.Is(perr, flag.ErrHelp) {
-			return "", ui.FormatText, 0, &HelpRequested{Usage: rdmIndexHealthUsage + rdmIndexHealthHelp}
-		}
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: %v\n%s", leaf, perr, rdmIndexHealthUsage)}
-	}
-	if *text && *asJSON {
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: give only one of -text, -json\n%s", leaf, rdmIndexHealthUsage)}
-	}
-	if *waitFlag < 0 {
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: -wait must not be negative\n%s", leaf, rdmIndexHealthUsage)}
-	}
-	words := fs.Args()
-	if len(words) != 1 || strings.TrimSpace(words[0]) == "" {
-		return "", ui.FormatText, 0, &UsageError{Msg: fmt.Sprintf("%s: want one instance name or ID, got %d arguments\n%s", leaf, len(words), rdmIndexHealthUsage)}
-	}
-	format = ui.FormatText
-	if *asJSON {
-		format = ui.FormatJSON
-	}
-	return strings.TrimSpace(words[0]), format, *waitFlag, nil
+	return parseIndexFormArgs(RDMIndexHealthCLISlug, rdmIndexHealthUsage, rdmIndexHealthHelp, args)
 }
 
 // RunRDMIndexHealthCLI is `clasm rdm-backup-and-restore rdm-index-health`: it
@@ -760,11 +805,7 @@ func RunRDMIndexHealthCLI(ctx context.Context, w io.Writer, clients map[string]a
 	}
 	report, err := CheckRDMIndexHealth(ctx, client, inst, wait, poll)
 	if err != nil {
-		if format != ui.FormatText {
-			code := CLIExitCode(err)
-			obj := map[string]any{"error": map[string]any{"class": exitClassName(code), "code": code, "message": err.Error()}}
-			_ = ui.WriteJSONValue(w, obj, format)
-		}
+		writeIndexJSONError(w, format, err)
 		return err
 	}
 	if err := WriteIndexHealth(w, report, format); err != nil {
