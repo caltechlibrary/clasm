@@ -9,7 +9,7 @@ Run `clasm` for the menu. It is organised in domains, each a menu of its own:
 - **Compute** -- instances, AMIs and launch templates: list and inspect, launch, start, stop, terminate, resize a root volume, create and sync launch templates, create AMIs, swap an instance's IAM instance profile, and read an instance's or an AMI's cloud-init.
 - **Key Management**, **S3** (buckets, static websites, lifecycle policies, an object browser) and **IAM** (roles, instance profiles and policies, with curated role templates, including a read-only restore role).
 - **Tag Management** -- add, update and remove tags across eleven kinds of resource, list every tag, and list what lacks the `Origin` tag.
-- **RDM Backup & Restore** -- generate, archive and restore Invenio RDM SQL dumps and OpenSearch snapshots over SSM.
+- **RDM Backup & Restore** -- generate, archive and restore Invenio RDM SQL dumps and OpenSearch snapshots over SSM, then check, repair and convert the audit-log and job-logs indices (index templates and data streams) a restore can leave broken.
 - **Configure clasm** -- regions, backup directories, the RDM Postgres rules, the Origin tag and more, kept in `~/.clasm`.
 
 Most actions also run without the menu. The command line mirrors the menu: `clasm <domain>` opens that domain's menu, `clasm <domain> <action>` opens that one action's prompts, and `clasm <domain> <action> <arguments>` runs it non-interactively and exits. Listings take `-json` and `-jsonl`:
@@ -52,11 +52,11 @@ clasm tag-management tag-resource instance new-data --tag origin=dld
 
 ## Release Notes
 
-- version: 0.0.11
+- version: 0.0.12
 - status: active
 - released: not yet released (draft)
 
-See `codemeta.json` (`releaseNotes`) and the GitHub release page for the notes of each version. In short, v0.0.11 adds the scriptable read-only restore role and instance-profile swap, `start-ec2-instance` and `stop-ec2-instance` (a stop of a production instance needs `--confirm`), the restore location guard with a repeatable `--confirm`, the `Origin` tag on everything clasm creates, and `show-untagged` and `tag-resource` for tagging the existing fleet.
+See `codemeta.json` (`releaseNotes`) and the GitHub release page for the notes of each version. In short, v0.0.12 fixes the restore defect behind caltechauthors issue #185: Restore OpenSearch now installs the missing index templates, turns orphaned and plain audit-log and job-logs indices back into data streams, and runs a health check, and the three steps are also forms of their own (`rdm-index-health`, `install-index-templates`, `convert-log-indices`). v0.0.11 added the scriptable read-only restore role and instance-profile swap, `start-ec2-instance` and `stop-ec2-instance` (a stop of a production instance needs `--confirm`), the restore location guard with a repeatable `--confirm`, the `Origin` tag on everything clasm creates, and `show-untagged` and `tag-resource` for tagging the existing fleet.
 
 ### Authors
 
