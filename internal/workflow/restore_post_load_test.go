@@ -191,8 +191,8 @@ func TestNewPostRestoreSteps_AreTheRealOnes(t *testing.T) {
 	ssm := &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusSuccess,
 		responses: []ssmCommandResponse{
 			{substring: "LIVE_TEMPLATES", stdout: installStdout(installSections()), status: types.CommandInvocationStatusSuccess},
-			{substring: "sec templates_ds", stdout: cvDiscoveryStdout(cvHealthy), status: types.CommandInvocationStatusSuccess},
 			{substring: "sec agg_audit", stdout: indexHealthStdout(healthySections()), status: types.CommandInvocationStatusSuccess},
+			{substring: "sec templates_ds", stdout: cvDiscoveryStdout(cvHealthy), status: types.CommandInvocationStatusSuccess},
 		}}
 	var out bytes.Buffer
 	if err := runPostRestoreRepair(context.Background(), &out, boxInstance(), newPostRestoreSteps(ssm, boxInstance())); err != nil {

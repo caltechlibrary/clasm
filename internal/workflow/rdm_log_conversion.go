@@ -8,6 +8,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -145,14 +146,35 @@ type dsTemplate struct {
 }
 
 func streamTemplateFor(templates []dsTemplate, stream string) (dsTemplate, bool) {
+	t, _, ok := streamTemplateMatch(templates, stream)
+	return t, ok
+}
+
+// streamTemplateMatch is streamTemplateFor that also says which pattern matched.
+func streamTemplateMatch(templates []dsTemplate, name string) (dsTemplate, string, bool) {
 	for _, t := range templates {
 		for _, p := range t.Patterns {
-			if ok, _ := path.Match(p, stream); ok {
-				return t, true
+			if ok, _ := path.Match(p, name); ok {
+				return t, p, true
 			}
 		}
 	}
-	return dsTemplate{}, false
+	return dsTemplate{}, "", false
+}
+
+// dsTemplatesQuery is the read that lists the data-stream templates and their patterns; the discovery
+// pass and the health check both use it.
+const dsTemplatesQuery = `/_index_template?filter_path=index_templates.name,index_templates.index_template.index_patterns,index_templates.index_template.data_stream`
+
+// readDSTemplates picks the templates that define a data stream out of a dsTemplatesQuery answer.
+func readDSTemplates(b templatesDSBody) []dsTemplate {
+	var out []dsTemplate
+	for _, t := range b.IndexTemplates {
+		if len(t.IndexTemplate.DataStream) > 0 && string(t.IndexTemplate.DataStream) != "null" {
+			out = append(out, dsTemplate{Name: t.Name, Patterns: t.IndexTemplate.IndexPatterns})
+		}
+	}
+	return out
 }
 
 type templatesDSBody struct {
@@ -200,20 +222,52 @@ func checkConversionPreconditions(f conversionFacts, lc logConversion) error {
 
 var orphanGenerationRE = regexp.MustCompile(`^\.ds-(.+)-(\d{6})$`)
 
-// planAuditLog plans the audit log: the alias <prefix>auditlog points at the orphan, the plain index, or both.
+// planAuditLog plans the audit log. It finds the log indices by what they are, not by the alias that may
+// or may not be on them (found live 2026-10-20: a snapshot taken between the cutover and the by-hand alias
+// fix brings back an orphan with the alias and a plain index named like the stream without it):
+//
+//   - an orphan is a .ds-<stream>-NNNNNN index whose stream does not exist, for a stream named
+//     <prefix>auditlog-...;
+//   - a plain index is one named <prefix>auditlog-... that is not a stream or a backing index and that
+//     a data-stream template's pattern matches, i.e. that the template wants to be a stream;
+//   - an alias target counts either way, as before.
 func planAuditLog(f conversionFacts) (*logConversion, string, error) {
 	alias := f.prefix + "auditlog"
 	if _, isIndex := f.docs[alias]; isIndex {
 		return nil, "", refuse("an index is named %q, the audit log's alias; remove or rename it first", alias)
 	}
+	logPrefix := f.prefix + "auditlog-"
 	var orphans, plains []string
+	seen := map[string]bool{}
+	add := func(list *[]string, name string) {
+		if !seen[name] {
+			seen[name] = true
+			*list = append(*list, name)
+		}
+	}
 	for _, target := range f.aliases[alias] {
 		stream, backing := dataStreamOfBackingIndex(target)
 		switch {
 		case !backing:
-			plains = append(plains, target)
+			add(&plains, target)
 		case f.streams[stream] == nil:
-			orphans = append(orphans, target)
+			add(&orphans, target)
+		}
+	}
+	names := make([]string, 0, len(f.docs))
+	for name := range f.docs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if stream, backing := dataStreamOfBackingIndex(name); backing {
+			if strings.HasPrefix(stream, logPrefix) && f.streams[stream] == nil {
+				add(&orphans, name)
+			}
+			continue
+		}
+		if _, ok := streamTemplateFor(f.templates, name); ok && strings.HasPrefix(name, logPrefix) && f.streams[name] == nil {
+			add(&plains, name)
 		}
 	}
 	if len(orphans) == 0 && len(plains) == 0 {
@@ -236,7 +290,6 @@ func planAuditLog(f conversionFacts) (*logConversion, string, error) {
 			return nil, "", refuse("the orphaned backing index %q is generation %s; a new stream starts at 000001, so only generation 000001 can be converted", orphans[0], m[2])
 		}
 		lc.Orphan, lc.Stream, lc.OrphanDocs = orphans[0], m[1], f.docs[orphans[0]]
-		lc.Aliases = append(lc.Aliases, [2]string{orphans[0], alias})
 	} else {
 		lc.HoldOrphan = ""
 	}
@@ -245,9 +298,14 @@ func planAuditLog(f conversionFacts) (*logConversion, string, error) {
 			return nil, "", refuse("the audit log's orphan (stream %q) and plain index (%q) disagree about the stream's name", lc.Stream, plains[0])
 		}
 		lc.Plain, lc.Stream, lc.PlainDocs = plains[0], plains[0], f.docs[plains[0]]
-		lc.Aliases = append(lc.Aliases, [2]string{plains[0], alias})
 	} else {
 		lc.HoldPlain = ""
+	}
+	// Only an alias that is really there is removed.
+	for _, index := range []string{lc.Orphan, lc.Plain} {
+		if index != "" && slices.Contains(f.aliases[alias], index) {
+			lc.Aliases = append(lc.Aliases, [2]string{index, alias})
+		}
 	}
 	if f.streams[lc.Stream] != nil {
 		return nil, "", refuse("a data stream %q already exists alongside its orphan or plain index; that needs attention by hand", lc.Stream)
@@ -342,11 +400,7 @@ func buildConversionPlan(sections map[string]string) (conversionPlan, error) {
 	for _, a := range aliasRows {
 		f.aliases[a.Alias] = append(f.aliases[a.Alias], a.Index)
 	}
-	for _, t := range templates.IndexTemplates {
-		if len(t.IndexTemplate.DataStream) > 0 && string(t.IndexTemplate.DataStream) != "null" {
-			f.templates = append(f.templates, dsTemplate{Name: t.Name, Patterns: t.IndexTemplate.IndexPatterns})
-		}
-	}
+	f.templates = readDSTemplates(templates)
 	for _, planner := range []func(conversionFacts) (*logConversion, string, error){planAuditLog, planJobLogs} {
 		lc, note, err := planner(f)
 		if err != nil {
@@ -367,7 +421,7 @@ func buildConversionPlan(sections map[string]string) (conversionPlan, error) {
 const conversionDiscoveryBody = `sec data_streams; get '/_data_stream?filter_path=data_streams.name,data_streams.indices.index_name'
 sec indices; get '/_cat/indices?format=json&h=index,docs.count&expand_wildcards=all'
 sec aliases; get '/_cat/aliases?format=json&h=alias,index'
-sec templates_ds; get '/_index_template?filter_path=index_templates.name,index_templates.index_template.index_patterns,index_templates.index_template.data_stream'
+sec templates_ds; get 'DS_TEMPLATES_QUERY'
 `
 
 // buildConversionDiscoveryCommand builds the read-only script that says what a conversion would do.
@@ -378,7 +432,7 @@ sec templates_ds; get '/_index_template?filter_path=index_templates.name,index_t
 //
 //	cmd := buildConversionDiscoveryCommand(DefaultIndexHealthWait)
 func buildConversionDiscoveryCommand(wait time.Duration) string {
-	return indexScriptStart(wait) + conversionDiscoveryBody
+	return indexScriptStart(wait) + strings.Replace(conversionDiscoveryBody, "DS_TEMPLATES_QUERY", dsTemplatesQuery, 1)
 }
 
 // DiscoverLogConversion reads inst through one read-only SSM command and says what a conversion would

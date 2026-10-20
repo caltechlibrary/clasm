@@ -935,3 +935,117 @@ func TestConversionPlan_ACopyNameThatTheInstancePrefixCouldCaptureIsAnInternalEr
 		t.Errorf("err = %v, want an ExitCodeError 70 naming the instance prefix", err)
 	}
 }
+
+// ---- found live on 2026-10-20 (R1): the log indices need not carry the alias ----
+//
+// Restoring rdm-20261019-123545 -- a snapshot taken between the cutover and the by-hand alias fix -- brought back
+// the orphan WITH the alias and a plain index named like the stream WITHOUT it. Discovery followed the alias, so it
+// planned an orphan-only conversion, deleted the orphan, and could not create the stream: a plain index of that
+// name was still there. Every document survived (the copy held them), but the order's whole point is that nothing
+// that can be foreseen fails after a delete. These tests are that state, and its neighbours.
+
+func aliaslessPlain(overrides map[string]string) map[string]string {
+	return with(cvSections(), overrides)
+}
+
+func TestConversionPlan_APlainIndexWithoutTheAliasIsStillTheAuditLogsPlainIndex(t *testing.T) {
+	s := aliaslessPlain(map[string]string{
+		"aliases": `[{"alias":"` + cvAlias + `","index":"` + cvOrphan + `"}]`, // the alias is on the orphan only
+	})
+	p := mustPlan(t, s)
+	a := p.Logs[0]
+	if a.Orphan != cvOrphan || a.Plain != cvStream || a.PlainDocs != 120 || a.HoldPlain == "" {
+		t.Fatalf("the plain index named like the stream is part of the conversion even with no alias on it: %+v", a)
+	}
+	if !slices.Equal(sortedPairs(a.Aliases), []string{cvOrphan + "|" + cvAlias}) {
+		t.Errorf("only an alias that exists is removed: %v", a.Aliases)
+	}
+}
+
+func TestConversionPlan_APlainAuditIndexWithNoAliasAndNoOrphanIsFoundByItsName(t *testing.T) {
+	s := aliaslessPlain(map[string]string{
+		"indices":      `[{"index":"` + cvStream + `","docs.count":"120"},{"index":".ds-` + cvJobs + `-000001","docs.count":"1"}]`,
+		"aliases":      `[]`,
+		"data_streams": `{"data_streams":[{"name":"` + cvJobs + `","indices":[{"index_name":".ds-` + cvJobs + `-000001"}]}]}`,
+	})
+	p := mustPlan(t, s)
+	if len(p.Logs) != 1 || p.Logs[0].Plain != cvStream || p.Logs[0].Stream != cvStream || p.Logs[0].Orphan != "" || len(p.Logs[0].Aliases) != 0 {
+		t.Errorf("a plain index that matches the data-stream template's pattern is what the template wants to be a stream: %+v", p.Logs)
+	}
+}
+
+func TestConversionPlan_AnOrphanWithNoAliasIsFoundByItsName(t *testing.T) {
+	s := aliaslessPlain(map[string]string{
+		"indices":      `[{"index":"` + cvOrphan + `","docs.count":"5"},{"index":".ds-` + cvJobs + `-000001","docs.count":"1"}]`,
+		"aliases":      `[]`,
+		"data_streams": `{"data_streams":[{"name":"` + cvJobs + `","indices":[{"index_name":".ds-` + cvJobs + `-000001"}]}]}`,
+	})
+	p := mustPlan(t, s)
+	if len(p.Logs) != 1 || p.Logs[0].Orphan != cvOrphan || p.Logs[0].Stream != cvStream || len(p.Logs[0].Aliases) != 0 {
+		t.Errorf("an orphaned backing index is an orphan whether or not an alias points at it: %+v", p.Logs)
+	}
+}
+
+func TestConversionPlan_ThePlainIndexIsNotCountedTwiceWhenItHasTheAliasToo(t *testing.T) {
+	p := mustPlan(t, cvSections()) // the alias is on both
+	a := p.Logs[0]
+	if a.Plain != cvStream || len(a.Aliases) != 2 {
+		t.Errorf("found by alias and by name, planned once: %+v", a)
+	}
+}
+
+func TestConversionPlan_TwoPlainCandidatesAreRefused(t *testing.T) {
+	s := aliaslessPlain(map[string]string{
+		"indices":      `[{"index":"` + cvStream + `","docs.count":"1"},{"index":"caltechauthors-auditlog-other-v9","docs.count":"2"},{"index":".ds-` + cvJobs + `-000001","docs.count":"1"}]`,
+		"aliases":      `[]`,
+		"data_streams": `{"data_streams":[{"name":"` + cvJobs + `","indices":[{"index_name":".ds-` + cvJobs + `-000001"}]}]}`,
+	})
+	_, err := buildConversionPlan(s)
+	if err == nil || !strings.Contains(err.Error(), "more than one plain index") {
+		t.Errorf("err = %v, want a refusal for two plain candidates", err)
+	}
+}
+
+func TestConversionPlan_ACopyOrAnUnrelatedIndexIsNotACandidate(t *testing.T) {
+	// The kept copies and anything outside the data-stream template's pattern are not log indices.
+	s := aliaslessPlain(map[string]string{
+		"indices": `[{"index":"auditlog-fix-old","docs.count":"9"},{"index":"clasm-fix-auditlog-orphan","docs.count":"9"},` +
+			`{"index":"caltechauthors-records-record-v7.0.0-1","docs.count":"9"},{"index":".ds-` + cvJobs + `-000001","docs.count":"1"}]`,
+		"aliases":      `[]`,
+		"data_streams": `{"data_streams":[{"name":"` + cvJobs + `","indices":[{"index_name":".ds-` + cvJobs + `-000001"}]}]}`,
+	})
+	p := mustPlan(t, s)
+	if len(p.Logs) != 0 {
+		t.Errorf("nothing here is a log index to convert: %+v", p.Logs)
+	}
+}
+
+// The whole thing, from the instance's state to the fake cluster: the plan must account for every index that would
+// stand in the stream's way, or the fake (like OpenSearch) refuses at the create, after the orphan is gone.
+func TestConvert_FromTheStateTheSnapshotProducedNothingStandsInTheStreamsWay(t *testing.T) {
+	s := aliaslessPlain(map[string]string{
+		"aliases": `[{"alias":"` + cvAlias + `","index":"` + cvOrphan + `"}]`,
+	})
+	plan := mustPlan(t, s)
+	f := newFakeOS()
+	f.put(cvOrphan, 5, "o")
+	f.put(cvStream, 3, "p") // no alias on it
+	f.alias(cvAlias, cvOrphan)
+	f.put(cvJobs, 4, "j")
+	before := f.everyDocument()
+	res, err := ConvertLogIndices(context.Background(), &strings.Builder{}, f, plan)
+	if err != nil {
+		t.Fatalf("%v\ncalls:\n%s", err, strings.Join(f.calls, "\n"))
+	}
+	if !f.streams[cvStream] || !f.streams[cvJobs] || len(res) != 2 {
+		t.Errorf("both logs are streams: %v %v %d", f.streams[cvStream], f.streams[cvJobs], len(res))
+	}
+	for id := range before {
+		if !f.everyDocument()[id] {
+			t.Errorf("document %s was lost", id)
+		}
+	}
+	if len(f.idx[cvStream]) != 8 {
+		t.Errorf("the stream holds the orphan's 5 and the plain index's 3, got %d", len(f.idx[cvStream]))
+	}
+}

@@ -148,6 +148,7 @@ sec templates; get '/_index_template?filter_path=index_templates.name'
 sec data_streams; get '/_data_stream?filter_path=data_streams.name,data_streams.template,data_streams.indices.index_name'
 sec indices; get '/_cat/indices?format=json&h=index,docs.count&expand_wildcards=all'
 sec aliases; get '/_cat/aliases?format=json&h=alias,index'
+sec templates_ds; get 'DS_TEMPLATES_QUERY'
 sec mapping_audit; get "/${P}auditlog/_mapping/field/MAPPING_AUDIT"
 sec mapping_jobs; get "/${P}job-logs/_mapping/field/MAPPING_JOBS"
 sec agg_audit; agg "${P}auditlog" 'AGG_AUDIT'
@@ -202,6 +203,7 @@ const indexHealthNoWait = `c=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$OS"
 //	cmd := buildIndexHealthCommand(5 * time.Minute)
 func buildIndexHealthCommand(wait time.Duration) string {
 	return strings.NewReplacer(
+		"DS_TEMPLATES_QUERY", dsTemplatesQuery,
 		"MAPPING_AUDIT", strings.Join(auditLogFields, ","),
 		"MAPPING_JOBS", strings.Join(jobLogFields, ","),
 		"AGG_AUDIT", auditAggregationBody,
@@ -580,15 +582,40 @@ func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, erro
 	for _, n := range append(auditAccounted, jobAccounted...) {
 		accounted[n] = true
 	}
+	// The data-stream templates' patterns are optional input: without the section the rule below
+	// does not apply, as for an older script's output.
+	var dsTemplates []dsTemplate
+	if body, ok := sections["templates_ds"]; ok && strings.TrimSpace(body) != "" {
+		parsed, err := decodeSection[templatesDSBody](sections, "templates_ds")
+		if err != nil {
+			return r, err
+		}
+		dsTemplates = readDSTemplates(parsed)
+	}
+	indexNames := make([]string, 0, len(indexSet))
 	for idx := range indexSet {
+		indexNames = append(indexNames, idx)
+	}
+	sort.Strings(indexNames)
+	for _, idx := range indexNames {
+		if accounted[idx] {
+			continue
+		}
+		// A plain index that a data-stream template's pattern matches is exactly what the template does not
+		// want: it blocks the stream and takes writes with the wrong mapping. That is a problem, not
+		// information (found live 2026-10-20: a restored snapshot's plain audit index with no alias on it).
+		if _, backing := dataStreamOfBackingIndex(idx); !backing && streams[idx] == nil {
+			if _, pattern, ok := streamTemplateMatch(dsTemplates, idx); ok {
+				r.Problems = append(r.Problems, fmt.Sprintf("the plain index %s matches the data-stream template pattern %s but is not a data stream", idx, pattern))
+				continue
+			}
+		}
 		lower := strings.ToLower(idx)
-		looksLikeLog := strings.Contains(lower, "auditlog") || strings.Contains(lower, "audit-log") ||
-			strings.Contains(lower, "job-logs") || strings.Contains(lower, "joblogs")
-		if looksLikeLog && !accounted[idx] {
+		if strings.Contains(lower, "auditlog") || strings.Contains(lower, "audit-log") ||
+			strings.Contains(lower, "job-logs") || strings.Contains(lower, "joblogs") {
 			r.Strays = append(r.Strays, idx)
 		}
 	}
-	sort.Strings(r.Strays)
 
 	r.Healthy = len(r.Problems) == 0
 	return r, nil

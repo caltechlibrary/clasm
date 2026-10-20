@@ -766,3 +766,62 @@ func TestIndexListingsIncludeHiddenIndices(t *testing.T) {
 		}
 	}
 }
+
+// ---- found live on 2026-10-20 (R1): a plain index named like the stream, with no alias on it ----
+//
+// The check found log indices through the alias. After restoring a snapshot taken before the by-hand alias fix the
+// audit log was reported "absent" (not a failure) while a 3,990-document plain index named like the stream sat in the
+// strays list. A plain index that matches a data-stream template's pattern is exactly what the template does not
+// want, so it is a problem, not information.
+
+const hlTemplatesDS = `{"index_templates":[` +
+	`{"name":"caltechauthors-auditlogs-datastream-auditlog-v1.0.0","index_template":{"index_patterns":["caltechauthors-auditlog*"],"data_stream":{}}},` +
+	`{"name":"caltechauthors-job-logs-v1.0.0","index_template":{"index_patterns":["caltechauthors-job-logs*"],"data_stream":{}}},` +
+	`{"name":"caltechauthors-rdmrecords","index_template":{"index_patterns":["caltechauthors-rdmrecords*"]}}]}`
+
+func TestIndexHealth_AUnaliasedPlainIndexNamedLikeAStreamIsAProblem(t *testing.T) {
+	unaliased := with(healthySections(), map[string]string{
+		"templates_ds":  hlTemplatesDS,
+		"data_streams":  `{"data_streams":[{"name":"caltechauthors-job-logs","indices":[{"index_name":".ds-caltechauthors-job-logs-000001"}],"template":"t"}]}`,
+		"indices":       `[{"index":"caltechauthors-auditlog-audit-log-v1.0.0","docs.count":"3990"},{"index":".ds-caltechauthors-job-logs-000001","docs.count":"582"}]`,
+		"aliases":       `[]`,
+		"mapping_audit": healthNotFound, "agg_audit": healthNotFound,
+	})
+	r := mustReport(t, unaliased)
+	if r.Healthy || !hasProblem(r, "caltechauthors-auditlog-audit-log-v1.0.0") || !hasProblem(r, "caltechauthors-auditlog*") {
+		t.Fatalf("a plain index matching a data-stream template pattern must fail, naming the index and the pattern: healthy=%v problems=%v", r.Healthy, r.Problems)
+	}
+	if slices.Contains(r.Strays, "caltechauthors-auditlog-audit-log-v1.0.0") {
+		t.Errorf("it is a problem, so it is not also listed as an informational stray: %v", r.Strays)
+	}
+}
+
+func TestIndexHealth_TheDataStreamTemplatesDoNotMakeHealthyThingsProblems(t *testing.T) {
+	r := mustReport(t, with(healthySections(), map[string]string{"templates_ds": hlTemplatesDS}))
+	if !r.Healthy || len(r.Problems) != 0 {
+		t.Errorf("streams and their backing indices match the patterns and are fine: %v", r.Problems)
+	}
+	// the kept copies sit outside every pattern, and a record index matches no data-stream template
+	copies := with(healthySections(), map[string]string{"templates_ds": hlTemplatesDS,
+		"indices": `[{"index":".ds-caltechauthors-auditlog-audit-log-v1.0.0-000001","docs.count":"1"},{"index":".ds-caltechauthors-job-logs-000001","docs.count":"1"},` +
+			`{"index":"auditlog-fix-old","docs.count":"9"},{"index":"clasm-fix-job-logs-plain","docs.count":"9"},{"index":"caltechauthors-rdmrecords-records-record-v7.0.0-1","docs.count":"9"}]`})
+	r = mustReport(t, copies)
+	if !r.Healthy {
+		t.Errorf("copies and unrelated indices must not fail: %v", r.Problems)
+	}
+}
+
+func TestIndexHealth_WithoutTheTemplateListTheCheckStillWorks(t *testing.T) {
+	// An older instance output with no templates_ds section: the new rule simply does not apply.
+	r := mustReport(t, healthySections())
+	if !r.Healthy {
+		t.Errorf("problems = %v", r.Problems)
+	}
+}
+
+func TestIndexHealthCommand_ReadsTheDataStreamTemplatePatterns(t *testing.T) {
+	cmd := buildIndexHealthCommand(0)
+	if !strings.Contains(cmd, "sec templates_ds") || !strings.Contains(cmd, "index_template.index_patterns") {
+		t.Errorf("the health script must read the data-stream template patterns")
+	}
+}
