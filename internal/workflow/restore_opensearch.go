@@ -594,7 +594,7 @@ func RestoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 		return nil
 	}
 
-	inst, err := pickInstance(ctx, "Select the target instance to restore into", "Connects to this instance via SSM to restore OpenSearch indices from an archived snapshot. This deletes any conflicting indices already on the target before restoring.", instances)
+	inst, err := pickInstance(ctx, "Select the target instance to restore into", "Connects to this instance via SSM to restore OpenSearch indices from an archived snapshot. This deletes any conflicting indices already on the target before restoring. Afterwards it installs missing index templates, converts plain or orphaned audit-log and job-logs indices to data streams (copies kept), and checks index health.", instances)
 	if err != nil {
 		return cancelledIsNil(w, err)
 	}
@@ -674,6 +674,8 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err != nil {
 		return err
 	}
+	// What the confirmation below covers beyond the restore itself (DR-0199).
+	fmt.Fprintf(w, "Note: %s.\n", restorePostLoadNote)
 	if len(existing) > 0 {
 		ok, err := ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
 		if err != nil {
@@ -866,7 +868,9 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	if redCount > 0 {
 		fmt.Fprintf(w, "\nWARNING: %d restored index/indices reported red health -- investigate before trusting this restore.\n", redCount)
 	}
-	return nil
+	// The restore is loaded, verified and tidy. What a restore without global state leaves missing is
+	// put right now, and the health check's verdict is this restore's (DR-0196, DR-0199).
+	return runPostRestoreRepair(ctx, w, inst, newPostRestoreSteps(ssmClient, inst))
 }
 
 // staleRepoDirPrefix is where the generation files already in a repository

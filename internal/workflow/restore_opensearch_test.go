@@ -332,6 +332,11 @@ func restoreOpenSearchFake(existingIndicesStdout, recoveryStdout, verifyStdout s
 		commandID:   "cmd-1",
 		finalStatus: types.CommandInvocationStatusSuccess,
 		responses: []ssmCommandResponse{
+			// The three post-load steps (R1): a healthy instance with nothing to install or convert. They
+			// come first because their scripts also contain "%{http_code}", which a later entry matches.
+			{substring: "LIVE_TEMPLATES", stdout: noopInstallStdout(), status: types.CommandInvocationStatusSuccess},
+			{substring: "sec templates_ds", stdout: cvDiscoveryStdout(cvHealthy), status: types.CommandInvocationStatusSuccess},
+			{substring: "sec agg_audit", stdout: indexHealthStdout(healthySections()), status: types.CommandInvocationStatusSuccess},
 			{substring: "command -v aws", stdout: "/usr/bin/aws", status: types.CommandInvocationStatusSuccess},
 			{substring: "id -u", stdout: "1000 1001\n", status: types.CommandInvocationStatusSuccess}, // the service owner lookup: ubuntu is uid 1000, gid 1001
 			{substring: "_cat/indices/caltechdata-*,.ds-caltechdata-*", stdout: existingIndicesStdout, status: types.CommandInvocationStatusSuccess},

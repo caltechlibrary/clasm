@@ -299,7 +299,10 @@ enough for unattended use -- see "Non-interactive (CLI) Usage" below; a
 successful interactive run of either prints the exact command that
 reproduces it. The two
 **Restore** items are the reverse: pick a target instance, pick an
-archive from S3, and load it back. Both are gated behind
+archive from S3, and load it back. Restore OpenSearch also puts right what a
+restore without global state leaves missing -- index templates and the audit log's
+and job logs' data streams -- and its exit status is the index health check's (see
+"What Restore OpenSearch does after the load" below). Both are gated behind
 type-to-confirm on the exact instance ID or Name tag, and neither keeps
 any recall history of the last instance used -- restoring is a rare,
 deliberate action, and clasm deliberately does not pre-position the
@@ -1088,7 +1091,44 @@ clasm rdm-backup-and-restore restore-opensearch-snapshot-from-s3 \
 ~~~
 
 Exit codes are the same as for the other forms: 0 success (a dry run and a help
-request included), 1 the action failed, 2 a usage error.
+request included), 1 the action failed, 2 a usage error. A restore of OpenSearch
+adds the classes of what it does after the load (next section): 1 also means the
+restore finished but the index health check reports a problem, 65, 66, 69 and 70 are
+as for those forms, and the error says the restore itself finished.
+
+##### What Restore OpenSearch does after the load
+
+A restore keeps `include_global_state:false`, which carries neither **index
+templates** nor **data-stream definitions**. A restored instance therefore has
+none, and the app's first write creates a plain, dynamically mapped audit-log and
+job-logs index with `text` where the shipped templates say `keyword`; the admin
+audit-logs page then silently stops updating (caltechauthors #185). So once the
+snapshot is restored and verified and the local repository is cleaned up, Restore
+goes on, in this order, and on **every** instance:
+
+1. **Install the missing index templates**, as `install-index-templates` does;
+2. **convert the audit log and job logs** if they came back as an orphaned `.ds-`
+   index or a plain index, as `convert-log-indices` does -- copy first, the copies
+   kept and named, never deleted by clasm (a snapshot taken before 2026-10-19
+   holds the audit log as exactly that orphan, so this applies to older snapshots
+   too); a healthy instance converts nothing;
+3. **run RDM Index Health** and print its report.
+
+**The health check's verdict is the restore's verdict.** A restore that leaves the
+admin page broken exits 1 where it used to exit 0; the restore's own table is
+printed first, so nothing is hidden. If a step cannot run or fails, the error says
+the restore itself finished and names the form that repeats that step (all three
+are also forms of their own, for an instance already in the state).
+
+**There is no second confirmation.** The conversion deletes indices, but only
+after verified copies, and the one confirmation the restore already takes names it:
+the dry-run plan, the terminal prompt and the menu flow all say that after the load
+clasm will install missing templates, convert any audit-log or job-logs index that
+comes back plain or orphaned, and check health. A dry run still only reads; it runs
+none of these. A second prompt after a long download would stall an unattended
+`--confirm` run with the instance restored but not yet usable. The post-load steps
+add the time of a conversion (about 306,000 audit-log documents on CaltechAUTHORS)
+to a restore, run as polled tasks.
 
 Two things a restore does to the repository directory that you may notice.
 Before it downloads a snapshot it moves any `index-N` file and `index.latest`

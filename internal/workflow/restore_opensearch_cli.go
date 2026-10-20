@@ -132,6 +132,7 @@ func RunRestoreOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClien
 		fmt.Sprintf("download the snapshot into %s on the instance, hand it to the service user, and register it as a repository", p.Directory),
 		fmt.Sprintf("check the snapshot holds indices matching %q, delete the existing indices, then restore the %d index patterns", p.IndexPrefix, len(indices)),
 		"delete the local copy of the snapshot and deregister the repository",
+		restorePostLoadNote,
 	}
 	decision, err := gate.Decide(w, input, output)
 	if err != nil {
