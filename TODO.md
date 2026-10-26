@@ -1,6 +1,8 @@
 
 # Action items
 
+- [ ] Drop the 32-bit Raspberry Pi build (`Linux-armv7l`, `GOARM=7`) from the Makefile and any release check the next time this module is worked on (workspace DR-0018, proposed 2026-10-26). 64-bit Raspberry Pi OS stays covered by `Linux-aarch64`. Already-published releases are left as they are.
+
 **Status 2026-10-20: v0.0.12 is released and installed; clasm is in maintenance mode.** Every item below that is still open is **deferred, with no release pending**: none is a blocker and none loses data. The next release is cut when a live run or a report finds a defect, or when the author chooses to batch the deferred fixes (the four interactive-flow findings of 2026-10-19 are the likeliest). Open items need a live run (the v0.0.10, v0.0.11 and v0.0.12 live-verification gaps), a cross-repository change (`pg_dump --column-inserts`, which must move with `invenio-sql-backup.bash`), or are feature work taken when wanted (CLI leaf parity, shell completion, the Multipass restore).
 
 ## Bugs and issues
