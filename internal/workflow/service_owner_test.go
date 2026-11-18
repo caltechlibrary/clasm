@@ -59,7 +59,7 @@ func TestBuildResolveServiceOwnerCommand_MissingUserFailsNonZero(t *testing.T) {
 
 func TestResolveServiceOwner_ParsesUIDAndGID(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "1000 1001\n"}
-	got, err := ResolveServiceOwner(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	got, err := ResolveServiceOwner(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestResolveServiceOwner_ParsesUIDAndGID(t *testing.T) {
 // diagnosis.
 func TestResolveServiceOwner_FailedStatusNamesUserAndInstance(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "id: 'ubuntu': no such user"}
-	_, err := ResolveServiceOwner(context.Background(), fake, "i-abc", time.Second, testPollInterval)
+	_, err := ResolveServiceOwner(context.Background(), NewSSMExecutor(fake, "i-abc"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -92,7 +92,7 @@ func TestResolveServiceOwner_FailedStatusNamesUserAndInstance(t *testing.T) {
 
 func TestResolveServiceOwner_PropagatesTransportError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
-	_, err := ResolveServiceOwner(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	_, err := ResolveServiceOwner(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
 		t.Errorf("expected the transport error to propagate, got: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestResolveServiceOwner_PropagatesTransportError(t *testing.T) {
 func TestResolveServiceOwner_RejectsMalformedOutput(t *testing.T) {
 	for _, stdout := range []string{"", " ", "1000", "1000 1001 5", "ubuntu ubuntu", "-1 1001", "1000 x"} {
 		fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: stdout}
-		_, err := ResolveServiceOwner(context.Background(), fake, "i-1", time.Second, testPollInterval)
+		_, err := ResolveServiceOwner(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 		if err == nil {
 			t.Errorf("stdout %q: expected an error, got none", stdout)
 			continue

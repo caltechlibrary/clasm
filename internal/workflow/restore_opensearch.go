@@ -16,7 +16,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
@@ -35,13 +34,13 @@ func buildSyncFromS3Command(bucket, prefix, snapshotName, localDir string) strin
 }
 
 // SyncOpenSearchBackupsFromS3 runs buildSyncFromS3Command via SSM.
-func SyncOpenSearchBackupsFromS3(ctx context.Context, client awsclient.SSMAPI, instanceID, bucket, prefix, snapshotName, localDir string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildSyncFromS3Command(bucket, prefix, snapshotName, localDir), timeout, pollInterval)
+func SyncOpenSearchBackupsFromS3(ctx context.Context, ex Executor, bucket, prefix, snapshotName, localDir string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildSyncFromS3Command(bucket, prefix, snapshotName, localDir), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("syncing OpenSearch snapshot %q from s3://%s/%s on %s failed", snapshotName, bucket, openSearchSnapshotsPrefix(prefix), instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("syncing OpenSearch snapshot %q from s3://%s/%s on %s failed", snapshotName, bucket, openSearchSnapshotsPrefix(prefix), ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -76,13 +75,13 @@ func buildChownTreeCommand(dir string, owner ServiceOwner) string {
 // -- `pg_dump | gzip` masking pg_dump's own exit status, and gunzip's
 // "unknown suffix" message vanishing with stderr -- and one extra round
 // trip is cheap next to a restore.
-func NormalizeSnapshotRepoOwnership(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildChownTreeCommand(dir, owner), timeout, pollInterval)
+func NormalizeSnapshotRepoOwnership(ctx context.Context, ex Executor, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildChownTreeCommand(dir, owner), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("setting ownership of the OpenSearch snapshot repository %q on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("setting ownership of the OpenSearch snapshot repository %q on %s failed", dir, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -140,13 +139,13 @@ func matchesAnyPattern(name string, patterns []string) bool {
 // which of a restore's own target indices already exist, so the caller
 // can gate a destructive delete-before-restore behind an explicit
 // confirmation.
-func detectExistingOpenSearchIndices(ctx context.Context, client awsclient.SSMAPI, instanceID, indexPrefix string, patterns []string, timeout, pollInterval time.Duration) ([]string, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildListIndicesCommand(indexPrefix), timeout, pollInterval)
+func detectExistingOpenSearchIndices(ctx context.Context, ex Executor, indexPrefix string, patterns []string, timeout, pollInterval time.Duration) ([]string, error) {
+	stdout, status, err := ex.Run(ctx, buildListIndicesCommand(indexPrefix), timeout, pollInterval)
 	if err != nil {
 		return nil, err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return nil, curlFailureError(fmt.Sprintf("listing existing indices on %s failed", instanceID), status, stdout)
+	if status != StatusSuccess {
+		return nil, curlFailureError(fmt.Sprintf("listing existing indices on %s failed", ex.Name()), status, stdout)
 	}
 	var matched []string
 	for _, name := range parseListedIndices(stdout) {
@@ -213,7 +212,7 @@ func buildDeleteDataStreamsCommand(streams []string) string {
 // same name already exists" (found live the same day). OpenSearch answers 200 for
 // a stream that does not exist and, with ignore_unavailable, for an index already
 // gone, so doing both is safe in every case.
-func DeleteConflictingIndices(ctx context.Context, client awsclient.SSMAPI, instanceID string, indices []string, timeout, pollInterval time.Duration) error {
+func DeleteConflictingIndices(ctx context.Context, ex Executor, indices []string, timeout, pollInterval time.Duration) error {
 	if len(indices) == 0 {
 		return nil
 	}
@@ -226,20 +225,20 @@ func DeleteConflictingIndices(ctx context.Context, client awsclient.SSMAPI, inst
 		}
 	}
 	if len(streams) > 0 {
-		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteDataStreamsCommand(streams), timeout, pollInterval)
+		stdout, status, err := ex.Run(ctx, buildDeleteDataStreamsCommand(streams), timeout, pollInterval)
 		if err != nil {
 			return err
 		}
-		if status != ssmtypes.CommandInvocationStatusSuccess {
-			return curlFailureError(fmt.Sprintf("deleting data stream(s) %s on %s failed", strings.Join(streams, ", "), instanceID), status, stdout)
+		if status != StatusSuccess {
+			return curlFailureError(fmt.Sprintf("deleting data stream(s) %s on %s failed", strings.Join(streams, ", "), ex.Name()), status, stdout)
 		}
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteIndicesCommand(indices), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildDeleteIndicesCommand(indices), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("deleting %d conflicting index/indices on %s failed", len(indices), instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("deleting %d conflicting index/indices on %s failed", len(indices), ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -286,13 +285,13 @@ func restoredIndexCount(stdout string) (n int, known bool) {
 // is still accepted (HTTP 200, "indices":[], 0 shards). That is reported as
 // errNoIndicesRestored rather than left to fail later on a 404 from the
 // recovery poll, for indices that were never there.
-func RestoreSnapshot(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName string, indices []string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildRestoreSnapshotCommand(repo, snapshotName, indices), timeout, pollInterval)
+func RestoreSnapshot(ctx context.Context, ex Executor, repo, snapshotName string, indices []string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildRestoreSnapshotCommand(repo, snapshotName, indices), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("restoring snapshot %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("restoring snapshot %s/%s on %s failed", repo, snapshotName, ex.Name()), status, stdout)
 	}
 	if n, known := restoredIndexCount(stdout); known && n == 0 {
 		return errNoIndicesRestored
@@ -354,17 +353,17 @@ func parseRestoreRecovery(stdout string) (done bool, err error) {
 // built with progress reporting from the start, rather than shipping a
 // bare blocking wait and retrofitting the lesson a second time (see
 // DECISIONS.md, "Restore load steps should report real progress...").
-func PollRestoreUntilComplete(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID string, indices []string, timeout, pollInterval time.Duration) error {
+func PollRestoreUntilComplete(ctx context.Context, w io.Writer, ex Executor, indices []string, timeout, pollInterval time.Duration) error {
 	command := buildRestoreRecoveryCommand(indices)
-	label := fmt.Sprintf("OpenSearch restore of %d index pattern(s) on %s", len(indices), instanceID)
+	label := fmt.Sprintf("OpenSearch restore of %d index pattern(s) on %s", len(indices), ex.Name())
 
 	return pollWithProgress(ctx, w, label, timeout, pollInterval, func(ctx context.Context) (bool, error) {
-		stdout, status, err := RunShellCommand(ctx, client, instanceID, command, DefaultSnapshotStateCheckTimeout, DefaultSSMPollInterval)
+		stdout, status, err := ex.Run(ctx, command, DefaultSnapshotStateCheckTimeout, DefaultSSMPollInterval)
 		if err != nil {
 			return false, err
 		}
-		if status != ssmtypes.CommandInvocationStatusSuccess {
-			return false, curlFailureError(fmt.Sprintf("restore recovery check on %s failed", instanceID), status, stdout)
+		if status != StatusSuccess {
+			return false, curlFailureError(fmt.Sprintf("restore recovery check on %s failed", ex.Name()), status, stdout)
 		}
 		return parseRestoreRecovery(stdout)
 	})
@@ -422,13 +421,13 @@ func parseRestoredIndices(stdout string) ([]restoredIndexInfo, error) {
 // (an index missing entirely from the response, or reporting red health)
 // -- see DECISIONS.md, "Restore OpenSearch: verify against observed
 // _cat/indices state, not the snapshot's own internal _status metadata."
-func VerifyRestoredIndices(ctx context.Context, client awsclient.SSMAPI, instanceID string, indices []string, timeout, pollInterval time.Duration) ([]restoredIndexInfo, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildVerifyRestoredIndicesCommand(indices), timeout, pollInterval)
+func VerifyRestoredIndices(ctx context.Context, ex Executor, indices []string, timeout, pollInterval time.Duration) ([]restoredIndexInfo, error) {
+	stdout, status, err := ex.Run(ctx, buildVerifyRestoredIndicesCommand(indices), timeout, pollInterval)
 	if err != nil {
 		return nil, err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return nil, curlFailureError(fmt.Sprintf("verifying restored indices on %s failed", instanceID), status, stdout)
+	if status != StatusSuccess {
+		return nil, curlFailureError(fmt.Sprintf("verifying restored indices on %s failed", ex.Name()), status, stdout)
 	}
 	return parseRestoredIndices(stdout)
 }
@@ -457,13 +456,13 @@ func snapshotIndexList(stdout string) (indices []string, known bool) {
 // restore nothing. A response it cannot read does not block: the check exists
 // to refuse a positively empty match, and RestoreSnapshot still stops on an
 // empty result afterwards.
-func CheckSnapshotHoldsMatchingIndices(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName, indexPrefix string, patterns []string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildSnapshotStateCommand(repo, snapshotName), timeout, pollInterval)
+func CheckSnapshotHoldsMatchingIndices(ctx context.Context, ex Executor, repo, snapshotName, indexPrefix string, patterns []string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildSnapshotStateCommand(repo, snapshotName), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("listing the indices in snapshot %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("listing the indices in snapshot %s/%s on %s failed", repo, snapshotName, ex.Name()), status, stdout)
 	}
 	held, known := snapshotIndexList(stdout)
 	if !known {
@@ -627,7 +626,7 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err != nil {
 		return err
 	}
-	if err := CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckAWSCLIAvailable(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -638,7 +637,7 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	// replacement, which this workflow's own ordering (DR-0175 decision 2)
 	// exists to refuse. The check needs only the instance, so nothing forces
 	// it later.
-	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	owner, err := ResolveServiceOwner(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOwnershipTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -670,7 +669,7 @@ func restoreOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	}
 	indices := rdmOpenSearchSnapshotIndexPatterns(indexPrefix)
 
-	existing, err := detectExistingOpenSearchIndices(ctx, ssmClient, inst.InstanceID, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
+	existing, err := detectExistingOpenSearchIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -772,7 +771,7 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// Made or repaired for the service user immediately before the sync,
 	// which needs the directory the operator just typed. Non-recursive: the
 	// chown -R below, after the sync, is the only recursive step.
-	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := EnsureBackupDirectory(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	// Before the sync, the directory must hold nothing that can shadow the
@@ -780,13 +779,13 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// (metadata only), and the generation files an earlier Archive or Restore
 	// left behind are moved aside, never deleted. OpenSearch picks the highest
 	// index-N it finds, not the one index.latest names (found live 2026-09-30).
-	if err := DeregisterSnapshotRepoIfPresent(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeregisterSnapshotRepoIfPresent(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := MoveStaleRepositoryGenerations(ctx, w, ssmClient, inst.InstanceID, directory, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := MoveStaleRepositoryGenerations(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), directory, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := SyncOpenSearchBackupsFromS3(ctx, ssmClient, inst.InstanceID, bucket, sourceName, snap.Name, directory, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
+	if err := SyncOpenSearchBackupsFromS3(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), bucket, sourceName, snap.Name, directory, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	// Strictly between the sync and the registration. After the sync
@@ -796,10 +795,10 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// retrofit already chowned -- so registering first would report
 	// success against a tree OpenSearch cannot write and destroy the one
 	// signal available here (DR-0175, PLAN.md Phase 20.63).
-	if err := NormalizeSnapshotRepoOwnership(ctx, ssmClient, inst.InstanceID, directory, owner, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := NormalizeSnapshotRepoOwnership(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := RegisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := RegisterSnapshotRepo(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -812,24 +811,24 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// caltechauthors-test-v13; DR-0175 decision 2 -- never destroy the current
 	// state before a verified replacement exists). The operator's
 	// confirmation was taken earlier because it only needs the target.
-	if err := CheckSnapshotHoldsMatchingIndices(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snap.Name, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckSnapshotHoldsMatchingIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snap.Name, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := DeleteConflictingIndices(ctx, ssmClient, inst.InstanceID, existing, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeleteConflictingIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), existing, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
-	if err := RestoreSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snap.Name, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := RestoreSnapshot(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snap.Name, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		if errors.Is(err, errNoIndicesRestored) {
 			return fmt.Errorf("snapshot %q holds no indices matching the index prefix %q, so nothing was restored (the synced snapshot is still in %s): the index prefix is the name the indices carry inside the snapshot (e.g. caltechauthors), not the source instance name used as the S3 prefix (e.g. caltechauthors-v13)", snap.Name, indexPrefix, directory)
 		}
 		return err
 	}
-	if err := PollRestoreUntilComplete(ctx, w, ssmClient, inst.InstanceID, indices, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
+	if err := PollRestoreUntilComplete(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), indices, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
 		return err
 	}
 
-	restored, err := VerifyRestoredIndices(ctx, ssmClient, inst.InstanceID, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
+	restored, err := VerifyRestoredIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -847,10 +846,10 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// snapshot, so the API can reach it and no carve-out is needed), then
 	// the repository is deregistered. What is left is an empty directory
 	// owned by uid 1000, which is what Archive needs to find.
-	if err := DeleteSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snap.Name, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeleteSnapshot(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snap.Name, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := DeregisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeregisterSnapshotRepo(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "Cleaned up the local snapshot repository on %s (snapshot %q deleted, repository deregistered).\n", inst.InstanceID, snap.Name)
@@ -870,7 +869,7 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	}
 	// The restore is loaded, verified and tidy. What a restore without global state leaves missing is
 	// put right now, and the health check's verdict is this restore's (DR-0196, DR-0199).
-	return runPostRestoreRepair(ctx, w, inst, newPostRestoreSteps(ssmClient, inst))
+	return runPostRestoreRepair(ctx, w, inst, newPostRestoreSteps(NewSSMExecutor(ssmClient, inst.InstanceID), inst.Name))
 }
 
 // staleRepoDirPrefix is where the generation files already in a repository
@@ -922,28 +921,28 @@ func parseStaleMove(stdout string) (n int, where string, ok bool) {
 // MoveStaleRepositoryGenerations moves the generation files already in dir aside
 // (buildMoveStaleGenerationsCommand) and tells the operator how many and where.
 // It says nothing when there was nothing to move.
-func MoveStaleRepositoryGenerations(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, dir string, timeout, pollInterval time.Duration) error {
-	if err := checkBackupDirectory(dir, instanceID); err != nil {
+func MoveStaleRepositoryGenerations(ctx context.Context, w io.Writer, ex Executor, dir string, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, ex.Name()); err != nil {
 		return err
 	}
 	staleDir := staleRepoDirPrefix + time.Now().Format("20060102T150405")
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildMoveStaleGenerationsCommand(dir, staleDir), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildMoveStaleGenerationsCommand(dir, staleDir), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("moving the stale repository files in %q aside on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("moving the stale repository files in %q aside on %s failed", dir, ex.Name()), status, stdout)
 	}
 	n, where, ok := parseStaleMove(stdout)
 	if !ok {
-		return fmt.Errorf("moving the stale repository files in %q aside on %s gave no result to read: %q", dir, instanceID, strings.TrimSpace(stdout))
+		return fmt.Errorf("moving the stale repository files in %q aside on %s gave no result to read: %q", dir, ex.Name(), strings.TrimSpace(stdout))
 	}
 	if n > 0 {
 		noun := "files"
 		if n == 1 {
 			noun = "file"
 		}
-		fmt.Fprintf(w, "Moved %d stale repository %s (index-N, index.latest) from %s aside to %s on %s: leftovers of an earlier run, which would have shadowed the snapshot being restored. Nothing was deleted.\n", n, noun, dir, where, instanceID)
+		fmt.Fprintf(w, "Moved %d stale repository %s (index-N, index.latest) from %s aside to %s on %s: leftovers of an earlier run, which would have shadowed the snapshot being restored. Nothing was deleted.\n", n, noun, dir, where, ex.Name())
 	}
 	return nil
 }
@@ -960,18 +959,18 @@ func buildDeregisterIfPresentCommand(repo string) string {
 // tolerating "not registered" (HTTP 404). Metadata only: no file in the
 // directory is touched (DR-0175). A Restore does this before it syncs, so the
 // repository is registered fresh against the files it is about to hold.
-func DeregisterSnapshotRepoIfPresent(ctx context.Context, client awsclient.SSMAPI, instanceID, repo string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeregisterIfPresentCommand(repo), timeout, pollInterval)
+func DeregisterSnapshotRepoIfPresent(ctx context.Context, ex Executor, repo string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildDeregisterIfPresentCommand(repo), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("deregistering snapshot repository %q on %s failed", repo, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("deregistering snapshot repository %q on %s failed", repo, ex.Name()), status, stdout)
 	}
 	switch code := strings.TrimSpace(stdout); code {
 	case "200", "404":
 		return nil
 	default:
-		return fmt.Errorf("deregistering snapshot repository %q on %s returned HTTP status %q, want 200 or 404", repo, instanceID, code)
+		return fmt.Errorf("deregistering snapshot repository %q on %s returned HTTP status %q, want 200 or 404", repo, ex.Name(), code)
 	}
 }

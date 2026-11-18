@@ -119,7 +119,7 @@ func archiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClients map[
 	if err != nil {
 		return err
 	}
-	if err := CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckAWSCLIAvailable(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -227,17 +227,17 @@ func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient aw
 	// looks first, refuses anything that is not a snapshot repository, and
 	// repairs the rest (DR-0179): a tree left root-owned underneath used to pass
 	// this step and fail in the search container after the whole snapshot.
-	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	owner, err := ResolveServiceOwner(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOwnershipTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
 	if err := CheckOwnerMatchesOpenSearch(owner); err != nil {
 		return err
 	}
-	if err := EnsureBackupDirectory(ctx, ssmClient, inst.InstanceID, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := EnsureBackupDirectory(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := RepairSnapshotRepoOwnership(ctx, w, ssmClient, inst.InstanceID, directory, owner, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := RepairSnapshotRepoOwnership(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -262,20 +262,20 @@ func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient aw
 		}
 	}
 
-	if err := RegisterSnapshotRepo(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := RegisterSnapshotRepo(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
 	snapshotName := time.Now().UTC().Format("rdm-20060102-150405")
 	indices := rdmOpenSearchSnapshotIndexPatterns(indexPrefix)
-	if err := CreateSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CreateSnapshot(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snapshotName, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if _, err := PollSnapshotUntilComplete(ctx, w, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
+	if _, err := PollSnapshotUntilComplete(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snapshotName, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
 		return err
 	}
 
-	if err := SyncOpenSearchBackupsToS3(ctx, ssmClient, inst.InstanceID, directory, bucket, prefix, snapshotName, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
+	if err := SyncOpenSearchBackupsToS3(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, bucket, prefix, snapshotName, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	objectCount, totalBytes, err := VerifySyncedSnapshot(ctx, bucketClient, bucket, prefix, snapshotName)
@@ -287,7 +287,7 @@ func runArchiveOpenSearchSnapshot(ctx context.Context, w io.Writer, ssmClient aw
 	// unconditional -- not gated by the cleanup confirm above, which only
 	// ever covers the S3-side cleanup below (DESIGN.md, "Archive
 	// OpenSearch Snapshot to S3", step 9).
-	if err := DeleteSnapshot(ctx, ssmClient, inst.InstanceID, DefaultOpenSearchRepoName, snapshotName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeleteSnapshot(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snapshotName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 

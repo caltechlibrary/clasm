@@ -6,10 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // DefaultRDMServiceUser is the account that owns /Sites/<repo> and runs
@@ -55,22 +51,22 @@ func buildResolveServiceOwnerCommand(user string) string {
 
 // ResolveServiceOwner looks up DefaultRDMServiceUser's uid and gid on
 // instanceID via SSM. Read-only.
-func ResolveServiceOwner(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) (ServiceOwner, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildResolveServiceOwnerCommand(DefaultRDMServiceUser), timeout, pollInterval)
+func ResolveServiceOwner(ctx context.Context, ex Executor, timeout, pollInterval time.Duration) (ServiceOwner, error) {
+	stdout, status, err := ex.Run(ctx, buildResolveServiceOwnerCommand(DefaultRDMServiceUser), timeout, pollInterval)
 	if err != nil {
 		return ServiceOwner{}, err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return ServiceOwner{}, curlFailureError(fmt.Sprintf("looking up the uid and gid of the %q service user on %s failed", DefaultRDMServiceUser, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return ServiceOwner{}, curlFailureError(fmt.Sprintf("looking up the uid and gid of the %q service user on %s failed", DefaultRDMServiceUser, ex.Name()), status, stdout)
 	}
 	fields := strings.Fields(stdout)
 	if len(fields) != 2 {
-		return ServiceOwner{}, fmt.Errorf("looking up the %q service user on %s returned %q, want \"<uid> <gid>\"", DefaultRDMServiceUser, instanceID, strings.TrimSpace(stdout))
+		return ServiceOwner{}, fmt.Errorf("looking up the %q service user on %s returned %q, want \"<uid> <gid>\"", DefaultRDMServiceUser, ex.Name(), strings.TrimSpace(stdout))
 	}
 	uid, uerr := strconv.Atoi(fields[0])
 	gid, gerr := strconv.Atoi(fields[1])
 	if uerr != nil || gerr != nil || uid < 0 || gid < 0 {
-		return ServiceOwner{}, fmt.Errorf("looking up the %q service user on %s returned %q, want \"<uid> <gid>\" as non-negative numbers", DefaultRDMServiceUser, instanceID, strings.TrimSpace(stdout))
+		return ServiceOwner{}, fmt.Errorf("looking up the %q service user on %s returned %q, want \"<uid> <gid>\" as non-negative numbers", DefaultRDMServiceUser, ex.Name(), strings.TrimSpace(stdout))
 	}
 	return ServiceOwner{UID: uid, GID: gid}, nil
 }

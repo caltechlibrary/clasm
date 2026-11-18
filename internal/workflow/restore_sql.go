@@ -13,7 +13,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
@@ -113,13 +112,13 @@ func buildDownloadAndDecompressCommand(bucket, key string) string {
 // needsDecompression) on instanceID. Returns remoteRestoreSQLPath if the
 // key was decompressed, or remoteRestoreDownloadPath (the raw downloaded
 // file, already plain SQL text) if it wasn't.
-func downloadAndDecompressSQLBackup(ctx context.Context, client awsclient.SSMAPI, instanceID, bucket, key string, timeout, pollInterval time.Duration) (string, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDownloadAndDecompressCommand(bucket, key), timeout, pollInterval)
+func downloadAndDecompressSQLBackup(ctx context.Context, ex Executor, bucket, key string, timeout, pollInterval time.Duration) (string, error) {
+	stdout, status, err := ex.Run(ctx, buildDownloadAndDecompressCommand(bucket, key), timeout, pollInterval)
 	if err != nil {
 		return "", err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return "", curlFailureError(fmt.Sprintf("downloading/decompressing s3://%s/%s on %s failed", bucket, key, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return "", curlFailureError(fmt.Sprintf("downloading/decompressing s3://%s/%s on %s failed", bucket, key, ex.Name()), status, stdout)
 	}
 	if needsDecompression(key) {
 		return remoteRestoreSQLPath, nil
@@ -167,13 +166,13 @@ func buildDetectExistingSQLDataCommand(containerName, dbName, dbUser string) str
 // and reports whether dbName already exists on containerName -- any
 // non-empty output (psql's -tAc prints a bare "1" per matching row, no
 // header/formatting) means it does.
-func detectExistingSQLData(ctx context.Context, client awsclient.SSMAPI, instanceID, containerName, dbName, dbUser string, timeout, pollInterval time.Duration) (bool, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDetectExistingSQLDataCommand(containerName, dbName, dbUser), timeout, pollInterval)
+func detectExistingSQLData(ctx context.Context, ex Executor, containerName, dbName, dbUser string, timeout, pollInterval time.Duration) (bool, error) {
+	stdout, status, err := ex.Run(ctx, buildDetectExistingSQLDataCommand(containerName, dbName, dbUser), timeout, pollInterval)
 	if err != nil {
 		return false, err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return false, curlFailureError(fmt.Sprintf("checking for an existing database %q on %s failed", dbName, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return false, curlFailureError(fmt.Sprintf("checking for an existing database %q on %s failed", dbName, ex.Name()), status, stdout)
 	}
 	return strings.TrimSpace(stdout) != "", nil
 }
@@ -228,19 +227,19 @@ func buildRestoreSQLCommands(containerName, dbName, dbUser, sqlFilePath string) 
 // runRestoreSQLCommands issues buildRestoreSQLCommands' three commands
 // in sequence via SSM, stopping at (and naming) the first one that
 // fails.
-func runRestoreSQLCommands(ctx context.Context, client awsclient.SSMAPI, instanceID, containerName, dbName, dbUser, sqlFilePath string, timeout, pollInterval time.Duration) error {
+func runRestoreSQLCommands(ctx context.Context, ex Executor, containerName, dbName, dbUser, sqlFilePath string, timeout, pollInterval time.Duration) error {
 	dropCmd, createCmd, loadCmd := buildRestoreSQLCommands(containerName, dbName, dbUser, sqlFilePath)
 	for _, step := range []struct{ name, command string }{
 		{"dropping the existing database", dropCmd},
 		{"creating the database", createCmd},
 		{"loading the SQL backup", loadCmd},
 	} {
-		stdout, status, err := RunShellCommand(ctx, client, instanceID, step.command, timeout, pollInterval)
+		stdout, status, err := ex.Run(ctx, step.command, timeout, pollInterval)
 		if err != nil {
 			return err
 		}
-		if status != ssmtypes.CommandInvocationStatusSuccess {
-			return curlFailureError(fmt.Sprintf("%s on %s failed", step.name, instanceID), status, stdout)
+		if status != StatusSuccess {
+			return curlFailureError(fmt.Sprintf("%s on %s failed", step.name, ex.Name()), status, stdout)
 		}
 	}
 	return nil
@@ -258,17 +257,17 @@ func buildRestoreVerificationCommand(containerName, dbUser, dbName string) strin
 
 // countRestoredTables runs buildRestoreVerificationCommand via SSM and
 // parses the resulting table count.
-func countRestoredTables(ctx context.Context, client awsclient.SSMAPI, instanceID, containerName, dbUser, dbName string, timeout, pollInterval time.Duration) (int, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildRestoreVerificationCommand(containerName, dbUser, dbName), timeout, pollInterval)
+func countRestoredTables(ctx context.Context, ex Executor, containerName, dbUser, dbName string, timeout, pollInterval time.Duration) (int, error) {
+	stdout, status, err := ex.Run(ctx, buildRestoreVerificationCommand(containerName, dbUser, dbName), timeout, pollInterval)
 	if err != nil {
 		return 0, err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return 0, curlFailureError(fmt.Sprintf("verifying the restored database on %s failed", instanceID), status, stdout)
+	if status != StatusSuccess {
+		return 0, curlFailureError(fmt.Sprintf("verifying the restored database on %s failed", ex.Name()), status, stdout)
 	}
 	n, convErr := strconv.Atoi(strings.TrimSpace(stdout))
 	if convErr != nil {
-		return 0, fmt.Errorf("parsing restored table count %q on %s: %w", stdout, instanceID, convErr)
+		return 0, fmt.Errorf("parsing restored table count %q on %s: %w", stdout, ex.Name(), convErr)
 	}
 	return n, nil
 }
@@ -312,7 +311,7 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 	if err != nil {
 		return err
 	}
-	if err := CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckAWSCLIAvailable(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -320,7 +319,7 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 	// tag, same reasoning as Run SQL Backup (DECISIONS.md, "Default
 	// db_name/db_user to the instance's Project tag, not its Name tag").
 	fallbackIdentifier := cmp.Or(inst.Project, inst.Name)
-	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(ctx, w, ssmClient, inst.InstanceID, inst.Name, fallbackIdentifier, rdmPostgresRules, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), inst.Name, fallbackIdentifier, rdmPostgresRules, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -380,7 +379,7 @@ func restoreSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]aw
 		return nil
 	}
 
-	exists, err := detectExistingSQLData(ctx, ssmClient, inst.InstanceID, containerName, dbName, dbUser, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	exists, err := detectExistingSQLData(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), containerName, dbName, dbUser, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -423,22 +422,22 @@ type sqlRestoreRun struct {
 func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, r sqlRestoreRun) error {
 	inst, containerName, dbName, dbUser, bucket, object := r.inst, r.containerName, r.dbName, r.dbUser, r.bucket, r.object
 
-	sqlFilePath, err := downloadAndDecompressSQLBackup(ctx, ssmClient, inst.InstanceID, bucket, object.Key, DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
+	sqlFilePath, err := downloadAndDecompressSQLBackup(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), bucket, object.Key, DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
 
 	if r.locations != nil {
-		if err := r.locations.recheck(ctx, ssmClient, inst.InstanceID, sqlFilePath); err != nil {
+		if err := r.locations.recheck(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), sqlFilePath); err != nil {
 			return err
 		}
 	}
 
-	if err := runRestoreSQLCommands(ctx, ssmClient, inst.InstanceID, containerName, dbName, dbUser, sqlFilePath, DefaultSQLRestoreTimeout, DefaultSSMPollInterval); err != nil {
+	if err := runRestoreSQLCommands(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), containerName, dbName, dbUser, sqlFilePath, DefaultSQLRestoreTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
-	tableCount, err := countRestoredTables(ctx, ssmClient, inst.InstanceID, containerName, dbUser, dbName, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	tableCount, err := countRestoredTables(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), containerName, dbUser, dbName, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -449,7 +448,7 @@ func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSM
 	// is there nothing left to keep. A failed run returns above and leaves
 	// both files where they are. The database is restored either way, so a
 	// removal failure is reported but does not turn the restore into one.
-	if err := removeRestoreScratchFiles(ctx, ssmClient, inst.InstanceID, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
+	if err := removeRestoreScratchFiles(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
 		fmt.Fprintf(w, "Warning: the restore succeeded, but clasm could not remove its scratch files %s and %s on %s: %v\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, inst.InstanceID, err)
 		return nil
 	}
@@ -461,13 +460,13 @@ func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSM
 // restore uses, as a step of its own so a failure is attributed to cleanup and
 // not to the restore. `rm -f` makes the non-gzip case, where the .sql file was
 // never written, succeed.
-func removeRestoreScratchFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) error {
+func removeRestoreScratchFiles(ctx context.Context, ex Executor, timeout, pollInterval time.Duration) error {
 	cmd := fmt.Sprintf("rm -f %s %s", shellQuote(remoteRestoreDownloadPath), shellQuote(remoteRestoreSQLPath))
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, cmd, timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, cmd, timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
+	if status != StatusSuccess {
 		return curlFailureError("removing the scratch files failed", status, stdout)
 	}
 	return nil

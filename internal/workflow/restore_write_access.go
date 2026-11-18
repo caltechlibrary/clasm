@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
@@ -101,12 +100,12 @@ func (p *principalSet) addRoles(ctx context.Context, ec2Client awsclient.EC2API,
 }
 
 func (p *principalSet) addEnvKey(ctx context.Context, ssmClient awsclient.SSMAPI, iamClient awsclient.IAMAPI, instanceID string) {
-	stdout, status, err := RunShellCommand(ctx, ssmClient, instanceID, buildEnvKeyCommand(), DefaultBackupListTimeout, DefaultSSMPollInterval)
+	stdout, status, err := NewSSMExecutor(ssmClient, instanceID).Run(ctx, buildEnvKeyCommand(), DefaultBackupListTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		p.unknown("could not read %s on %s: %v", DefaultRDMEnvFile, instanceID, err)
 		return
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
+	if status != StatusSuccess {
 		p.unknown("reading %s on %s failed (%s)", DefaultRDMEnvFile, instanceID, status)
 		return
 	}

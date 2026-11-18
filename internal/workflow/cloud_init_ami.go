@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
@@ -111,11 +110,11 @@ func ExtractCloudInitFromAMI(ctx context.Context, ec2Client awsclient.EC2API, ss
 		return "", fmt.Errorf("SSM never came online on temporary instance %s; it was launched into %s, whose outbound rules must allow HTTPS to the SSM endpoints", instanceID, describeExtractionGroup(securityGroupID))
 	}
 
-	stdout, status, err := RunShellCommand(ctx, ssmClient, instanceID, amiUserDataCommand, timeout, pollInterval)
+	stdout, status, err := NewSSMExecutor(ssmClient, instanceID).Run(ctx, amiUserDataCommand, timeout, pollInterval)
 	if err != nil {
 		return "", err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
+	if status != StatusSuccess {
 		return "", fmt.Errorf("reading user-data from %s failed (status: %s)", instanceID, status)
 	}
 	return stdout, nil

@@ -7,7 +7,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
@@ -36,13 +35,13 @@ func buildSyncCommand(localDir, bucket, prefix, snapshotName string) string {
 // the whole directory -- unlike Feature 11's per-file upload loop, `aws
 // s3 sync` handles the entire local snapshot repo as a single CLI
 // invocation.
-func SyncOpenSearchBackupsToS3(ctx context.Context, client awsclient.SSMAPI, instanceID, localDir, bucket, prefix, snapshotName string, timeout, pollInterval time.Duration) error {
-	_, status, err := RunShellCommand(ctx, client, instanceID, buildSyncCommand(localDir, bucket, prefix, snapshotName), timeout, pollInterval)
+func SyncOpenSearchBackupsToS3(ctx context.Context, ex Executor, localDir, bucket, prefix, snapshotName string, timeout, pollInterval time.Duration) error {
+	_, status, err := ex.Run(ctx, buildSyncCommand(localDir, bucket, prefix, snapshotName), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return fmt.Errorf("syncing OpenSearch snapshot %q to s3://%s/%s on %s failed (status: %s)", snapshotName, bucket, openSearchSnapshotsPrefix(prefix), instanceID, status)
+	if status != StatusSuccess {
+		return fmt.Errorf("syncing OpenSearch snapshot %q to s3://%s/%s on %s failed (status: %s)", snapshotName, bucket, openSearchSnapshotsPrefix(prefix), ex.Name(), status)
 	}
 	return nil
 }

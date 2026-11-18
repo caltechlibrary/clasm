@@ -718,7 +718,7 @@ func TestConversionDiscoveryCommand_IsReadOnlyAndNamesNoWildcard(t *testing.T) {
 
 func opsWith(stdouts ...string) (indexOps, *fakeSSMClient) {
 	f := &fakeSSMClient{commandID: "c", finalStatus: "Success", stdoutSequence: stdouts}
-	return newSSMIndexOps(f, "i-1", 0, 0), f
+	return newIndexOps(NewSSMExecutor(f, "i-1"), 0, 0), f
 }
 
 func TestSSMOps_DeleteNamesExactlyOneIndex(t *testing.T) {
@@ -827,7 +827,7 @@ func TestSSMOps_ReindexFailuresAreErrors(t *testing.T) {
 
 func TestSSMOps_ReindexGivesUpAtItsTimeout(t *testing.T) {
 	f := &fakeSSMClient{commandID: "c", finalStatus: "Success", stdoutSequence: []string{`{"task":"a:1"}`, `{"completed":false}`}}
-	ops := newSSMIndexOps(f, "i-1", 1, 50*1_000_000) // 1ns poll, 50ms limit
+	ops := newIndexOps(NewSSMExecutor(f, "i-1"), 1, 50*1_000_000) // 1ns poll, 50ms limit
 	if err := ops.Reindex(context.Background(), "a", "b"); err == nil || !strings.Contains(err.Error(), "did not finish") {
 		t.Errorf("a reindex that never completes must time out and say so: %v", err)
 	}
@@ -879,13 +879,13 @@ func TestSSMOps_EveryCommandIsLocalAndCarriesNoCredentials(t *testing.T) {
 
 func TestSSMOps_AFailedCommandIsAnErrorWithItsOutput(t *testing.T) {
 	f := &fakeSSMClient{commandID: "c", finalStatus: "Failed", stdout: "curl: (7) Failed to connect"}
-	ops := newSSMIndexOps(f, "i-1", 0, 0)
+	ops := newIndexOps(NewSSMExecutor(f, "i-1"), 0, 0)
 	err := ops.DeleteIndex(context.Background(), "clasm-fix-y")
 	if err == nil || !strings.Contains(err.Error(), "Failed to connect") {
 		t.Errorf("the curl failure's output belongs in the error: %v", err)
 	}
 	f = &fakeSSMClient{commandID: "c", sendCommandErr: errors.New("InvalidInstanceId")}
-	if err := newSSMIndexOps(f, "i-1", 0, 0).DeleteIndex(context.Background(), "clasm-fix-y"); exitCodeOf(err) != ExitUnavailable {
+	if err := newIndexOps(NewSSMExecutor(f, "i-1"), 0, 0).DeleteIndex(context.Background(), "clasm-fix-y"); exitCodeOf(err) != ExitUnavailable {
 		t.Errorf("an unreachable instance is 69: %v", err)
 	}
 }

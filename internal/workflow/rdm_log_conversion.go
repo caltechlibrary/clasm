@@ -13,9 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
-	"github.com/caltechlibrary/clasm/internal/inventory"
 )
 
 // Convert the audit log and the job logs to real data streams, copy first (DR-0198).
@@ -59,7 +56,7 @@ const DefaultReindexTimeout = 30 * time.Minute
 
 // indexOps is what the conversion needs from OpenSearch. The algorithm is written against it so
 // every ordering rule can be tested on a fake that records its calls and can fail any of them; the
-// SSM implementation (ssmIndexOps) is tested for its exact commands.
+// Executor implementation (execIndexOps) is tested for its exact commands.
 type indexOps interface {
 	// Count refreshes the index and returns its document count.
 	Count(ctx context.Context, index string) (int64, error)
@@ -440,16 +437,15 @@ func buildConversionDiscoveryCommand(wait time.Duration) string {
 // is a refusal (a plain error, exit 1) naming why.
 //
 // @param ctx {context.Context} cancels the SSM command
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param inst {inventory.Instance} the instance to read
+// @param ex {Executor} the host to read
 // @param wait {time.Duration} how long to wait for OpenSearch to answer
 // @param poll {time.Duration} how often to poll SSM for the command's result
 // @returns {conversionPlan, error} the plan, or a refusal or an *ExitCodeError
 // @example
 //
-//	plan, err := DiscoverLogConversion(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
-func DiscoverLogConversion(ctx context.Context, client awsclient.SSMAPI, inst inventory.Instance, wait, poll time.Duration) (conversionPlan, error) {
-	sections, err := runIndexScript(ctx, client, inst.InstanceID, "the log index discovery", buildConversionDiscoveryCommand(wait), wait+indexHealthScriptSlack, poll)
+//	plan, err := DiscoverLogConversion(ctx, ex, DefaultIndexHealthWait, DefaultSSMPollInterval)
+func DiscoverLogConversion(ctx context.Context, ex Executor, wait, poll time.Duration) (conversionPlan, error) {
+	sections, err := runIndexScript(ctx, ex, "the log index discovery", buildConversionDiscoveryCommand(wait), wait+indexHealthScriptSlack, poll)
 	if err != nil {
 		return conversionPlan{}, err
 	}
@@ -466,7 +462,7 @@ func DiscoverLogConversion(ctx context.Context, client awsclient.SSMAPI, inst in
 // @returns {[]logResult, error} one result per converted log; a *conversionError naming the copies when a step fails
 // @example
 //
-//	results, err := ConvertLogIndices(ctx, os.Stdout, newSSMIndexOps(client, id, DefaultSSMPollInterval, DefaultReindexTimeout), plan)
+//	results, err := ConvertLogIndices(ctx, os.Stdout, newIndexOps(ex, DefaultSSMPollInterval, DefaultReindexTimeout), plan)
 func ConvertLogIndices(ctx context.Context, w io.Writer, ops indexOps, plan conversionPlan) ([]logResult, error) {
 	var results []logResult
 	for _, lc := range plan.Logs {
@@ -610,31 +606,29 @@ func convertOne(ctx context.Context, w io.Writer, ops indexOps, lc logConversion
 
 func slicesClone(s []string) []string { return append([]string(nil), s...) }
 
-// ---- the SSM implementation ----
+// ---- the Executor implementation ----
 
-// ssmIndexOps is indexOps over SSM: one curl to the instance's own unauthenticated OpenSearch per call.
-type ssmIndexOps struct {
-	client     awsclient.SSMAPI
-	instanceID string
-	poll       time.Duration
-	timeout    time.Duration
+// execIndexOps is indexOps over an Executor: one curl to the host's own unauthenticated OpenSearch per call.
+type execIndexOps struct {
+	ex      Executor
+	poll    time.Duration
+	timeout time.Duration
 }
 
-// newSSMIndexOps makes the SSM implementation.
+// newIndexOps makes the Executor implementation.
 //
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param instanceID {string} the instance
+// @param ex {Executor} the host whose OpenSearch is called
 // @param poll {time.Duration} how often to poll SSM, and a reindex task
 // @param reindexTimeout {time.Duration} how long one reindex may take; zero means DefaultReindexTimeout
 // @returns {indexOps} the OpenSearch calls
 // @example
 //
-//	ops := newSSMIndexOps(client, "i-0abc", DefaultSSMPollInterval, DefaultReindexTimeout)
-func newSSMIndexOps(client awsclient.SSMAPI, instanceID string, poll, reindexTimeout time.Duration) indexOps {
+//	ops := newIndexOps(ex, DefaultSSMPollInterval, DefaultReindexTimeout)
+func newIndexOps(ex Executor, poll, reindexTimeout time.Duration) indexOps {
 	if reindexTimeout == 0 {
 		reindexTimeout = DefaultReindexTimeout
 	}
-	return &ssmIndexOps{client: client, instanceID: instanceID, poll: poll, timeout: reindexTimeout}
+	return &execIndexOps{ex: ex, poll: poll, timeout: reindexTimeout}
 }
 
 const osBase = "http://localhost:9200"
@@ -653,13 +647,13 @@ func curlOS(method, urlPath, body string) string {
 	return cmd
 }
 
-func (o *ssmIndexOps) run(ctx context.Context, what, command string) (string, error) {
-	stdout, status, err := RunShellCommand(ctx, o.client, o.instanceID, command, DefaultOpenSearchRESTTimeout, o.poll)
+func (o *execIndexOps) run(ctx context.Context, what, command string) (string, error) {
+	stdout, status, err := o.ex.Run(ctx, command, DefaultOpenSearchRESTTimeout, o.poll)
 	if err != nil {
-		return "", &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("%s on %s through SSM: %w", what, o.instanceID, err)}
+		return "", &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("%s on %s through SSM: %w", what, o.ex.Name(), err)}
 	}
 	if status != "Success" {
-		return "", fmt.Errorf("%s failed on %s (SSM status %s): %s", what, o.instanceID, status, strings.TrimSpace(stdout))
+		return "", fmt.Errorf("%s failed on %s (SSM status %s): %s", what, o.ex.Name(), status, strings.TrimSpace(stdout))
 	}
 	return stdout, nil
 }
@@ -697,7 +691,7 @@ func validIndexName(name string) bool {
 	return !strings.HasPrefix(name, "-") && !strings.HasPrefix(name, "_") && !strings.HasPrefix(name, "+")
 }
 
-func (o *ssmIndexOps) Count(ctx context.Context, index string) (int64, error) {
+func (o *execIndexOps) Count(ctx context.Context, index string) (int64, error) {
 	if !validIndexName(index) {
 		return 0, fmt.Errorf("refusing to count %q: not an exact index name", index)
 	}
@@ -724,7 +718,7 @@ func (o *ssmIndexOps) Count(ctx context.Context, index string) (int64, error) {
 	return *b.Count, nil
 }
 
-func (o *ssmIndexOps) CreateIndex(ctx context.Context, name string) error {
+func (o *execIndexOps) CreateIndex(ctx context.Context, name string) error {
 	if !validIndexName(name) {
 		return fmt.Errorf("refusing to create %q: not an exact index name", name)
 	}
@@ -747,7 +741,7 @@ type reindexRequest struct {
 	} `json:"dest"`
 }
 
-func (o *ssmIndexOps) Reindex(ctx context.Context, src, dst string) error {
+func (o *execIndexOps) Reindex(ctx context.Context, src, dst string) error {
 	if !validIndexName(src) || !validIndexName(dst) {
 		return fmt.Errorf("refusing to reindex %q into %q: not exact index names", src, dst)
 	}
@@ -808,7 +802,7 @@ func (o *ssmIndexOps) Reindex(ctx context.Context, src, dst string) error {
 	}
 }
 
-func (o *ssmIndexOps) RemoveAlias(ctx context.Context, index, alias string) error {
+func (o *execIndexOps) RemoveAlias(ctx context.Context, index, alias string) error {
 	if !validIndexName(index) || !validIndexName(alias) {
 		return fmt.Errorf("refusing to remove alias %q from %q: not exact names", alias, index)
 	}
@@ -824,7 +818,7 @@ func (o *ssmIndexOps) RemoveAlias(ctx context.Context, index, alias string) erro
 	return acknowledged("removing alias "+alias+" from "+index, stdout)
 }
 
-func (o *ssmIndexOps) DeleteIndex(ctx context.Context, name string) error {
+func (o *execIndexOps) DeleteIndex(ctx context.Context, name string) error {
 	if !validIndexName(name) {
 		return fmt.Errorf("refusing to delete %q: not an exact index name", name)
 	}
@@ -835,7 +829,7 @@ func (o *ssmIndexOps) DeleteIndex(ctx context.Context, name string) error {
 	return acknowledged("deleting "+name, stdout)
 }
 
-func (o *ssmIndexOps) CreateDataStream(ctx context.Context, name string) error {
+func (o *execIndexOps) CreateDataStream(ctx context.Context, name string) error {
 	if !validIndexName(name) {
 		return fmt.Errorf("refusing to create the data stream %q: not an exact name", name)
 	}

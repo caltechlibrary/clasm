@@ -432,7 +432,7 @@ func healthInstance() inventory.Instance {
 
 func TestCheckRDMIndexHealth_RunsOneScriptAndReportsTheInstance(t *testing.T) {
 	ssm := &fakeSSMClient{commandID: "c-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: indexHealthStdout(healthySections())}
-	r, err := CheckRDMIndexHealth(context.Background(), ssm, healthInstance(), 0, time.Millisecond)
+	r, err := CheckRDMIndexHealth(context.Background(), NewSSMExecutor(ssm, healthInstance().InstanceID), healthInstance().Name, 0, time.Millisecond)
 	if err != nil {
 		t.Fatalf("CheckRDMIndexHealth: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestCheckRDMIndexHealth_RunsOneScriptAndReportsTheInstance(t *testing.T) {
 
 func TestCheckRDMIndexHealth_AWaitLengthensTheSSMTimeout(t *testing.T) {
 	ssm := &fakeSSMClient{commandID: "c-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: indexHealthStdout(healthySections())}
-	if _, err := CheckRDMIndexHealth(context.Background(), ssm, healthInstance(), 5*time.Minute, time.Millisecond); err != nil {
+	if _, err := CheckRDMIndexHealth(context.Background(), NewSSMExecutor(ssm, healthInstance().InstanceID), healthInstance().Name, 5*time.Minute, time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	if ssm.lastTimeoutSeconds == nil || *ssm.lastTimeoutSeconds <= 300 {
@@ -459,7 +459,7 @@ func TestCheckRDMIndexHealth_AWaitLengthensTheSSMTimeout(t *testing.T) {
 
 func TestCheckRDMIndexHealth_UnreachableInstanceIsExit69(t *testing.T) {
 	ssm := &fakeSSMClient{commandID: "c-1", sendCommandErr: errors.New("InvalidInstanceId: instance not in a valid state")}
-	_, err := CheckRDMIndexHealth(context.Background(), ssm, healthInstance(), 0, time.Millisecond)
+	_, err := CheckRDMIndexHealth(context.Background(), NewSSMExecutor(ssm, healthInstance().InstanceID), healthInstance().Name, 0, time.Millisecond)
 	var coded *ExitCodeError
 	if !errors.As(err, &coded) || coded.Code != ExitUnavailable {
 		t.Fatalf("err = %v, want an ExitCodeError 69", err)
@@ -468,7 +468,7 @@ func TestCheckRDMIndexHealth_UnreachableInstanceIsExit69(t *testing.T) {
 
 func TestCheckRDMIndexHealth_ScriptFailureIsExit70(t *testing.T) {
 	ssm := &fakeSSMClient{commandID: "c-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "sh: 3: syntax error"}
-	_, err := CheckRDMIndexHealth(context.Background(), ssm, healthInstance(), 0, time.Millisecond)
+	_, err := CheckRDMIndexHealth(context.Background(), NewSSMExecutor(ssm, healthInstance().InstanceID), healthInstance().Name, 0, time.Millisecond)
 	var coded *ExitCodeError
 	if !errors.As(err, &coded) || coded.Code != 70 {
 		t.Fatalf("err = %v, want an ExitCodeError 70 (internal): the script never fails on a known condition", err)

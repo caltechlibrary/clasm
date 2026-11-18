@@ -9,10 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // ensureDirModePattern accepts the octal modes install -m takes as a
@@ -50,19 +46,19 @@ func buildEnsureDirCommand(dir string, owner ServiceOwner, mode string) string {
 // relative path, which would land wherever SSM's working directory is.
 // The directory is operator-typed at the backup-directory prompt, so both
 // are one typo away.
-func EnsureBackupDirectory(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, mode string, timeout, pollInterval time.Duration) error {
-	if err := checkBackupDirectory(dir, instanceID); err != nil {
+func EnsureBackupDirectory(ctx context.Context, ex Executor, dir string, owner ServiceOwner, mode string, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, ex.Name()); err != nil {
 		return err
 	}
 	if !ensureDirModePattern.MatchString(mode) {
 		return fmt.Errorf("refusing to set mode %q on %q: want three or four octal digits", mode, dir)
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildEnsureDirCommand(dir, owner, mode), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildEnsureDirCommand(dir, owner, mode), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("creating or repairing the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("creating or repairing the backup directory %q on %s failed", dir, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -97,19 +93,19 @@ func buildCreateDirIfMissingCommand(dir string, uid int, group, mode string) str
 // CreateBackupDirectoryIfMissing runs buildCreateDirIfMissingCommand via SSM, as
 // its own step, with the same refusals EnsureBackupDirectory makes (the
 // filesystem root, a relative path) before anything is sent.
-func CreateBackupDirectoryIfMissing(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, uid int, group, mode string, timeout, pollInterval time.Duration) error {
-	if err := checkBackupDirectory(dir, instanceID); err != nil {
+func CreateBackupDirectoryIfMissing(ctx context.Context, ex Executor, dir string, uid int, group, mode string, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, ex.Name()); err != nil {
 		return err
 	}
 	if !ensureDirModePattern.MatchString(mode) {
 		return fmt.Errorf("refusing to set mode %q on %q: want three or four octal digits", mode, dir)
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildCreateDirIfMissingCommand(dir, uid, group, mode), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildCreateDirIfMissingCommand(dir, uid, group, mode), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("creating the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("creating the backup directory %q on %s failed", dir, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -128,16 +124,16 @@ func buildHandOverDumpCommand(dir, dumpFile string, uid int) string {
 }
 
 // HandOverDump runs buildHandOverDumpCommand via SSM, as its own step.
-func HandOverDump(ctx context.Context, client awsclient.SSMAPI, instanceID, dir, dumpFile string, uid int, timeout, pollInterval time.Duration) error {
-	if err := checkBackupDirectory(dir, instanceID); err != nil {
+func HandOverDump(ctx context.Context, ex Executor, dir, dumpFile string, uid int, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, ex.Name()); err != nil {
 		return err
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildHandOverDumpCommand(dir, dumpFile, uid), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildHandOverDumpCommand(dir, dumpFile, uid), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("handing the new dump in %q over to the service user on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("handing the new dump in %q over to the service user on %s failed", dir, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -152,16 +148,16 @@ func HandOverDump(ctx context.Context, client awsclient.SSMAPI, instanceID, dir,
 // Refuses the same directories EnsureBackupDirectory does, and for the same
 // reason, before sending anything: `chown -R /` as root is the worst command
 // this package could send.
-func ChownBackupDirectory(ctx context.Context, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
-	if err := checkBackupDirectory(dir, instanceID); err != nil {
+func ChownBackupDirectory(ctx context.Context, ex Executor, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, ex.Name()); err != nil {
 		return err
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildChownTreeCommand(dir, owner), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildChownTreeCommand(dir, owner), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("setting ownership of the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("setting ownership of the backup directory %q on %s failed", dir, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -223,20 +219,20 @@ func parseOwnershipProbe(stdout string) (n int, looksLikeRepo, known bool) {
 // no confirmation: it changes ownership only, is idempotent, and is what
 // Restore already does unprompted. An unreadable probe warns and proceeds,
 // since the repair is a courtesy and the archive reports its own failures.
-func RepairSnapshotRepoOwnership(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
-	if err := checkBackupDirectory(dir, instanceID); err != nil {
+func RepairSnapshotRepoOwnership(ctx context.Context, w io.Writer, ex Executor, dir string, owner ServiceOwner, timeout, pollInterval time.Duration) error {
+	if err := checkBackupDirectory(dir, ex.Name()); err != nil {
 		return err
 	}
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildOwnershipProbeCommand(dir, owner), timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, buildOwnershipProbeCommand(dir, owner), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("checking the ownership of the backup directory %q on %s failed", dir, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("checking the ownership of the backup directory %q on %s failed", dir, ex.Name()), status, stdout)
 	}
 	n, looksLikeRepo, known := parseOwnershipProbe(stdout)
 	if !known {
-		fmt.Fprintf(w, "warning: could not read the ownership of %s on %s; skipping the ownership repair.\n", dir, instanceID)
+		fmt.Fprintf(w, "warning: could not read the ownership of %s on %s; skipping the ownership repair.\n", dir, ex.Name())
 		return nil
 	}
 	if n == 0 {
@@ -247,9 +243,9 @@ func RepairSnapshotRepoOwnership(ctx context.Context, w io.Writer, client awscli
 		noun = "entry"
 	}
 	if !looksLikeRepo {
-		return fmt.Errorf("the backup directory %q on %s holds %d %s not owned by the service user, but it does not look like an OpenSearch snapshot repository (no index.latest file, no indices directory), so clasm will not change ownership recursively across it; if that really is the directory, fix its ownership by hand", dir, instanceID, n, noun)
+		return fmt.Errorf("the backup directory %q on %s holds %d %s not owned by the service user, but it does not look like an OpenSearch snapshot repository (no index.latest file, no indices directory), so clasm will not change ownership recursively across it; if that really is the directory, fix its ownership by hand", dir, ex.Name(), n, noun)
 	}
-	if err := ChownBackupDirectory(ctx, client, instanceID, dir, owner, timeout, pollInterval); err != nil {
+	if err := ChownBackupDirectory(ctx, ex, dir, owner, timeout, pollInterval); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "Repaired ownership of %d %s under %s (not owned by uid %d, left over from an earlier run).\n", n, noun, dir, owner.UID)

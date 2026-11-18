@@ -245,7 +245,7 @@ func installFake(s map[string]string) *fakeSSMClient {
 
 func TestInstallRDMIndexTemplates_OneCommandAndTheInstanceNamed(t *testing.T) {
 	ssm := installFake(installSections())
-	r, err := InstallRDMIndexTemplates(context.Background(), ssm, healthInstance(), 0, time.Millisecond)
+	r, err := InstallRDMIndexTemplates(context.Background(), NewSSMExecutor(ssm, healthInstance().InstanceID), healthInstance().Name, 0, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestInstallRDMIndexTemplates_OneCommandAndTheInstanceNamed(t *testing.T) {
 
 func TestInstallRDMIndexTemplates_TheTimeoutCoversTheWaitAndTheApp(t *testing.T) {
 	ssm := installFake(installSections())
-	if _, err := InstallRDMIndexTemplates(context.Background(), ssm, healthInstance(), 5*time.Minute, time.Millisecond); err != nil {
+	if _, err := InstallRDMIndexTemplates(context.Background(), NewSSMExecutor(ssm, healthInstance().InstanceID), healthInstance().Name, 5*time.Minute, time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	if ssm.lastTimeoutSeconds == nil || *ssm.lastTimeoutSeconds <= 300+180 {
@@ -268,11 +268,11 @@ func TestInstallRDMIndexTemplates_TheTimeoutCoversTheWaitAndTheApp(t *testing.T)
 }
 
 func TestInstallRDMIndexTemplates_SSMFailureClasses(t *testing.T) {
-	_, err := InstallRDMIndexTemplates(context.Background(), &fakeSSMClient{commandID: "c", sendCommandErr: errors.New("InvalidInstanceId")}, healthInstance(), 0, time.Millisecond)
+	_, err := InstallRDMIndexTemplates(context.Background(), NewSSMExecutor(&fakeSSMClient{commandID: "c", sendCommandErr: errors.New("InvalidInstanceId")}, healthInstance().InstanceID), healthInstance().Name, 0, time.Millisecond)
 	if exitCodeOf(err) != ExitUnavailable {
 		t.Errorf("an unreachable instance is 69, got %v", err)
 	}
-	_, err = InstallRDMIndexTemplates(context.Background(), &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusFailed, stdout: "sh: syntax error"}, healthInstance(), 0, time.Millisecond)
+	_, err = InstallRDMIndexTemplates(context.Background(), NewSSMExecutor(&fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusFailed, stdout: "sh: syntax error"}, healthInstance().InstanceID), healthInstance().Name, 0, time.Millisecond)
 	if exitCodeOf(err) != ExitInternal {
 		t.Errorf("a script that failed is 70, got %v", err)
 	}

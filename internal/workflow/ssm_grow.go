@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
@@ -116,8 +114,8 @@ func growRootFilesystem(ctx context.Context, w io.Writer, client awsclient.SSMAP
 		return
 	}
 
-	detectOut, status, err := RunShellCommand(ctx, client, instanceID, "findmnt -no SOURCE,FSTYPE /", commandTimeout, pollInterval)
-	if err != nil || status != types.CommandInvocationStatusSuccess {
+	detectOut, status, err := NewSSMExecutor(client, instanceID).Run(ctx, "findmnt -no SOURCE,FSTYPE /", commandTimeout, pollInterval)
+	if err != nil || status != StatusSuccess {
 		fmt.Fprintln(w, "Could not detect the root filesystem's device and type; skipping automated growth.")
 		printManualGrowInstructions(w)
 		return
@@ -145,7 +143,7 @@ func growRootFilesystem(ctx context.Context, w io.Writer, client awsclient.SSMAP
 	}
 
 	fmt.Fprintf(w, "Growing %s (%s, partition %s of %s) to use the new %d GB...\n", device, fstype, partition, disk, newGB)
-	if _, status, err := RunShellCommand(ctx, client, instanceID, cmd, commandTimeout, pollInterval); err != nil || status != types.CommandInvocationStatusSuccess {
+	if _, status, err := NewSSMExecutor(client, instanceID).Run(ctx, cmd, commandTimeout, pollInterval); err != nil || status != StatusSuccess {
 		fmt.Fprintln(w, "Automated filesystem growth failed; finish it manually:")
 		printManualGrowInstructions(w)
 		return

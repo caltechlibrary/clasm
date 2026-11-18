@@ -46,7 +46,7 @@ func TestBuildDeregisterRepoCommand_TargetsTheRepoNotASnapshot(t *testing.T) {
 
 func TestDeregisterSnapshotRepo_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := DeregisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval)
+	err := DeregisterSnapshotRepo(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}
@@ -57,7 +57,7 @@ func TestDeregisterSnapshotRepo_PropagatesFailedStatus(t *testing.T) {
 func TestDeregisterSnapshotRepo_ErrorIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"root_cause":[{"type":"repository_missing_exception","reason":"[rdm_backup_repo] missing"}]},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	err := DeregisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval)
+	err := DeregisterSnapshotRepo(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}
@@ -68,7 +68,7 @@ func TestDeregisterSnapshotRepo_ErrorIncludesResponseBody(t *testing.T) {
 
 func TestDeregisterSnapshotRepo_SendsDelete(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	if err := DeregisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval); err != nil {
+	if err := DeregisterSnapshotRepo(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if want := "curl --fail-with-body -sS -X DELETE 'localhost:9200/_snapshot/rdm_backup_repo'"; fake.lastCommandText != want {
@@ -142,7 +142,7 @@ func TestParseSnapshotState(t *testing.T) {
 
 func TestRegisterSnapshotRepo_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := RegisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
+	err := RegisterSnapshotRepo(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}
@@ -161,7 +161,7 @@ func TestRegisterSnapshotRepo_PropagatesFailedStatus(t *testing.T) {
 func TestRegisterSnapshotRepo_ErrorIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"root_cause":[{"type":"repository_exception","reason":"[rdm_backup_repo] location [/opt/rdm_opensearch_backups] doesn't match any of the locations specified by path.repo"}]},"status":500}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	err := RegisterSnapshotRepo(context.Background(), fake, "i-1", "rdm_backup_repo", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
+	err := RegisterSnapshotRepo(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "/opt/rdm_opensearch_backups", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}
@@ -172,7 +172,7 @@ func TestRegisterSnapshotRepo_ErrorIncludesResponseBody(t *testing.T) {
 
 func TestCreateSnapshot_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := CreateSnapshot(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", []string{"caltechauthors-rdmrecords-*"}, time.Second, testPollInterval)
+	err := CreateSnapshot(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", []string{"caltechauthors-rdmrecords-*"}, time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}
@@ -181,7 +181,7 @@ func TestCreateSnapshot_PropagatesFailedStatus(t *testing.T) {
 func TestCreateSnapshot_ErrorIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"reason":"no such index"},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	err := CreateSnapshot(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", []string{"caltechauthors-rdmrecords-*"}, time.Second, testPollInterval)
+	err := CreateSnapshot(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", []string{"caltechauthors-rdmrecords-*"}, time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -192,7 +192,7 @@ func TestCreateSnapshot_ErrorIncludesResponseBody(t *testing.T) {
 
 func TestDeleteSnapshot_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := DeleteSnapshot(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	err := DeleteSnapshot(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}
@@ -201,7 +201,7 @@ func TestDeleteSnapshot_PropagatesFailedStatus(t *testing.T) {
 func TestDeleteSnapshot_ErrorIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"reason":"snapshot missing"},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	err := DeleteSnapshot(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	err := DeleteSnapshot(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -216,7 +216,7 @@ func TestPollSnapshotUntilComplete_SucceedsAfterInProgress(t *testing.T) {
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"SUCCESS"}]}`},
 	}
-	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestPollSnapshotUntilComplete_PrintsProgressWhileWaiting(t *testing.T) {
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"IN_PROGRESS"}]}`, `{"snapshots":[{"state":"SUCCESS"}]}`},
 	}
-	_, err := PollSnapshotUntilComplete(context.Background(), &buf, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestPollSnapshotUntilComplete_FailedStateReturnsErrorNotTimeout(t *testing.
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"FAILED"}]}`},
 	}
-	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a FAILED snapshot state")
 	}
@@ -274,7 +274,7 @@ func TestPollSnapshotUntilComplete_NeverCompletingSequenceTimesOut(t *testing.T)
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{`{"snapshots":[{"state":"IN_PROGRESS"}]}`},
 	}
-	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", 30*time.Millisecond, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", 30*time.Millisecond, testPollInterval)
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
@@ -325,7 +325,7 @@ func TestPollSnapshotUntilComplete_ToleratesTransientSnapshotMissing(t *testing.
 			types.CommandInvocationStatusSuccess,
 		},
 	}
-	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error inside the grace window: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestPollSnapshotUntilComplete_ResetsGraceCountAfterASuccessfulRead(t *testi
 			types.CommandInvocationStatusSuccess,
 		},
 	}
-	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	state, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error -- the miss count should have reset after the IN_PROGRESS read: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestPollSnapshotUntilComplete_FailsWithDiagnosisAfterGraceWindow(t *testing
 		stdoutSequence: []string{snapshotMissingBody},
 		statusSequence: []types.CommandInvocationStatus{types.CommandInvocationStatusFailed},
 	}
-	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error once the grace window is exhausted")
 	}
@@ -398,7 +398,7 @@ func TestPollSnapshotUntilComplete_FailsWithDiagnosisAfterGraceWindow(t *testing
 func TestPollSnapshotUntilComplete_UnrelatedFailureKeepsPlainError(t *testing.T) {
 	body := `{"error":{"type":"repository_missing_exception","reason":"[rdm_backup_repo] missing"},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -413,7 +413,7 @@ func TestPollSnapshotUntilComplete_UnrelatedFailureKeepsPlainError(t *testing.T)
 func TestPollSnapshotUntilComplete_SSMFailureIncludesResponseBody(t *testing.T) {
 	body := `{"error":{"reason":"no such repository"},"status":404}`
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: body}
-	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -424,7 +424,7 @@ func TestPollSnapshotUntilComplete_SSMFailureIncludesResponseBody(t *testing.T) 
 
 func TestPollSnapshotUntilComplete_PropagatesSendCommandError(t *testing.T) {
 	fake := &fakeSSMClient{sendCommandErr: errors.New("boom")}
-	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, fake, "i-1", "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
+	_, err := PollSnapshotUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

@@ -153,10 +153,10 @@ func TestScanFileLocations_ReturnsTheRowsOfTheLocalFileAndTheStream(t *testing.T
 	out := realShapedLocationInsert + "\nclasm-scan-rc=0\n"
 	for name, run := range map[string]func(*fakeSSMClient) ([]FileLocation, error){
 		"local": func(f *fakeSSMClient) ([]FileLocation, error) {
-			return ScanLocalFileLocations(context.Background(), f, "i-1", remoteRestoreSQLPath)
+			return ScanLocalFileLocations(context.Background(), NewSSMExecutor(f, "i-1"), remoteRestoreSQLPath)
 		},
 		"stream": func(f *fakeSSMClient) ([]FileLocation, error) {
-			return ScanBackupFileLocations(context.Background(), f, "i-1", "b", "src/x.sql.gz")
+			return ScanBackupFileLocations(context.Background(), NewSSMExecutor(f, "i-1"), "b", "src/x.sql.gz")
 		},
 	} {
 		got, err := run(scanFake(out, types.CommandInvocationStatusSuccess))
@@ -167,7 +167,7 @@ func TestScanFileLocations_ReturnsTheRowsOfTheLocalFileAndTheStream(t *testing.T
 }
 
 func TestScanFileLocations_NoRowsIsAnEmptyResult(t *testing.T) {
-	got, err := ScanLocalFileLocations(context.Background(), scanFake("clasm-scan-rc=0\n", types.CommandInvocationStatusSuccess), "i-1", remoteRestoreSQLPath)
+	got, err := ScanLocalFileLocations(context.Background(), NewSSMExecutor(scanFake("clasm-scan-rc=0\n", types.CommandInvocationStatusSuccess), "i-1"), remoteRestoreSQLPath)
 	if err != nil || len(got) != 0 {
 		t.Errorf("a clean scan with no rows is empty, not an error: %+v, %v", got, err)
 	}
@@ -186,12 +186,12 @@ func TestScanFileLocations_AScanThatDidNotFinishIsAnError(t *testing.T) {
 		"command failed":     {"boom", types.CommandInvocationStatusFailed},
 		"truncated sentinel": {"clasm-scan-rc=", types.CommandInvocationStatusSuccess},
 	} {
-		_, err := ScanBackupFileLocations(context.Background(), scanFake(tc.stdout, tc.status), "i-1", "b", "src/x.sql.gz")
+		_, err := ScanBackupFileLocations(context.Background(), NewSSMExecutor(scanFake(tc.stdout, tc.status), "i-1"), "b", "src/x.sql.gz")
 		if err == nil {
 			t.Errorf("%s: want an error", name)
 		}
 	}
-	_, err := ScanBackupFileLocations(context.Background(), scanFake("fatal error: Unable to locate credentials\nclasm-scan-rc=1\n", types.CommandInvocationStatusSuccess), "i-1", "b", "src/x.sql.gz")
+	_, err := ScanBackupFileLocations(context.Background(), NewSSMExecutor(scanFake("fatal error: Unable to locate credentials\nclasm-scan-rc=1\n", types.CommandInvocationStatusSuccess), "i-1"), "b", "src/x.sql.gz")
 	if err == nil || !strings.Contains(err.Error(), "Unable to locate credentials") {
 		t.Errorf("the remote message is the reason, got %v", err)
 	}
@@ -199,7 +199,7 @@ func TestScanFileLocations_AScanThatDidNotFinishIsAnError(t *testing.T) {
 
 // A command that failed is a failed scan even if its output looks complete.
 func TestScanFileLocations_AFailedCommandIsAnErrorEvenWithACompleteLookingOutput(t *testing.T) {
-	_, err := ScanBackupFileLocations(context.Background(), scanFake(realShapedLocationInsert+"\nclasm-scan-rc=0\n", types.CommandInvocationStatusFailed), "i-1", "b", "src/x.sql.gz")
+	_, err := ScanBackupFileLocations(context.Background(), NewSSMExecutor(scanFake(realShapedLocationInsert+"\nclasm-scan-rc=0\n", types.CommandInvocationStatusFailed), "i-1"), "b", "src/x.sql.gz")
 	if err == nil {
 		t.Fatal("a failed command must be an error")
 	}
@@ -208,7 +208,7 @@ func TestScanFileLocations_AFailedCommandIsAnErrorEvenWithACompleteLookingOutput
 // Output with no sentinel at all is an error however it ends: one whose tail would
 // read as "0" if the missing sentinel were not checked first.
 func TestScanFileLocations_NoSentinelIsAnErrorEvenWhenTheTailLooksLikeZero(t *testing.T) {
-	_, err := ScanLocalFileLocations(context.Background(), scanFake("xxxxxxxxxxxxx0", types.CommandInvocationStatusSuccess), "i-1", remoteRestoreSQLPath)
+	_, err := ScanLocalFileLocations(context.Background(), NewSSMExecutor(scanFake("xxxxxxxxxxxxx0", types.CommandInvocationStatusSuccess), "i-1"), remoteRestoreSQLPath)
 	if err == nil {
 		t.Fatal("want an error")
 	}

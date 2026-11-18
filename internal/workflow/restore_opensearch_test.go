@@ -54,7 +54,7 @@ func TestBuildChownTreeCommand_QuotesDirectory(t *testing.T) {
 
 func TestNormalizeSnapshotRepoOwnership_SendsChown(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	if err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval); err != nil {
+	if err := NormalizeSnapshotRepoOwnership(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.sendCommandCalls() != 1 {
@@ -70,7 +70,7 @@ func TestNormalizeSnapshotRepoOwnership_SendsChown(t *testing.T) {
 // unable to archive, so it must never fail quietly.
 func TestNormalizeSnapshotRepoOwnership_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "chown: cannot access"}
-	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval)
+	err := NormalizeSnapshotRepoOwnership(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "chown: cannot access") {
 		t.Errorf("expected an error including the remote output, got: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNormalizeSnapshotRepoOwnership_PropagatesFailedStatus(t *testing.T) {
 
 func TestNormalizeSnapshotRepoOwnership_PropagatesTransportError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
-	err := NormalizeSnapshotRepoOwnership(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval)
+	err := NormalizeSnapshotRepoOwnership(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_opensearch_backups", ServiceOwner{UID: 1000, GID: 1001}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
 		t.Errorf("expected the transport error to propagate, got: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDetectExistingOpenSearchIndices_FiltersToCuratedPatterns(t *testing.T) 
 		finalStatus: types.CommandInvocationStatusSuccess,
 		stdout:      "caltechdata-rdmrecords-records-record-v7.0.0\ncaltechdata-events-stats-file-download-2025-09\ncaltechdata-users-user-v3.0.0\n",
 	}
-	got, err := detectExistingOpenSearchIndices(context.Background(), fake, "i-1", "caltechdata", patterns, time.Second, testPollInterval)
+	got, err := detectExistingOpenSearchIndices(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechdata", patterns, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestDetectExistingOpenSearchIndices_FiltersToCuratedPatterns(t *testing.T) 
 
 func TestDetectExistingOpenSearchIndices_SSMFailure(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "boom"}
-	_, err := detectExistingOpenSearchIndices(context.Background(), fake, "i-1", "caltechdata", nil, time.Second, testPollInterval)
+	_, err := detectExistingOpenSearchIndices(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechdata", nil, time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -161,7 +161,7 @@ func TestBuildDeleteIndicesCommand(t *testing.T) {
 
 func TestDeleteConflictingIndices_NoopWhenEmpty(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1"}
-	if err := DeleteConflictingIndices(context.Background(), fake, "i-1", nil, time.Second, testPollInterval); err != nil {
+	if err := DeleteConflictingIndices(context.Background(), NewSSMExecutor(fake, "i-1"), nil, time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.sendCommandCalls() != 0 {
@@ -171,7 +171,7 @@ func TestDeleteConflictingIndices_NoopWhenEmpty(t *testing.T) {
 
 func TestDeleteConflictingIndices_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "boom"}
-	err := DeleteConflictingIndices(context.Background(), fake, "i-1", []string{"a"}, time.Second, testPollInterval)
+	err := DeleteConflictingIndices(context.Background(), NewSSMExecutor(fake, "i-1"), []string{"a"}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("expected an error including the response body, got: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestBuildRestoreSnapshotCommand(t *testing.T) {
 
 func TestRestoreSnapshot_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "boom"}
-	err := RestoreSnapshot(context.Background(), fake, "i-1", "rdm_backup_repo", "rdm-1", []string{"a-*"}, time.Second, testPollInterval)
+	err := RestoreSnapshot(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", "rdm-1", []string{"a-*"}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("expected an error including the response body, got: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestPollRestoreUntilComplete_SucceedsAfterInProgress(t *testing.T) {
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{"", "a snapshot index\n", "a snapshot done\n"},
 	}
-	err := PollRestoreUntilComplete(context.Background(), io.Discard, fake, "i-1", []string{"a-*"}, time.Second, testPollInterval)
+	err := PollRestoreUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), []string{"a-*"}, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestPollRestoreUntilComplete_NeverCompletingSequenceTimesOut(t *testing.T) 
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{"a snapshot index\n"},
 	}
-	err := PollRestoreUntilComplete(context.Background(), io.Discard, fake, "i-1", []string{"a-*"}, 30*time.Millisecond, testPollInterval)
+	err := PollRestoreUntilComplete(context.Background(), io.Discard, NewSSMExecutor(fake, "i-1"), []string{"a-*"}, 30*time.Millisecond, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("expected a timeout error, got: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestPollRestoreUntilComplete_PrintsProgressWhileWaiting(t *testing.T) {
 		finalStatus:    types.CommandInvocationStatusSuccess,
 		stdoutSequence: []string{"a snapshot index\n", "a snapshot index\n", "a snapshot done\n"},
 	}
-	err := PollRestoreUntilComplete(context.Background(), &buf, fake, "i-1", []string{"a-*"}, time.Second, testPollInterval)
+	err := PollRestoreUntilComplete(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), []string{"a-*"}, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestParseRestoredIndices_MalformedRow(t *testing.T) {
 
 func TestVerifyRestoredIndices_SSMFailure(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "boom"}
-	_, err := VerifyRestoredIndices(context.Background(), fake, "i-1", []string{"a-*"}, time.Second, testPollInterval)
+	_, err := VerifyRestoredIndices(context.Background(), NewSSMExecutor(fake, "i-1"), []string{"a-*"}, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("expected an error including the response body, got: %v", err)
 	}

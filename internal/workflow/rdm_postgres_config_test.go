@@ -32,7 +32,7 @@ const realCaltechauthorsDockerPS = "rabbitmq:3-management\tcaltechauthors-mq-1\n
 func TestDiscoverPostgresContainer_RealCaltechauthorsFleetFindsOnlyThePostgresContainer(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: realCaltechauthorsDockerPS}
 
-	got, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	got, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestDiscoverPostgresContainer_RealCaltechauthorsFleetFindsOnlyThePostgresCo
 func TestDiscoverPostgresContainer_SingleResult(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "postgres:14.13\tcaltechauthors-db-1\n"}
 
-	got, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	got, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestDiscoverPostgresContainer_SingleResult(t *testing.T) {
 func TestDiscoverPostgresContainer_MatchesBarePostgresImageNoTag(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "postgres\tsome-db-1\n"}
 
-	got, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	got, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDiscoverPostgresContainer_MatchesBarePostgresImageNoTag(t *testing.T) {
 func TestDiscoverPostgresContainer_MatchesFullyQualifiedImageReference(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "docker.io/library/postgres:16-alpine\tsome-db-1\n"}
 
-	got, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	got, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestDiscoverPostgresContainer_DoesNotMatchImageMerelyContainingPostgresAsAS
 	// only "postgres", "postgres:<tag>", or "<path>/postgres[:<tag>]".
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "my-postgres-exporter:latest\texporter-1\n"}
 
-	_, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	_, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected no match for an image that merely contains \"postgres\" as a substring, not as its own repository name")
 	}
@@ -97,7 +97,7 @@ func TestDiscoverPostgresContainer_DoesNotMatchImageMerelyContainingPostgresAsAS
 func TestDiscoverPostgresContainer_ZeroResultsErrors(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "\n"}
 
-	_, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	_, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error when no Postgres container is found")
 	}
@@ -109,7 +109,7 @@ func TestDiscoverPostgresContainer_ZeroResultsErrors(t *testing.T) {
 func TestDiscoverPostgresContainer_MultipleResultsErrors(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "postgres:14.13\tcaltechauthors-db-1\npostgres:14.13\tcaltechauthors-db-2\n"}
 
-	_, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	_, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error when more than one Postgres container is found")
 	}
@@ -121,7 +121,7 @@ func TestDiscoverPostgresContainer_MultipleResultsErrors(t *testing.T) {
 func TestDiscoverPostgresContainer_CommandFailureStatusErrors(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
 
-	_, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	_, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error when the discovery command itself fails")
 	}
@@ -131,7 +131,7 @@ func TestDiscoverPostgresContainer_SendCommandErrorPropagates(t *testing.T) {
 	boom := errors.New("boom")
 	fake := &fakeSSMClient{sendCommandErr: boom}
 
-	_, err := discoverPostgresContainer(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	_, err := discoverPostgresContainer(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected the SendCommand error to propagate")
 	}
@@ -141,7 +141,7 @@ func TestResolveRDMPostgresConfig_NewInstanceDiscoversAndSaves(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "postgres:14.13\tcaltechauthors-db-1\n"}
 	var buf bytes.Buffer
 
-	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(context.Background(), &buf, fake, "i-1", "caltechauthors", "caltechauthors", nil, time.Second, testPollInterval)
+	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "caltechauthors", "caltechauthors", nil, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestResolveRDMPostgresConfig_UsesFallbackIdentifierNotInstanceName(t *testi
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "postgres:14.13\tcaltechauthors-db-1\n"}
 	var buf bytes.Buffer
 
-	_, dbName, dbUser, _, err := resolveRDMPostgresConfig(context.Background(), &buf, fake, "i-1", "newauthors", "caltechauthors", nil, time.Second, testPollInterval)
+	_, dbName, dbUser, _, err := resolveRDMPostgresConfig(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "newauthors", "caltechauthors", nil, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestResolveRDMPostgresConfig_UnchangedContainerPrintsNothing(t *testing.T) 
 	var buf bytes.Buffer
 	existing := []config.RDMPostgresRule{{Pattern: "caltechauthors", ContainerName: "caltechauthors-db-1"}}
 
-	_, _, _, updatedRules, err := resolveRDMPostgresConfig(context.Background(), &buf, fake, "i-1", "caltechauthors", "caltechauthors", existing, time.Second, testPollInterval)
+	_, _, _, updatedRules, err := resolveRDMPostgresConfig(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "caltechauthors", "caltechauthors", existing, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestResolveRDMPostgresConfig_ChangedContainerReportsAndUpdates(t *testing.T
 	var buf bytes.Buffer
 	existing := []config.RDMPostgresRule{{Pattern: "caltechauthors", ContainerName: "caltechauthors_db_1"}}
 
-	containerName, _, _, updatedRules, err := resolveRDMPostgresConfig(context.Background(), &buf, fake, "i-1", "caltechauthors", "caltechauthors", existing, time.Second, testPollInterval)
+	containerName, _, _, updatedRules, err := resolveRDMPostgresConfig(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "caltechauthors", "caltechauthors", existing, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestResolveRDMPostgresConfig_PreservesDBOverridesThroughReconcile(t *testin
 	var buf bytes.Buffer
 	existing := []config.RDMPostgresRule{{Pattern: "caltechauthors", ContainerName: "caltechauthors_db_1", DBName: "custom_db", DBUser: "custom_user"}}
 
-	_, dbName, dbUser, _, err := resolveRDMPostgresConfig(context.Background(), &buf, fake, "i-1", "caltechauthors", "caltechauthors", existing, time.Second, testPollInterval)
+	_, dbName, dbUser, _, err := resolveRDMPostgresConfig(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "caltechauthors", "caltechauthors", existing, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestResolveRDMPostgresConfig_DiscoveryFailurePropagates(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "\n"}
 	var buf bytes.Buffer
 
-	_, _, _, _, err := resolveRDMPostgresConfig(context.Background(), &buf, fake, "i-1", "caltechauthors", "caltechauthors", nil, time.Second, testPollInterval)
+	_, _, _, _, err := resolveRDMPostgresConfig(context.Background(), &buf, NewSSMExecutor(fake, "i-1"), "caltechauthors", "caltechauthors", nil, time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected the discovery failure to propagate")
 	}

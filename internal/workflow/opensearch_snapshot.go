@@ -7,10 +7,6 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // Default timeouts/intervals for Archive OpenSearch Snapshot to S3's SSM
@@ -47,7 +43,7 @@ func buildRegisterRepoCommand(repo, location string) string {
 // path.repo"), not just curl's own generic "exit status 22". Without
 // this, a real incident (2026-07-29, CaltechAUTHORS production) required
 // manually inspecting the --debug JSONL log to find the actual cause.
-func curlFailureError(action string, status ssmtypes.CommandInvocationStatus, stdout string) error {
+func curlFailureError(action string, status CommandStatus, stdout string) error {
 	body := strings.TrimSpace(stdout)
 	if body == "" {
 		return fmt.Errorf("%s (status: %s)", action, status)
@@ -89,13 +85,13 @@ func openSearchErrorReason(stdout string) string {
 
 // RegisterSnapshotRepo runs buildRegisterRepoCommand via SSM and errors
 // on a non-Success SSM invocation status.
-func RegisterSnapshotRepo(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, location string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildRegisterRepoCommand(repo, location), timeout, pollInterval)
+func RegisterSnapshotRepo(ctx context.Context, ex Executor, repo, location string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildRegisterRepoCommand(repo, location), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("registering snapshot repo %q on %s failed", repo, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("registering snapshot repo %q on %s failed", repo, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -118,13 +114,13 @@ func buildDeregisterRepoCommand(repo string) string {
 // DeregisterSnapshotRepo runs buildDeregisterRepoCommand via SSM and
 // errors on a non-Success SSM invocation status -- the mirror of
 // RegisterSnapshotRepo, including its --fail-with-body contract.
-func DeregisterSnapshotRepo(ctx context.Context, client awsclient.SSMAPI, instanceID, repo string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeregisterRepoCommand(repo), timeout, pollInterval)
+func DeregisterSnapshotRepo(ctx context.Context, ex Executor, repo string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildDeregisterRepoCommand(repo), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("deregistering snapshot repo %q on %s failed", repo, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("deregistering snapshot repo %q on %s failed", repo, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -150,13 +146,13 @@ func buildCreateSnapshotCommand(repo, snapshotName string, indices []string) str
 // non-Success SSM invocation status. Returns once the snapshot request
 // has been accepted -- it does not wait for the snapshot itself to
 // finish; see PollSnapshotUntilComplete for that.
-func CreateSnapshot(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName string, indices []string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildCreateSnapshotCommand(repo, snapshotName, indices), timeout, pollInterval)
+func CreateSnapshot(ctx context.Context, ex Executor, repo, snapshotName string, indices []string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildCreateSnapshotCommand(repo, snapshotName, indices), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("creating snapshot %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("creating snapshot %s/%s on %s failed", repo, snapshotName, ex.Name()), status, stdout)
 	}
 	return nil
 }
@@ -257,9 +253,9 @@ func snapshotDiscardedError(repo, snapshotName, instanceID string) error {
 // several minutes, and printing nothing until the very end reads as a
 // hung prompt (confirmed live 2026-08-17, DECISIONS.md, "Poll-loop
 // progress output...").
-func PollSnapshotUntilComplete(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, repo, snapshotName string, timeout, pollInterval time.Duration) (string, error) {
+func PollSnapshotUntilComplete(ctx context.Context, w io.Writer, ex Executor, repo, snapshotName string, timeout, pollInterval time.Duration) (string, error) {
 	command := buildSnapshotStateCommand(repo, snapshotName)
-	label := fmt.Sprintf("snapshot %s/%s on %s", repo, snapshotName, instanceID)
+	label := fmt.Sprintf("snapshot %s/%s on %s", repo, snapshotName, ex.Name())
 
 	var finalState string
 	// consecutiveMissing counts snapshot_missing_exception responses in a
@@ -267,11 +263,11 @@ func PollSnapshotUntilComplete(ctx context.Context, w io.Writer, client awsclien
 	// ever covers an uninterrupted run of them.
 	consecutiveMissing := 0
 	err := pollWithProgress(ctx, w, label, timeout, pollInterval, func(ctx context.Context) (bool, error) {
-		stdout, status, err := RunShellCommand(ctx, client, instanceID, command, DefaultSnapshotStateCheckTimeout, DefaultSSMPollInterval)
+		stdout, status, err := ex.Run(ctx, command, DefaultSnapshotStateCheckTimeout, DefaultSSMPollInterval)
 		if err != nil {
 			return false, err
 		}
-		if status != ssmtypes.CommandInvocationStatusSuccess {
+		if status != StatusSuccess {
 			// A missing snapshot is checked before the generic failure
 			// path: with --fail-with-body a 404 arrives here as a
 			// non-zero curl exit carrying the body on stdout, never as a
@@ -279,11 +275,11 @@ func PollSnapshotUntilComplete(ctx context.Context, w io.Writer, client awsclien
 			if isSnapshotMissing(stdout) {
 				consecutiveMissing++
 				if consecutiveMissing > snapshotMissingGraceChecks {
-					return false, snapshotDiscardedError(repo, snapshotName, instanceID)
+					return false, snapshotDiscardedError(repo, snapshotName, ex.Name())
 				}
 				return false, nil
 			}
-			return false, curlFailureError(fmt.Sprintf("snapshot state check for %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+			return false, curlFailureError(fmt.Sprintf("snapshot state check for %s/%s on %s failed", repo, snapshotName, ex.Name()), status, stdout)
 		}
 		consecutiveMissing = 0
 		state, err := parseSnapshotState([]byte(stdout))
@@ -316,13 +312,13 @@ func buildDeleteSnapshotCommand(repo, snapshotName string) string {
 
 // DeleteSnapshot runs buildDeleteSnapshotCommand via SSM and errors on a
 // non-Success SSM invocation status.
-func DeleteSnapshot(ctx context.Context, client awsclient.SSMAPI, instanceID, repo, snapshotName string, timeout, pollInterval time.Duration) error {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteSnapshotCommand(repo, snapshotName), timeout, pollInterval)
+func DeleteSnapshot(ctx context.Context, ex Executor, repo, snapshotName string, timeout, pollInterval time.Duration) error {
+	stdout, status, err := ex.Run(ctx, buildDeleteSnapshotCommand(repo, snapshotName), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return curlFailureError(fmt.Sprintf("deleting snapshot %s/%s on %s failed", repo, snapshotName, instanceID), status, stdout)
+	if status != StatusSuccess {
+		return curlFailureError(fmt.Sprintf("deleting snapshot %s/%s on %s failed", repo, snapshotName, ex.Name()), status, stdout)
 	}
 	return nil
 }

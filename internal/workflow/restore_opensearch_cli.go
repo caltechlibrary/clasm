@@ -92,7 +92,7 @@ func RunRestoreOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClien
 		return err
 	}
 
-	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	owner, err := ResolveServiceOwner(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOwnershipTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -101,7 +101,7 @@ func RunRestoreOpenSearchSnapshotAuto(ctx context.Context, w io.Writer, ssmClien
 	}
 
 	indices := rdmOpenSearchSnapshotIndexPatterns(p.IndexPrefix)
-	existing, err := detectExistingOpenSearchIndices(ctx, ssmClient, inst.InstanceID, p.IndexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
+	existing, err := detectExistingOpenSearchIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), p.IndexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -142,7 +140,7 @@ func backupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClients map[strin
 	if err != nil {
 		return err
 	}
-	if err := CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckAWSCLIAvailable(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -231,7 +229,7 @@ func RunBackupArchiveAndTrimAuto(ctx context.Context, w io.Writer, ssmClient aws
 }
 
 func runBackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, bucketClient awsclient.S3API, inst inventory.Instance, params BackupArchiveParams, confirm func(toUpload, aged []BackupFile, bucket, prefix string) (bool, error)) error {
-	allFiles, err := ListBackupFiles(ctx, ssmClient, params.InstanceID, params.Directory, DefaultBackupListTimeout, DefaultSSMPollInterval)
+	allFiles, err := ListBackupFiles(ctx, NewSSMExecutor(ssmClient, params.InstanceID), params.Directory, DefaultBackupListTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -285,7 +283,7 @@ func runBackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClient awsclie
 		return nil
 	}
 
-	uploads, err := UploadBackupFiles(ctx, ssmClient, params.InstanceID, toUpload, params.Bucket, prefix, DefaultBackupUploadTimeout, DefaultSSMPollInterval, func(p UploadProgress) {
+	uploads, err := UploadBackupFiles(ctx, NewSSMExecutor(ssmClient, params.InstanceID), toUpload, params.Bucket, prefix, DefaultBackupUploadTimeout, DefaultSSMPollInterval, func(p UploadProgress) {
 		status := "OK"
 		if !p.Result.OK {
 			status = "FAIL"
@@ -331,14 +329,14 @@ func runBackupArchiveAndTrim(ctx context.Context, w io.Writer, ssmClient awsclie
 	}
 
 	if len(toDelete) > 0 {
-		if err := DeleteVerifiedFiles(ctx, ssmClient, params.InstanceID, toDelete, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
+		if err := DeleteVerifiedFiles(ctx, NewSSMExecutor(ssmClient, params.InstanceID), toDelete, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
 			return err
 		}
 		// Only worth the SSM round trip when something was actually
 		// removed -- a copy-only run frees nothing to trim.
-		if _, status, err := RunShellCommand(ctx, ssmClient, params.InstanceID, "sudo fstrim -av", DefaultBackupFstrimTimeout, DefaultSSMPollInterval); err != nil {
+		if _, status, err := NewSSMExecutor(ssmClient, params.InstanceID).Run(ctx, "sudo fstrim -av", DefaultBackupFstrimTimeout, DefaultSSMPollInterval); err != nil {
 			fmt.Fprintf(w, "fstrim did not complete: %v\n", err)
-		} else if status != ssmtypes.CommandInvocationStatusSuccess {
+		} else if status != StatusSuccess {
 			fmt.Fprintf(w, "fstrim did not complete (status: %s)\n", status)
 		}
 	}

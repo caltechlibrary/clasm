@@ -82,7 +82,7 @@ func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclie
 	}
 
 	fallbackIdentifier := cmp.Or(inst.Project, inst.Name)
-	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(ctx, io.Discard, ssmClient, inst.InstanceID, inst.Name, fallbackIdentifier, rules, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(ctx, io.Discard, NewSSMExecutor(ssmClient, inst.InstanceID), inst.Name, fallbackIdentifier, rules, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func RunRestoreSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclie
 		return err
 	}
 
-	exists, err := detectExistingSQLData(ctx, ssmClient, inst.InstanceID, containerName, dbName, dbUser, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	exists, err := detectExistingSQLData(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), containerName, dbName, dbUser, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}

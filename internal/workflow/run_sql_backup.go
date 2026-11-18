@@ -8,8 +8,6 @@ import (
 	"slices"
 	"time"
 
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -99,7 +97,7 @@ func runSQLBackup(ctx context.Context, w io.Writer, ssmClients map[string]awscli
 	}
 	// Docker, not the AWS CLI: nothing this workflow does touches S3 (DR-0178).
 	// Still the first SSM call, before any prompt.
-	if err := CheckDockerAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckDockerAvailable(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -142,7 +140,7 @@ type SQLBackupParams struct {
 // runSQLBackup. There is no confirmation, like the archive forms: it writes a
 // dump on the instance and changes nothing else, and is meant for cron.
 func RunSQLBackupAuto(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, inst inventory.Instance, p SQLBackupParams, rdmPostgresRules []config.RDMPostgresRule, saveRDMPostgresRules func([]config.RDMPostgresRule) error) error {
-	if err := CheckDockerAvailable(ctx, ssmClient, inst.InstanceID, DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckDockerAvailable(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupListTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	return executeSQLBackup(ctx, w, ssmClient, inst, p.Directory, rdmPostgresRules, saveRDMPostgresRules)
@@ -160,7 +158,7 @@ func executeSQLBackup(ctx context.Context, w io.Writer, ssmClient awsclient.SSMA
 	// instance's Project tag, not its Name tag"). Pattern matching itself
 	// still uses inst.Name, same convention as config.BackupDirectoryFor.
 	fallbackIdentifier := cmp.Or(inst.Project, inst.Name)
-	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(ctx, w, ssmClient, inst.InstanceID, inst.Name, fallbackIdentifier, rdmPostgresRules, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	containerName, dbName, dbUser, updatedRules, err := resolveRDMPostgresConfig(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), inst.Name, fallbackIdentifier, rdmPostgresRules, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -184,24 +182,24 @@ func executeSQLBackup(ctx context.Context, w io.Writer, ssmClient awsclient.SSMA
 	// group-writable. The directory is created if it is missing and otherwise
 	// left exactly as it is: it belongs to the site, and clasm re-owning it once
 	// stopped the dump cron on caltechauthors-v13.
-	owner, err := ResolveServiceOwner(ctx, ssmClient, inst.InstanceID, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	owner, err := ResolveServiceOwner(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOwnershipTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
-	if err := CreateBackupDirectoryIfMissing(ctx, ssmClient, inst.InstanceID, directory, owner.UID, sqlBackupDirGroup, sqlBackupDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CreateBackupDirectoryIfMissing(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner.UID, sqlBackupDirGroup, sqlBackupDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
 	date := time.Now().Format("2006-01-02")
 	command := buildSQLDumpCommand(containerName, dbName, dbUser, directory, date)
-	dumpOut, status, err := RunShellCommand(ctx, ssmClient, inst.InstanceID, command, DefaultSQLDumpTimeout, DefaultSSMPollInterval)
+	dumpOut, status, err := NewSSMExecutor(ssmClient, inst.InstanceID).Run(ctx, command, DefaultSQLDumpTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
+	if status != StatusSuccess {
 		return curlFailureError(fmt.Sprintf("SQL dump failed on %s", inst.InstanceID), status, dumpOut)
 	}
-	if err := HandOverDump(ctx, ssmClient, inst.InstanceID, directory, sqlDumpRawFile(directory, containerName, dbName, date)+".gz", owner.UID, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := HandOverDump(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, sqlDumpRawFile(directory, containerName, dbName, date)+".gz", owner.UID, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "SQL backup created in %s on %s.\n", directory, inst.InstanceID)

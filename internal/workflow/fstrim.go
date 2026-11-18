@@ -60,11 +60,11 @@ func offerFstrimIfAvailable(ctx context.Context, w io.Writer, client awsclient.S
 		return nil
 	}
 
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, "sudo fstrim -av", DefaultCloudInitTimeout, DefaultSSMPollInterval)
+	stdout, status, err := NewSSMExecutor(client, instanceID).Run(ctx, "sudo fstrim -av", DefaultCloudInitTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
-	if status != types.CommandInvocationStatusSuccess {
+	if status != StatusSuccess {
 		fmt.Fprintf(w, "fstrim did not complete (status: %s)\n", status)
 	} else {
 		fmt.Fprintf(w, "fstrim output:\n%s\n", stdout)

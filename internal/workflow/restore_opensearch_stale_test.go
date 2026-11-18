@@ -132,7 +132,7 @@ func TestDeregisterSnapshotRepoIfPresent(t *testing.T) {
 	}
 	for _, c := range cases {
 		fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: c.status, stdout: c.stdout}
-		err := DeregisterSnapshotRepoIfPresent(context.Background(), fake, "i-1", "rdm_backup_repo", time.Second, testPollInterval)
+		err := DeregisterSnapshotRepoIfPresent(context.Background(), NewSSMExecutor(fake, "i-1"), "rdm_backup_repo", time.Second, testPollInterval)
 		if (err != nil) != c.wantErr {
 			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
 		}

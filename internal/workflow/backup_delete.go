@@ -5,10 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // buildDeleteCommand builds a shell script that removes exactly the
@@ -27,16 +23,16 @@ func buildDeleteCommand(paths []string) string {
 // separate SSM command -- distinct from the upload command -- deleting
 // only files the tool has already independently verified in S3. A nil
 // or empty paths list is a no-op; nothing is sent.
-func DeleteVerifiedFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, paths []string, timeout, pollInterval time.Duration) error {
+func DeleteVerifiedFiles(ctx context.Context, ex Executor, paths []string, timeout, pollInterval time.Duration) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	_, status, err := RunShellCommand(ctx, client, instanceID, buildDeleteCommand(paths), timeout, pollInterval)
+	_, status, err := ex.Run(ctx, buildDeleteCommand(paths), timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return fmt.Errorf("delete command on %s failed (status: %s)", instanceID, status)
+	if status != StatusSuccess {
+		return fmt.Errorf("delete command on %s failed (status: %s)", ex.Name(), status)
 	}
 	return nil
 }

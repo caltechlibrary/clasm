@@ -20,7 +20,7 @@ func TestBuildDeleteCommand_QuotesPaths(t *testing.T) {
 
 func TestDeleteVerifiedFiles_Success(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	err := DeleteVerifiedFiles(context.Background(), fake, "i-1", []string{"/opt/rdm_sql_backups/foo.sql.gz"}, testPollInterval, testPollInterval)
+	err := DeleteVerifiedFiles(context.Background(), NewSSMExecutor(fake, "i-1"), []string{"/opt/rdm_sql_backups/foo.sql.gz"}, testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestDeleteVerifiedFiles_Success(t *testing.T) {
 
 func TestDeleteVerifiedFiles_NoOpOnEmptyList(t *testing.T) {
 	fake := &fakeSSMClient{}
-	err := DeleteVerifiedFiles(context.Background(), fake, "i-1", nil, testPollInterval, testPollInterval)
+	err := DeleteVerifiedFiles(context.Background(), NewSSMExecutor(fake, "i-1"), nil, testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestDeleteVerifiedFiles_NoOpOnEmptyList(t *testing.T) {
 
 func TestDeleteVerifiedFiles_CommandFailure(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := DeleteVerifiedFiles(context.Background(), fake, "i-1", []string{"/opt/rdm_sql_backups/foo.sql.gz"}, testPollInterval, testPollInterval)
+	err := DeleteVerifiedFiles(context.Background(), NewSSMExecutor(fake, "i-1"), []string{"/opt/rdm_sql_backups/foo.sql.gz"}, testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error when the delete command fails")
 	}

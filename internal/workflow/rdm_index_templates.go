@@ -212,21 +212,21 @@ func buildInstallReport(sections map[string]string) (IndexTemplateInstallReport,
 // Failed, with no error, so the caller can show what worked first.
 //
 // @param ctx {context.Context} cancels the SSM command
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param inst {inventory.Instance} the instance to repair
+// @param ex {Executor} the host to repair
+// @param instanceName {string} the host's name, for the report
 // @param wait {time.Duration} how long to wait for OpenSearch to answer; zero checks once
 // @param poll {time.Duration} how often to poll SSM for the command's result
 // @returns {IndexTemplateInstallReport, error} what was installed, or an error naming why the run could not be made
 // @example
 //
-//	report, err := InstallRDMIndexTemplates(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
-func InstallRDMIndexTemplates(ctx context.Context, client awsclient.SSMAPI, inst inventory.Instance, wait, poll time.Duration) (IndexTemplateInstallReport, error) {
-	sections, err := runIndexScript(ctx, client, inst.InstanceID, "the index template install", buildInstallIndexTemplatesCommand(wait), wait+indexHealthScriptSlack, poll)
+//	report, err := InstallRDMIndexTemplates(ctx, ex, "caltechauthors-v13", DefaultIndexHealthWait, DefaultSSMPollInterval)
+func InstallRDMIndexTemplates(ctx context.Context, ex Executor, instanceName string, wait, poll time.Duration) (IndexTemplateInstallReport, error) {
+	sections, err := runIndexScript(ctx, ex, "the index template install", buildInstallIndexTemplatesCommand(wait), wait+indexHealthScriptSlack, poll)
 	if err != nil {
 		return IndexTemplateInstallReport{}, err
 	}
 	report, err := buildInstallReport(sections)
-	report.InstanceID, report.Instance = inst.InstanceID, inst.Name
+	report.InstanceID, report.Instance = ex.Name(), instanceName
 	return report, err
 }
 
@@ -332,7 +332,7 @@ func RunInstallIndexTemplatesCLI(ctx context.Context, w io.Writer, clients map[s
 	if err != nil {
 		return err
 	}
-	report, err := InstallRDMIndexTemplates(ctx, client, inst, wait, poll)
+	report, err := InstallRDMIndexTemplates(ctx, NewSSMExecutor(client, inst.InstanceID), inst.Name, wait, poll)
 	if err != nil {
 		writeIndexJSONError(w, format, err)
 		return err
@@ -376,7 +376,7 @@ func installIndexTemplatesForInstance(ctx context.Context, w io.Writer, clients 
 		return err
 	}
 	fmt.Fprintf(w, "Installing missing index templates on %s (%s); waiting up to %s for OpenSearch to answer...\n", inst.Name, inst.InstanceID, DefaultIndexHealthWait)
-	report, err := InstallRDMIndexTemplates(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
+	report, err := InstallRDMIndexTemplates(ctx, NewSSMExecutor(client, inst.InstanceID), inst.Name, DefaultIndexHealthWait, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}

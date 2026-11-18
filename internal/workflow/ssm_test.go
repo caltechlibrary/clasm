@@ -37,6 +37,7 @@ type fakeSSMClient struct {
 	// fails every call cannot express.
 	sendCommandErrOnCall   int
 	sendCommandCallCount   int
+	lastInstanceIDs        []string // the InstanceIds of the most recent SendCommand (executor tests)
 	lastTimeoutSeconds     *int32
 	lastExecutionTimeout   string
 	sawExecutionTimeoutKey bool
@@ -125,6 +126,7 @@ func (f *fakeSSMClient) DescribeInstanceInformation(ctx context.Context, params 
 
 func (f *fakeSSMClient) SendCommand(ctx context.Context, params *ssm.SendCommandInput, optFns ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
 	f.sendCommandCallCount++
+	f.lastInstanceIDs = params.InstanceIds
 	f.lastTimeoutSeconds = params.TimeoutSeconds
 	if et, ok := params.Parameters["executionTimeout"]; ok && len(et) > 0 {
 		f.sawExecutionTimeoutKey = true

@@ -6,10 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // BackupFile is one file found by ListBackupFiles.
@@ -38,14 +34,14 @@ func shellQuote(s string) string {
 // filtering is done locally by FilterByAge rather than in the remote
 // shell command, keeping the remote script minimal and the filtering
 // logic testable without a real instance.
-func ListBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID, directory string, timeout, pollInterval time.Duration) ([]BackupFile, error) {
+func ListBackupFiles(ctx context.Context, ex Executor, directory string, timeout, pollInterval time.Duration) ([]BackupFile, error) {
 	command := fmt.Sprintf(`find %s -maxdepth 1 -type f -printf '%%s\t%%T@\t%%p\n'`, shellQuote(directory))
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, command, timeout, pollInterval)
+	stdout, status, err := ex.Run(ctx, command, timeout, pollInterval)
 	if err != nil {
 		return nil, err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return nil, fmt.Errorf("listing files in %s on %s failed (status: %s)", directory, instanceID, status)
+	if status != StatusSuccess {
+		return nil, fmt.Errorf("listing files in %s on %s failed (status: %s)", directory, ex.Name(), status)
 	}
 	return parseBackupFileList(stdout)
 }

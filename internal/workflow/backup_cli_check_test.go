@@ -12,7 +12,7 @@ import (
 func TestCheckAWSCLIAvailable_Success(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "/usr/local/bin/aws\n"}
 
-	if err := CheckAWSCLIAvailable(context.Background(), fake, "i-1", testPollInterval, testPollInterval); err != nil {
+	if err := CheckAWSCLIAvailable(context.Background(), NewSSMExecutor(fake, "i-1"), testPollInterval, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -20,7 +20,7 @@ func TestCheckAWSCLIAvailable_Success(t *testing.T) {
 func TestCheckAWSCLIAvailable_MissingReturnsClearError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
 
-	err := CheckAWSCLIAvailable(context.Background(), fake, "i-1", testPollInterval, testPollInterval)
+	err := CheckAWSCLIAvailable(context.Background(), NewSSMExecutor(fake, "i-1"), testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error when the AWS CLI is missing")
 	}
@@ -32,7 +32,7 @@ func TestCheckAWSCLIAvailable_MissingReturnsClearError(t *testing.T) {
 func TestCheckAWSCLIAvailable_PropagatesSSMError(t *testing.T) {
 	fake := &fakeSSMClient{sendCommandErr: errors.New("SSM unavailable")}
 
-	err := CheckAWSCLIAvailable(context.Background(), fake, "i-1", testPollInterval, testPollInterval)
+	err := CheckAWSCLIAvailable(context.Background(), NewSSMExecutor(fake, "i-1"), testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected the underlying SSM error to propagate")
 	}

@@ -4,10 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // CheckAWSCLIAvailable runs a quick `command -v aws` preflight check on
@@ -18,13 +14,13 @@ import (
 // silently reporting FAIL with the real cause buried in -debug output
 // (see DECISIONS.md, "Preflight check: AWS CLI availability before
 // Backup Archive & Trim").
-func CheckAWSCLIAvailable(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) error {
-	_, status, err := RunShellCommand(ctx, client, instanceID, "command -v aws", timeout, pollInterval)
+func CheckAWSCLIAvailable(ctx context.Context, ex Executor, timeout, pollInterval time.Duration) error {
+	_, status, err := ex.Run(ctx, "command -v aws", timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return fmt.Errorf("AWS CLI not found on instance %s -- install it before running Backup Archive & Trim", instanceID)
+	if status != StatusSuccess {
+		return fmt.Errorf("AWS CLI not found on instance %s -- install it before running Backup Archive & Trim", ex.Name())
 	}
 	return nil
 }
@@ -38,13 +34,13 @@ func CheckAWSCLIAvailable(ctx context.Context, client awsclient.SSMAPI, instance
 // and sits in the same place -- the first SSM call, before any prompt -- so it
 // keeps the early "is this instance reachable and sane" signal the AWS CLI
 // check gave by accident.
-func CheckDockerAvailable(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) error {
-	_, status, err := RunShellCommand(ctx, client, instanceID, "command -v docker", timeout, pollInterval)
+func CheckDockerAvailable(ctx context.Context, ex Executor, timeout, pollInterval time.Duration) error {
+	_, status, err := ex.Run(ctx, "command -v docker", timeout, pollInterval)
 	if err != nil {
 		return err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return fmt.Errorf("docker not found on instance %s -- Generate SQL Backup runs pg_dump inside the Postgres container with `docker exec`", instanceID)
+	if status != StatusSuccess {
+		return fmt.Errorf("docker not found on instance %s -- Generate SQL Backup runs pg_dump inside the Postgres container with `docker exec`", ex.Name())
 	}
 	return nil
 }

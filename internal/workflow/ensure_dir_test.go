@@ -78,7 +78,7 @@ func TestBuildEnsureDirCommand_KeepsExistingContentsAndFixesMode(t *testing.T) {
 
 func TestEnsureBackupDirectory_SendsInstallD(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	if err := EnsureBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, "0750", time.Second, testPollInterval); err != nil {
+	if err := EnsureBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", testOwner, "0750", time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.sendCommandCalls() != 1 {
@@ -91,7 +91,7 @@ func TestEnsureBackupDirectory_SendsInstallD(t *testing.T) {
 
 func TestEnsureBackupDirectory_FailedStatusNamesDirectoryAndInstance(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "install: cannot change owner"}
-	err := EnsureBackupDirectory(context.Background(), fake, "i-abc", "/opt/rdm_sql_backups", testOwner, "0750", time.Second, testPollInterval)
+	err := EnsureBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-abc"), "/opt/rdm_sql_backups", testOwner, "0750", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -104,7 +104,7 @@ func TestEnsureBackupDirectory_FailedStatusNamesDirectoryAndInstance(t *testing.
 
 func TestEnsureBackupDirectory_PropagatesTransportError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
-	err := EnsureBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, "0750", time.Second, testPollInterval)
+	err := EnsureBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", testOwner, "0750", time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
 		t.Errorf("expected the transport error to propagate, got: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestEnsureBackupDirectory_PropagatesTransportError(t *testing.T) {
 func TestEnsureBackupDirectory_RefusesUnsafeDirectories(t *testing.T) {
 	for _, dir := range []string{"", "/", "//", "/.", "/opt/..", "relative/dir", "./x", "opt/rdm_sql_backups"} {
 		fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-		err := EnsureBackupDirectory(context.Background(), fake, "i-1", dir, testOwner, "0750", time.Second, testPollInterval)
+		err := EnsureBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), dir, testOwner, "0750", time.Second, testPollInterval)
 		if err == nil {
 			t.Errorf("dir %q: expected an error, got none", dir)
 		}
@@ -130,7 +130,7 @@ func TestEnsureBackupDirectory_RefusesUnsafeDirectories(t *testing.T) {
 func TestEnsureBackupDirectory_RefusesBadMode(t *testing.T) {
 	for _, mode := range []string{"", "750; rm -rf /", "u+rwx", "0999", "07500", "rwx"} {
 		fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-		err := EnsureBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, mode, time.Second, testPollInterval)
+		err := EnsureBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", testOwner, mode, time.Second, testPollInterval)
 		if err == nil {
 			t.Errorf("mode %q: expected an error, got none", mode)
 		}
@@ -142,7 +142,7 @@ func TestEnsureBackupDirectory_RefusesBadMode(t *testing.T) {
 
 func TestChownBackupDirectory_SendsRecursiveChownToTheOwner(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	if err := ChownBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval); err != nil {
+	if err := ChownBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.sendCommandCalls() != 1 {
@@ -155,7 +155,7 @@ func TestChownBackupDirectory_SendsRecursiveChownToTheOwner(t *testing.T) {
 
 func TestChownBackupDirectory_FailedStatusNamesDirectoryAndInstance(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "chown: invalid user"}
-	err := ChownBackupDirectory(context.Background(), fake, "i-abc", "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval)
+	err := ChownBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-abc"), "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -168,7 +168,7 @@ func TestChownBackupDirectory_FailedStatusNamesDirectoryAndInstance(t *testing.T
 
 func TestChownBackupDirectory_PropagatesTransportError(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errors.New("network is unreachable")}
-	err := ChownBackupDirectory(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval)
+	err := ChownBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", testOwner, time.Second, testPollInterval)
 	if err == nil || !strings.Contains(err.Error(), "network is unreachable") {
 		t.Errorf("expected the transport error to propagate, got: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestChownBackupDirectory_PropagatesTransportError(t *testing.T) {
 func TestChownBackupDirectory_RefusesUnsafeDirectories(t *testing.T) {
 	for _, dir := range []string{"", "/", "//", "/.", "/opt/..", "relative/dir"} {
 		fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-		err := ChownBackupDirectory(context.Background(), fake, "i-1", dir, testOwner, time.Second, testPollInterval)
+		err := ChownBackupDirectory(context.Background(), NewSSMExecutor(fake, "i-1"), dir, testOwner, time.Second, testPollInterval)
 		if err == nil {
 			t.Errorf("dir %q: expected an error, got none", dir)
 		}

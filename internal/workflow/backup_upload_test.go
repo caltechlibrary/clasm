@@ -86,7 +86,7 @@ func TestUploadBackupFiles_Success(t *testing.T) {
 	files := []BackupFile{{Path: "/opt/rdm_sql_backups/foo.sql.gz", SizeBytes: 1024}}
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "OK\tnewauthors/foo.sql.gz\t1024\n"}
 
-	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
+	got, err := UploadBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestUploadBackupFiles_CommandFailureIsRecordedNotFatal(t *testing.T) {
 	files := []BackupFile{{Path: "/opt/rdm_sql_backups/foo.sql.gz", SizeBytes: 1024}}
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
 
-	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
+	got, err := UploadBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestUploadBackupFiles_TransportErrorMidListDoesNotAbortRemaining(t *testing
 		},
 	}
 
-	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "p", testPollInterval, testPollInterval, nil)
+	got, err := UploadBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), files, "my-bucket", "p", testPollInterval, testPollInterval, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestUploadBackupFiles_CancelledContextStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := UploadBackupFiles(ctx, fake, "i-1", files, "my-bucket", "p", testPollInterval, testPollInterval, nil); err == nil {
+	if _, err := UploadBackupFiles(ctx, NewSSMExecutor(fake, "i-1"), files, "my-bucket", "p", testPollInterval, testPollInterval, nil); err == nil {
 		t.Fatal("expected an error when the run's own context is cancelled")
 	}
 	if fake.sendCommandCalls() != 1 {
@@ -184,7 +184,7 @@ func TestUploadBackupFiles_SendsOneCommandPerFile(t *testing.T) {
 		},
 	}
 
-	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
+	got, err := UploadBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestUploadBackupFiles_ReportsProgressPerFile(t *testing.T) {
 	}
 
 	var progress []UploadProgress
-	_, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, func(p UploadProgress) {
+	_, err := UploadBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), files, "my-bucket", "newauthors", testPollInterval, testPollInterval, func(p UploadProgress) {
 		progress = append(progress, p)
 	})
 	if err != nil {
@@ -231,7 +231,7 @@ func TestUploadBackupFiles_PrefixesKeyWithInstanceName(t *testing.T) {
 	files := []BackupFile{{Path: "/opt/rdm_sql_backups/foo.sql.gz", SizeBytes: 1024}}
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "OK\tnewauthors/foo.sql.gz\t1024\n"}
 
-	got, err := UploadBackupFiles(context.Background(), fake, "i-1", files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
+	got, err := UploadBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), files, "my-bucket", "newauthors", testPollInterval, testPollInterval, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

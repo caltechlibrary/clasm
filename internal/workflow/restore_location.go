@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // The restore's file-location guard (DR-0187) reads the file location rows a
@@ -176,8 +173,8 @@ func buildStreamLocationScanCommand(bucket, key string) string {
 // readLocationScan turns a scan's output into rows. The output must end with the
 // sentinel reporting status 0; anything else (no sentinel, a non-zero status) means
 // the scan did not finish, and the rest of the output is the reason.
-func readLocationScan(what, stdout string, status ssmtypes.CommandInvocationStatus) ([]FileLocation, error) {
-	if status != ssmtypes.CommandInvocationStatusSuccess {
+func readLocationScan(what, stdout string, status CommandStatus) ([]FileLocation, error) {
+	if status != StatusSuccess {
 		return nil, curlFailureError(fmt.Sprintf("scanning %s for file locations failed", what), status, stdout)
 	}
 	idx := strings.LastIndex(stdout, locationScanSentinel)
@@ -191,16 +188,15 @@ func readLocationScan(what, stdout string, status ssmtypes.CommandInvocationStat
 // already on the instance (the decompressed download of a confirmed restore).
 //
 // @param ctx {context.Context} the call's context
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param instanceID {string} the instance holding the file
+// @param ex {Executor} the host the commands run on
 // @param sqlPath {string} the plain SQL file on the instance
 // @returns {[]FileLocation, error} the rows, or an error if the scan did not finish or a row was unreadable
-func ScanLocalFileLocations(ctx context.Context, client awsclient.SSMAPI, instanceID, sqlPath string) ([]FileLocation, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildLocalLocationScanCommand(sqlPath), DefaultOwnershipTimeout, DefaultSSMPollInterval)
+func ScanLocalFileLocations(ctx context.Context, ex Executor, sqlPath string) ([]FileLocation, error) {
+	stdout, status, err := ex.Run(ctx, buildLocalLocationScanCommand(sqlPath), DefaultOwnershipTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return nil, err
 	}
-	return readLocationScan(sqlPath+" on "+instanceID, stdout, status)
+	return readLocationScan(sqlPath+" on "+ex.Name(), stdout, status)
 }
 
 // ScanBackupFileLocations reads the files_location rows by streaming a backup from
@@ -208,13 +204,12 @@ func ScanLocalFileLocations(ctx context.Context, client awsclient.SSMAPI, instan
 // since the backup has not been downloaded.
 //
 // @param ctx {context.Context} the call's context
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param instanceID {string} the instance that streams the backup
+// @param ex {Executor} the host the commands run on
 // @param bucket {string} the backup's bucket
 // @param key {string} the backup's key; a .gz suffix means gzip
 // @returns {[]FileLocation, error} the rows, or an error if the scan did not finish or a row was unreadable
-func ScanBackupFileLocations(ctx context.Context, client awsclient.SSMAPI, instanceID, bucket, key string) ([]FileLocation, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, buildStreamLocationScanCommand(bucket, key), DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
+func ScanBackupFileLocations(ctx context.Context, ex Executor, bucket, key string) ([]FileLocation, error) {
+	stdout, status, err := ex.Run(ctx, buildStreamLocationScanCommand(bucket, key), DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return nil, err
 	}

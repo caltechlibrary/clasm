@@ -59,7 +59,7 @@ func TestBuildDownloadAndDecompressCommand_NonGzKeySkipsGunzip(t *testing.T) {
 
 func TestDownloadAndDecompressSQLBackup_Success(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	got, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "my-bucket", "new-data/backup.sql.gz", testPollInterval, testPollInterval)
+	got, err := downloadAndDecompressSQLBackup(context.Background(), NewSSMExecutor(fake, "i-1"), "my-bucket", "new-data/backup.sql.gz", testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDownloadAndDecompressSQLBackup_Success(t *testing.T) {
 // path directly, not the (never-created, in this case) decompressed one.
 func TestDownloadAndDecompressSQLBackup_NonGzKeyReturnsRawDownloadPath(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	got, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-16.sql", testPollInterval, testPollInterval)
+	got, err := downloadAndDecompressSQLBackup(context.Background(), NewSSMExecutor(fake, "i-1"), "sql-backups.library.caltech.edu", "new-data/caltechdata-db-1-caltechdata-2026-08-16.sql", testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestDownloadAndDecompressSQLBackup_NonGzKeyReturnsRawDownloadPath(t *testin
 
 func TestDownloadAndDecompressSQLBackup_SSMFailurePropagatesBody(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "download failed: NoSuchKey"}
-	_, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "my-bucket", "new-data/backup.sql.gz", testPollInterval, testPollInterval)
+	_, err := downloadAndDecompressSQLBackup(context.Background(), NewSSMExecutor(fake, "i-1"), "my-bucket", "new-data/backup.sql.gz", testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -103,7 +103,7 @@ func TestDownloadAndDecompressSQLBackup_SSMFailurePropagatesBody(t *testing.T) {
 // failure's actual message reaches the reported error.
 func TestDownloadAndDecompressSQLBackup_SurfacesStderr(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "gzip: /var/tmp/clasm-sql-restore.download: unknown suffix -- ignored"}
-	_, err := downloadAndDecompressSQLBackup(context.Background(), fake, "i-1", "my-bucket", "new-data/backup.sql", testPollInterval, testPollInterval)
+	_, err := downloadAndDecompressSQLBackup(context.Background(), NewSSMExecutor(fake, "i-1"), "my-bucket", "new-data/backup.sql", testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -214,7 +214,7 @@ func TestBuildRestoreSQLCommands_DropTerminatesOtherSessionsFirst(t *testing.T) 
 
 func TestDetectExistingSQLData_ExistingDatabase(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "1\n"}
-	got, err := detectExistingSQLData(context.Background(), fake, "i-1", "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
+	got, err := detectExistingSQLData(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestDetectExistingSQLData_ExistingDatabase(t *testing.T) {
 
 func TestDetectExistingSQLData_NoDatabase(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: ""}
-	got, err := detectExistingSQLData(context.Background(), fake, "i-1", "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
+	got, err := detectExistingSQLData(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestDetectExistingSQLData_NoDatabase(t *testing.T) {
 
 func TestDetectExistingSQLData_SSMFailure(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed, stdout: "boom"}
-	_, err := detectExistingSQLData(context.Background(), fake, "i-1", "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
+	_, err := detectExistingSQLData(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -244,7 +244,7 @@ func TestDetectExistingSQLData_SSMFailure(t *testing.T) {
 
 func TestCountRestoredTables_ParsesCount(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "42\n"}
-	got, err := countRestoredTables(context.Background(), fake, "i-1", "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
+	got, err := countRestoredTables(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestCountRestoredTables_ParsesCount(t *testing.T) {
 
 func TestCountRestoredTables_SSMFailure(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	_, err := countRestoredTables(context.Background(), fake, "i-1", "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
+	_, err := countRestoredTables(context.Background(), NewSSMExecutor(fake, "i-1"), "caltechauthors-db-1", "caltechauthors", "caltechauthors", testPollInterval, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

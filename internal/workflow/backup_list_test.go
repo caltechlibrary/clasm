@@ -86,7 +86,7 @@ func TestListBackupFiles_Success(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess,
 		stdout: "1024\t1751328000\t/opt/rdm_sql_backups/foo.sql.gz\n"}
 
-	got, err := ListBackupFiles(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", time.Second, testPollInterval)
+	got, err := ListBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestListBackupFiles_Success(t *testing.T) {
 
 func TestListBackupFiles_CommandFailure(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	_, err := ListBackupFiles(context.Background(), fake, "i-1", "/opt/rdm_sql_backups", time.Second, testPollInterval)
+	_, err := ListBackupFiles(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_sql_backups", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error when the list command fails")
 	}

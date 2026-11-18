@@ -26,7 +26,7 @@ import (
 
 func TestCheckDockerAvailable_FoundIsNil(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess, stdout: "/usr/bin/docker"}
-	if err := CheckDockerAvailable(context.Background(), fake, "i-1", time.Second, testPollInterval); err != nil {
+	if err := CheckDockerAvailable(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fake.sentCommands) != 1 || !strings.Contains(fake.sentCommands[0], "command -v docker") {
@@ -36,7 +36,7 @@ func TestCheckDockerAvailable_FoundIsNil(t *testing.T) {
 
 func TestCheckDockerAvailable_MissingNamesDockerAndWhy(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := CheckDockerAvailable(context.Background(), fake, "i-1", time.Second, testPollInterval)
+	err := CheckDockerAvailable(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -52,7 +52,7 @@ func TestCheckDockerAvailable_MissingNamesDockerAndWhy(t *testing.T) {
 
 func TestCheckDockerAvailable_TransportErrorPropagates(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", sendCommandErr: errUnavailable}
-	if err := CheckDockerAvailable(context.Background(), fake, "i-1", time.Second, testPollInterval); !errors.Is(err, errUnavailable) {
+	if err := CheckDockerAvailable(context.Background(), NewSSMExecutor(fake, "i-1"), time.Second, testPollInterval); !errors.Is(err, errUnavailable) {
 		t.Fatalf("want errUnavailable, got: %v", err)
 	}
 }

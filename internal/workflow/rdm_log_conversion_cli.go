@@ -199,7 +199,7 @@ func RunConvertLogIndicesCLI(ctx context.Context, w, eout io.Writer, ssmClients 
 	if err != nil {
 		return err
 	}
-	plan, err := DiscoverLogConversion(ctx, ssmClient, inst, wait, poll)
+	plan, err := DiscoverLogConversion(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), wait, poll)
 	if err != nil {
 		writeIndexJSONError(w, format, err)
 		return err
@@ -218,7 +218,7 @@ func RunConvertLogIndicesCLI(ctx context.Context, w, eout io.Writer, ssmClients 
 		}
 		production = isProductionInstance(live)
 	}
-	return convertWithGate(ctx, w, eout, newSSMIndexOps(ssmClient, inst.InstanceID, poll, DefaultReindexTimeout), plan, inst, production, confirms, interactive, input, output, format)
+	return convertWithGate(ctx, w, eout, newIndexOps(NewSSMExecutor(ssmClient, inst.InstanceID), poll, DefaultReindexTimeout), plan, inst, production, confirms, interactive, input, output, format)
 }
 
 // ConvertLogIndicesMenu is the interactive Convert Log Indices leaf: pick an instance and run the form's

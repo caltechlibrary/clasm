@@ -624,13 +624,13 @@ func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, erro
 // runIndexScript sends one RDM index script to an instance through SSM and splits its output into
 // sections. An instance SSM cannot reach is 69; a script that did not succeed is 70, since the
 // scripts end successfully on every known condition.
-func runIndexScript(ctx context.Context, client awsclient.SSMAPI, instanceID, what, script string, timeout, poll time.Duration) (map[string]string, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, script, timeout, poll)
+func runIndexScript(ctx context.Context, ex Executor, what, script string, timeout, poll time.Duration) (map[string]string, error) {
+	stdout, status, err := ex.Run(ctx, script, timeout, poll)
 	if err != nil {
-		return nil, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running %s on %s through SSM: %w", what, instanceID, err)}
+		return nil, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running %s on %s through SSM: %w", what, ex.Name(), err)}
 	}
 	if status != "Success" {
-		return nil, &ExitCodeError{Code: ExitInternal, Err: fmt.Errorf("%s script failed on %s (SSM status %s): %s", what, instanceID, status, strings.TrimSpace(stdout))}
+		return nil, &ExitCodeError{Code: ExitInternal, Err: fmt.Errorf("%s script failed on %s (SSM status %s): %s", what, ex.Name(), status, strings.TrimSpace(stdout))}
 	}
 	return splitIndexHealthSections(stdout), nil
 }
@@ -642,21 +642,21 @@ func runIndexScript(ctx context.Context, client awsclient.SSMAPI, instanceID, wh
 // cannot be read, 70 for a script that failed.
 //
 // @param ctx {context.Context} cancels the SSM command
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param inst {inventory.Instance} the instance to check
+// @param ex {Executor} the host to check
+// @param instanceName {string} the host's name, for the report
 // @param wait {time.Duration} how long to wait for OpenSearch to answer; zero checks once
 // @param poll {time.Duration} how often to poll SSM for the command's result
 // @returns {IndexHealthReport, error} the verdict, or an *ExitCodeError naming why none could be made
 // @example
 //
-//	report, err := CheckRDMIndexHealth(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
-func CheckRDMIndexHealth(ctx context.Context, client awsclient.SSMAPI, inst inventory.Instance, wait, poll time.Duration) (IndexHealthReport, error) {
-	sections, err := runIndexScript(ctx, client, inst.InstanceID, "the index health check", buildIndexHealthCommand(wait), wait+indexHealthScriptSlack, poll)
+//	report, err := CheckRDMIndexHealth(ctx, ex, "caltechauthors-v13", DefaultIndexHealthWait, DefaultSSMPollInterval)
+func CheckRDMIndexHealth(ctx context.Context, ex Executor, instanceName string, wait, poll time.Duration) (IndexHealthReport, error) {
+	sections, err := runIndexScript(ctx, ex, "the index health check", buildIndexHealthCommand(wait), wait+indexHealthScriptSlack, poll)
 	if err != nil {
 		return IndexHealthReport{}, err
 	}
 	report, err := buildIndexHealthReport(sections)
-	report.InstanceID, report.Instance = inst.InstanceID, inst.Name
+	report.InstanceID, report.Instance = ex.Name(), instanceName
 	return report, err
 }
 
@@ -852,7 +852,7 @@ func RunRDMIndexHealthCLI(ctx context.Context, w io.Writer, clients map[string]a
 	if err != nil {
 		return err
 	}
-	report, err := CheckRDMIndexHealth(ctx, client, inst, wait, poll)
+	report, err := CheckRDMIndexHealth(ctx, NewSSMExecutor(client, inst.InstanceID), inst.Name, wait, poll)
 	if err != nil {
 		writeIndexJSONError(w, format, err)
 		return err
@@ -898,7 +898,7 @@ func rdmIndexHealthForInstance(ctx context.Context, w io.Writer, clients map[str
 		return err
 	}
 	fmt.Fprintf(w, "Checking %s (%s); waiting up to %s for OpenSearch to answer...\n", inst.Name, inst.InstanceID, DefaultIndexHealthWait)
-	report, err := CheckRDMIndexHealth(ctx, client, inst, DefaultIndexHealthWait, DefaultSSMPollInterval)
+	report, err := CheckRDMIndexHealth(ctx, NewSSMExecutor(client, inst.InstanceID), inst.Name, DefaultIndexHealthWait, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}

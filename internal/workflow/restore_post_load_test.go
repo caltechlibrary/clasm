@@ -195,7 +195,7 @@ func TestNewPostRestoreSteps_AreTheRealOnes(t *testing.T) {
 			{substring: "sec templates_ds", stdout: cvDiscoveryStdout(cvHealthy), status: types.CommandInvocationStatusSuccess},
 		}}
 	var out bytes.Buffer
-	if err := runPostRestoreRepair(context.Background(), &out, boxInstance(), newPostRestoreSteps(ssm, boxInstance())); err != nil {
+	if err := runPostRestoreRepair(context.Background(), &out, boxInstance(), newPostRestoreSteps(NewSSMExecutor(ssm, boxInstance().InstanceID), boxInstance().Name)); err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
 	order := []string{"LIVE_TEMPLATES", "sec templates_ds", "sec agg_audit"}

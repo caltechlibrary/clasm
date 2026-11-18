@@ -100,7 +100,7 @@ func inspectRestoreLocations(ctx context.Context, guard RestoreGuardClients, ssm
 	if err != nil {
 		return restoreLocationReport{}, err
 	}
-	locs, err := ScanBackupFileLocations(ctx, ssmClient, inst.InstanceID, bucket, key)
+	locs, err := ScanBackupFileLocations(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), bucket, key)
 	if err != nil {
 		return restoreLocationReport{}, err
 	}
@@ -114,8 +114,8 @@ func inspectRestoreLocations(ctx context.Context, guard RestoreGuardClients, ssm
 // recheck reads the file locations of the downloaded file and refuses if it names
 // an S3 bucket the report did not judge. The scan and the download are two reads
 // of one object; this closes the gap between them, before anything is dropped.
-func (r restoreLocationReport) recheck(ctx context.Context, ssmClient awsclient.SSMAPI, instanceID, sqlPath string) error {
-	locs, err := ScanLocalFileLocations(ctx, ssmClient, instanceID, sqlPath)
+func (r restoreLocationReport) recheck(ctx context.Context, ex Executor, sqlPath string) error {
+	locs, err := ScanLocalFileLocations(ctx, ex, sqlPath)
 	if err != nil {
 		return fmt.Errorf("re-reading the downloaded backup's file locations failed, so nothing was dropped: %w", err)
 	}

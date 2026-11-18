@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
 	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
@@ -49,13 +47,13 @@ func checkCloudInitCompletion(ctx context.Context, client awsclient.SSMAPI, inst
 		return CloudInitCheckResult{Skipped: true}, nil
 	}
 
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, "cloud-init status --wait --long", commandTimeout, pollInterval)
+	stdout, status, err := NewSSMExecutor(client, instanceID).Run(ctx, "cloud-init status --wait --long", commandTimeout, pollInterval)
 	if err != nil {
 		return CloudInitCheckResult{}, err
 	}
 	detail := cloudInitErrorText(stdout)
 	switch {
-	case status == types.CommandInvocationStatusSuccess && cloudInitStatusLine(stdout) == "done":
+	case status == StatusSuccess && cloudInitStatusLine(stdout) == "done":
 		return CloudInitCheckResult{Status: "done"}, nil
 	case cloudInitStatusLine(stdout) == "degraded" && !cloudInitHasErrors(stdout):
 		return CloudInitCheckResult{Status: "degraded", Detail: detail}, nil

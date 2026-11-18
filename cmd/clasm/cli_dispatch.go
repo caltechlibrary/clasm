@@ -294,7 +294,7 @@ func preflightForArchive(ctx context.Context, eout io.Writer, ssmClients map[str
 		fmt.Fprintf(eout, "%v\n", err)
 		return nil, nil, err
 	}
-	if err := workflow.CheckAWSCLIAvailable(ctx, ssmClient, inst.InstanceID, workflow.DefaultBackupListTimeout, workflow.DefaultSSMPollInterval); err != nil {
+	if err := workflow.CheckAWSCLIAvailable(ctx, workflow.NewSSMExecutor(ssmClient, inst.InstanceID), workflow.DefaultBackupListTimeout, workflow.DefaultSSMPollInterval); err != nil {
 		fmt.Fprintf(eout, "%v\n", err)
 		return nil, nil, err
 	}

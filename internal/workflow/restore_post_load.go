@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/inventory"
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
@@ -45,28 +44,28 @@ type postRestoreSteps struct {
 	health   func(ctx context.Context) (IndexHealthReport, error)
 }
 
-// newPostRestoreSteps builds the real steps for inst over client.
+// newPostRestoreSteps builds the real steps for a host.
 //
-// @param client {awsclient.SSMAPI} the SSM client for the instance's region
-// @param inst {inventory.Instance} the instance that was just restored
+// @param ex {Executor} the host that was just restored
+// @param instanceName {string} the host's name, for the reports
 // @returns {postRestoreSteps} the install, discovery, conversion and health check
 // @example
 //
-//	err := runPostRestoreRepair(ctx, os.Stdout, inst, newPostRestoreSteps(client, inst))
-func newPostRestoreSteps(client awsclient.SSMAPI, inst inventory.Instance) postRestoreSteps {
+//	err := runPostRestoreRepair(ctx, os.Stdout, inst, newPostRestoreSteps(ex, inst.Name))
+func newPostRestoreSteps(ex Executor, instanceName string) postRestoreSteps {
 	poll := DefaultSSMPollInterval
 	return postRestoreSteps{
 		install: func(ctx context.Context) (IndexTemplateInstallReport, error) {
-			return InstallRDMIndexTemplates(ctx, client, inst, postRestoreWait, poll)
+			return InstallRDMIndexTemplates(ctx, ex, instanceName, postRestoreWait, poll)
 		},
 		discover: func(ctx context.Context) (conversionPlan, error) {
-			return DiscoverLogConversion(ctx, client, inst, postRestoreWait, poll)
+			return DiscoverLogConversion(ctx, ex, postRestoreWait, poll)
 		},
 		convert: func(ctx context.Context, w io.Writer, plan conversionPlan) ([]logResult, error) {
-			return ConvertLogIndices(ctx, w, newSSMIndexOps(client, inst.InstanceID, poll, DefaultReindexTimeout), plan)
+			return ConvertLogIndices(ctx, w, newIndexOps(ex, poll, DefaultReindexTimeout), plan)
 		},
 		health: func(ctx context.Context) (IndexHealthReport, error) {
-			return CheckRDMIndexHealth(ctx, client, inst, postRestoreWait, poll)
+			return CheckRDMIndexHealth(ctx, ex, instanceName, postRestoreWait, poll)
 		},
 	}
 }

@@ -7,10 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 )
 
 // UploadResult is one file's outcome from the remote upload script --
@@ -119,7 +115,7 @@ type UploadProgress struct {
 // An individual file reporting FAIL inside its own command was always a
 // normal, expected outcome returned to the caller to report, and is
 // unchanged.
-func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID string, files []BackupFile, bucket, prefix string, timeout, pollInterval time.Duration, onProgress func(UploadProgress)) ([]UploadResult, error) {
+func UploadBackupFiles(ctx context.Context, ex Executor, files []BackupFile, bucket, prefix string, timeout, pollInterval time.Duration, onProgress func(UploadProgress)) ([]UploadResult, error) {
 	var bytesTotal int64
 	for _, f := range files {
 		bytesTotal += f.SizeBytes
@@ -129,7 +125,7 @@ func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID 
 	var bytesDone int64
 	for i, f := range files {
 		result := UploadResult{Key: uploadKey(prefix, f.Path)}
-		stdout, status, err := RunShellCommand(ctx, client, instanceID, buildUploadCommand([]BackupFile{f}, bucket, prefix), timeout, pollInterval)
+		stdout, status, err := ex.Run(ctx, buildUploadCommand([]BackupFile{f}, bucket, prefix), timeout, pollInterval)
 		switch {
 		case ctx.Err() != nil:
 			// The operator cancelled (or an outer deadline fired) --
@@ -139,7 +135,7 @@ func UploadBackupFiles(ctx context.Context, client awsclient.SSMAPI, instanceID 
 				err = ctx.Err()
 			}
 			return nil, err
-		case err != nil || status != ssmtypes.CommandInvocationStatusSuccess:
+		case err != nil || status != StatusSuccess:
 			// This one file failed; every other file still gets its turn.
 		default:
 			if parsed := parseUploadResults(stdout); len(parsed) == 1 {

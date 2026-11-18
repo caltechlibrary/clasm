@@ -30,7 +30,7 @@ func TestBuildSyncCommand(t *testing.T) {
 
 func TestSyncOpenSearchBackupsToS3_PropagatesFailedStatus(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed}
-	err := SyncOpenSearchBackupsToS3(context.Background(), fake, "i-1", "/opt/rdm_opensearch_backups", "my-bucket", "caltechauthors", "rdm-1", time.Second, testPollInterval)
+	err := SyncOpenSearchBackupsToS3(context.Background(), NewSSMExecutor(fake, "i-1"), "/opt/rdm_opensearch_backups", "my-bucket", "caltechauthors", "rdm-1", time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error for a failed SSM status")
 	}

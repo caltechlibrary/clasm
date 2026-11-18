@@ -44,7 +44,7 @@ func TestDataStreamOfBackingIndex(t *testing.T) {
 
 func TestDeleteConflictingIndices_BackingIndexGoesThroughTheDataStreamAPI(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	err := DeleteConflictingIndices(context.Background(), fake, "i-1",
+	err := DeleteConflictingIndices(context.Background(), NewSSMExecutor(fake, "i-1"),
 		[]string{auditBackingIndex, "caltechdata-users-user-v3.0.0"}, time.Second, testPollInterval)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -63,7 +63,7 @@ func TestDeleteConflictingIndices_BackingIndexGoesThroughTheDataStreamAPI(t *tes
 // also deleted by name, after the streams, tolerating "already gone".
 func TestDeleteConflictingIndices_AnOrphanedBackingIndexIsAlsoDeletedByName(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusSuccess}
-	if err := DeleteConflictingIndices(context.Background(), fake, "i-1", []string{auditBackingIndex}, time.Second, testPollInterval); err != nil {
+	if err := DeleteConflictingIndices(context.Background(), NewSSMExecutor(fake, "i-1"), []string{auditBackingIndex}, time.Second, testPollInterval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fake.sentCommands) != 2 {
@@ -87,7 +87,7 @@ func TestBuildDeleteIndicesCommand_ToleratesAlreadyDeletedIndices(t *testing.T) 
 func TestDeleteConflictingIndices_DataStreamFailureNamesTheStream(t *testing.T) {
 	fake := &fakeSSMClient{commandID: "cmd-1", finalStatus: types.CommandInvocationStatusFailed,
 		stdout: `{"error":{"root_cause":[{"type":"resource_not_found_exception","reason":"no such data stream"}],"type":"resource_not_found_exception","reason":"no such data stream"},"status":404}`}
-	err := DeleteConflictingIndices(context.Background(), fake, "i-1", []string{auditBackingIndex}, time.Second, testPollInterval)
+	err := DeleteConflictingIndices(context.Background(), NewSSMExecutor(fake, "i-1"), []string{auditBackingIndex}, time.Second, testPollInterval)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -160,7 +160,7 @@ func TestOpenSearchErrorReason(t *testing.T) {
 
 func TestCurlFailureError_LeadsWithTheOpenSearchReasonNotRawJSON(t *testing.T) {
 	stdout := `{"error":{"root_cause":[{"type":"index_not_found_exception","reason":"no such index [a-b]","index":"a-b"}],"type":"index_not_found_exception","reason":"no such index [a-b]","index":"a-b"},"status":404}`
-	err := curlFailureError("restore recovery check on i-1 failed", types.CommandInvocationStatusFailed, stdout)
+	err := curlFailureError("restore recovery check on i-1 failed", StatusFailed, stdout)
 	msg := err.Error()
 	if !strings.Contains(msg, "no such index [a-b]") {
 		t.Errorf("message should carry OpenSearch's reason, got: %s", msg)

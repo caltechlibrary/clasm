@@ -7,9 +7,6 @@ import (
 	"strings"
 	"time"
 
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-
-	"github.com/caltechlibrary/clasm/internal/awsclient"
 	"github.com/caltechlibrary/clasm/internal/config"
 )
 
@@ -50,13 +47,13 @@ const DefaultRDMPostgresDiscoveryTimeout = 2 * time.Minute
 // command is included in the error text so the operator can investigate
 // by hand (matching ResizeInstanceRootVolume's own manual-fallback
 // precedent for an unrecognized layout).
-func discoverPostgresContainer(ctx context.Context, client awsclient.SSMAPI, instanceID string, timeout, pollInterval time.Duration) (string, error) {
-	stdout, status, err := RunShellCommand(ctx, client, instanceID, dockerPSCommand, timeout, pollInterval)
+func discoverPostgresContainer(ctx context.Context, ex Executor, timeout, pollInterval time.Duration) (string, error) {
+	stdout, status, err := ex.Run(ctx, dockerPSCommand, timeout, pollInterval)
 	if err != nil {
 		return "", err
 	}
-	if status != ssmtypes.CommandInvocationStatusSuccess {
-		return "", fmt.Errorf("discovering the Postgres container on %s failed (status: %s) -- checked via: %s", instanceID, status, dockerPSCommand)
+	if status != StatusSuccess {
+		return "", fmt.Errorf("discovering the Postgres container on %s failed (status: %s) -- checked via: %s", ex.Name(), status, dockerPSCommand)
 	}
 
 	var names []string
@@ -75,11 +72,11 @@ func discoverPostgresContainer(ctx context.Context, client awsclient.SSMAPI, ins
 	}
 	switch len(names) {
 	case 0:
-		return "", fmt.Errorf("no running Postgres container found on %s -- checked via: %s", instanceID, dockerPSCommand)
+		return "", fmt.Errorf("no running Postgres container found on %s -- checked via: %s", ex.Name(), dockerPSCommand)
 	case 1:
 		return names[0], nil
 	default:
-		return "", fmt.Errorf("more than one running Postgres container found on %s (%s) -- resolve manually, checked via: %s", instanceID, strings.Join(names, ", "), dockerPSCommand)
+		return "", fmt.Errorf("more than one running Postgres container found on %s (%s) -- resolve manually, checked via: %s", ex.Name(), strings.Join(names, ", "), dockerPSCommand)
 	}
 }
 
@@ -100,8 +97,8 @@ func discoverPostgresContainer(ctx context.Context, client awsclient.SSMAPI, ins
 // existing config-loading pattern; a config-write failure is a
 // convenience lost, not a reason to abort the backup/restore itself
 // (same spirit as BackupHistory.Save).
-func resolveRDMPostgresConfig(ctx context.Context, w io.Writer, client awsclient.SSMAPI, instanceID, instanceName, fallbackIdentifier string, rules []config.RDMPostgresRule, timeout, pollInterval time.Duration) (containerName, dbName, dbUser string, updatedRules []config.RDMPostgresRule, err error) {
-	containerName, err = discoverPostgresContainer(ctx, client, instanceID, timeout, pollInterval)
+func resolveRDMPostgresConfig(ctx context.Context, w io.Writer, ex Executor, instanceName, fallbackIdentifier string, rules []config.RDMPostgresRule, timeout, pollInterval time.Duration) (containerName, dbName, dbUser string, updatedRules []config.RDMPostgresRule, err error) {
+	containerName, err = discoverPostgresContainer(ctx, ex, timeout, pollInterval)
 	if err != nil {
 		return "", "", "", nil, err
 	}
