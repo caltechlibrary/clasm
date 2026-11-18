@@ -433,3 +433,65 @@ func TestVMUserData_NamesWhatHoldsUserData(t *testing.T) {
 		}
 	}
 }
+
+func TestRun_ASettingThatIsAlreadyRightIsLeftAloneEvenWhenSettingIsAsked(t *testing.T) {
+	dir := t.TempDir()
+	p := writeFile(t, dir, "site/.env", "INVENIO_MAIL_SUPPRESS_SEND=True\n")
+	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, SetMailSuppression: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p + ".clasm-bak"); err == nil {
+		t.Error("a file that was already right must not be touched or backed up")
+	}
+	if strings.Contains(fs[0].Detail, "set by clasm") {
+		t.Errorf("nothing was set: %q", fs[0].Detail)
+	}
+}
+
+// ---- containers ----
+
+// fakeDocker puts a docker on PATH whose inspect output has the shape the real
+// one prints for the format the check asks for: a name line, then one
+// environment line each, then a blank line.
+func fakeDocker(t *testing.T, inspectOutput string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/bash\ncase \"$1\" in\n  ps) echo abc123; echo def456;;\n  inspect) cat <<'EOT'\n" + inspectOutput + "EOT\n;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestCheckNoProductionCredentials_ReadsEveryContainersEnvironmentNamesOnlyAndOnlyWhenAsked(t *testing.T) {
+	fakeDocker(t, "/web\nFOO=1\nINVENIO_S3_ACCESS_KEY_ID="+secretValue+"\nINVENIO_MAIL_PASSWORD=\n\n/db\nPOSTGRES_PASSWORD=x\n\n")
+	dir := t.TempDir()
+	o := Options{EnvGlobs: []string{dir + "/x/.env"}, HomeGlobs: []string{dir + "/h/*"}}
+	if f, _ := CheckNoProductionCredentials(context.Background(), ex, o); !f.OK {
+		t.Errorf("containers are not read unless asked: %+v", f)
+	}
+	o.Docker = true
+	f, err := CheckNoProductionCredentials(context.Background(), ex, o)
+	if err != nil || f.OK {
+		t.Fatalf("%+v err=%v", f, err)
+	}
+	if !strings.Contains(f.Detail, "docker:/web: INVENIO_S3_ACCESS_KEY_ID") {
+		t.Errorf("want the container and the name:\n%s", f.Detail)
+	}
+	if strings.Contains(f.Detail, secretValue) {
+		t.Error("a value leaked")
+	}
+	if strings.Contains(f.Detail, "INVENIO_MAIL_PASSWORD") || strings.Contains(f.Detail, "POSTGRES_PASSWORD") || strings.Contains(f.Detail, "/db") {
+		t.Errorf("an empty value and an unrelated password are not production credentials:\n%s", f.Detail)
+	}
+}
+
+func TestCheckNoProductionCredentials_NoDockerOnTheVMIsNotAnError(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin") // may hold a docker on a developer's Mac; the check tolerates either
+	dir := t.TempDir()
+	f, err := CheckNoProductionCredentials(context.Background(), ex, Options{EnvGlobs: []string{dir + "/x/.env"}, HomeGlobs: []string{dir + "/h/*"}, Docker: true})
+	if err != nil {
+		t.Errorf("err = %v (finding %+v)", err, f)
+	}
+}
