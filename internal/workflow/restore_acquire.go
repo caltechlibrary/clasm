@@ -128,3 +128,70 @@ func NeedsDecompression(key string) bool { return needsDecompression(key) }
 func DecompressRestoreDownloadCommand() string {
 	return fmt.Sprintf("{ set -e; gunzip -c %s > %s; } 2>&1", shellQuote(RestoreDownloadPath), shellQuote(RestoreSQLPath))
 }
+
+// DiscoverPostgresContainer finds the one running Postgres container on a host.
+//
+// @param ctx {context.Context} cancels the lookup
+// @param ex {Executor} reaches the host
+// @returns {string} the container name
+// @returns {error} none or several found, or why the host could not be asked
+// @example
+//
+//	name, err := DiscoverPostgresContainer(ctx, ex)
+func DiscoverPostgresContainer(ctx context.Context, ex Executor) (string, error) {
+	return discoverPostgresContainer(ctx, ex, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+}
+
+// DetectExistingSQLData reports whether the database already holds tables, which
+// a restore would drop.
+//
+// @param ctx {context.Context} cancels the check
+// @param ex {Executor} reaches the host
+// @param containerName {string} the Postgres container
+// @param dbName {string} the database
+// @param dbUser {string} the database user
+// @returns {bool} true when there is data to be replaced
+// @returns {error} why it could not be checked
+// @example
+//
+//	has, err := DetectExistingSQLData(ctx, ex, "db-1", "caltechauthors", "postgres")
+func DetectExistingSQLData(ctx context.Context, ex Executor, containerName, dbName, dbUser string) (bool, error) {
+	return detectExistingSQLData(ctx, ex, containerName, dbName, dbUser, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+}
+
+// OpenSearchRestorePlan is what an OpenSearch restore onto a host will use and
+// replace.
+type OpenSearchRestorePlan struct {
+	Owner    ServiceOwner
+	Indices  []string // the index patterns to restore
+	Existing []string // indices already on the host that the restore would delete and replace
+}
+
+// PlanOpenSearchRestore looks up the service owner, refuses one that cannot own
+// the OpenSearch repository, and lists the index patterns a restore of
+// indexPrefix covers and the indices already on the host that match them. It
+// changes nothing.
+//
+// @param ctx {context.Context} cancels the plan
+// @param ex {Executor} reaches the host
+// @param indexPrefix {string} the prefix the indices carry in the snapshot, such as caltechauthors
+// @returns {OpenSearchRestorePlan} the owner, patterns and conflicting indices
+// @returns {error} why the host cannot take the restore
+// @example
+//
+//	plan, err := PlanOpenSearchRestore(ctx, ex, "caltechauthors")
+func PlanOpenSearchRestore(ctx context.Context, ex Executor, indexPrefix string) (OpenSearchRestorePlan, error) {
+	owner, err := ResolveServiceOwner(ctx, ex, DefaultOwnershipTimeout, DefaultSSMPollInterval)
+	if err != nil {
+		return OpenSearchRestorePlan{}, err
+	}
+	if err := CheckOwnerMatchesOpenSearch(owner); err != nil {
+		return OpenSearchRestorePlan{}, err
+	}
+	indices := rdmOpenSearchSnapshotIndexPatterns(indexPrefix)
+	existing, err := detectExistingOpenSearchIndices(ctx, ex, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
+	if err != nil {
+		return OpenSearchRestorePlan{}, err
+	}
+	return OpenSearchRestorePlan{Owner: owner, Indices: indices, Existing: existing}, nil
+}

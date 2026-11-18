@@ -648,8 +648,14 @@ func TestRun_ADataCitePasswordIsStillRefusedWhenTheSafeguardsAreSet(t *testing.T
 	if !errors.As(err, &refused) {
 		t.Fatalf("err = %v", err)
 	}
-	if !strings.Contains(err.Error(), "INVENIO_DATACITE_PASSWORD") {
-		t.Errorf("the refusal should name the password setting: %v", err)
+	found := false
+	for _, f := range refused.Findings {
+		if !f.OK && strings.Contains(f.Detail, "INVENIO_DATACITE_PASSWORD") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a finding should name the password setting: %+v", refused.Findings)
 	}
 }
 
@@ -675,5 +681,110 @@ func TestOptionsDefaultsAreTheRDMHostLayout(t *testing.T) {
 	o := Options{}.withDefaults()
 	if o.HostsFile != "/etc/hosts" || o.DiskPath != "/var/tmp" || len(o.EnvGlobs) != 1 || o.EnvGlobs[0] != "/Sites/*/.env" || len(o.HomeGlobs) != 2 || len(o.CredentialGlobs) != 1 {
 		t.Errorf("defaults = %+v", o)
+	}
+}
+
+// ---- the application is stopped ----
+
+// fakeSystemctl puts a systemctl on PATH that reports each unit named on the
+// command line as the state given for it (default inactive), one per line, and
+// exits 3 unless every unit is active, as the real is-active does.
+func fakeSystemctl(t *testing.T, states map[string]string) {
+	t.Helper()
+	var cases strings.Builder
+	for unit, st := range states {
+		cases.WriteString("    " + unit + ") echo " + st + ";;\n")
+	}
+	script := "#!/bin/bash\n[ \"$1\" = is-active ] || exit 1\nshift\nfor u in \"$@\"; do\n  case \"$u\" in\n" + cases.String() + "    *) echo inactive;;\n  esac\ndone\nexit 3\n"
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestCheckAppStopped_AnyRunningOrStartingUnitIsRefusedAndNamed(t *testing.T) {
+	for _, st := range []string{"active", "activating", "reloading"} {
+		fakeSystemctl(t, map[string]string{"rdm.service": "inactive", "rdm_celery.service": st})
+		f, err := CheckAppStopped(context.Background(), ex, nil)
+		if err != nil || f.OK || !strings.Contains(f.Detail, "rdm_celery.service") || !strings.Contains(f.Detail, st) {
+			t.Errorf("%s: %+v err=%v", st, f, err)
+		}
+		if !strings.Contains(f.Detail, "systemctl stop") {
+			t.Errorf("the finding should say how to stop it: %s", f.Detail)
+		}
+	}
+}
+
+func TestCheckAppStopped_AllInactiveOrFailedIsOKAndTheDefaultUnitsAreTheRDMOnes(t *testing.T) {
+	fakeSystemctl(t, map[string]string{"rdm.service": "inactive", "rdm_rest.service": "failed", "rdm_celery.service": "inactive"})
+	f, err := CheckAppStopped(context.Background(), ex, nil)
+	if err != nil || !f.OK {
+		t.Errorf("%+v err=%v", f, err)
+	}
+	fakeSystemctl(t, map[string]string{"rdm_rest.service": "active"})
+	if f, _ := CheckAppStopped(context.Background(), ex, nil); f.OK {
+		t.Error("rdm_rest.service is one of the default units")
+	}
+	fakeSystemctl(t, map[string]string{"other.service": "active"})
+	if f, _ := CheckAppStopped(context.Background(), ex, []string{"other.service"}); f.OK {
+		t.Error("an explicit unit list is honoured")
+	}
+}
+
+func TestCheckAppStopped_AUnitNameThatCouldInjectACommandIsRefused(t *testing.T) {
+	for _, bad := range []string{"rdm; id", "a b", "$(id)", "../x", ""} {
+		if _, err := CheckAppStopped(context.Background(), ex, []string{bad}); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+}
+
+func TestRun_RequireAppStoppedAddsAFifthCheckAndOnlyWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	env := writeFile(t, dir, "site/.env", safeEnv)
+	o := Options{EnvGlobs: []string{env}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hostsFile(t, dir, true)}
+	fakeSystemctl(t, map[string]string{"rdm.service": "active"})
+	if fs, err := Run(context.Background(), ex, o); err != nil || len(fs) != 4 {
+		t.Fatalf("not asked: %d findings, err %v", len(fs), err)
+	}
+	o.RequireAppStopped = true
+	fs, err := Run(context.Background(), ex, o)
+	var refused *RefusedError
+	if !errors.As(err, &refused) || len(fs) != 5 || fs[4].OK {
+		t.Fatalf("a running app must be refused: %+v err=%v", fs, err)
+	}
+	fakeSystemctl(t, map[string]string{})
+	if fs, err := Run(context.Background(), ex, o); err != nil || len(fs) != 5 || !fs[4].OK {
+		t.Errorf("stopped: %+v err=%v", fs, err)
+	}
+}
+
+type cannedExecutor struct{ stdout string }
+
+func (c cannedExecutor) Run(ctx context.Context, command string, timeout, poll time.Duration) (string, executor.CommandStatus, error) {
+	return c.stdout, executor.StatusSuccess, nil
+}
+func (cannedExecutor) Put(ctx context.Context, l, r string) error { return nil }
+func (cannedExecutor) Get(ctx context.Context, r, l string) error { return nil }
+func (cannedExecutor) Name() string                               { return "canned" }
+
+func TestCheckAppStopped_StatesThatCannotBeReadAreNotTakenAsStopped(t *testing.T) {
+	for _, out := range []string{"", "inactive\n", "inactive\ninactive\n"} { // fewer states than units
+		f, err := CheckAppStopped(context.Background(), cannedExecutor{stdout: out}, nil)
+		if err != nil || f.OK || !strings.Contains(f.Detail, "could not read") {
+			t.Errorf("%q: %+v err=%v", out, f, err)
+		}
+	}
+	if f, _ := CheckAppStopped(context.Background(), cannedExecutor{stdout: "inactive\nfailed\ninactive\n"}, nil); !f.OK {
+		t.Errorf("three states for three units is readable: %+v", f)
+	}
+}
+
+func TestRefusedError_NamesTheFailedChecksOnly(t *testing.T) {
+	e := &RefusedError{Findings: []Finding{{Check: "a", OK: false, Detail: "d1\nd2"}, {Check: "b", OK: true, Detail: "fine"}, {Check: "c", OK: false, Detail: "d3"}}}
+	msg := e.Error()
+	if !strings.Contains(msg, "a") || !strings.Contains(msg, "c") || strings.Contains(msg, "d1") || strings.Contains(msg, "fine") || strings.Contains(msg, "\n") || !strings.Contains(msg, "2") {
+		t.Errorf("message = %q", msg)
 	}
 }

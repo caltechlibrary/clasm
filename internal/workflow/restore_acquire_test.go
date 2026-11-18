@@ -246,3 +246,51 @@ func TestNeedsDecompression_IsExportedAndBySuffix(t *testing.T) {
 		t.Error("by .gz suffix")
 	}
 }
+
+// ---- planning helpers for another host's orchestrator ----
+
+func TestDiscoverPostgresContainer_FindsTheOnePostgresContainer(t *testing.T) {
+	ex := &routedExecutor{name: "vm-1", responses: []ssmCommandResponse{{substring: "docker ps", stdout: "opensearchproject/opensearch:2\tsearch-1\npostgres:14\tdb-1\nredis:7\tcache\n", status: types.CommandInvocationStatusSuccess}}}
+	got, err := DiscoverPostgresContainer(context.Background(), ex)
+	if err != nil || got != "db-1" {
+		t.Errorf("got %q err %v", got, err)
+	}
+}
+
+func TestDetectExistingSQLData_ReportsWhetherTheDatabaseHoldsTables(t *testing.T) {
+	has := &routedExecutor{name: "vm-1", responses: []ssmCommandResponse{{substring: "docker exec", stdout: "1\n", status: types.CommandInvocationStatusSuccess}}}
+	if got, err := DetectExistingSQLData(context.Background(), has, "db-1", "caltechauthors", "postgres"); err != nil || !got {
+		t.Errorf("has data: %v %v", got, err)
+	}
+	empty := &routedExecutor{name: "vm-1", responses: []ssmCommandResponse{{substring: "docker exec", stdout: "\n", status: types.CommandInvocationStatusSuccess}}}
+	if got, err := DetectExistingSQLData(context.Background(), empty, "db-1", "caltechauthors", "postgres"); err != nil || got {
+		t.Errorf("empty: %v %v", got, err)
+	}
+}
+
+func TestPlanOpenSearchRestore_ResolvesTheOwnerThePatternsAndTheConflictingIndices(t *testing.T) {
+	ex := &routedExecutor{name: "vm-1", responses: []ssmCommandResponse{
+		{substring: "id -u", stdout: "1000 1001\n", status: types.CommandInvocationStatusSuccess},
+		{substring: "_cat/indices", stdout: "caltechauthors-rdmrecords-records-record-v7.0.0\ncaltechauthors-users-user-v2.0.0\nother-thing\n.ds-caltechauthors-job-logs-000001\n", status: types.CommandInvocationStatusSuccess},
+	}}
+	p, err := PlanOpenSearchRestore(context.Background(), ex, "caltechauthors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Owner.UID != 1000 || p.Owner.GID != 1001 || len(p.Indices) == 0 {
+		t.Errorf("plan = %+v", p)
+	}
+	if len(p.Existing) != 3 || strings.Contains(strings.Join(p.Existing, ","), "other-thing") {
+		t.Errorf("the indices the restore would replace (the log data stream counts) are the conflicts, and nothing else: %v", p.Existing)
+	}
+}
+
+func TestPlanOpenSearchRestore_AServiceUserThatCannotOwnTheRepositoryIsRefusedBeforeAnythingElse(t *testing.T) {
+	ex := &routedExecutor{name: "vm-1", responses: []ssmCommandResponse{{substring: "id -u", stdout: "1234 1234\n", status: types.CommandInvocationStatusSuccess}}}
+	if _, err := PlanOpenSearchRestore(context.Background(), ex, "caltechauthors"); err == nil || !strings.Contains(err.Error(), "uid") {
+		t.Errorf("err = %v", err)
+	}
+	if indexOfCommand(ex.commands, "_cat/indices") >= 0 {
+		t.Error("nothing more should be asked of a host that failed the owner check")
+	}
+}

@@ -36,10 +36,10 @@ func (e *RefusedError) Error() string {
 	var bad []string
 	for _, f := range e.Findings {
 		if !f.OK {
-			bad = append(bad, f.Check+": "+f.Detail)
+			bad = append(bad, f.Check)
 		}
 	}
-	return "refused: " + strings.Join(bad, "; ")
+	return fmt.Sprintf("refused: %d pre-flight check(s) failed: %s", len(bad), strings.Join(bad, ", "))
 }
 
 // Options say where to look and how much room is needed.
@@ -53,6 +53,8 @@ type Options struct {
 	SetMailSuppression    bool     // set INVENIO_MAIL_SUPPRESS_SEND=True when it is not already
 	HostsFile             string   // the hosts file to read and extend; default /etc/hosts
 	SetDataCiteSafeguards bool     // set DataCite test mode and block its API hosts when they are not already
+	RequireAppStopped     bool     // also refuse while the RDM services are running (a restore needs them stopped)
+	AppUnits              []string // the units to check; default rdm, rdm_rest, rdm_celery
 }
 
 func (o Options) withDefaults() Options {
@@ -373,6 +375,13 @@ func Run(ctx context.Context, ex executor.Executor, o Options) ([]Finding, error
 		return nil, err
 	}
 	findings := []Finding{mail, creds, disk, dc}
+	if o.RequireAppStopped {
+		app, err := CheckAppStopped(ctx, ex, o.AppUnits)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, app)
+	}
 	for _, f := range findings {
 		if !f.OK {
 			return findings, &RefusedError{Findings: findings}
@@ -646,4 +655,62 @@ echo "SET $n"
 		return fmt.Errorf("setting the DataCite safeguards on %s failed (%s): %s", ex.Name(), status, strings.TrimSpace(out))
 	}
 	return nil
+}
+
+// defaultAppUnits are the systemd units of an RDM instance, from the repository's
+// own committed units.
+var defaultAppUnits = []string{"rdm.service", "rdm_rest.service", "rdm_celery.service"}
+
+// AppUnits returns the systemd units of an RDM instance that a restore needs stopped.
+//
+//	 {[]string} rdm, rdm_rest and rdm_celery
+//
+//
+//		units := AppUnits()
+func AppUnits() []string { return append([]string{}, defaultAppUnits...) }
+
+var safeUnit = regexp.MustCompile(`^[A-Za-z0-9_.@:-]+$`)
+
+// CheckAppStopped fails if any of the RDM services is running or starting. A
+// restore drops and recreates the database and the indices underneath the
+// application, so the application must be stopped first; stopping it is a
+// separate step (clmpm stop-application), never done by a check.
+//
+// @param ctx {context.Context} cancels the check
+// @param ex {executor.Executor} reaches the VM
+// @param units {[]string} the systemd units to check; nil means rdm, rdm_rest and rdm_celery
+// @returns {Finding} the result, naming each unit that is running and how to stop it
+// @returns {error} an unsafe unit name, or why the VM could not be reached
+// @example
+//
+//	f, err := CheckAppStopped(ctx, ex, nil)
+func CheckAppStopped(ctx context.Context, ex executor.Executor, units []string) (Finding, error) {
+	const check = "application stopped"
+	if len(units) == 0 {
+		units = defaultAppUnits
+	}
+	for _, u := range units {
+		if !safeUnit.MatchString(u) || strings.Contains(u, "..") {
+			return Finding{}, fmt.Errorf("refusing the unit name %q", u)
+		}
+	}
+	out, _, err := run(ctx, ex, "systemctl is-active "+strings.Join(units, " ")+" 2>/dev/null; true")
+	if err != nil {
+		return Finding{}, err
+	}
+	states := strings.Fields(out)
+	if len(states) < len(units) {
+		return Finding{Check: check, Detail: "could not read the state of " + strings.Join(units, ", ") + " on " + ex.Name() + ", so it cannot be confirmed stopped"}, nil
+	}
+	var running []string
+	for i, u := range units {
+		switch states[i] {
+		case "active", "activating", "reloading":
+			running = append(running, u+" ("+states[i]+")")
+		}
+	}
+	if len(running) > 0 {
+		return Finding{Check: check, Detail: "still running: " + strings.Join(running, ", ") + "; stop it first (clmpm stop-application, or sudo systemctl stop " + strings.Join(units, " ") + ")"}, nil
+	}
+	return Finding{Check: check, OK: true, Detail: strings.Join(units, ", ") + " not running"}, nil
 }
