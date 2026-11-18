@@ -2,7 +2,12 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -122,5 +127,79 @@ func TestSSMExecutor_Name_IsTheInstanceID(t *testing.T) {
 	exec := NewSSMExecutor(&fakeSSMClient{}, "i-0123456789")
 	if got := exec.Name(); got != "i-0123456789" {
 		t.Errorf("Name() = %q, want %q", got, "i-0123456789")
+	}
+}
+
+func sha256Hex(b []byte) string {
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
+
+func writeTempFile(t *testing.T, content []byte) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "local.bin")
+	if err := os.WriteFile(p, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestSSMExecutor_Put_SendsTheFileAndVerifiesItsChecksum(t *testing.T) {
+	content := []byte("hello\n")
+	fake := &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusSuccess, stdout: sha256Hex(content) + "  /etc/thing.conf\n"}
+	exec := NewSSMExecutor(fake, "i-1")
+	if err := exec.Put(context.Background(), writeTempFile(t, content), "/etc/thing.conf"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if !strings.Contains(fake.lastCommandText, "/etc/thing.conf") {
+		t.Errorf("the command does not name the destination: %q", fake.lastCommandText)
+	}
+	if !strings.Contains(fake.lastCommandText, base64.StdEncoding.EncodeToString(content)) {
+		t.Errorf("the command does not carry the file")
+	}
+	if fake.sendCommandCallCount != 1 {
+		t.Errorf("want one SSM call, got %d", fake.sendCommandCallCount)
+	}
+}
+
+func TestSSMExecutor_Put_AChecksumMismatchIsAnError(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusSuccess, stdout: "deadbeef  /etc/thing.conf\n"}
+	err := NewSSMExecutor(fake, "i-1").Put(context.Background(), writeTempFile(t, []byte("hello\n")), "/etc/thing.conf")
+	if err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Errorf("want a checksum error, got %v", err)
+	}
+}
+
+func TestSSMExecutor_Put_ARemoteFailureIsAnError(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusFailed, stdout: "No space left on device"}
+	err := NewSSMExecutor(fake, "i-1").Put(context.Background(), writeTempFile(t, []byte("x")), "/etc/thing.conf")
+	if err == nil || !strings.Contains(err.Error(), "No space left") {
+		t.Errorf("the remote output belongs in the error: %v", err)
+	}
+}
+
+func TestSSMExecutor_Put_RefusesAFileOverTheLimitAndSendsNothing(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusSuccess}
+	err := NewSSMExecutor(fake, "i-1").Put(context.Background(), writeTempFile(t, make([]byte, maxSSMPutBytes+1)), "/etc/big")
+	if err == nil || !strings.Contains(err.Error(), "S3") {
+		t.Errorf("an oversize file should be refused with a pointer to S3: %v", err)
+	}
+	if fake.sendCommandCallCount != 0 {
+		t.Errorf("nothing may be sent, got %d calls", fake.sendCommandCallCount)
+	}
+}
+
+func TestSSMExecutor_Put_RefusesARelativeRemotePathAndSendsNothing(t *testing.T) {
+	fake := &fakeSSMClient{commandID: "c", finalStatus: types.CommandInvocationStatusSuccess}
+	err := NewSSMExecutor(fake, "i-1").Put(context.Background(), writeTempFile(t, []byte("x")), "relative/path")
+	if err == nil || fake.sendCommandCallCount != 0 {
+		t.Errorf("a relative destination is refused before anything is sent: err=%v calls=%d", err, fake.sendCommandCallCount)
+	}
+}
+
+func TestSSMExecutor_Get_IsNotSupportedAndSaysWhy(t *testing.T) {
+	err := NewSSMExecutor(&fakeSSMClient{}, "i-1").Get(context.Background(), "/etc/x", filepath.Join(t.TempDir(), "x"))
+	if err == nil || !strings.Contains(err.Error(), "S3") {
+		t.Errorf("Get over SSM should say to use S3: %v", err)
 	}
 }

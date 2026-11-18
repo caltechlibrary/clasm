@@ -139,3 +139,6 @@ func TestNewPostRestoreSteps_RunThroughAnyExecutor(t *testing.T) {
 		t.Errorf("the health step should run one script through the executor, got %d", len(ex.commands))
 	}
 }
+
+func (f *fakeExecutor) Put(ctx context.Context, local, remote string) error { return nil }
+func (f *fakeExecutor) Get(ctx context.Context, remote, local string) error { return nil }
