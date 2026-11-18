@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/caltechlibrary/clasm"
+	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/executor"
 	"github.com/caltechlibrary/clasm/internal/multipass"
 )
@@ -31,6 +32,7 @@ const (
 	exitUsage       = 2  // the command line is wrong
 	exitNoInput     = 66 // a named input file is missing
 	exitUnavailable = 69 // multipass cannot be run
+	exitConfig      = 78 // a configuration file is present but wrong
 	exitInternal    = 70 // a bug, or an error nothing classified
 	exitTempFail    = 75 // retrying later may succeed (a wait timed out)
 )
@@ -55,6 +57,8 @@ func classify(err error) (int, string) {
 		return exitUsage, "usage"
 	case errors.Is(err, fs.ErrNotExist):
 		return exitNoInput, "no_input"
+	case errors.Is(err, config.ErrNewerConfig), errors.Is(err, config.ErrInvalidConfig):
+		return exitConfig, "config"
 	case errors.Is(err, multipass.ErrUnavailable):
 		return exitUnavailable, "unavailable"
 	case errors.Is(err, multipass.ErrWaitTimeout):

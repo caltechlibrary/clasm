@@ -93,7 +93,7 @@ func main() {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(eout, "%v\n", err)
-		os.Exit(1)
+		os.Exit(config.ExitCode(err))
 	}
 
 	// appState is clasm's own runtime memory (~/.clasm_state, distinct

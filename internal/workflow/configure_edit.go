@@ -20,6 +20,7 @@ import (
 // "Show current config").
 func displayConfig(w io.Writer, cfg config.Config) {
 	fmt.Fprintln(w, "\nCurrent configuration:")
+	fmt.Fprintf(w, "Config version: %d (saved as %d)\n", cfg.ConfigVersion, config.CurrentVersion)
 	displayRegionsList(w, cfg.Regions)
 	displayBackupDirectoryRulesList(w, cfg.BackupDirectories)
 	displayRDMPostgresRulesList(w, cfg.RDMPostgresConfig)
@@ -54,7 +55,7 @@ func regionsEditDescription(regions []string) string {
 }
 
 func backupDirectoryRuleLabel(r config.BackupDirectoryRule) string {
-	return fmt.Sprintf("%s -> %s", r.Pattern, r.Directory)
+	return hostPrefix(r.Host) + fmt.Sprintf("%s -> %s", r.Pattern, r.Directory)
 }
 
 func displayBackupDirectoryRulesList(w io.Writer, rules []config.BackupDirectoryRule) {
@@ -216,7 +217,16 @@ func rdmPostgresRuleLabel(r config.RDMPostgresRule) string {
 	if dbUser == "" {
 		dbUser = "(instance Name)"
 	}
-	return fmt.Sprintf("%s -> %s (%s/%s)", r.Pattern, container, dbName, dbUser)
+	return hostPrefix(r.Host) + fmt.Sprintf("%s -> %s (%s/%s)", r.Pattern, container, dbName, dbUser)
+}
+
+// hostPrefix marks a rule that is not an AWS rule; AWS is the default and is
+// left unmarked (DR-0206).
+func hostPrefix(host string) string {
+	if host == "" || host == config.HostAWS {
+		return ""
+	}
+	return "[" + host + "] "
 }
 
 func displayRDMPostgresRulesList(w io.Writer, rules []config.RDMPostgresRule) {

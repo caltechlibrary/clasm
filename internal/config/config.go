@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
@@ -36,6 +35,9 @@ const DefaultOriginTagKey = "Origin"
 // migration machinery, appropriate for a single-operator-maintained
 // local dotfile.
 type Config struct {
+	// ConfigVersion is the schema version of the file (DR-0206). A file with no
+	// version is version 1; Save always writes CurrentVersion.
+	ConfigVersion     int                   `yaml:"config_version"`
 	Regions           []string              `yaml:"regions"`
 	BackupDirectories []BackupDirectoryRule `yaml:"backup_directories"`
 	OriginTag         OriginTagConfig       `yaml:"origin_tag"`
@@ -88,6 +90,7 @@ type OriginTagConfig struct {
 // directories, and typing the right path from memory every run invites
 // mistakes.
 type BackupDirectoryRule struct {
+	Host      string `yaml:"host,omitempty" json:"host,omitempty"`
 	Pattern   string `yaml:"pattern" json:"pattern"`
 	Directory string `yaml:"directory" json:"directory"`
 }
@@ -99,15 +102,7 @@ type BackupDirectoryRule struct {
 // the same as no match, not a fatal error, since a typo'd pattern
 // should degrade to the ordinary prompt, not crash the workflow).
 func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string {
-	if instanceName == "" {
-		return ""
-	}
-	for _, rule := range rules {
-		if ok, err := path.Match(rule.Pattern, instanceName); err == nil && ok {
-			return rule.Directory
-		}
-	}
-	return ""
+	return BackupDirectoryForHost(rules, HostAWS, instanceName)
 }
 
 // RDMPostgresRule maps a glob-style pattern (path.Match syntax, matched
@@ -120,6 +115,7 @@ func BackupDirectoryFor(rules []BackupDirectoryRule, instanceName string) string
 // RDMPostgresConfigFor never invents a default for it, unlike DBName/
 // DBUser, which fall back to the instance's own Name tag.
 type RDMPostgresRule struct {
+	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
 	Pattern       string `yaml:"pattern" json:"pattern"`
 	ContainerName string `yaml:"container_name" json:"container_name"`
 	DBName        string `yaml:"db_name" json:"db_name"`
@@ -144,20 +140,7 @@ type RDMPostgresRule struct {
 // to discover (DECISIONS.md, "RDM Postgres container/DB naming:
 // discover via docker ps every run, reconcile with rdm_postgres_config").
 func RDMPostgresConfigFor(rules []RDMPostgresRule, instanceName, fallbackIdentifier string) (containerName, dbName, dbUser string) {
-	dbName, dbUser = fallbackIdentifier, fallbackIdentifier
-	for _, rule := range rules {
-		if ok, err := path.Match(rule.Pattern, instanceName); err == nil && ok {
-			containerName = rule.ContainerName
-			if rule.DBName != "" {
-				dbName = rule.DBName
-			}
-			if rule.DBUser != "" {
-				dbUser = rule.DBUser
-			}
-			return containerName, dbName, dbUser
-		}
-	}
-	return containerName, dbName, dbUser
+	return RDMPostgresConfigForHost(rules, HostAWS, instanceName, fallbackIdentifier)
 }
 
 // UpsertRDMPostgresRule updates the ContainerName of the existing rule
@@ -170,18 +153,7 @@ func RDMPostgresConfigFor(rules []RDMPostgresRule, instanceName, fallbackIdentif
 // ContainerName, the returned slice is equal in value to rules, so
 // callers can cheaply tell whether a save is actually needed.
 func UpsertRDMPostgresRule(rules []RDMPostgresRule, pattern, containerName string) []RDMPostgresRule {
-	for i, rule := range rules {
-		if rule.Pattern == pattern {
-			if rule.ContainerName == containerName {
-				return rules
-			}
-			updated := make([]RDMPostgresRule, len(rules))
-			copy(updated, rules)
-			updated[i].ContainerName = containerName
-			return updated
-		}
-	}
-	return append(append([]RDMPostgresRule{}, rules...), RDMPostgresRule{Pattern: pattern, ContainerName: containerName})
+	return UpsertRDMPostgresRuleForHost(rules, HostAWS, pattern, containerName)
 }
 
 // Save marshals cfg to YAML and writes it to path (0644 -- no secrets
@@ -192,6 +164,7 @@ func UpsertRDMPostgresRule(rules []RDMPostgresRule, pattern, containerName strin
 // hand-written comments in an existing file are lost once Save writes
 // it.
 func Save(path string, cfg Config) error {
+	cfg.ConfigVersion = CurrentVersion
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
@@ -222,7 +195,7 @@ func DefaultPath() string {
 // left unset in an otherwise-valid file falls back to its own default
 // independently, not all-or-nothing.
 func Load(path string) (Config, error) {
-	cfg := Config{Regions: DefaultRegions, OriginTag: OriginTagConfig{Key: DefaultOriginTagKey}}
+	cfg := Config{Regions: DefaultRegions, OriginTag: OriginTagConfig{Key: DefaultOriginTagKey}, ConfigVersion: CurrentVersion}
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -232,8 +205,21 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 
+	var probe struct {
+		Version int `yaml:"config_version"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return Config{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if probe.Version > CurrentVersion {
+		return Config{}, fmt.Errorf("%w: %s has config_version %d and this program understands up to %d; update clasm and clmpm on this machine before using it", ErrNewerConfig, path, probe.Version, CurrentVersion)
+	}
+	cfg.ConfigVersion = 1
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if err := validateHosts(path, cfg); err != nil {
+		return Config{}, err
 	}
 	if len(cfg.Regions) == 0 {
 		cfg.Regions = DefaultRegions

@@ -405,3 +405,21 @@ func TestDisplayConfig_ShowsExtractionSecurityGroups(t *testing.T) {
 		}
 	}
 }
+
+// DR-0206: the version the file will be saved with, and which host a rule is for.
+func TestDisplayConfig_ShowsTheConfigVersionAndAMultipassRulesHost(t *testing.T) {
+	cfg := config.Config{
+		ConfigVersion:     1,
+		BackupDirectories: []config.BackupDirectoryRule{{Pattern: "vm-*", Host: config.HostMultipass, Directory: "/opt/rdm_sql_backups"}, {Pattern: "aws-*", Directory: "/d"}},
+		RDMPostgresConfig: []config.RDMPostgresRule{{Pattern: "vm-*", Host: config.HostMultipass, ContainerName: "db"}},
+	}
+	_, _, buf := newPipeEditor("")
+	displayConfig(buf, cfg)
+	out := buf.String()
+	if !strings.Contains(out, "Config version") || !strings.Contains(out, "multipass") {
+		t.Errorf("output:\n%s", out)
+	}
+	if strings.Count(out, "multipass") != 2 {
+		t.Errorf("only the two multipass rules should say so; an aws rule is the default:\n%s", out)
+	}
+}

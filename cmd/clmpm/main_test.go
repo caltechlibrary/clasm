@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/executor"
 	"github.com/caltechlibrary/clasm/internal/multipass"
 )
@@ -338,5 +340,13 @@ func TestLaunch_TheImageDefaultsToUbuntu2404(t *testing.T) {
 	m := newMP()
 	if code, _, _ := do(t, m, nil, "launch-instance-from-cloud-init", "vm", ci); code != 0 || !m.called("launch 24.04 --name vm ") {
 		t.Errorf("code=%d calls=%v", code, m.calls)
+	}
+}
+
+func TestClassify_ANewerOrInvalidConfigIsExit78(t *testing.T) {
+	for _, err := range []error{config.ErrNewerConfig, fmt.Errorf("x: %w", config.ErrInvalidConfig)} {
+		if code, class := classify(err); code != 78 || class != "config" {
+			t.Errorf("%v: %d %s", err, code, class)
+		}
 	}
 }

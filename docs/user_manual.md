@@ -1146,6 +1146,7 @@ credentials or profile selection. Can be viewed and edited from within
 clasm itself (Configuration domain, above), or hand-edited directly:
 
 ~~~yaml
+config_version: 2
 regions:
   - us-west-1
   - us-west-2
@@ -1160,6 +1161,9 @@ rdm_postgres_config:
     container_name: etd-db-1
     db_name: etd
     db_user: etd
+  - pattern: "caltechauthors-*-v14"
+    host: multipass
+    container_name: caltechauthors-db-1
 origin_tag:
   key: "Origin"
   dld_value: ""
@@ -1183,6 +1187,20 @@ discovered live and saved back here, or edited by hand. `origin_tag`
 names the tag the IAM domain treats as its DLD-ownership convention --
 `key` defaults to `"Origin"`, `dld_value` defaults to empty (meaning no
 value is recognized as DLD-owned yet, until your group settles on one).
+
+**`config_version` and `host` (DR-0206).** `config_version` is the file's schema
+version. clasm and clmpm write the current one (2) on every save; a file with
+none is version 1. A program that finds a version newer than it understands
+**refuses the file and exits 78**, naming the version, rather than ignore fields
+it does not know and drop them on the next save. Each rule in `backup_directories`,
+`opensearch_backup_directories` and `rdm_postgres_config` may carry
+`host: aws` or `host: multipass`; no `host` means `aws`. clasm reads only
+AWS rules and clmpm only Multipass rules, so a broad pattern cannot send a
+restore to the wrong kind of host. Any other `host` value is a config error
+(exit 78). The Configure clasm display shows the version and marks a Multipass
+rule `[multipass]`. **Before adding a Multipass rule, install this release of
+clasm on every machine that shares or copies your `~/.clasm`:** a 0.0.12 binary
+ignores both fields and would treat the rule as an AWS rule.
 
 **clasm tags what it creates with this tag** (DR-0189, DR-0190), the same key
 and value everywhere, read at each create. IAM roles, policies and instance
