@@ -22,7 +22,9 @@ import (
 	"github.com/caltechlibrary/clasm"
 	"github.com/caltechlibrary/clasm/internal/config"
 	"github.com/caltechlibrary/clasm/internal/executor"
+	"github.com/caltechlibrary/clasm/internal/mpreflight"
 	"github.com/caltechlibrary/clasm/internal/multipass"
+	"github.com/caltechlibrary/clasm/internal/rdmfetch"
 )
 
 // Exit codes (workspace DR-0014). clmpm uses this subset.
@@ -30,6 +32,7 @@ const (
 	exitOK          = 0
 	exitNegative    = 1  // the answer is no: no such instance, or the state forbids it
 	exitUsage       = 2  // the command line is wrong
+	exitData        = 65 // content read is wrong: a download failed verification
 	exitNoInput     = 66 // a named input file is missing
 	exitUnavailable = 69 // multipass cannot be run
 	exitConfig      = 78 // a configuration file is present but wrong
@@ -43,6 +46,7 @@ type deps struct {
 	ctx         context.Context
 	client      *multipass.Client
 	newExecutor func(vm string) executor.Executor
+	backups     backupDeps
 }
 
 type usageError struct{ msg string }
@@ -52,6 +56,9 @@ func (e *usageError) Error() string { return e.msg }
 // classify maps an error to its DR-0014 exit code and class name.
 func classify(err error) (int, string) {
 	var u *usageError
+	var unavail *unavailableError
+	var refused *mpreflight.RefusedError
+	var negative *negativeError
 	switch {
 	case errors.As(err, &u):
 		return exitUsage, "usage"
@@ -63,6 +70,12 @@ func classify(err error) (int, string) {
 		return exitUnavailable, "unavailable"
 	case errors.Is(err, multipass.ErrWaitTimeout):
 		return exitTempFail, "temp_fail"
+	case errors.Is(err, rdmfetch.ErrCorrupt):
+		return exitData, "data"
+	case errors.As(err, &unavail):
+		return exitUnavailable, "unavailable"
+	case errors.As(err, &refused), errors.As(err, &negative), errors.Is(err, rdmfetch.ErrNotFound):
+		return exitNegative, "negative"
 	case errors.Is(err, multipass.ErrNotFound), errors.Is(err, multipass.ErrFailed),
 		errors.Is(err, multipass.ErrCloudInit), errors.Is(err, context.Canceled):
 		return exitNegative, "negative"
@@ -80,7 +93,20 @@ const verbList = `  list-instances                    show every instance
   clone-instance SOURCE NAME        copy a stopped instance
   snapshot-instance NAME SNAPSHOT   snapshot a stopped instance (-comment)
   restore-snapshot NAME SNAPSHOT    dry run; -confirm discards current state and restores
-  wait-for-cloud-init NAME          wait until cloud-init finishes (-wait -poll)`
+  wait-for-cloud-init NAME          wait until cloud-init finishes (-wait -poll)
+
+  list-backups SOURCE               list the SQL dumps and OpenSearch snapshots in S3 (read-only)
+  fetch-backups SOURCE              download and verify the newest of each (-dump -snapshot)
+  run-preflights VM                 mail, credentials, DataCite, disk, services stopped
+                                    (-set-mail-suppression -set-datacite-safeguards)
+  stop-application VM               dry run; -confirm stops the RDM services
+  start-application VM              dry run; -confirm starts them
+  restore-sql VM SOURCE             dry run; -confirm fetches, checks and loads a dump
+  restore-opensearch VM SOURCE      dry run; -confirm fetches, checks and loads a snapshot
+                                    (both: -snapshot-first takes a safety snapshot)
+  check-index-health VM             the RDM log indices after a load
+  show-user-data VM                 where the production data now is
+  remove-fetched-backups            dry run; -confirm deletes the downloads on this machine`
 
 const helpText = `{app_name} {version} -- manage Multipass instances for RDM rehearsals
 
@@ -99,9 +125,10 @@ run until it is given -confirm.
 
 EXIT STATUS
 
-  0 ok    1 no such instance, or the state forbids it    2 usage
-  66 a named file is missing    69 multipass cannot be run
-  70 internal error    75 a wait timed out (retrying may succeed)
+  0 ok    1 no such instance, a refused pre-flight, or the state forbids it    2 usage
+  65 a download failed verification    66 a named file is missing
+  69 multipass, S3 or the VM's services cannot be reached    70 internal error
+  75 a wait timed out (retrying may succeed)    78 ~/.clasm is wrong or newer
 `
 
 func main() {
@@ -112,6 +139,7 @@ func main() {
 		ctx:         ctx,
 		client:      multipass.New(),
 		newExecutor: func(vm string) executor.Executor { return executor.NewMultipassExecutor(vm) },
+		backups:     realBackupDeps(),
 	}
 	stop2 := run(os.Args[1:], os.Stdout, os.Stderr, d)
 	stop()
@@ -186,6 +214,15 @@ type options struct {
 	comment             string
 	confirm, purge      bool
 	wait, poll          time.Duration
+
+	// backups and restores
+	sqlBucket, osBucket, region, dumpKey, snapshotName string
+	skipSQL, skipOpenSearch, snapshotFirst             bool
+	listN                                              int
+	setMail, setDataCite, requireStopped               bool
+	need                                               int64
+	cache                                              string
+	container, dbName, dbUser, indexPrefix, directory  string
 }
 
 type cmdOut struct {
@@ -231,6 +268,16 @@ func init() {
 		"clone-instance":                  {usage: "SOURCE NAME", minArgs: 2, maxArgs: 2, do: doClone},
 		"snapshot-instance":               {usage: "[-comment TEXT] NAME SNAPSHOT", minArgs: 2, maxArgs: 2, flags: snapshotFlags, do: doSnapshot},
 		"restore-snapshot":                {usage: "[-confirm] NAME SNAPSHOT", minArgs: 2, maxArgs: 2, flags: confirmFlag, do: doRestore},
+		"list-backups":                    {usage: "[-n N] SOURCE", minArgs: 1, maxArgs: 1, flags: backupFlags, do: doListBackups},
+		"fetch-backups":                   {usage: "[-dump KEY] [-snapshot NAME] [-skip-sql] [-skip-opensearch] SOURCE", minArgs: 1, maxArgs: 1, flags: backupFlags, do: doFetchBackups},
+		"run-preflights":                  {usage: "[-set-mail-suppression] [-set-datacite-safeguards] [-require-stopped] [-need BYTES] VM", minArgs: 1, maxArgs: 1, flags: preflightFlags, do: doRunPreflights},
+		"stop-application":                {usage: "[-confirm] VM", minArgs: 1, maxArgs: 1, flags: confirmFlag, do: doStopApplication},
+		"start-application":               {usage: "[-confirm] VM", minArgs: 1, maxArgs: 1, flags: confirmFlag, do: doStartApplication},
+		"show-user-data":                  {usage: "[-cache DIR] VM", minArgs: 1, maxArgs: 1, flags: cacheOnlyFlag, do: doShowUserData},
+		"remove-fetched-backups":          {usage: "[-cache DIR] [-confirm]", do: doRemoveFetchedBackups, flags: cacheFlag},
+		"restore-sql":                     {usage: "[-confirm] [-dump KEY] [-container C] [-db-name N] [-db-user U] [-snapshot-first] [-set-mail-suppression] [-set-datacite-safeguards] VM SOURCE", minArgs: 2, maxArgs: 2, flags: restoreFlags, do: doRestoreSQL},
+		"restore-opensearch":              {usage: "[-confirm] [-snapshot NAME] [-index-prefix P] [-directory D] [-snapshot-first] [-set-mail-suppression] [-set-datacite-safeguards] VM SOURCE", minArgs: 2, maxArgs: 2, flags: restoreFlags, do: doRestoreOpenSearch},
+		"check-index-health":              {usage: "[-wait DURATION] VM", minArgs: 1, maxArgs: 1, flags: healthFlags, do: doCheckIndexHealth},
 		"wait-for-cloud-init":             {usage: "[-wait DURATION] [-poll DURATION] NAME", minArgs: 1, maxArgs: 1, flags: waitFlags, do: doWait},
 	}
 	// list-instances takes no arguments: minArgs and maxArgs are already 0.
