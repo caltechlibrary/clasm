@@ -275,9 +275,9 @@ func TestEstimates_GrowWithTheInputAndAGzipDumpNeedsMoreRoomThanAPlainOne(t *tes
 
 func TestRun_AllPassingReturnsTheFindingsAndNoError(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "site/.env", "INVENIO_MAIL_SUPPRESS_SEND=True\n")
-	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, DiskPath: dir, DiskNeed: 1})
-	if err != nil || len(fs) != 3 {
+	writeFile(t, dir, "site/.env", safeEnv)
+	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hostsFile(t, dir, true), DiskPath: dir, DiskNeed: 1})
+	if err != nil || len(fs) != 4 {
 		t.Fatalf("fs=%+v err=%v", fs, err)
 	}
 	for _, f := range fs {
@@ -290,12 +290,12 @@ func TestRun_AllPassingReturnsTheFindingsAndNoError(t *testing.T) {
 func TestRun_AFailureIsARefusalCarryingEveryFindingAndRunsAllChecks(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "site/.env", "INVENIO_S3_SECRET_ACCESS_KEY="+secretValue+"\n")
-	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, DiskPath: dir, DiskNeed: 1 << 60})
+	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hostsFile(t, dir, false), DiskPath: dir, DiskNeed: 1 << 60})
 	var refused *RefusedError
 	if !errors.As(err, &refused) {
 		t.Fatalf("err = %v", err)
 	}
-	if len(refused.Findings) != 3 || len(fs) != 3 {
+	if len(refused.Findings) != 4 || len(fs) != 4 {
 		t.Errorf("every check should run and report: %+v", refused.Findings)
 	}
 	bad := 0
@@ -304,8 +304,8 @@ func TestRun_AFailureIsARefusalCarryingEveryFindingAndRunsAllChecks(t *testing.T
 			bad++
 		}
 	}
-	if bad != 3 {
-		t.Errorf("mail unset, a credential present and no room: want 3 failures, got %d", bad)
+	if bad != 4 {
+		t.Errorf("mail unset, a credential present, no room and DataCite not blocked: want 4 failures, got %d", bad)
 	}
 	if strings.Contains(err.Error(), secretValue) {
 		t.Error("the refusal message leaked a value")
@@ -314,8 +314,8 @@ func TestRun_AFailureIsARefusalCarryingEveryFindingAndRunsAllChecks(t *testing.T
 
 func TestRun_SetMailSuppressionFixesThatCheckOnly(t *testing.T) {
 	dir := t.TempDir()
-	p := writeFile(t, dir, "site/.env", "FOO=1\n")
-	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, SetMailSuppression: true})
+	p := writeFile(t, dir, "site/.env", "INVENIO_DATACITE_TEST_MODE=True\n")
+	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hostsFile(t, dir, true), SetMailSuppression: true})
 	if err != nil {
 		t.Fatalf("err = %v, findings %+v", err, fs)
 	}
@@ -436,8 +436,8 @@ func TestVMUserData_NamesWhatHoldsUserData(t *testing.T) {
 
 func TestRun_ASettingThatIsAlreadyRightIsLeftAloneEvenWhenSettingIsAsked(t *testing.T) {
 	dir := t.TempDir()
-	p := writeFile(t, dir, "site/.env", "INVENIO_MAIL_SUPPRESS_SEND=True\n")
-	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, SetMailSuppression: true})
+	p := writeFile(t, dir, "site/.env", safeEnv)
+	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{dir + "/site/.env"}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hostsFile(t, dir, true), SetMailSuppression: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,5 +493,187 @@ func TestCheckNoProductionCredentials_NoDockerOnTheVMIsNotAnError(t *testing.T) 
 	f, err := CheckNoProductionCredentials(context.Background(), ex, Options{EnvGlobs: []string{dir + "/x/.env"}, HomeGlobs: []string{dir + "/h/*"}, Docker: true})
 	if err != nil {
 		t.Errorf("err = %v (finding %+v)", err, f)
+	}
+}
+
+// ---- DataCite cannot register DOIs ----
+
+// safeEnv is a .env that passes the mail and DataCite checks.
+const safeEnv = "INVENIO_MAIL_SUPPRESS_SEND=True\nINVENIO_DATACITE_TEST_MODE=True\n"
+
+// hostsFile writes a hosts file, with or without the DataCite API hosts blocked.
+func hostsFile(t *testing.T, dir string, blocked bool) string {
+	t.Helper()
+	content := "127.0.0.1 localhost\n"
+	if blocked {
+		content += "127.0.0.1 api.datacite.org api.test.datacite.org\n"
+	}
+	return writeFile(t, dir, "etc/hosts", content)
+}
+
+func TestCheckDataCite_NeedsTestModeAndBothHostsBlocked(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		hosts   string
+		want    bool
+		wantMsg string
+	}{
+		{"all safe", "INVENIO_DATACITE_TEST_MODE=True\n", "127.0.0.1 api.datacite.org api.test.datacite.org\n", true, ""},
+		{"hosts on separate lines", "INVENIO_DATACITE_TEST_MODE=True\n", "127.0.0.1 api.datacite.org\n0.0.0.0 api.test.datacite.org\n", true, ""},
+		{"test mode unset", "FOO=1\n", "127.0.0.1 api.datacite.org api.test.datacite.org\n", false, "TEST_MODE"},
+		{"test mode False", "INVENIO_DATACITE_TEST_MODE=False\n", "127.0.0.1 api.datacite.org api.test.datacite.org\n", false, "TEST_MODE"},
+		{"lowercase true is the same trap as lowercase false", "INVENIO_DATACITE_TEST_MODE=true\n", "127.0.0.1 api.datacite.org api.test.datacite.org\n", false, "TEST_MODE"},
+		{"live host not blocked", "INVENIO_DATACITE_TEST_MODE=True\n", "127.0.0.1 api.test.datacite.org\n", false, "api.datacite.org"},
+		{"test host not blocked", "INVENIO_DATACITE_TEST_MODE=True\n", "127.0.0.1 api.datacite.org\n", false, "api.test.datacite.org"},
+		{"blocked only in a comment", "INVENIO_DATACITE_TEST_MODE=True\n", "# 127.0.0.1 api.datacite.org api.test.datacite.org\n", false, "api.datacite.org"},
+		{"mapped to a real address is not blocked", "INVENIO_DATACITE_TEST_MODE=True\n", "1.2.3.4 api.datacite.org api.test.datacite.org\n", false, "api.datacite.org"},
+		{"a name in a trailing comment is not blocked", "INVENIO_DATACITE_TEST_MODE=True\n", "127.0.0.1 localhost # api.datacite.org api.test.datacite.org\n", false, "api.datacite.org"},
+		{"a longer name is not the host", "INVENIO_DATACITE_TEST_MODE=True\n", "127.0.0.1 xapi.datacite.org.example api.test.datacite.org\n", false, "api.datacite.org"},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		env := writeFile(t, dir, "site/.env", c.env)
+		hosts := writeFile(t, dir, "etc/hosts", c.hosts)
+		f, err := CheckDataCite(context.Background(), ex, []string{env}, hosts)
+		if err != nil || f.OK != c.want || f.Check == "" {
+			t.Errorf("%s: %+v err=%v, want ok=%v", c.name, f, err, c.want)
+			continue
+		}
+		if c.wantMsg != "" && !strings.Contains(f.Detail, c.wantMsg) {
+			t.Errorf("%s: the finding should mention %q: %s", c.name, c.wantMsg, f.Detail)
+		}
+	}
+}
+
+func TestCheckDataCite_NoEnvFileOrNoHostsFileCannotBeConfirmed(t *testing.T) {
+	dir := t.TempDir()
+	hosts := hostsFile(t, dir, true)
+	if f, err := CheckDataCite(context.Background(), ex, []string{dir + "/none/.env"}, hosts); err != nil || f.OK {
+		t.Errorf("no env file: %+v err=%v", f, err)
+	}
+	env := writeFile(t, dir, "site/.env", safeEnv)
+	if f, err := CheckDataCite(context.Background(), ex, []string{env}, dir+"/no-hosts"); err != nil || f.OK {
+		t.Errorf("no hosts file: %+v err=%v", f, err)
+	}
+}
+
+func TestCheckDataCite_AnUnsafePathIsRefused(t *testing.T) {
+	if _, err := CheckDataCite(context.Background(), ex, []string{"/a/.env"}, "/etc/hosts; id"); err == nil {
+		t.Error("an unsafe hosts path must be refused")
+	}
+	if _, err := CheckDataCite(context.Background(), ex, []string{"/a b/.env"}, "/etc/hosts"); err == nil {
+		t.Error("an unsafe env path must be refused")
+	}
+}
+
+func TestSetDataCiteSafeguards_SetsTestModeAndBlocksBothHostsKeepingEverythingElse(t *testing.T) {
+	dir := t.TempDir()
+	env := writeFile(t, dir, "site/.env", "FOO=1\nINVENIO_DATACITE_TEST_MODE=False\nBAR=2\n")
+	hosts := writeFile(t, dir, "etc/hosts", "127.0.0.1 localhost\n10.0.0.5 myhost\n")
+	if err := SetDataCiteSafeguards(context.Background(), ex, []string{env}, hosts); err != nil {
+		t.Fatal(err)
+	}
+	f, err := CheckDataCite(context.Background(), ex, []string{env}, hosts)
+	if err != nil || !f.OK {
+		t.Fatalf("after setting: %+v err=%v", f, err)
+	}
+	e, _ := os.ReadFile(env)
+	h, _ := os.ReadFile(hosts)
+	if !strings.Contains(string(e), "FOO=1") || !strings.Contains(string(e), "BAR=2") || strings.Count(string(e), "INVENIO_DATACITE_TEST_MODE=") != 1 {
+		t.Errorf("env:\n%s", e)
+	}
+	if !strings.Contains(string(h), "10.0.0.5 myhost") || !strings.Contains(string(h), "127.0.0.1 localhost") {
+		t.Errorf("hosts lost a line:\n%s", h)
+	}
+	for _, p := range []string{env, hosts} {
+		bak, err := os.ReadFile(p + ".clasm-bak")
+		if err != nil || strings.Contains(string(bak), "api.datacite.org") || strings.Contains(string(bak), "TEST_MODE=True") {
+			t.Errorf("%s must keep the original: %q %v", p, bak, err)
+		}
+	}
+	// running it again changes nothing and does not touch the backup
+	before, _ := os.ReadFile(hosts)
+	if err := SetDataCiteSafeguards(context.Background(), ex, []string{env}, hosts); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(hosts); string(after) != string(before) {
+		t.Errorf("a second run must add nothing:\n%s", after)
+	}
+}
+
+func TestSetDataCiteSafeguards_AddsOnlyTheHostThatIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	env := writeFile(t, dir, "site/.env", "FOO=1\n")
+	hosts := writeFile(t, dir, "etc/hosts", "127.0.0.1 api.datacite.org\n")
+	if err := SetDataCiteSafeguards(context.Background(), ex, []string{env}, hosts); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := os.ReadFile(hosts)
+	if strings.Count(string(h), "api.datacite.org") != 1 || !strings.Contains(string(h), "api.test.datacite.org") {
+		t.Errorf("hosts:\n%s", h)
+	}
+}
+
+func TestSetDataCiteSafeguards_NoEnvFileIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := SetDataCiteSafeguards(context.Background(), ex, []string{dir + "/none/.env"}, hostsFile(t, dir, false)); err == nil {
+		t.Error("nothing to set must not look like success")
+	}
+}
+
+func TestRun_SetDataCiteSafeguardsFixesThatCheckAndDoesNotTouchTheOthers(t *testing.T) {
+	dir := t.TempDir()
+	env := writeFile(t, dir, "site/.env", "INVENIO_MAIL_SUPPRESS_SEND=True\n")
+	hosts := hostsFile(t, dir, false)
+	o := Options{EnvGlobs: []string{env}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hosts}
+	if _, err := Run(context.Background(), ex, o); err == nil {
+		t.Fatal("without the safeguards this must be refused")
+	}
+	o.SetDataCiteSafeguards = true
+	fs, err := Run(context.Background(), ex, o)
+	if err != nil {
+		t.Fatalf("err = %v, findings %+v", err, fs)
+	}
+	if !strings.Contains(fs[3].Detail, "set by clasm") {
+		t.Errorf("the finding should say it was set: %q", fs[3].Detail)
+	}
+}
+
+func TestRun_ADataCitePasswordIsStillRefusedWhenTheSafeguardsAreSet(t *testing.T) {
+	dir := t.TempDir()
+	env := writeFile(t, dir, "site/.env", safeEnv+"INVENIO_DATACITE_PASSWORD="+secretValue+"\n")
+	_, err := Run(context.Background(), ex, Options{EnvGlobs: []string{env}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hostsFile(t, dir, true), SetDataCiteSafeguards: true})
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "INVENIO_DATACITE_PASSWORD") {
+		t.Errorf("the refusal should name the password setting: %v", err)
+	}
+}
+
+func TestRun_SafeguardsThatAreAlreadyInPlaceAreLeftAloneEvenWhenSettingIsAsked(t *testing.T) {
+	dir := t.TempDir()
+	env := writeFile(t, dir, "site/.env", safeEnv)
+	hosts := hostsFile(t, dir, true)
+	fs, err := Run(context.Background(), ex, Options{EnvGlobs: []string{env}, HomeGlobs: []string{dir + "/h/*"}, HostsFile: hosts, SetDataCiteSafeguards: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{env, hosts} {
+		if _, err := os.Stat(p + ".clasm-bak"); err == nil {
+			t.Errorf("%s was already right and must not be backed up or touched", p)
+		}
+	}
+	if strings.Contains(fs[3].Detail, "set by clasm") {
+		t.Errorf("nothing was set: %q", fs[3].Detail)
+	}
+}
+
+func TestOptionsDefaultsAreTheRDMHostLayout(t *testing.T) {
+	o := Options{}.withDefaults()
+	if o.HostsFile != "/etc/hosts" || o.DiskPath != "/var/tmp" || len(o.EnvGlobs) != 1 || o.EnvGlobs[0] != "/Sites/*/.env" || len(o.HomeGlobs) != 2 || len(o.CredentialGlobs) != 1 {
+		t.Errorf("defaults = %+v", o)
 	}
 }

@@ -44,13 +44,15 @@ func (e *RefusedError) Error() string {
 
 // Options say where to look and how much room is needed.
 type Options struct {
-	EnvGlobs           []string // RDM .env files; default /Sites/*/.env
-	CredentialGlobs    []string // more files to scan for credential names; default /etc/environment
-	HomeGlobs          []string // home directories whose .aws files are checked; default /root /home/*
-	Docker             bool     // also scan running and stopped containers' environment names
-	DiskPath           string   // where the load writes; default /var/tmp
-	DiskNeed           int64    // bytes the load needs; 0 skips the check
-	SetMailSuppression bool     // set INVENIO_MAIL_SUPPRESS_SEND=True when it is not already
+	EnvGlobs              []string // RDM .env files; default /Sites/*/.env
+	CredentialGlobs       []string // more files to scan for credential names; default /etc/environment
+	HomeGlobs             []string // home directories whose .aws files are checked; default /root /home/*
+	Docker                bool     // also scan running and stopped containers' environment names
+	DiskPath              string   // where the load writes; default /var/tmp
+	DiskNeed              int64    // bytes the load needs; 0 skips the check
+	SetMailSuppression    bool     // set INVENIO_MAIL_SUPPRESS_SEND=True when it is not already
+	HostsFile             string   // the hosts file to read and extend; default /etc/hosts
+	SetDataCiteSafeguards bool     // set DataCite test mode and block its API hosts when they are not already
 }
 
 func (o Options) withDefaults() Options {
@@ -62,6 +64,9 @@ func (o Options) withDefaults() Options {
 	}
 	if len(o.HomeGlobs) == 0 {
 		o.HomeGlobs = []string{"/root", "/home/*"}
+	}
+	if o.HostsFile == "" {
+		o.HostsFile = "/etc/hosts"
 	}
 	if o.DiskPath == "" {
 		o.DiskPath = "/var/tmp"
@@ -344,6 +349,21 @@ func Run(ctx context.Context, ex executor.Executor, o Options) ([]Finding, error
 			mail.Detail += " (set by clasm; the original is kept as .clasm-bak, and the application must be restarted)"
 		}
 	}
+	dc, err := CheckDataCite(ctx, ex, o.EnvGlobs, o.HostsFile)
+	if err != nil {
+		return nil, err
+	}
+	if !dc.OK && o.SetDataCiteSafeguards {
+		if err := SetDataCiteSafeguards(ctx, ex, o.EnvGlobs, o.HostsFile); err != nil {
+			return nil, err
+		}
+		if dc, err = CheckDataCite(ctx, ex, o.EnvGlobs, o.HostsFile); err != nil {
+			return nil, err
+		}
+		if dc.OK {
+			dc.Detail += " (set by clasm; the originals are kept as .clasm-bak, and the application must be restarted)"
+		}
+	}
 	creds, err := CheckNoProductionCredentials(ctx, ex, o)
 	if err != nil {
 		return nil, err
@@ -352,7 +372,7 @@ func Run(ctx context.Context, ex executor.Executor, o Options) ([]Finding, error
 	if err != nil {
 		return nil, err
 	}
-	findings := []Finding{mail, creds, disk}
+	findings := []Finding{mail, creds, disk, dc}
 	for _, f := range findings {
 		if !f.OK {
 			return findings, &RefusedError{Findings: findings}
@@ -498,4 +518,132 @@ func VMUserData() []string {
 		"the application's .env file: secrets for this VM only, no production credentials",
 		"the VM's snapshots and clones (multipass snapshot, clone): each one holds a copy of all of the above",
 	}
+}
+
+// dataCiteHosts are the DataCite API hosts a development VM must not be able to
+// reach, so that a publish cannot register a DOI at DataCite.
+var dataCiteHosts = []string{"api.datacite.org", "api.test.datacite.org"}
+
+// CheckDataCite confirms a development VM cannot register DOIs at DataCite:
+// INVENIO_DATACITE_TEST_MODE is exactly True in every .env file, and both
+// DataCite API hosts resolve to a loopback address in the hosts file. A password
+// is a separate matter, refused by CheckNoProductionCredentials. This is the
+// set-up that lets a VM be tested without a DataCite account: DataCite stays
+// enabled, so records with DataCite DOIs still display, but every registration
+// goes nowhere. (INVENIO_DATACITE_ENABLED=false does not work: Invenio parses
+// the value as a Python literal, so lowercase false is a truthy string, and
+// False makes every record with a DataCite DOI return a 500.)
+//
+// @param ctx {context.Context} cancels the check
+// @param ex {executor.Executor} reaches the VM
+// @param envGlobs {[]string} absolute path patterns of the RDM .env files
+// @param hostsFile {string} the absolute path of the hosts file, normally /etc/hosts
+// @returns {Finding} the result, naming what is not safe
+// @returns {error} an unsafe path, or why the VM could not be reached
+// @example
+//
+//	f, err := CheckDataCite(ctx, ex, []string{"/Sites/*/.env"}, "/etc/hosts")
+func CheckDataCite(ctx context.Context, ex executor.Executor, envGlobs []string, hostsFile string) (Finding, error) {
+	const check = "datacite registration blocked"
+	words, err := globWords(envGlobs)
+	if err != nil {
+		return Finding{}, err
+	}
+	if !safeGlob.MatchString(hostsFile) || strings.ContainsAny(hostsFile, "*") || strings.Contains(hostsFile, "..") {
+		return Finding{}, fmt.Errorf("refusing the hosts file path %q", hostsFile)
+	}
+	script := `for f in ` + words + `; do
+  [ -f "$f" ] || continue
+  v=$(awk -v q="'" '{ l=$0; sub(/^[ \t]*export[ \t]+/, "", l) } l ~ /^INVENIO_DATACITE_TEST_MODE=/ { v=substr(l, index(l, "=")+1) } END { gsub("^[\"" q " \t]+|[\"" q " \t]+$", "", v); print v }' "$f")
+  echo "DC $f [$v]"
+done
+if [ -f ` + hostsFile + ` ]; then
+  for h in ` + strings.Join(dataCiteHosts, " ") + `; do
+    if awk -v h="$h" '{ sub(/#.*/, "") } ($1 == "127.0.0.1" || $1 == "0.0.0.0" || $1 == "::1") { for (i = 2; i <= NF; i++) if ($i == h) found = 1 } END { exit !found }' ` + hostsFile + `; then echo "BLOCKED $h"; else echo "OPEN $h"; fi
+  done
+else
+  echo "NOHOSTS"
+fi
+`
+	out, _, err := run(ctx, ex, script)
+	if err != nil {
+		return Finding{}, err
+	}
+	var problems []string
+	files := 0
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "DC "):
+			files++
+			rest := strings.TrimPrefix(line, "DC ")
+			if i := strings.LastIndex(rest, " ["); i >= 0 && rest[i+2:] != "True]" {
+				problems = append(problems, rest[:i]+": INVENIO_DATACITE_TEST_MODE is not set to True")
+			}
+		case strings.HasPrefix(line, "OPEN "):
+			problems = append(problems, strings.TrimPrefix(line, "OPEN ")+" is not blocked in "+hostsFile)
+		case line == "NOHOSTS":
+			problems = append(problems, hostsFile+" not found, so the DataCite hosts cannot be confirmed blocked")
+		}
+	}
+	if files == 0 {
+		problems = append([]string{"no .env file found under " + words + ", so DataCite test mode cannot be confirmed"}, problems...)
+	}
+	if len(problems) > 0 {
+		return Finding{Check: check, Detail: strings.Join(problems, "\n")}, nil
+	}
+	return Finding{Check: check, OK: true, Detail: "INVENIO_DATACITE_TEST_MODE=True, and " + strings.Join(dataCiteHosts, " and ") + " resolve to loopback"}, nil
+}
+
+// SetDataCiteSafeguards sets INVENIO_DATACITE_TEST_MODE=True in every .env file
+// matching envGlobs and adds a loopback line to hostsFile for each DataCite API
+// host that is not already blocked. Each file it changes is saved once beside
+// itself as .clasm-bak, and a later run never replaces that backup. The
+// application must be restarted for the setting to take effect.
+//
+// @param ctx {context.Context} cancels the change
+// @param ex {executor.Executor} reaches the VM
+// @param envGlobs {[]string} absolute path patterns of the RDM .env files
+// @param hostsFile {string} the absolute path of the hosts file
+// @returns {error} an unsafe path, no .env file found, or why an edit failed
+// @example
+//
+//	err := SetDataCiteSafeguards(ctx, ex, []string{"/Sites/*/.env"}, "/etc/hosts")
+func SetDataCiteSafeguards(ctx context.Context, ex executor.Executor, envGlobs []string, hostsFile string) error {
+	words, err := globWords(envGlobs)
+	if err != nil {
+		return err
+	}
+	if !safeGlob.MatchString(hostsFile) || strings.ContainsAny(hostsFile, "*") || strings.Contains(hostsFile, "..") {
+		return fmt.Errorf("refusing the hosts file path %q", hostsFile)
+	}
+	script := `set -e
+umask 077
+n=0
+for f in ` + words + `; do
+  [ -f "$f" ] || continue
+  [ -e "$f.clasm-bak" ] || cp -p "$f" "$f.clasm-bak"
+  awk '{ t=$0; sub(/^[ \t]*export[ \t]+/, "", t) } t ~ /^INVENIO_DATACITE_TEST_MODE=/ { if (!done) { print "INVENIO_DATACITE_TEST_MODE=True"; done=1 } next } { print $0 } END { if (!done) print "INVENIO_DATACITE_TEST_MODE=True" }' "$f" > "$f.clasm-tmp"
+  cat "$f.clasm-tmp" > "$f"
+  rm -f "$f.clasm-tmp"
+  n=$((n+1))
+done
+[ "$n" -gt 0 ] || { echo "no .env file found under ` + words + `"; exit 1; }
+H=` + hostsFile + `
+[ -f "$H" ] || { echo "$H not found"; exit 1; }
+for h in ` + strings.Join(dataCiteHosts, " ") + `; do
+  if ! awk -v h="$h" '{ sub(/#.*/, "") } ($1 == "127.0.0.1" || $1 == "0.0.0.0" || $1 == "::1") { for (i = 2; i <= NF; i++) if ($i == h) found = 1 } END { exit !found }' "$H"; then
+    [ -e "$H.clasm-bak" ] || cp -p "$H" "$H.clasm-bak"
+    printf '127.0.0.1 %s # clasm: no DataCite registration from a development VM\n' "$h" >> "$H"
+  fi
+done
+echo "SET $n"
+`
+	out, status, err := run(ctx, ex, script)
+	if err != nil {
+		return err
+	}
+	if status != executor.StatusSuccess {
+		return fmt.Errorf("setting the DataCite safeguards on %s failed (%s): %s", ex.Name(), status, strings.TrimSpace(out))
+	}
+	return nil
 }

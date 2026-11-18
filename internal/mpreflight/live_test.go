@@ -32,16 +32,17 @@ func TestLive_ChecksOnARealVM(t *testing.T) {
 	sh("rm -rf " + base + " && mkdir -p " + base + "/site " + base + "/home/ubuntu/.aws " + base + "/home/nocreds")
 	defer sh("rm -rf " + base)
 	sh("printf 'FOO=1\\nINVENIO_MAIL_SUPPRESS_SEND=False\\nINVENIO_S3_SECRET_ACCESS_KEY=FAKEVALUE0123\\n' > " + base + "/site/.env; chmod 600 " + base + "/site/.env")
+	sh("printf '127.0.0.1 localhost\\n' > " + base + "/hosts")
 	sh("printf '[default]\\naws_access_key_id = FAKEVALUE0123\\n' > " + base + "/home/ubuntu/.aws/credentials")
 
-	o := Options{EnvGlobs: []string{base + "/site/.env"}, HomeGlobs: []string{base + "/home/*"}, CredentialGlobs: []string{base + "/none"}, Docker: true, DiskPath: "/var/tmp", DiskNeed: 1 << 20}
+	o := Options{EnvGlobs: []string{base + "/site/.env"}, HomeGlobs: []string{base + "/home/*"}, CredentialGlobs: []string{base + "/none"}, Docker: true, HostsFile: base + "/hosts", DiskPath: "/var/tmp", DiskNeed: 1 << 20}
 	findings, err := Run(ctx, mp, o)
 	if err == nil {
 		t.Fatalf("want a refusal, got %+v", findings)
 	}
-	mail, creds, disk := findings[0], findings[1], findings[2]
-	if mail.OK || creds.OK || !disk.OK {
-		t.Errorf("mail=%+v creds=%+v disk=%+v", mail, creds, disk)
+	mail, creds, disk, dc := findings[0], findings[1], findings[2], findings[3]
+	if mail.OK || creds.OK || !disk.OK || dc.OK {
+		t.Errorf("mail=%+v creds=%+v disk=%+v dc=%+v", mail, creds, disk, dc)
 	}
 	for _, want := range []string{"INVENIO_S3_SECRET_ACCESS_KEY", "aws_access_key_id", "credentials"} {
 		if !strings.Contains(creds.Detail, want) {
@@ -53,6 +54,7 @@ func TestLive_ChecksOnARealVM(t *testing.T) {
 	}
 
 	o.SetMailSuppression = true
+	o.SetDataCiteSafeguards = true
 	sh("sed -i '/SECRET_ACCESS/d' " + base + "/site/.env; rm -f " + base + "/home/ubuntu/.aws/credentials")
 	findings, err = Run(ctx, mp, o)
 	if err != nil {
@@ -60,6 +62,9 @@ func TestLive_ChecksOnARealVM(t *testing.T) {
 	}
 	if got := sh("cat " + base + "/site/.env; ls -A " + base + "/site; stat -c %a " + base + "/site/.env"); !strings.Contains(got, "INVENIO_MAIL_SUPPRESS_SEND=True") || !strings.Contains(got, ".env.clasm-bak") || !strings.Contains(got, "600") {
 		t.Errorf("after set: %s", got)
+	}
+	if got := sh("cat " + base + "/hosts; grep -c TEST_MODE=True " + base + "/site/.env"); !strings.Contains(got, "127.0.0.1 api.datacite.org") || !strings.Contains(got, "127.0.0.1 api.test.datacite.org") || !strings.Contains(got, "localhost") {
+		t.Errorf("hosts after set: %s", got)
 	}
 	if f, err := CheckDiskSpace(ctx, mp, "/var/tmp", 1<<60); err != nil || f.OK {
 		t.Errorf("an exabyte must not fit: %+v %v", f, err)
