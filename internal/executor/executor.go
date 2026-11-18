@@ -1,4 +1,4 @@
-package workflow
+package executor
 
 import (
 	"context"
@@ -144,7 +144,7 @@ func (e *SSMExecutor) Put(ctx context.Context, local, remote string) error {
 	sum := sha256.Sum256(content)
 	want := hex.EncodeToString(sum[:])
 	command := fmt.Sprintf("set -e\nmkdir -p %[1]s\nbase64 -d > %[2]s <<'__CLASM_B64__'\n%[3]s\n__CLASM_B64__\nchmod %[4]s %[2]s\nsha256sum %[2]s\n",
-		shellQuote(path.Dir(remote)), shellQuote(remote), base64.StdEncoding.EncodeToString(content), fmt.Sprintf("%04o", info.Mode().Perm()))
+		ShellQuote(path.Dir(remote)), ShellQuote(remote), base64.StdEncoding.EncodeToString(content), fmt.Sprintf("%04o", info.Mode().Perm()))
 	stdout, status, err := e.Run(ctx, command, defaultSSMPutTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return fmt.Errorf("copying %s to %s on %s: %w", local, remote, e.instanceID, err)

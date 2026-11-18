@@ -25,9 +25,6 @@ type BackupFile struct {
 // a command string, so this is the one place that risk is unavoidable --
 // handled carefully and tested directly, rather than hand-built ad hoc
 // per call site.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
 
 // ListBackupFiles runs a read-only `find` over directory on instanceID
 // via SSM, listing every file's size and modification time. Age

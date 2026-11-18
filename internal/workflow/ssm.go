@@ -2,22 +2,19 @@ package workflow
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/aws/smithy-go"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
+	"github.com/caltechlibrary/clasm/internal/executor"
 )
 
 // DefaultSSMPollInterval is the poll interval production callers should
 // use for WaitForSSMOnline and RunShellCommand.
-const DefaultSSMPollInterval = 5 * time.Second
+const DefaultSSMPollInterval = executor.DefaultSSMPollInterval
 
 // WaitForSSMOnline polls ssm:DescribeInstanceInformation until the given
 // instance reports PingStatus Online, or the timeout elapses. A timeout
@@ -55,7 +52,7 @@ func WaitForSSMOnline(ctx context.Context, client awsclient.SSMAPI, instanceID s
 
 // minSSMCommandTimeoutSeconds is AWS's own floor for ssm:SendCommand's
 // TimeoutSeconds -- values below this are rejected outright.
-const minSSMCommandTimeoutSeconds = 30
+const minSSMCommandTimeoutSeconds = executor.MinSSMCommandTimeoutSeconds
 
 // RunShellCommand runs command on instanceID via ssm:SendCommand
 // (AWS-RunShellScript) and polls ssm:GetCommandInvocation until it
@@ -79,64 +76,5 @@ const minSSMCommandTimeoutSeconds = 30
 // RunShellCommand's SSM SendCommand never sets TimeoutSeconds..." and
 // its same-day follow-up, PLAN.md Phase 20.61).
 func RunShellCommand(ctx context.Context, client awsclient.SSMAPI, instanceID, command string, timeout, pollInterval time.Duration) (stdout string, status types.CommandInvocationStatus, err error) {
-	timeoutSeconds := max(int32(timeout/time.Second), minSSMCommandTimeoutSeconds)
-	sendOut, err := client.SendCommand(ctx, &ssm.SendCommandInput{
-		InstanceIds:  []string{instanceID},
-		DocumentName: aws.String("AWS-RunShellScript"),
-		Parameters: map[string][]string{
-			"commands":         {command},
-			"executionTimeout": {strconv.Itoa(int(timeoutSeconds))},
-		},
-		TimeoutSeconds: aws.Int32(timeoutSeconds),
-	})
-	if err != nil {
-		return "", "", err
-	}
-	commandID := aws.ToString(sendOut.Command.CommandId)
-
-	deadline, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	input := &ssm.GetCommandInvocationInput{CommandId: aws.String(commandID), InstanceId: aws.String(instanceID)}
-	for {
-		out, err := client.GetCommandInvocation(deadline, input)
-		switch {
-		case err != nil && !isInvocationNotYetVisible(err):
-			return "", "", err
-		case err == nil && isTerminalCommandStatus(out.Status):
-			return aws.ToString(out.StandardOutputContent), out.Status, nil
-		}
-		select {
-		case <-deadline.Done():
-			return "", "", fmt.Errorf("timed out waiting for command %q to finish on %s", command, instanceID)
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-// isInvocationNotYetVisible reports whether err is AWS's own
-// InvocationDoesNotExist -- expected for the first few seconds after
-// ssm:SendCommand returns a new command ID, before that invocation is
-// visible to ssm:GetCommandInvocation (the SSM-side analog of
-// launch_execute.go's isInstanceNotYetVisible / create_ami_execute.go's
-// isImageNotYetVisible). Without this, RunShellCommand could fail
-// immediately after a successful SendCommand with "InvocationDoesNotExist"
-// -- confusing given the command was, in fact, just accepted. See
-// DECISIONS.md, "Tolerate GetCommandInvocation's post-SendCommand
-// eventual-consistency window".
-func isInvocationNotYetVisible(err error) bool {
-	apiErr, ok := errors.AsType[smithy.APIError](err)
-	return ok && apiErr.ErrorCode() == "InvocationDoesNotExist"
-}
-
-func isTerminalCommandStatus(s types.CommandInvocationStatus) bool {
-	switch s {
-	case types.CommandInvocationStatusSuccess,
-		types.CommandInvocationStatusFailed,
-		types.CommandInvocationStatusCancelled,
-		types.CommandInvocationStatusTimedOut:
-		return true
-	default:
-		return false
-	}
+	return executor.RunShellCommand(ctx, client, instanceID, command, timeout, pollInterval)
 }

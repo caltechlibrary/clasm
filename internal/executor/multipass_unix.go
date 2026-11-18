@@ -1,6 +1,6 @@
 //go:build !windows
 
-package workflow
+package executor
 
 import (
 	"os/exec"

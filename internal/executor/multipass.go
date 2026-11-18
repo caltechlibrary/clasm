@@ -1,4 +1,4 @@
-package workflow
+package executor
 
 import (
 	"bytes"
@@ -158,7 +158,7 @@ func (w *sentinelWriter) String() string {
 // prints the exit marker last.
 func (m *MultipassExecutor) stepScript(body string) string {
 	return fmt.Sprintf("F=$(mktemp %s)\nbase64 -d > \"$F\" <<'__CLASM_B64__'\n%s\n__CLASM_B64__\nchmod 700 \"$F\"; bash \"$F\" </dev/null; rc=$?; rm -f \"$F\"; printf '\\n%s%%s\\n' \"$rc\"; exit $rc\n",
-		shellQuote(m.stage()+"/clasm-step.XXXXXX"), base64.StdEncoding.EncodeToString([]byte(body)), multipassSentinel)
+		ShellQuote(m.stage()+"/clasm-step.XXXXXX"), base64.StdEncoding.EncodeToString([]byte(body)), multipassSentinel)
 }
 
 // runScript runs body on the guest through one `multipass exec` and returns its
@@ -260,7 +260,7 @@ type DetachedRun struct {
 //	out, status, err := d.Wait(ctx, time.Hour, 10*time.Second)
 func (m *MultipassExecutor) Start(ctx context.Context, command string) (*DetachedRun, error) {
 	dir := m.stage() + "/clasm-run-" + randHex(6)
-	q := shellQuote
+	q := ShellQuote
 	inner := "bash " + q(dir+"/step.sh") + " </dev/null > " + q(dir+"/log") + " 2>&1; echo $? > " + q(dir+"/rc.tmp") + "; mv " + q(dir+"/rc.tmp") + " " + q(dir+"/rc")
 	body := fmt.Sprintf("set -e\nmkdir -p %[1]s\nbase64 -d > %[2]s <<'__CLASM_B64__'\n%[3]s\n__CLASM_B64__\nchmod 700 %[2]s\nnohup bash -c %[4]s >/dev/null 2>&1 </dev/null &\necho started\n",
 		q(dir), q(dir+"/step.sh"), base64.StdEncoding.EncodeToString([]byte(command)), q(inner))
@@ -288,7 +288,7 @@ func (d *DetachedRun) Wait(ctx context.Context, timeout, pollInterval time.Durat
 	if pollInterval <= 0 {
 		pollInterval = 5 * time.Second
 	}
-	q := shellQuote
+	q := ShellQuote
 	poll := fmt.Sprintf("if [ -f %[1]s ]; then echo DONE; cat %[1]s; tail -c 1048576 %[2]s; else echo RUNNING; fi\n", q(d.dir+"/rc"), q(d.dir+"/log"))
 	deadline := time.Now().Add(timeout)
 	for {
@@ -357,7 +357,7 @@ func (m *MultipassExecutor) Put(ctx context.Context, local, remote string) error
 	if err := m.transfer(ctx, local, m.vm+":"+tmp); err != nil {
 		return fmt.Errorf("copying %s to %s:%s: %w", local, m.vm, remote, err)
 	}
-	q := shellQuote
+	q := ShellQuote
 	body := fmt.Sprintf("set -e\ngot=$(sha256sum %[1]s | cut -d' ' -f1)\nif [ \"$got\" != %[2]s ]; then rm -f %[1]s; echo \"checksum mismatch: the VM has $got\"; exit 3; fi\nmkdir -p %[3]s\nchmod %[4]s %[1]s\nchown \"$(id -u):$(id -g)\" %[1]s\nmv -f %[1]s %[5]s\necho ok\n",
 		q(tmp), q(want), q(path.Dir(remote)), fmt.Sprintf("%04o", info.Mode().Perm()), q(remote))
 	out, rc, err := m.runScript(ctx, body, multipassControlTimeout)
@@ -383,7 +383,7 @@ func (m *MultipassExecutor) Get(ctx context.Context, remote, local string) error
 		return fmt.Errorf("MultipassExecutor.Get: the source must be an absolute path, got %q", remote)
 	}
 	tmp := m.stage() + "/clasm-get-" + randHex(6)
-	q := shellQuote
+	q := ShellQuote
 	body := fmt.Sprintf("set -e\nsum=$(sha256sum %[1]s | cut -d' ' -f1)\ncp %[1]s %[2]s\nchmod 0644 %[2]s\necho \"$sum\"\n", q(remote), q(tmp))
 	out, rc, err := m.runScript(ctx, body, multipassControlTimeout)
 	if err != nil {
