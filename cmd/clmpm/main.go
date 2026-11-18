@@ -105,6 +105,7 @@ EXIT STATUS
 `
 
 func main() {
+	config.Writer = path.Base(os.Args[0]) + " " + clasm.Version
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	d := deps{

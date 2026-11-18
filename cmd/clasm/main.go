@@ -90,6 +90,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	config.Writer = appName + " " + version
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(eout, "%v\n", err)

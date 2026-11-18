@@ -192,3 +192,53 @@ func TestUpsertRDMPostgresRuleForHost_AppendsANewMultipassRuleCarryingItsHost(t 
 		t.Errorf("an aws rule stays unmarked: %+v", aws)
 	}
 }
+
+// ---- written_by: informational, never read to decide anything ----
+
+func withWriter(t *testing.T, w string) {
+	t.Helper()
+	old := Writer
+	Writer = w
+	t.Cleanup(func() { Writer = old })
+}
+
+func TestSave_RecordsWhichProgramWroteTheFile(t *testing.T) {
+	withWriter(t, "clasm 0.0.13")
+	p := filepath.Join(t.TempDir(), ".clasm")
+	if err := Save(p, Config{Regions: []string{"us-west-2"}}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "written_by: clasm 0.0.13") {
+		t.Errorf("file:\n%s", b)
+	}
+	got, err := Load(p)
+	if err != nil || got.WrittenBy != "clasm 0.0.13" {
+		t.Errorf("load: %q %v", got.WrittenBy, err)
+	}
+}
+
+func TestSave_ReplacesAnEarlierWriterAndOmitsAnUnsetOne(t *testing.T) {
+	withWriter(t, "clmpm 0.0.14")
+	p := filepath.Join(t.TempDir(), ".clasm")
+	if err := Save(p, Config{WrittenBy: "clasm 0.0.12"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), "clasm 0.0.12") || !strings.Contains(string(b), "clmpm 0.0.14") {
+		t.Errorf("the writer must be the saving program:\n%s", b)
+	}
+	withWriter(t, "")
+	if err := Save(p, Config{WrittenBy: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), "written_by") {
+		t.Errorf("an unset writer is omitted, and a stale one is not carried:\n%s", b)
+	}
+}
+
+func TestLoad_WrittenByNeverAffectsLoading(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "config_version: 2\nwritten_by: some future program 9.9\nregions: [us-west-2]\n"))
+	if err != nil || cfg.Regions[0] != "us-west-2" {
+		t.Errorf("cfg=%+v err=%v", cfg, err)
+	}
+}

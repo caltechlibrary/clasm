@@ -1198,7 +1198,8 @@ it does not know and drop them on the next save. Each rule in `backup_directorie
 AWS rules and clmpm only Multipass rules, so a broad pattern cannot send a
 restore to the wrong kind of host. Any other `host` value is a config error
 (exit 78). The Configure clasm display shows the version and marks a Multipass
-rule `[multipass]`. **Before adding a Multipass rule, install this release of
+rule `[multipass]`. `written_by` records which program and release last saved the file
+(for example `clasm 0.0.13`); it is informational and nothing reads it. **Before adding a Multipass rule, install this release of
 clasm on every machine that shares or copies your `~/.clasm`:** a 0.0.12 binary
 ignores both fields and would treat the rule as an AWS rule.
 

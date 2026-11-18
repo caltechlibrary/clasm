@@ -165,3 +165,7 @@ func ExitCode(err error) int {
 	}
 	return 1
 }
+
+// Writer is recorded as written_by on every Save. A command sets it once at
+// start, for example "clasm 0.0.13"; unset, the field is omitted.
+var Writer string

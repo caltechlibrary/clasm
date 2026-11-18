@@ -37,7 +37,11 @@ const DefaultOriginTagKey = "Origin"
 type Config struct {
 	// ConfigVersion is the schema version of the file (DR-0206). A file with no
 	// version is version 1; Save always writes CurrentVersion.
-	ConfigVersion     int                   `yaml:"config_version"`
+	ConfigVersion int `yaml:"config_version"`
+	// WrittenBy names the program and release that last saved the file, such as
+	// "clasm 0.0.13". It is informational: nothing reads it to decide anything
+	// (DR-0206).
+	WrittenBy         string                `yaml:"written_by,omitempty"`
 	Regions           []string              `yaml:"regions"`
 	BackupDirectories []BackupDirectoryRule `yaml:"backup_directories"`
 	OriginTag         OriginTagConfig       `yaml:"origin_tag"`
@@ -165,6 +169,7 @@ func UpsertRDMPostgresRule(rules []RDMPostgresRule, pattern, containerName strin
 // it.
 func Save(path string, cfg Config) error {
 	cfg.ConfigVersion = CurrentVersion
+	cfg.WrittenBy = Writer
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
