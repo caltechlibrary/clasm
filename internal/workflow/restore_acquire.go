@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/caltechlibrary/clasm/internal/inventory"
@@ -98,4 +99,32 @@ func RestoreOpenSearchOnHost(ctx context.Context, w io.Writer, ex Executor, p Op
 		owner: p.Owner, directory: p.Directory, bucket: p.Bucket, sourceName: p.SourceName,
 		indexPrefix: p.IndexPrefix, snap: p.Snapshot, indices: p.Indices, existing: p.Existing,
 	}, acquire)
+}
+
+// The fixed scratch files a restore uses on the host. The cleanup step removes
+// exactly these two, so an acquirer for another host must use them too.
+const (
+	RestoreDownloadPath = remoteRestoreDownloadPath
+	RestoreSQLPath      = remoteRestoreSQLPath
+)
+
+// NeedsDecompression reports whether a backup key names a gzip file, by suffix.
+//
+// @param key {string} the backup's S3 key or file name
+// @returns {bool} true for a .gz name
+// @example
+//
+//	NeedsDecompression("db-2026-11-17.sql.gz") // true
+func NeedsDecompression(key string) bool { return needsDecompression(key) }
+
+// DecompressRestoreDownloadCommand is the step of the on-host download that
+// turns RestoreDownloadPath into plain SQL at RestoreSQLPath, for an acquirer
+// that put the compressed file there itself.
+//
+// @returns {string} the shell command
+// @example
+//
+//	out, status, err := ex.Run(ctx, DecompressRestoreDownloadCommand(), timeout, poll)
+func DecompressRestoreDownloadCommand() string {
+	return fmt.Sprintf("{ set -e; gunzip -c %s > %s; } 2>&1", shellQuote(RestoreDownloadPath), shellQuote(RestoreSQLPath))
 }

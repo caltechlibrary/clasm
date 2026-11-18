@@ -221,3 +221,28 @@ func TestRestoreSQLOnHost_MapsTheDatabaseAndUserToTheRightPlaces(t *testing.T) {
 		t.Errorf("sent: %v", fake.sentCommands)
 	}
 }
+
+// ---- exports for the Multipass acquirers ----
+
+func TestRestoreScratchPathsAreTheOnesTheCleanupRemoves(t *testing.T) {
+	if RestoreDownloadPath != remoteRestoreDownloadPath || RestoreSQLPath != remoteRestoreSQLPath {
+		t.Errorf("exported paths %q %q differ from %q %q", RestoreDownloadPath, RestoreSQLPath, remoteRestoreDownloadPath, remoteRestoreSQLPath)
+	}
+}
+
+func TestDecompressRestoreDownloadCommand_IsTheDecompressStepOfTheAWSCommand(t *testing.T) {
+	aws := buildDownloadAndDecompressCommand("b", "k/x.sql.gz")
+	frag := "gunzip -c " + shellQuote(RestoreDownloadPath) + " > " + shellQuote(RestoreSQLPath)
+	if !strings.Contains(aws, frag) {
+		t.Fatalf("the AWS command no longer holds %q:\n%s", frag, aws)
+	}
+	if got := DecompressRestoreDownloadCommand(); !strings.Contains(got, frag) || !strings.HasPrefix(got, "{ set -e;") || !strings.HasSuffix(got, "2>&1") {
+		t.Errorf("command = %q", got)
+	}
+}
+
+func TestNeedsDecompression_IsExportedAndBySuffix(t *testing.T) {
+	if !NeedsDecompression("a/b.sql.gz") || NeedsDecompression("a/b.sql") {
+		t.Error("by .gz suffix")
+	}
+}
