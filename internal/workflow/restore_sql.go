@@ -420,39 +420,46 @@ type sqlRestoreRun struct {
 // on the instance first -- nothing is destroyed until the replacement is in
 // hand -- then drop, create and load the database, then count its tables.
 func executeSQLRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, r sqlRestoreRun) error {
-	inst, containerName, dbName, dbUser, bucket, object := r.inst, r.containerName, r.dbName, r.dbUser, r.bucket, r.object
+	return executeSQLRestoreOn(ctx, w, NewSSMExecutor(ssmClient, r.inst.InstanceID), r, awsSQLAcquirer(r.bucket, r.object.Key))
+}
 
-	sqlFilePath, err := downloadAndDecompressSQLBackup(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), bucket, object.Key, DefaultSQLRestoreTimeout, DefaultSSMPollInterval)
+// executeSQLRestoreOn is executeSQLRestore on any host (DR-0207): acquire puts
+// the backup on the host, and every step after it is the same for every host.
+// The host's name in messages is ex.Name().
+func executeSQLRestoreOn(ctx context.Context, w io.Writer, ex Executor, r sqlRestoreRun, acquire SQLAcquirer) error {
+	containerName, dbName, dbUser, bucket, object := r.containerName, r.dbName, r.dbUser, r.bucket, r.object
+
+	sqlFilePath, err := acquire(ctx, ex)
 	if err != nil {
 		return err
 	}
 
 	if r.locations != nil {
-		if err := r.locations.recheck(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), sqlFilePath); err != nil {
+		if err := r.locations.recheck(ctx, ex, sqlFilePath); err != nil {
 			return err
 		}
 	}
 
-	if err := runRestoreSQLCommands(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), containerName, dbName, dbUser, sqlFilePath, DefaultSQLRestoreTimeout, DefaultSSMPollInterval); err != nil {
+	if err := runRestoreSQLCommands(ctx, ex, containerName, dbName, dbUser, sqlFilePath, DefaultSQLRestoreTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
-	tableCount, err := countRestoredTables(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), containerName, dbUser, dbName, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
+	tableCount, err := countRestoredTables(ctx, ex, containerName, dbUser, dbName, DefaultRDMPostgresDiscoveryTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(w, "\nRestored %q from s3://%s/%s into database %q on %s -- %d table(s) present.\n", object.Key, bucket, object.Key, dbName, inst.InstanceID, tableCount)
+	fmt.Fprintf(w, "\nRestored %q from s3://%s/%s into database %q on %s -- %d table(s) present.\n", object.Key, bucket, object.Key, dbName, ex.Name(), tableCount)
 
 	// The table count is the proof the replacement is in place, so only now
 	// is there nothing left to keep. A failed run returns above and leaves
 	// both files where they are. The database is restored either way, so a
 	// removal failure is reported but does not turn the restore into one.
-	if err := removeRestoreScratchFiles(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
-		fmt.Fprintf(w, "Warning: the restore succeeded, but clasm could not remove its scratch files %s and %s on %s: %v\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, inst.InstanceID, err)
+	if err := removeRestoreScratchFiles(ctx, ex, DefaultBackupDeleteTimeout, DefaultSSMPollInterval); err != nil {
+		fmt.Fprintf(w, "Warning: the restore succeeded, but clasm could not remove its scratch files %s and %s on %s: %v\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, ex.Name(), err)
 		return nil
 	}
-	fmt.Fprintf(w, "Removed the scratch files %s and %s from %s.\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, inst.InstanceID)
+	fmt.Fprintf(w, "Removed the scratch files %s and %s from %s.\n", remoteRestoreDownloadPath, remoteRestoreSQLPath, ex.Name())
 	return nil
 }
 

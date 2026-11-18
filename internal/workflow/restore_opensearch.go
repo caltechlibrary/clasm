@@ -765,13 +765,22 @@ type openSearchRestoreRun struct {
 // up. Nothing before the delete is destructive, and the delete comes after a
 // verified source (DR-0175 decision 2).
 func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awsclient.SSMAPI, r openSearchRestoreRun) error {
+	return executeOpenSearchRestoreOn(ctx, w, NewSSMExecutor(ssmClient, r.inst.InstanceID), r, awsSnapshotAcquirer(r.bucket, r.sourceName, r.snap.Name))
+}
+
+// executeOpenSearchRestoreOn is executeOpenSearchRestore on any host (DR-0207):
+// acquire makes the snapshot's files present in the repository directory, where
+// the on-host sync used to run, and every other step is the same for every host.
+// r.inst supplies the host's name for the index checks; the host's name in
+// messages is ex.Name().
+func executeOpenSearchRestoreOn(ctx context.Context, w io.Writer, ex Executor, r openSearchRestoreRun, acquire SnapshotAcquirer) error {
 	inst, owner, directory, bucket, sourceName := r.inst, r.owner, r.directory, r.bucket, r.sourceName
 	indexPrefix, snap, indices, existing := r.indexPrefix, r.snap, r.indices, r.existing
 
 	// Made or repaired for the service user immediately before the sync,
 	// which needs the directory the operator just typed. Non-recursive: the
 	// chown -R below, after the sync, is the only recursive step.
-	if err := EnsureBackupDirectory(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := EnsureBackupDirectory(ctx, ex, directory, owner, openSearchRepoDirMode, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 	// Before the sync, the directory must hold nothing that can shadow the
@@ -779,13 +788,13 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// (metadata only), and the generation files an earlier Archive or Restore
 	// left behind are moved aside, never deleted. OpenSearch picks the highest
 	// index-N it finds, not the one index.latest names (found live 2026-09-30).
-	if err := DeregisterSnapshotRepoIfPresent(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeregisterSnapshotRepoIfPresent(ctx, ex, DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := MoveStaleRepositoryGenerations(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), directory, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
+	if err := MoveStaleRepositoryGenerations(ctx, w, ex, directory, DefaultOwnershipTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := SyncOpenSearchBackupsFromS3(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), bucket, sourceName, snap.Name, directory, DefaultOpenSearchSyncTimeout, DefaultSSMPollInterval); err != nil {
+	if err := acquire(ctx, ex, directory); err != nil {
 		return err
 	}
 	// Strictly between the sync and the registration. After the sync
@@ -795,10 +804,10 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// retrofit already chowned -- so registering first would report
 	// success against a tree OpenSearch cannot write and destroy the one
 	// signal available here (DR-0175, PLAN.md Phase 20.63).
-	if err := NormalizeSnapshotRepoOwnership(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), directory, owner, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := NormalizeSnapshotRepoOwnership(ctx, ex, directory, owner, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := RegisterSnapshotRepo(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := RegisterSnapshotRepo(ctx, ex, DefaultOpenSearchRepoName, DefaultOpenSearchContainerRepoPath, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
@@ -811,24 +820,24 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// caltechauthors-test-v13; DR-0175 decision 2 -- never destroy the current
 	// state before a verified replacement exists). The operator's
 	// confirmation was taken earlier because it only needs the target.
-	if err := CheckSnapshotHoldsMatchingIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snap.Name, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := CheckSnapshotHoldsMatchingIndices(ctx, ex, DefaultOpenSearchRepoName, snap.Name, indexPrefix, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := DeleteConflictingIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), existing, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeleteConflictingIndices(ctx, ex, existing, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
 
-	if err := RestoreSnapshot(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snap.Name, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := RestoreSnapshot(ctx, ex, DefaultOpenSearchRepoName, snap.Name, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		if errors.Is(err, errNoIndicesRestored) {
 			return fmt.Errorf("snapshot %q holds no indices matching the index prefix %q, so nothing was restored (the synced snapshot is still in %s): the index prefix is the name the indices carry inside the snapshot (e.g. caltechauthors), not the source instance name used as the S3 prefix (e.g. caltechauthors-v13)", snap.Name, indexPrefix, directory)
 		}
 		return err
 	}
-	if err := PollRestoreUntilComplete(ctx, w, NewSSMExecutor(ssmClient, inst.InstanceID), indices, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
+	if err := PollRestoreUntilComplete(ctx, w, ex, indices, DefaultSnapshotCreateTimeout, DefaultSnapshotPollInterval); err != nil {
 		return err
 	}
 
-	restored, err := VerifyRestoredIndices(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
+	restored, err := VerifyRestoredIndices(ctx, ex, indices, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval)
 	if err != nil {
 		return err
 	}
@@ -846,15 +855,15 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	// snapshot, so the API can reach it and no carve-out is needed), then
 	// the repository is deregistered. What is left is an empty directory
 	// owned by uid 1000, which is what Archive needs to find.
-	if err := DeleteSnapshot(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, snap.Name, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeleteSnapshot(ctx, ex, DefaultOpenSearchRepoName, snap.Name, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	if err := DeregisterSnapshotRepo(ctx, NewSSMExecutor(ssmClient, inst.InstanceID), DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
+	if err := DeregisterSnapshotRepo(ctx, ex, DefaultOpenSearchRepoName, DefaultOpenSearchRESTTimeout, DefaultSSMPollInterval); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "Cleaned up the local snapshot repository on %s (snapshot %q deleted, repository deregistered).\n", inst.InstanceID, snap.Name)
+	fmt.Fprintf(w, "Cleaned up the local snapshot repository on %s (snapshot %q deleted, repository deregistered).\n", ex.Name(), snap.Name)
 
-	fmt.Fprintf(w, "\nRestored OpenSearch snapshot %q from s3://%s/%s onto %s:\n", snap.Name, bucket, openSearchSnapshotsPrefix(sourceName), inst.InstanceID)
+	fmt.Fprintf(w, "\nRestored OpenSearch snapshot %q from s3://%s/%s onto %s:\n", snap.Name, bucket, openSearchSnapshotsPrefix(sourceName), ex.Name())
 	var redCount int
 	for _, r := range restored {
 		marker := ""
@@ -869,7 +878,7 @@ func executeOpenSearchRestore(ctx context.Context, w io.Writer, ssmClient awscli
 	}
 	// The restore is loaded, verified and tidy. What a restore without global state leaves missing is
 	// put right now, and the health check's verdict is this restore's (DR-0196, DR-0199).
-	return runPostRestoreRepair(ctx, w, inst, newPostRestoreSteps(NewSSMExecutor(ssmClient, inst.InstanceID), inst.Name))
+	return runPostRestoreRepair(ctx, w, inst, newPostRestoreSteps(ex, inst.Name))
 }
 
 // staleRepoDirPrefix is where the generation files already in a repository
