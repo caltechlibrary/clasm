@@ -742,3 +742,17 @@ func TestARefusalMessageNamesTheFailedChecksAndLeavesTheDetailToTheFindings(t *t
 		t.Errorf("the detail belongs on stdout:\n%s", out)
 	}
 }
+
+// The check behind this line asks whether the database exists, not whether it has
+// tables: a fresh Postgres container creates an empty one (found on the first real
+// rehearsal VM, which had zero tables), so the plan must not claim it holds data.
+func TestRestoreSQL_ADryRunSaysTheDatabaseExistsNotThatItHoldsTables(t *testing.T) {
+	_, d := newWorld(t)
+	_, out, _ := runW(t, d, "restore-sql", "vm", "src")
+	if !strings.Contains(out, "exists") || !strings.Contains(out, "dropped and recreated") {
+		t.Errorf("plan should say the database exists and will be dropped and recreated:\n%s", out)
+	}
+	if strings.Contains(out, "holds tables") {
+		t.Errorf("an existing database is not necessarily holding tables:\n%s", out)
+	}
+}

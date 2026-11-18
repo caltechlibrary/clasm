@@ -501,7 +501,7 @@ func doRestoreSQL(d deps, o *options, args []string, out cmdOut) error {
 		fmt.Fprintf(out.w, "  load s3://%s/%s (%s) into database %q (user %q, container %q) on %s\n", o.sqlBucket, dump.Key, gib(dump.Size), dbName, dbUser, valueOr(container, "unknown"), vm)
 		if container != "" && d.backups.existingSQLData != nil {
 			if has, derr := d.backups.existingSQLData(d.ctx, ex, container, dbName, dbUser); derr == nil && has {
-				fmt.Fprintf(out.w, "  the database %q holds tables now and they will be dropped\n", dbName)
+				fmt.Fprintf(out.w, "  the database %q exists on %s now; it will be dropped and recreated\n", dbName, vm)
 			}
 		}
 		findings, perr := d.backups.preflight(d.ctx, ex, preflightOptions(o, false, need))
