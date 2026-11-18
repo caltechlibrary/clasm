@@ -18,7 +18,7 @@ import (
 	"github.com/caltechlibrary/clasm/internal/ui"
 )
 
-// The RDM index health check (DR-0197): a read-only look, through SSM at the
+// The RDM index health check (DR-0197): a read-only look, through an Executor at the
 // instance's own unauthenticated OpenSearch on localhost:9200, at whether the
 // audit log and the job logs are what the admin page needs. #185 was invisible
 // because every layer answered HTTP 200; the one signal that failed was
@@ -621,13 +621,13 @@ func buildIndexHealthReport(sections map[string]string) (IndexHealthReport, erro
 	return r, nil
 }
 
-// runIndexScript sends one RDM index script to an instance through SSM and splits its output into
+// runIndexScript sends one RDM index script to a host through its Executor and splits its output into
 // sections. An instance SSM cannot reach is 69; a script that did not succeed is 70, since the
 // scripts end successfully on every known condition.
 func runIndexScript(ctx context.Context, ex Executor, what, script string, timeout, poll time.Duration) (map[string]string, error) {
 	stdout, status, err := ex.Run(ctx, script, timeout, poll)
 	if err != nil {
-		return nil, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running %s on %s through SSM: %w", what, ex.Name(), err)}
+		return nil, &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("running %s on %s: %w", what, ex.Name(), err)}
 	}
 	if status != "Success" {
 		return nil, &ExitCodeError{Code: ExitInternal, Err: fmt.Errorf("%s script failed on %s (SSM status %s): %s", what, ex.Name(), status, strings.TrimSpace(stdout))}
@@ -737,7 +737,7 @@ Checks, read-only, that the instance's audit log and job logs are what the RDM
 admin pages need: both are real data streams (not a plain index, not an orphaned
 .ds- backing index), the fields the pages aggregate on are keyword, the pages' own
 aggregation has no failed shards, and every index template the app would install is
-present. It runs through SSM against the instance's own OpenSearch, with no
+present. It runs through an Executor against the host's own OpenSearch, with no
 credentials and no wildcards. Indices that only look like logs, such as kept copies,
 are listed as informational and never fail.
 

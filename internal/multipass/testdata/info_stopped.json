@@ -1,0 +1,30 @@
+{
+    "errors": [
+    ],
+    "info": {
+        "caltechauthors-rsdoiel-test-v13": {
+            "zone": {
+                "name": "zone1",
+                "available": true
+            },
+            "state": "Stopped",
+            "image_hash": "50e24e1fb79e89116e939d90aa7738f7af48c442fa1bc2510131e0b39c50348e",
+            "image_release": "24.04 LTS",
+            "release": "",
+            "cpu_count": "",
+            "snapshot_count": "0",
+            "load": [
+            ],
+            "disks": {
+                "sda1": {
+                }
+            },
+            "memory": {
+            },
+            "ipv4": [
+            ],
+            "mounts": {
+            }
+        }
+    }
+}

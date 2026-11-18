@@ -1,0 +1,38 @@
+{
+    "errors": [
+    ],
+    "info": {
+        "clasm-c1-scratch": {
+            "zone": {
+                "name": "zone1",
+                "available": true
+            },
+            "state": "Running",
+            "image_hash": "50e24e1fb79e89116e939d90aa7738f7af48c442fa1bc2510131e0b39c50348e",
+            "image_release": "24.04 LTS",
+            "release": "Ubuntu 24.04.5 LTS",
+            "cpu_count": "1",
+            "snapshot_count": "0",
+            "load": [
+                0.14,
+                0.03,
+                0.01
+            ],
+            "disks": {
+                "sda1": {
+                    "used": "2169235968",
+                    "total": "5119532032"
+                }
+            },
+            "memory": {
+                "used": 293695488,
+                "total": 998223872
+            },
+            "ipv4": [
+                "192.168.252.24"
+            ],
+            "mounts": {
+            }
+        }
+    }
+}

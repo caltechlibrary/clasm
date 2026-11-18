@@ -650,7 +650,7 @@ func curlOS(method, urlPath, body string) string {
 func (o *execIndexOps) run(ctx context.Context, what, command string) (string, error) {
 	stdout, status, err := o.ex.Run(ctx, command, DefaultOpenSearchRESTTimeout, o.poll)
 	if err != nil {
-		return "", &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("%s on %s through SSM: %w", what, o.ex.Name(), err)}
+		return "", &ExitCodeError{Code: ExitUnavailable, Err: fmt.Errorf("%s on %s: %w", what, o.ex.Name(), err)}
 	}
 	if status != "Success" {
 		return "", fmt.Errorf("%s failed on %s (SSM status %s): %s", what, o.ex.Name(), status, strings.TrimSpace(stdout))

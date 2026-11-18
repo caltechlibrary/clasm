@@ -8,7 +8,7 @@ PROJECT = clasm
 
 GIT_GROUP = caltechlibrary
 
-PROGRAMS = clasm
+PROGRAMS = clasm clmpm
 
 RELEASE_DATE = $(shell date +%Y-%m-%d)
 

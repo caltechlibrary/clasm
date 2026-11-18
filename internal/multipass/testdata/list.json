@@ -1,0 +1,38 @@
+{
+    "list": [
+        {
+            "name": "nginxtest",
+            "state": "Stopped",
+            "ipv4": [
+            ],
+            "release": "Ubuntu 24.04 LTS",
+            "zone": {
+                "name": "zone1",
+                "available": true
+            }
+        },
+        {
+            "name": "clasm-c1-scratch",
+            "state": "Running",
+            "ipv4": [
+                "192.168.252.24"
+            ],
+            "release": "Ubuntu 24.04 LTS",
+            "zone": {
+                "name": "zone1",
+                "available": true
+            }
+        },
+        {
+            "name": "caltechauthors-rsdoiel-test-v13",
+            "state": "Stopped",
+            "ipv4": [
+            ],
+            "release": "Ubuntu 24.04 LTS",
+            "zone": {
+                "name": "zone1",
+                "available": true
+            }
+        }
+    ]
+}
