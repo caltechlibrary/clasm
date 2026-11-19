@@ -111,7 +111,7 @@ func collectLaunchInstanceParamsFromCloudInit(ctx context.Context, w io.Writer, 
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	environment, err := ui.Prompt("Environment tag (production, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(menuInput, menuOutput))
+	environment, err := ui.Prompt("Environment tag (production, staged, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(menuInput, menuOutput))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}

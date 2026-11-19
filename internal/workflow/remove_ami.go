@@ -107,8 +107,8 @@ func confirmRemoveAMI(w io.Writer, img inventory.Image, dependents []inventory.I
 		}
 		fmt.Fprintf(w, "WARNING: %d instance(s) currently reference this AMI: %s\n", len(dependents), strings.Join(labels, ", "))
 	}
-	if img.Environment == "production" {
-		fmt.Fprintln(w, "WARNING: this AMI is tagged Environment=production.")
+	if isProtectedEnvironment(img.Environment) {
+		fmt.Fprintf(w, "WARNING: this AMI is tagged Environment=%s.\n", img.Environment)
 	}
 
 	return ConfirmDestructive([]string{img.ImageID, img.Name}, WithConfirmIO(input, output))

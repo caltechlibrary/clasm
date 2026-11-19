@@ -279,7 +279,7 @@ that is already stopping is waited out. A pending, shutting-down or terminated
 instance cannot be stopped: that is exit 1 and nothing is sent. Its EBS volumes
 persist and it can be started again.
 
-An instance tagged Environment=production is not stopped without --confirm: with
+An instance tagged Environment=production or staged is not stopped without --confirm: with
 no terminal the plan is printed and nothing is changed (exit 0). The progress
 line goes to stderr, so stdout is the result alone; with -json the plan goes to
 stderr too, and stdout is one object whose "declined" says nothing was done.
@@ -387,9 +387,9 @@ func runStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[stri
 
 	changed, declined := false, false
 	if previous == types.InstanceStateNameRunning {
-		if isProductionInstance(live) {
+		if isProtectedInstance(live) {
 			gate.Plan = []string{
-				fmt.Sprintf("stop instance %s (%s) in %s, tagged Environment=production", inst.InstanceID, inst.Name, inst.Region),
+				fmt.Sprintf("stop instance %s (%s) in %s, tagged Environment=%s", inst.InstanceID, inst.Name, inst.Region, liveEnvironment(live)),
 				"its EBS volumes persist; whatever runs on it stops until it is started again",
 			}
 			planW := w
@@ -450,16 +450,4 @@ func runStopInstanceCLI(ctx context.Context, w, eout io.Writer, clients map[stri
 		fmt.Fprintf(w, "Instance %s (%s) is now stopped.\n", inst.InstanceID, inst.Name)
 	}
 	return nil
-}
-
-// isProductionInstance reports whether the instance's live Environment tag is
-// exactly "production", the value the launch flows write and the production
-// warnings read. An untagged instance, or any other value, is not.
-func isProductionInstance(inst types.Instance) bool {
-	for _, tag := range inst.Tags {
-		if aws.ToString(tag.Key) == "Environment" {
-			return aws.ToString(tag.Value) == "production"
-		}
-	}
-	return false
 }

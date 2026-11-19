@@ -30,7 +30,7 @@ import (
 const CreateLaunchTemplateUsage = "usage: clasm compute " + CreateLaunchTemplateFromCloudInitCLISlug +
 	" [-text|-json] --name <template> --ami <ami-name-or-id> --instance-type <type> --key-pair <name>" +
 	" --security-group <sg-id>[,<sg-id>...] --subnet <subnet-id> --iam-instance-profile <name>" +
-	" --name-tag <name> --environment <production|development|test> [--project <tag>] [--root-volume-gb <n>] <cloud-init.yaml>"
+	" --name-tag <name> --environment <production|staged|development|test> [--project <tag>] [--root-volume-gb <n>] <cloud-init.yaml>"
 
 // CreateLaunchTemplateOptions are the form's parsed options.
 type CreateLaunchTemplateOptions struct {
@@ -138,7 +138,7 @@ Required:
   --iam-instance-profile <name>
                              must already exist and be SSM-capable
   --name-tag <name>          the instances' Name tag
-  --environment <env>        production, development or test
+  --environment <env>        production, staged, development or test
 Optional:
   --project <tag>            the instances' project tag (default: the AMI's)
   --root-volume-gb <n>       root volume size (default: the AMI's own; not smaller)

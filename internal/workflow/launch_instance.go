@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/caltechlibrary/clasm/internal/awsclient"
@@ -158,7 +159,7 @@ func collectLaunchInstanceParams(ctx context.Context, w io.Writer, ec2Clients ma
 		return LaunchInstanceParams{}, nil, nil, err
 	}
 
-	environment, err := ui.Prompt("Environment tag (production, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(menuInput, menuOutput))
+	environment, err := ui.Prompt("Environment tag (production, staged, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(menuInput, menuOutput))
 	if err != nil {
 		return LaunchInstanceParams{}, nil, nil, err
 	}
@@ -232,10 +233,8 @@ func requireAtLeastOneSecurityGroup(s string) error {
 // convention's fixed Environment vocabulary (see DECISIONS.md,
 // "Introduce a light Project/Environment tagging convention").
 func validateEnvironment(s string) error {
-	switch s {
-	case "production", "development", "test":
+	if slices.Contains(EnvironmentValues, s) {
 		return nil
-	default:
-		return fmt.Errorf("must be one of production, development, test")
 	}
+	return fmt.Errorf("must be one of %s", environmentList())
 }

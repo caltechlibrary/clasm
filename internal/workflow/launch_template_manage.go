@@ -111,8 +111,8 @@ func deleteLaunchTemplateVersions(ctx context.Context, w io.Writer, clients map[
 	}
 
 	fmt.Fprintf(w, "\n=== DRY RUN: deleting version(s) %s of launch template %s (%s) ===\n", strings.Join(versions, ", "), lt.TemplateID, lt.Name)
-	if lt.Environment == "production" {
-		fmt.Fprintln(w, "WARNING: this launch template is tagged Environment=production.")
+	if isProtectedEnvironment(lt.Environment) {
+		fmt.Fprintf(w, "WARNING: this launch template is tagged Environment=%s.\n", lt.Environment)
 	}
 	ok, err := ConfirmDestructive([]string{lt.TemplateID, lt.Name}, WithConfirmIO(input, output))
 	if err != nil {
@@ -166,8 +166,8 @@ func deleteLaunchTemplate(ctx context.Context, w io.Writer, clients map[string]a
 	}
 
 	fmt.Fprintf(w, "\n=== DRY RUN: deleting launch template %s (%s) and all its versions ===\n", lt.TemplateID, lt.Name)
-	if lt.Environment == "production" {
-		fmt.Fprintln(w, "WARNING: this launch template is tagged Environment=production.")
+	if isProtectedEnvironment(lt.Environment) {
+		fmt.Fprintf(w, "WARNING: this launch template is tagged Environment=%s.\n", lt.Environment)
 	}
 	ok, err := ConfirmDestructive([]string{lt.TemplateID, lt.Name}, WithConfirmIO(input, output))
 	if err != nil {

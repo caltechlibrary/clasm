@@ -108,8 +108,8 @@ func confirmTerminate(ctx context.Context, w io.Writer, client awsclient.EC2API,
 		fmt.Fprintf(w, "WARNING: DeleteOnTermination is set on these volumes -- their data (potentially including not-yet-archived backups) will be destroyed along with the instance: %s\n",
 			strings.Join(flaggedDevices, ", "))
 	}
-	if inst.Environment == "production" {
-		fmt.Fprintln(w, "WARNING: this instance is tagged Environment=production.")
+	if isProtectedEnvironment(inst.Environment) {
+		fmt.Fprintf(w, "WARNING: this instance is tagged Environment=%s.\n", inst.Environment)
 	}
 
 	return ConfirmDestructive([]string{params.InstanceID, inst.Name}, WithConfirmIO(input, output))

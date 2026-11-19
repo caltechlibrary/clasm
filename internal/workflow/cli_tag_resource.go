@@ -47,7 +47,7 @@ given. Nothing is ever removed. Tags are compared against what AWS reports at th
 <name-or-id> is a name or ID for instances, AMIs, launch templates, key pairs and S3
 buckets; an exact name for an IAM role or instance profile; a name or ARN for an IAM
 policy; an ID for an EBS volume, snapshot or network interface (found in whichever
-region has it). The Environment tag must be production, development or test, which the
+region has it). The Environment tag must be production, staged, development or test, which the
 production warnings read. Keys beginning aws: are reserved by AWS.
 `
 
@@ -101,7 +101,7 @@ func ParseTagResourceArgs(args []string) (TagResourceOptions, error) {
 		case seen[key]:
 			return fmt.Errorf("the key %q is given more than once", key)
 		case key == "Environment" && validateEnvironment(value) != nil:
-			return fmt.Errorf("Environment must be one of production, development, test, not %q", value)
+			return fmt.Errorf("Environment must be one of %s, not %q", environmentList(), value)
 		}
 		seen[key] = true
 		tags = append(tags, TagKV{key, value})

@@ -185,8 +185,8 @@ func resizeInstanceRootVolume(ctx context.Context, w io.Writer, ec2Clients map[s
 		return err
 	}
 
-	if inst.Environment == "production" {
-		fmt.Fprintln(w, "WARNING: this instance is tagged Environment=production.")
+	if isProtectedEnvironment(inst.Environment) {
+		fmt.Fprintf(w, "WARNING: this instance is tagged Environment=%s.\n", inst.Environment)
 	}
 	ok, err := ConfirmDestructive([]string{inst.InstanceID, inst.Name}, WithConfirmIO(input, output))
 	if err != nil {

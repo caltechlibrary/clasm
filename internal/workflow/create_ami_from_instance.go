@@ -60,7 +60,7 @@ func CollectCreateAMIParams(w io.Writer, inst inventory.Instance, now time.Time,
 		return CreateAMIParams{}, err
 	}
 
-	environment, err := ui.Prompt("Environment tag (production, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(input, output))
+	environment, err := ui.Prompt("Environment tag (production, staged, development, or test)", ui.WithValidator(validateEnvironment), ui.WithIO(input, output))
 	if err != nil {
 		return CreateAMIParams{}, err
 	}

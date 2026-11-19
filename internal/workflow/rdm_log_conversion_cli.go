@@ -31,7 +31,7 @@ orphan, the plain index, the stream or a copy, and says which copies. An instanc
 already data streams is a no-op (exit 0). A state clasm will not convert -- no data-stream template,
 a copy name already taken, more than one orphan -- is refused with the reason, and nothing is changed.
 
-On an instance whose live Environment tag is production the run is a dry run unless confirmed: with
+On an instance whose live Environment tag is production or staged the run is a dry run unless confirmed: with
 --confirm <instance-id-or-name> it runs; without it a terminal is asked to type the instance's ID or
 Name tag; with no terminal the plan is printed and nothing is changed (exit 0). Any other instance runs
 with no confirmation (--confirm is accepted and checked). Progress goes to stderr, the result to stdout.
@@ -46,7 +46,7 @@ Options:
       How long to wait for OpenSearch to answer, for a run right after a start
       (default 5m; 0 checks once).
   --confirm <instance-id-or-name>
-      Required to convert an instance tagged Environment=production. The value must equal the
+      Required to convert an instance tagged Environment=production or staged. The value must equal the
       instance's ID or Name tag, exactly; anything else is a usage error before any AWS call.
   -h, --help
       Show this help.
@@ -216,7 +216,7 @@ func RunConvertLogIndicesCLI(ctx context.Context, w, eout io.Writer, ssmClients 
 			writeIndexJSONError(w, format, err)
 			return err
 		}
-		production = isProductionInstance(live)
+		production = isProtectedInstance(live)
 	}
 	return convertWithGate(ctx, w, eout, newIndexOps(NewSSMExecutor(ssmClient, inst.InstanceID), poll, DefaultReindexTimeout), plan, inst, production, confirms, interactive, input, output, format)
 }
