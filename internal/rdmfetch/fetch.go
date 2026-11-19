@@ -188,9 +188,15 @@ func (f *Fetcher) FetchDump(ctx context.Context, bucket, key string) (DumpReport
 	isGz := strings.HasSuffix(key, ".gz")
 	final := filepath.Join(f.CacheDir, path.Base(key))
 
-	if info, err := os.Stat(final); err == nil && comparable && info.Size() == want {
-		if got, err := hashFile(final); err == nil && got == wantMD5 && (!isGz || gzipOK(final) == nil) {
-			return DumpReport{Path: final, Key: key, Size: want, MD5: got, MD5Verified: true, GzipOK: isGz, Reused: true}, nil
+	// A copy already in the cache is reused when it passes every check that can be
+	// made without downloading: the same size as S3; its MD5 against the ETag when
+	// that is comparable; for a gzip file, a full read. A dump uploaded in parts has
+	// no comparable MD5 (every large dump is one), so there the copy must also be
+	// no older than the object, which is what stops a changed object of the same
+	// size being taken for the cached one.
+	if info, err := os.Stat(final); err == nil && info.Size() == want && (comparable || !info.ModTime().Before(aws.ToTime(head.LastModified))) {
+		if got, err := hashFile(final); err == nil && (!comparable || got == wantMD5) && (!isGz || gzipOK(final) == nil) {
+			return DumpReport{Path: final, Key: key, Size: want, MD5: got, MD5Verified: comparable, GzipOK: isGz, Reused: true}, nil
 		}
 	}
 

@@ -560,3 +560,132 @@ func TestFetchSnapshot_DownloadsConcurrentlyUpToTheWorkerLimit(t *testing.T) {
 		t.Errorf("peak concurrent downloads = %d, want 2 or 3 with Workers=3", f.maxIn)
 	}
 }
+
+// ---- a dump uploaded in parts has no MD5 to compare, but it must still be reused ----
+// Found on the 2026-11-18 rehearsal: every large dump is a multipart upload, so the
+// MD5-only reuse rule never matched and restore-sql downloaded a 1 GiB dump twice.
+
+func multipartDump(t *testing.T, f *fakeS3, key string, data []byte) {
+	t.Helper()
+	f.put(key, data)
+	o := f.objects[key]
+	o.etag = `"d41d8cd98f00b204e9800998ecf8427e-5"`
+	f.objects[key] = o
+}
+
+func TestFetchDump_AMultipartDumpAlreadyFetchedIsReusedWithoutDownloadingAgain(t *testing.T) {
+	f := newFakeS3()
+	multipartDump(t, f, "src/d.sql.gz", gz(t, "SELECT 1;\n"))
+	fe := newFetcher(t, f)
+	if _, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz"); err != nil {
+		t.Fatal(err)
+	}
+	before := f.getCount()
+	r, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz")
+	if err != nil || !r.Reused || r.MD5Verified || !r.GzipOK {
+		t.Fatalf("r=%+v err=%v", r, err)
+	}
+	if f.getCount() != before {
+		t.Errorf("a verified copy must not be downloaded again: gets %d -> %d", before, f.getCount())
+	}
+	if r.MD5 == "" {
+		t.Error("the local MD5 is still reported")
+	}
+}
+
+func TestFetchDump_AMultipartCopyOlderThanTheObjectIsNotReused(t *testing.T) {
+	f := newFakeS3()
+	data := gz(t, "SELECT 1;\n")
+	multipartDump(t, f, "src/d.sql.gz", data)
+	fe := newFetcher(t, f)
+	local := filepath.Join(fe.CacheDir, "d.sql.gz")
+	if err := os.WriteFile(local, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := f.objects["src/d.sql.gz"].when.Add(-48 * time.Hour)
+	if err := os.Chtimes(local, old, old); err != nil {
+		t.Fatal(err)
+	}
+	r, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz")
+	if err != nil || r.Reused {
+		t.Errorf("an object changed after the copy was made: r=%+v err=%v", r, err)
+	}
+}
+
+func TestFetchDump_AMultipartCopyOfTheWrongSizeOrWithBrokenGzipIsNotReused(t *testing.T) {
+	f := newFakeS3()
+	good := gz(t, "SELECT 1;\n")
+	multipartDump(t, f, "src/d.sql.gz", good)
+	fe := newFetcher(t, f)
+	local := filepath.Join(fe.CacheDir, "d.sql.gz")
+	if err := os.WriteFile(local, good[:len(good)-3], 0o600); err != nil { // wrong size
+		t.Fatal(err)
+	}
+	if r, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz"); err != nil || r.Reused {
+		t.Errorf("wrong size: r=%+v err=%v", r, err)
+	}
+	broken := make([]byte, len(good)) // right size, not gzip
+	copy(broken, "this is not gzip")
+	if err := os.WriteFile(local, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz")
+	if err != nil || r.Reused {
+		t.Fatalf("broken gzip of the right size: r=%+v err=%v", r, err)
+	}
+	if b, _ := os.ReadFile(r.Path); !bytes.Equal(b, good) {
+		t.Error("the broken copy must be replaced by the verified download")
+	}
+}
+
+func TestFetchDump_AMultipartPlainDumpIsReusedOnSizeAndAge(t *testing.T) {
+	f := newFakeS3()
+	multipartDump(t, f, "src/d.sql", []byte("SELECT 1;\n"))
+	fe := newFetcher(t, f)
+	if _, err := fe.FetchDump(context.Background(), "b", "src/d.sql"); err != nil {
+		t.Fatal(err)
+	}
+	before := f.getCount()
+	r, err := fe.FetchDump(context.Background(), "b", "src/d.sql")
+	if err != nil || !r.Reused || r.GzipOK || f.getCount() != before {
+		t.Errorf("r=%+v err=%v gets %d -> %d", r, err, before, f.getCount())
+	}
+}
+
+func TestFetchDump_ACachedCopyWithAnOldTimeButTheRightMD5IsStillReusedForASinglePartObject(t *testing.T) {
+	f := newFakeS3()
+	data := gz(t, "SELECT 1;\n")
+	f.put("src/d.sql.gz", data) // single-part: the ETag is the real MD5
+	fe := newFetcher(t, f)
+	local := filepath.Join(fe.CacheDir, "d.sql.gz")
+	if err := os.WriteFile(local, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := f.objects["src/d.sql.gz"].when.Add(-48 * time.Hour)
+	if err := os.Chtimes(local, old, old); err != nil {
+		t.Fatal(err)
+	}
+	before := f.getCount()
+	r, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz")
+	if err != nil || !r.Reused || f.getCount() != before {
+		t.Errorf("an identical MD5 proves the content, so the age does not matter: r=%+v err=%v", r, err)
+	}
+}
+
+func TestFetchDump_AMultipartCopyThatIsValidGzipButADifferentSizeIsNotReused(t *testing.T) {
+	f := newFakeS3()
+	multipartDump(t, f, "src/d.sql.gz", gz(t, "SELECT 1;\n"))
+	fe := newFetcher(t, f)
+	other := gz(t, strings.Repeat("INSERT INTO t VALUES (2);\n", 50)) // valid gzip, newer than the object, wrong size
+	local := filepath.Join(fe.CacheDir, "d.sql.gz")
+	if err := os.WriteFile(local, other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := fe.FetchDump(context.Background(), "b", "src/d.sql.gz")
+	if err != nil || r.Reused {
+		t.Fatalf("r=%+v err=%v", r, err)
+	}
+	if b, _ := os.ReadFile(r.Path); bytes.Equal(b, other) {
+		t.Error("the wrong-size copy must be replaced by what S3 holds")
+	}
+}
