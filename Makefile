@@ -188,7 +188,8 @@ distribute_docs:
 	@cp -v README.md dist/
 	@cp -v LICENSE dist/
 	@cp -v INSTALL.md dist/
-	@cp -vR man dist/
+	@mkdir -p dist/man/man1
+	@for FNAME in $(MAN_PAGES_1); do cp -v "man/man1/$${FNAME}" dist/man/man1/; done
 	@for DNAME in $(DOCS); do cp -v $$DNAME dist/; done
 
 # test-release runs the tests of release.bash, and of release.ps1 when pwsh is
