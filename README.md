@@ -67,7 +67,6 @@ See `codemeta.json` (`releaseNotes`) and the GitHub release page for the notes o
 ## Software Requirements
 
 - Go >= 1.26
-- CMTools >= 0.0.46
 - Pandoc >= 3.9
 
 ### Software Suggestions

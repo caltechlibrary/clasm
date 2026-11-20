@@ -12,27 +12,26 @@
     }
   ],
   "dateCreated": "2026-06-30",
-  "dateModified": "2026-10-20",
-  "datePublished": "2026-10-20",
+  "dateModified": "2026-11-20",
+  "datePublished": "2026-11-20",
   "description": "Go TUI (clasm) with scriptable command-line support for administering Caltech Library DLD's AWS EC2 instances, AMIs, launch templates, and key pairs, plus S3 buckets and backup archives, IAM roles/instance profiles/policies, and Invenio RDM's own SQL/OpenSearch backup and restore lifecycle, with cross-resource tag management and cloud-init inspection.",
   "name": "clasm",
   "operatingSystem": [
     "POSIX"
   ],
   "programmingLanguage": [
-    "Go >= 1.26.4"
+    "Go >= 1.26.5"
   ],
   "softwareRequirements": [
     "Go >= 1.26",
-    "CMTools >= 0.0.46",
     "Pandoc >= 3.9"
   ],
   "softwareSuggestions": [
     "GNU Make >= 3.8"
   ],
-  "version": "0.0.12",
+  "version": "0.0.13",
   "developmentStatus": "active",
   "issueTracker": "https://github.com/caltechlibrary/clasm/issues",
-  "releaseNotes": "v0.0.12 fixes the restore defect behind caltechauthors issue #185 and adds a health check for RDM's log indices. A restore with include_global_state:false carries neither index templates nor data-stream definitions, so the app auto-created plain, text-mapped audit-log and job-logs indices and the admin audit-logs page silently stopped updating (HTTP 200, _shards.failed:1).\n\nThree new forms under `clasm rdm-backup-and-restore <slug>` (RDM menu items 6, 7 and 8), each with -text|-json and -wait (default 5m, 0 checks once). `rdm-index-health` is a read-only check of the audit log and job logs: exit 0 healthy, 1 a problem (missing template, plain or orphaned log index, text mappings, failed shards, a plain index that a data-stream template claims). `install-index-templates` installs the templates the app would install, only the missing ones, through the app's own routine; it never overwrites, and a run with nothing missing exits 0 (DR-0199). `convert-log-indices` turns orphaned and plain log indices back into real data streams, copying first; it needs `--confirm` on a production instance (DR-0180). Copies are named `clasm-fix-*` and clasm never deletes them.\n\nRestore OpenSearch (menu and command line) now ends with the install, the conversion and the health check, after the verified restore and the snapshot cleanup, with no second confirmation (DR-0199). The check's verdict is the restore's: a restore whose health check fails exits 1. Log indices are found by what they are, not by the alias, which a live restore of a pre-repair snapshot showed to matter. Verified live on a test instance.\n\nSnapshots taken from a real data stream restore as a real data stream; older snapshots hold the orphan form, so the conversion stays.",
+  "releaseNotes": "v0.0.13 adds the groundwork for rehearsing an Invenio RDM upgrade on a Multipass virtual machine and then on a test EC2 instance, and a runner for upgrade recipes.\n\n**clmpm** is a new companion program, **experimental** (its verbs and output may change before 1.0), that manages Multipass instances: launch from a cloud-init file, start, stop, clone, snapshot and delete (destructive verbs are a dry run until -confirm), fetch and verify the newest production SQL dump and OpenSearch snapshot from S3 (read-only), run pre-flight checks (mail suppressed, no production credentials, DataCite registration blocked, disk space, application stopped), restore the SQL dump and the OpenSearch snapshot into a VM, and check the RDM log indices afterwards (DR-0201, DR-0207). clasm and clmpm reach a host through one Executor interface with an SSM and a Multipass implementation, so the restore and health-check code is the same on both.\n\n**Upgrade recipes (DR-0202).** `clasm rdm-migration run-recipe` runs a directory of numbered NN_name.sh scripts on an instance over SSM, and `clmpm run-recipe` does the same on a Multipass VM. Each script declares its step name, what it changes (nothing, database, indices, host), a timeout, and optionally that it runs detached or as ubuntu. Without --apply the plan is printed and nothing runs. The run stops at the first failure and names the step to resume from with --from; parameters arrive as NAME=value; each step leaves one JSON line with its COUNT values. Exit codes follow the workspace table (a timed-out step is 69). Verified live on a Multipass VM and on a test EC2 instance.\n\n**staged (DR-0203).** The Environment tag has a fourth value, `staged`, protected like `production` everywhere production is: terminate, resize, remove AMI, the launch-template deletes, the stop gate, the log-conversion gate, and recipe steps that change the database or indices need --confirm. A Multipass VM is always treated as protected.\n\n**~/.clasm (DR-0206).** The file gains a `config_version` (now 2) that each program checks, a `host` kind on each rule (`aws` or `multipass`; no `host` means `aws`) and a `written_by` note. clasm reads only AWS rules and clmpm only Multipass rules. A program that finds a config_version newer than it understands refuses the file (exit 78) rather than dropping fields. Install this release on every machine that shares your ~/.clasm before adding a Multipass rule: a 0.0.12 binary ignores both new fields and would treat the rule as an AWS rule.\n\nThe 32-bit Raspberry Pi (Linux-armv7l) build is dropped (workspace DR-0018); 64-bit Raspberry Pi OS is covered by Linux-aarch64. The help text now lists all eight domains.",
   "copyrightYear": 2026
 }

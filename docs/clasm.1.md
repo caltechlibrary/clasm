@@ -1,6 +1,6 @@
-%clasm(1) user manual | version 0.0.12 128ae61
+%clasm(1) user manual | version 0.0.13 391b897
 % R. S. Doiel
-% 2026-10-20
+% 2026-11-20
 
 # NAME
 
@@ -23,13 +23,23 @@ RDM-specific.
 Run with no options to launch the interactive tool: after authenticating,
 it presents a domain picker -- Compute (EC2 instances, AMIs, and launch
 templates), Key Management (SSH key pairs), S3 (buckets, static website
-hosting, and backup archival), and Tag Management (add/update/remove/
-list tags across any of the above from one place). Each domain has its
+hosting, and backup archival), Tag Management (add/update/remove/
+list tags across any of the above from one place), IAM (roles, instance
+profiles and policies), RDM Backup & Restore (Invenio RDM's SQL and
+OpenSearch backup, restore and index-health lifecycle), RDM Migration
+(running an upgrade recipe on an instance, command line only for now) and
+Configuration. Each domain has its
 own menu of operations (e.g. Compute: create/start/stop/terminate an
 instance, create/remove an AMI, create/sync/promote/delete a launch
 template, show/export cloud-init) reachable after picking that domain;
 resource listings are shown on request via each domain's own "Show..."
 choice, not dumped automatically at startup.
+
+An instance's Environment tag is one of production, staged, development
+or test. Production and staged instances are protected: destructive
+actions, and recipe steps that change the database or indices, need
+--confirm. Multipass virtual machines for rehearsals are managed by the
+companion program clmpm (see clmpm(1)), which shares ~/.clasm.
 
 Some menu actions can also be run directly from the command line, once
 trusted enough for unattended use (e.g. via cron), bypassing every

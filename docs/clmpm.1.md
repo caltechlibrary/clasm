@@ -1,4 +1,4 @@
-clmpm 0.0.12 -- manage Multipass instances for RDM rehearsals
+clmpm 0.0.13 -- manage Multipass instances for RDM rehearsals
 
 USAGE
 

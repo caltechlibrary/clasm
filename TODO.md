@@ -1,9 +1,14 @@
 
 # Action items
 
-- [ ] Drop the 32-bit Raspberry Pi build (`Linux-armv7l`, `GOARM=7`) from the Makefile and any release check the next time this module is worked on (workspace DR-0018, proposed 2026-10-26). 64-bit Raspberry Pi OS stays covered by `Linux-aarch64`. Already-published releases are left as they are.
+- [x] (done 2026-11-20, release review) Drop the 32-bit Raspberry Pi build (`Linux-armv7l`, `GOARM=7`) from the Makefile and any release check the next time this module is worked on (workspace DR-0018, proposed 2026-10-26). 64-bit Raspberry Pi OS stays covered by `Linux-aarch64`. Already-published releases are left as they are.
 
-**Status 2026-10-20: v0.0.12 is released and installed; clasm is in maintenance mode.** Every item below that is still open is **deferred, with no release pending**: none is a blocker and none loses data. The next release is cut when a live run or a report finds a defect, or when the author chooses to batch the deferred fixes (the four interactive-flow findings of 2026-10-19 are the likeliest). Open items need a live run (the v0.0.10, v0.0.11 and v0.0.12 live-verification gaps), a cross-repository change (`pg_dump --column-inserts`, which must move with `invenio-sql-backup.bash`), or are feature work taken when wanted (CLI leaf parity, shell completion, the Multipass restore).
+## Planned for v0.0.14
+
+- [ ] A TUI for `clmpm`, built on the command-line DSL clmpm already provides (the verbs in `clmpm -help`, including `run-recipe`): each menu leaf runs the same verb form that a script would, as clasm's menus do for its leaf forms. `clmpm` is experimental in v0.0.13 and has no interactive mode yet; the `rdm-migration` menu entry in clasm only prints the CLI form and goes with it.
+- [ ] Improve the help text for `clmpm` (`clmpm -help`, and the man page generated from it): the verb list is terse, the options-before-arguments rule and the dry-run-until-`-confirm` rule need worked examples, and the exit codes, the Multipass sizing a cloud-init file needs (`-cpus`, `-memory`, `-disk`; the defaults are too small for the RDM cloud-init, which a fresh-VM boot showed on 2026-11-20) and the pre-flight checks should be documented.
+
+**Status 2026-11-20: v0.0.13 is being released; clasm is active again (it was in maintenance mode after v0.0.12).** Items below were written during that maintenance period. Every item below that is still open is **deferred, with no release pending**: none is a blocker and none loses data. The next release is cut when a live run or a report finds a defect, or when the author chooses to batch the deferred fixes (the four interactive-flow findings of 2026-10-19 are the likeliest). Open items need a live run (the v0.0.10, v0.0.11 and v0.0.12 live-verification gaps), a cross-repository change (`pg_dump --column-inserts`, which must move with `invenio-sql-backup.bash`), or are feature work taken when wanted (CLI leaf parity, shell completion, the Multipass restore).
 
 ## Bugs and issues
 
