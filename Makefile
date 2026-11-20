@@ -191,6 +191,13 @@ distribute_docs:
 	@cp -vR man dist/
 	@for DNAME in $(DOCS); do cp -v $$DNAME dist/; done
 
+# test-release runs the tests of release.bash, and of release.ps1 when pwsh is
+# installed. They use throwaway repositories and a stub gh, so nothing reaches
+# GitHub. Run it after changing release.bash, release.ps1 or release_test.bash.
+test-release: .FORCE
+	./release_test.bash
+	@if command -v pwsh >/dev/null 2>&1; then RELEASE_IMPL=ps1 ./release_test.bash; else echo "pwsh not found: release.ps1 not tested"; fi
+
 # check-release stops a release that is not ready. It changes nothing. It checks
 # that codemeta.json, version.go, CITATION.cff, both installers and the manual
 # pages in docs/ all carry the version in codemeta.json, that the release notes
