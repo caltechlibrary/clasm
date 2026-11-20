@@ -229,8 +229,8 @@ check-release: .FORCE
 	go test -count=1 ./... || exit 1; \
 	echo "check-release: codemeta.json, version.go, CITATION.cff, installers and docs/ carry $(VERSION); vet and tests pass"
 
-release: generate build check-release save setup_dist distribute_docs dist/Linux-x86_64 dist/Linux-aarch64 dist/macOS-x86_64 dist/macOS-arm64 dist/Windows-x86_64 dist/Windows-arm64
-	@printf "\nready to run\n\n\trelease.bash\n\n"
+release: generate build check-release setup_dist distribute_docs dist/Linux-x86_64 dist/Linux-aarch64 dist/macOS-x86_64 dist/macOS-arm64 dist/Windows-x86_64 dist/Windows-arm64
+	@printf "\ncheck-release passed. Now run: ./release.bash   (or ./release.bash --dry-run first)\n\n"
 
 
 .FORCE:
