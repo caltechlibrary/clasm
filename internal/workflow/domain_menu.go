@@ -278,6 +278,10 @@ type DomainActions struct {
 	// routine EC2 lifecycle actions, so it doesn't belong buried in that
 	// menu.
 	RDMBackupRestore func(ctx context.Context) error
+	// RDMMigration (DR-0202, DR-0204) runs the steps of moving an RDM instance to a
+	// new version: the recipe runner today, with parity checks to come. Its forms
+	// are CLI-only until a TUI shell over them exists.
+	RDMMigration func(ctx context.Context) error
 	// Configuration (DESIGN.md, "Configure clasm Domain") is last in the
 	// picker -- view/edit clasm's own ~/.clasm settings (regions, backup
 	// directory rules, Origin tag config) from within clasm instead of
@@ -324,6 +328,7 @@ var domainItems = []domainItem{
 	{label: "Tag Management", cliSlug: TagManagementDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.TagManagement(ctx) }},
 	{label: "IAM", cliSlug: IAMDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.IAM(ctx) }},
 	{label: "RDM Backup & Restore", cliSlug: RDMBackupRestoreDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.RDMBackupRestore(ctx) }},
+	{label: "RDM Migration", cliSlug: RDMMigrationDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.RDMMigration(ctx) }},
 	{label: "Configuration", cliSlug: ConfigurationDomainCLISlug, action: func(a DomainActions, ctx context.Context) error { return a.Configuration(ctx) }},
 }
 

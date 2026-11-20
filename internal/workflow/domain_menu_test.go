@@ -121,7 +121,7 @@ func TestRunDomainPicker_DispatchesToConfiguration(t *testing.T) {
 		Configuration: cancelingBackToPickerAction(&configuration, cancel),
 	}
 
-	menuInput := newHuhAccessibleInput("7\n") // Configuration
+	menuInput := newHuhAccessibleInput("8\n") // Configuration (RDM Migration is 7th since 2026-11-19)
 	if err := runDomainPicker(ctx, term, actions, menuInput, buf); err != nil {
 		t.Fatalf("expected a clean exit (nil error) once ctx is cancelled, got: %v", err)
 	}
@@ -243,8 +243,8 @@ func TestRunDomainPicker_RealDomainErrorPropagates(t *testing.T) {
 }
 
 func TestDomainItems_NoExitEntry(t *testing.T) {
-	if len(domainItems) != 7 {
-		t.Fatalf("len(domainItems) = %d, want 7 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
+	if len(domainItems) != 8 {
+		t.Fatalf("len(domainItems) = %d, want 8 (no more explicit \"Exit\" -- 'q' is the only way back/out now)", len(domainItems))
 	}
 	for _, item := range domainItems {
 		if item.action == nil {
@@ -270,6 +270,7 @@ func TestDomainItems_CLISlugs(t *testing.T) {
 		"Tag Management":                 "tag-management",
 		"IAM":                            "iam",
 		"RDM Backup & Restore":           "rdm-backup-and-restore",
+		"RDM Migration":                  "rdm-migration",
 		"Configuration":                  "configuration",
 	}
 	seen := map[string]string{}
@@ -440,5 +441,21 @@ func TestRunDomainPickerFromSlug_EveryDomainRunsItsOwnActionAndNoOther(t *testin
 		if calls[slug] != 1 || len(calls) != 1 {
 			t.Errorf("%s: calls = %v, want only %s once", slug, calls, slug)
 		}
+	}
+}
+
+func TestRunDomainPicker_DispatchesToRDMMigration(t *testing.T) {
+	var migration, compute int
+	term, buf := newTermOnly()
+	ctx, cancel := context.WithCancel(context.Background())
+	actions := DomainActions{
+		Compute:      backToPickerAction(&compute),
+		RDMMigration: cancelingBackToPickerAction(&migration, cancel),
+	}
+	if err := runDomainPicker(ctx, term, actions, newHuhAccessibleInput("7\n"), buf); err != nil {
+		t.Fatalf("expected a clean exit once ctx is cancelled, got: %v", err)
+	}
+	if migration != 1 || compute != 0 {
+		t.Errorf("migration=%d compute=%d, want 1 and 0", migration, compute)
 	}
 }

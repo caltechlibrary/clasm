@@ -32,6 +32,9 @@ VERBS (experimental until 1.0, like clasm's forms: names and output may change)
   show-user-data VM                 where the production data now is
   remove-fetched-backups            dry run; -confirm deletes the downloads on this machine
 
+  run-recipe VM DIR [NAME=value]... run an upgrade recipe (DR-0202): dry run until -apply;
+                                    -confirm permits database and index steps; -from resumes
+
 Launching defaults to Ubuntu 24.04, which the RDM cloud-init files target.
 Options go before the arguments. A verb that changes or discards state is a dry
 run until it is given -confirm.

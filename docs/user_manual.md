@@ -442,11 +442,12 @@ possessive `'s` is dropped, and every other run of punctuation and
 spaces becomes one hyphen (so "Resize instance's root volume" is
 `resize-instance-root-volume`). Every domain has a name, so
 `clasm <domain>` works for all of them: `compute`, `key-management`,
-`s3`, `tag-management`, `iam`, `rdm-backup-and-restore` and
+`s3`, `tag-management`, `iam`, `rdm-backup-and-restore`, `rdm-migration` and
 `configuration`.
 
-Six domains have actions with the full non-interactive form today:
-**RDM Backup & Restore** (`rdm-backup-and-restore`, below) and the
+Seven domains have actions with the full non-interactive form today:
+**RDM Backup & Restore** (`rdm-backup-and-restore`, below), **RDM Migration**
+(`rdm-migration`, "RDM Migration: run-recipe" below; its forms have no menu yet) and the
 read-only "Show" actions of **Compute** (`compute`), **Key Management**
 (`key-management`), **IAM** (`iam`), **S3** (`s3`) and **Tag Management**
 (`tag-management`), described under "Read-only forms". A path *under*
@@ -629,6 +630,68 @@ checking access to the destination bucket) -- only the interactive
 confirmation prompt is skipped. After a successful *interactive* run of
 any of these three actions, clasm prints the exact non-interactive command
 that reproduces it, ready to copy into a script or crontab entry.
+
+### RDM Migration: run-recipe
+
+`clasm rdm-migration run-recipe` runs an upgrade *recipe* on an instance over SSM, and
+`clmpm run-recipe` runs the same recipe on a Multipass VM. A recipe is a directory of
+numbered shell scripts that lives in the RDM repository, on the branch being upgraded
+(for example `upgrade/v13-to-v14/`); clasm owns only the plumbing, and the scripts hold
+what differs between releases. A person can run any script by hand without clasm.
+
+~~~
+upgrade/v13-to-v14/
+  00_preflight.sh     # step: preflight    # changes: nothing
+  10_load.sh          # step: load         # changes: database,indices   # detached: yes
+  20_verify.sh        # step: verify       # changes: nothing
+~~~
+
+Files named `NN_name.sh` (two or more digits) are the steps, run in order of the number,
+so `100_x` follows `20_y`. Any other file is ignored, and the dry run lists it so a mistyped
+name does not vanish. A script starts with header lines in its leading comment block (a
+blank or non-comment line ends the block); a script without one is refused:
+
+| Header | Required | Meaning |
+|---|---|---|
+| `# step: NAME` | yes | The name `--from` and the log use (letters, digits, `-`, `_`). |
+| `# changes: nothing\|database\|indices\|host` | yes | What the step changes; a comma list is allowed, `nothing` stands alone. |
+| `# timeout: SECONDS` | no (600) | The ceiling for the step, detached or not. |
+| `# detached: yes` | no | Run it in the background with a log and a finish marker, and poll it. |
+| `# user: root\|ubuntu` | no (root) | Who runs it. |
+
+~~~bash
+# Without --apply nothing runs: the plan, and what the production gate would stop.
+clasm rdm-migration run-recipe caltechauthors-test-v14 upgrade/v13-to-v14 SNAP=rdm-20261118
+# Run it. -json puts one JSON line per step on stdout and the progress on stderr.
+clasm rdm-migration run-recipe --apply -json caltechauthors-test-v14 upgrade/v13-to-v14 SNAP=rdm-20261118
+# A step failed: fix it, then resume from that step.
+clasm rdm-migration run-recipe --apply --from load caltechauthors-test-v14 upgrade/v13-to-v14 SNAP=rdm-20261118
+# The Multipass equivalent (every VM is treated as protected: -confirm for database/index steps).
+clmpm run-recipe -apply -confirm caltechauthors-rsdoiel-rehearse upgrade/v13-to-v14 SNAP=rdm-20261118
+~~~
+
+Parameters are `NAME=value`, exported to every step along with `APPLY=yes` (set by
+`--apply`; you cannot pass it). A name is capitals, digits and `_`; a value is letters,
+digits and `. _ : / @ = + , -` only, so nothing in it can be read as shell. Instance ids,
+bucket names and other production details arrive this way and never live in a recipe.
+
+**The gate.** On an instance whose live Environment tag is `production` or `staged`, a step
+whose header says `database` or `indices` is refused unless you pass
+`--confirm <instance-id-or-name>`; the refusal comes before any step runs. `test` and
+`development` instances need no `--confirm`.
+
+**The log.** Each step leaves one JSON line: `step`, `file`, `start`, `seconds`,
+`exit_class` (the workspace exit-code class: `ok`, `negative`, `data`, ..., or `timeout`),
+`exit_code` and `counts`. A step reports a count by printing `COUNT name=value`; nothing
+else a step prints is copied into the line, so a step must not print secrets or user data
+as counts. The whole of a step's output is shown to you and kept in its log file on the
+host under `/var/tmp/clasm-recipe/<run>/`. The run stops at the first failure and says
+which step to resume from.
+
+Exit status is the class of what happened: 0 ok; 1 the gate refused, or a step exited 1;
+2 usage; 65 a bad recipe, or a step exited 65; 66 the recipe directory is missing; 69 the
+instance could not be reached, or a step timed out; 70 a step exited with a code outside
+the workspace table; any other table code is the step's own.
 
 ### Read-only forms
 

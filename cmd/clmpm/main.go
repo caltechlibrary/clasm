@@ -47,6 +47,9 @@ type deps struct {
 	client      *multipass.Client
 	newExecutor func(vm string) executor.Executor
 	backups     backupDeps
+
+	// recipeRemoteDir is where run-recipe keeps its files on the host; "" for the default. Tests set it.
+	recipeRemoteDir string
 }
 
 type usageError struct{ msg string }
@@ -62,6 +65,8 @@ func classify(err error) (int, string) {
 	switch {
 	case errors.As(err, &u):
 		return exitUsage, "usage"
+	case recipeClassified(err):
+		return recipeCode(err)
 	case errors.Is(err, fs.ErrNotExist):
 		return exitNoInput, "no_input"
 	case errors.Is(err, config.ErrNewerConfig), errors.Is(err, config.ErrInvalidConfig):
@@ -106,7 +111,10 @@ const verbList = `  list-instances                    show every instance
                                     (both: -snapshot-first takes a safety snapshot)
   check-index-health VM             the RDM log indices after a load
   show-user-data VM                 where the production data now is
-  remove-fetched-backups            dry run; -confirm deletes the downloads on this machine`
+  remove-fetched-backups            dry run; -confirm deletes the downloads on this machine
+
+  run-recipe VM DIR [NAME=value]... run an upgrade recipe (DR-0202): dry run until -apply;
+                                    -confirm permits database and index steps; -from resumes`
 
 const helpText = `{app_name} {version} -- manage Multipass instances for RDM rehearsals
 
@@ -192,7 +200,7 @@ func run(args []string, stdout, stderr io.Writer, d deps) int {
 		err = &usageError{fmt.Sprintf("%v\nusage: %s %s [-text|-json] %s", err, appName, verb, h.usage)}
 	}
 	if err == nil {
-		err = h.do(d, o, fsl.Args(), cmdOut{w: stdout, json: *asJSON})
+		err = h.do(d, o, fsl.Args(), cmdOut{w: stdout, errw: stderr, json: *asJSON})
 	}
 	if err == nil {
 		return exitOK
@@ -221,12 +229,15 @@ type options struct {
 	listN                                              int
 	setMail, setDataCite, requireStopped               bool
 	need                                               int64
+	apply                                              bool
+	from                                               string
 	cache                                              string
 	container, dbName, dbUser, indexPrefix, directory  string
 }
 
 type cmdOut struct {
 	w    io.Writer
+	errw io.Writer // stderr: progress while stdout carries JSON
 	json bool
 }
 
@@ -278,6 +289,7 @@ func init() {
 		"restore-sql":                     {usage: "[-confirm] [-dump KEY] [-container C] [-db-name N] [-db-user U] [-snapshot-first] [-set-mail-suppression] [-set-datacite-safeguards] VM SOURCE", minArgs: 2, maxArgs: 2, flags: restoreFlags, do: doRestoreSQL},
 		"restore-opensearch":              {usage: "[-confirm] [-snapshot NAME] [-index-prefix P] [-directory D] [-snapshot-first] [-set-mail-suppression] [-set-datacite-safeguards] VM SOURCE", minArgs: 2, maxArgs: 2, flags: restoreFlags, do: doRestoreOpenSearch},
 		"check-index-health":              {usage: "[-wait DURATION] VM", minArgs: 1, maxArgs: 1, flags: healthFlags, do: doCheckIndexHealth},
+		"run-recipe":                      {usage: "[-apply] [-from STEP] [-confirm] VM RECIPE-DIR [NAME=value]...", minArgs: 2, maxArgs: 64, flags: recipeFlags, do: doRunRecipe},
 		"wait-for-cloud-init":             {usage: "[-wait DURATION] [-poll DURATION] NAME", minArgs: 1, maxArgs: 1, flags: waitFlags, do: doWait},
 	}
 	// list-instances takes no arguments: minArgs and maxArgs are already 0.

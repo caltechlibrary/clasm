@@ -60,6 +60,9 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 		{"compute", "archive-sql-backups-to-s3", false}, // an RDM slug, not Compute's
 		{"rdm-backup-and-restore", "archive-sql-backups-to-s3", true},
 		{"rdm-backup-and-restore", "show-instances", false}, // a Compute slug, not RDM's
+		{"rdm-migration", "run-recipe", true},
+		{"rdm-migration", "show-instances", false},
+		{"rdm-backup-and-restore", "run-recipe", false}, // the migration domain's leaf
 		{"iam", "show-roles", true},
 		{"iam", "delete-role", true},
 		{"iam", "create-instance-profile", true},
@@ -82,7 +85,7 @@ func TestLeafCLISlugExists_IsPerDomain(t *testing.T) {
 
 func TestDomainHasLeafCLIForms(t *testing.T) {
 	for domain, want := range map[string]bool{
-		"compute": true, "rdm-backup-and-restore": true,
+		"compute": true, "rdm-backup-and-restore": true, "rdm-migration": true,
 		"iam": true, "key-management": true,
 		"s3": true, "tag-management": true, "configuration": true,
 	} {

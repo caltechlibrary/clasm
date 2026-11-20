@@ -111,7 +111,7 @@ func TestRunCLILeaf_UnknownSlugIsAnInternalErrorNotAPanic(t *testing.T) {
 // of them, not only RDM Backup & Restore (which is all the manual could have
 // been describing truthfully before).
 func TestClassifyCLIArgs_EveryDomainDeepLinks(t *testing.T) {
-	for _, slug := range []string{"compute", "key-management", "s3", "tag-management", "iam", "configuration", "rdm-backup-and-restore"} {
+	for _, slug := range []string{"compute", "key-management", "s3", "tag-management", "iam", "configuration", "rdm-backup-and-restore", "rdm-migration"} {
 		mode, domainSlug, leafSlug, leafArgs, err := classifyCLIArgs([]string{slug})
 		if err != nil {
 			t.Errorf("%q: unexpected error: %v", slug, err)
@@ -1223,5 +1223,52 @@ func TestRunCLILeaf_ConvertLogIndicesHelpPrintsTheUsageAndExitsZero(t *testing.T
 	code := runCLILeaf(context.Background(), &out, &eout, "convert-log-indices", []string{"--help"}, cliEnv{})
 	if code != 0 || eout.Len() != 0 || !strings.Contains(out.String(), "convert-log-indices") || !strings.Contains(out.String(), "--confirm") || !strings.Contains(out.String(), "Exit status") {
 		t.Errorf("want exit 0, usage and the exit status on stdout, nothing on stderr; got %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), eout.String())
+	}
+}
+
+// Run Recipe (DR-0202) is the RDM Migration domain's first leaf: the dispatcher routes it,
+// and a usage error, a help request or a bad recipe never reaches AWS.
+func TestClassifyCLIArgs_RunRecipeLeaf(t *testing.T) {
+	mode, domainSlug, leafSlug, leafArgs, err := classifyCLIArgs([]string{"rdm-migration", "run-recipe", "box", "dir"})
+	if err != nil || mode != cliModeRun || domainSlug != "rdm-migration" || leafSlug != "run-recipe" || len(leafArgs) != 2 {
+		t.Errorf("got %q %q %q %v %v", mode, domainSlug, leafSlug, leafArgs, err)
+	}
+	if mode, _, _, _, err := classifyCLIArgs([]string{"rdm-migration", "run-recipe"}); err != nil || mode != cliModeLeaf {
+		t.Errorf("a bare leaf deep-links: %q %v", mode, err)
+	}
+	if _, _, _, _, err := classifyCLIArgs([]string{"rdm-backup-and-restore", "run-recipe"}); err == nil {
+		t.Error("run-recipe is not an rdm-backup-and-restore leaf")
+	}
+}
+
+func TestRunCLILeaf_RunRecipeFailuresNeverReachAWS(t *testing.T) {
+	missing := t.TempDir() + "/absent"
+	for name, tc := range map[string]struct {
+		args []string
+		want int
+	}{
+		"no arguments":              {nil, 2},
+		"only an instance":          {[]string{"box"}, 2},
+		"a bad parameter":           {[]string{"box", missing, "lower=x"}, 2},
+		"a bad flag":                {[]string{"--bogus", "box", missing}, 2},
+		"a missing recipe":          {[]string{"box", missing}, 66},
+		"an empty recipe directory": {[]string{"--apply", "no-such-box", t.TempDir()}, 65},
+	} {
+		var out, eout bytes.Buffer
+		code := runCLILeaf(context.Background(), &out, &eout, "run-recipe", tc.args, cliEnv{})
+		if code != tc.want {
+			t.Errorf("%s: exit %d, want %d (stderr %q)", name, code, tc.want, eout.String())
+		}
+		if strings.Contains(eout.String(), "internal error") {
+			t.Errorf("%s: the leaf was not routed to its own form; stderr %q", name, eout.String())
+		}
+	}
+}
+
+func TestRunCLILeaf_RunRecipeHelpPrintsTheUsageAndExitsZero(t *testing.T) {
+	var out, eout bytes.Buffer
+	code := runCLILeaf(context.Background(), &out, &eout, "run-recipe", []string{"--help"}, cliEnv{})
+	if code != 0 || eout.Len() != 0 || !strings.Contains(out.String(), "# changes:") || !strings.Contains(out.String(), "Exit status") {
+		t.Errorf("want exit 0 and the recipe format on stdout; got %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), eout.String())
 	}
 }

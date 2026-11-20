@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -680,6 +681,9 @@ func main() {
 			}
 			return workflow.RunRDMBackupRestoreMenu(ctx, out, rdmActions)
 		},
+		RDMMigration: func(ctx context.Context) error {
+			return workflow.RunRDMMigrationMenu(ctx, out)
+		},
 	}
 
 	// The loader each CLI domain runs first -- the same one its interactive
@@ -687,6 +691,7 @@ func main() {
 	cliLoaders := map[string]func(context.Context) error{
 		workflow.ComputeDomainCLISlug:          refresh,
 		workflow.RDMBackupRestoreDomainCLISlug: refresh,
+		workflow.RDMMigrationDomainCLISlug:     refresh,
 		workflow.KeyManagementDomainCLISlug:    refreshKeyMgmt,
 		workflow.S3DomainCLISlug:               refreshS3,
 		workflow.TagManagementDomainCLISlug:    refreshTagMgmt,
@@ -725,6 +730,10 @@ func main() {
 			_, leafErr = workflow.RunTagMgmtMenuFromSlug(ctx, out, tagMgmtActions, cliLeafSlug)
 		case workflow.ConfigurationDomainCLISlug:
 			_, leafErr = workflow.RunConfigureMenuFromSlug(ctx, out, configPath, ec2Clients, cliLeafSlug)
+		case workflow.RDMMigrationDomainCLISlug:
+			if err := workflow.RunRDMMigrationMenu(ctx, out); err != nil && !errors.Is(err, workflow.ErrBackToDomainPicker) {
+				leafErr = err
+			}
 		default:
 			_, leafErr = workflow.RunRDMBackupRestoreMenuFromSlug(ctx, out, rdmActions, cliLeafSlug)
 		}
