@@ -191,7 +191,38 @@ distribute_docs:
 	@cp -vR man dist/
 	@for DNAME in $(DOCS); do cp -v $$DNAME dist/; done
 
-release: generate build save setup_dist distribute_docs dist/Linux-x86_64 dist/Linux-aarch64 dist/macOS-x86_64 dist/macOS-arm64 dist/Windows-x86_64 dist/Windows-arm64
+# check-release stops a release that is not ready. It changes nothing. It checks
+# that codemeta.json, version.go, CITATION.cff, both installers and the manual
+# pages in docs/ all carry the version in codemeta.json, that the release notes
+# begin with that version, that dateModified and datePublished agree, and then
+# runs go vet and the whole test suite (the live tests are opt-in by environment
+# variable and are skipped). It does not compare the release hash, which
+# `make generate` rewrites; the release target runs generate first. Run
+# `make generate build` before running it by hand on a changed codemeta.json.
+check-release: .FORCE
+	@if [ -z "$(VERSION)" ]; then \
+		echo "error: no version in codemeta.json" >&2; exit 1; fi; \
+	if ! jq -r .releaseNotes codemeta.json | grep -q '^v$(VERSION) '; then \
+		echo "error: codemeta.json releaseNotes do not begin with v$(VERSION)" >&2; exit 1; fi; \
+	if [ "$$(jq -r .dateModified codemeta.json)" != "$$(jq -r .datePublished codemeta.json)" ]; then \
+		echo "error: codemeta.json dateModified and datePublished differ" >&2; exit 1; fi; \
+	if ! grep -q 'Version = "$(VERSION)"' version.go; then \
+		echo "error: version.go does not carry version $(VERSION); run make generate" >&2; exit 1; fi; \
+	if ! grep -q '^version: $(VERSION)$$' CITATION.cff; then \
+		echo "error: CITATION.cff does not carry version $(VERSION); run make generate" >&2; exit 1; fi; \
+	for FNAME in installer.sh installer.ps1; do \
+		if ! grep -q 'VERSION.*"$(VERSION)"' $$FNAME; then \
+			echo "error: $$FNAME does not carry version $(VERSION); run make generate" >&2; exit 1; fi; \
+	done; \
+	for FNAME in docs/*.?.md; do \
+		if ! head -4 $$FNAME | grep -qF "$(VERSION)"; then \
+			echo "error: $$FNAME does not carry version $(VERSION); run make build" >&2; exit 1; fi; \
+	done; \
+	go vet ./... || exit 1; \
+	go test -count=1 ./... || exit 1; \
+	echo "check-release: codemeta.json, version.go, CITATION.cff, installers and docs/ carry $(VERSION); vet and tests pass"
+
+release: generate build check-release save setup_dist distribute_docs dist/Linux-x86_64 dist/Linux-aarch64 dist/macOS-x86_64 dist/macOS-arm64 dist/Windows-x86_64 dist/Windows-arm64
 	@printf "\nready to run\n\n\trelease.bash\n\n"
 
 
